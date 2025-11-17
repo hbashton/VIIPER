@@ -1,7 +1,6 @@
 package csharp
 
 import (
-	"strings"
 	"viiper/internal/codegen/common"
 )
 
@@ -14,10 +13,9 @@ func toCamelCase(s string) string {
 }
 
 func goTypeToCSharp(goType string) string {
-	goType = strings.TrimPrefix(goType, "*")
-	goType = strings.TrimPrefix(goType, "[]")
+	base, _, _ := common.NormalizeGoType(goType)
 
-	switch goType {
+	switch base {
 	case "uint8":
 		return "byte"
 	case "uint16":
@@ -45,13 +43,8 @@ func goTypeToCSharp(goType string) string {
 	case "byte":
 		return "byte"
 	default:
-		return toPascalCase(goType)
+		return toPascalCase(base)
 	}
 }
 
-func writeFileHeader() string {
-	return `// Auto-generated VIIPER C# SDK
-// DO NOT EDIT - This file is generated from the VIIPER server codebase
-
-`
-}
+func writeFileHeader() string { return common.FileHeader("//", "C#") }

@@ -188,7 +188,9 @@ func mapFuncImpl(device string, mapInfo scanner.MapInfo) string {
 	builder.WriteString("    if (!out_value) return 0;\n")
 	builder.WriteString("    switch (key) {\n")
 
-	for keyStr, value := range mapInfo.Entries {
+	keys := common.SortedStringKeys(mapInfo.Entries)
+	for _, keyStr := range keys {
+		value := mapInfo.Entries[keyStr]
 		cKey := formatCMapKey(keyStr, mapInfo.KeyType, device)
 		cValue := formatCMapValue(value, mapInfo.ValueType, device)
 		builder.WriteString(fmt.Sprintf("        case %s: *out_value = %s; return 1;\n", cKey, cValue))

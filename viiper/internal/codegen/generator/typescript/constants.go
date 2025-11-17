@@ -80,11 +80,8 @@ func groupConstants(constants []scanner.ConstantInfo) []tsEnumGroup {
 			g = &tsEnumGroup{Name: prefix, Type: "number"}
 			groups[prefix] = g
 		}
-		name := strings.TrimPrefix(c.Name, prefix)
-		if len(name) > 0 && name[0] >= '0' && name[0] <= '9' {
-			name = "Num" + name
-		}
-		g.Constants = append(g.Constants, tsConstInfo{Name: name, Value: formatConstValueTS(c.Value)})
+		_, member := common.TrimPrefixAndSanitize(c.Name)
+		g.Constants = append(g.Constants, tsConstInfo{Name: member, Value: formatConstValueTS(c.Value)})
 	}
 	var result []tsEnumGroup
 	for _, g := range groups {
@@ -117,11 +114,7 @@ func convertMaps(maps []scanner.MapInfo) []tsMapData {
 	var result []tsMapData
 	for _, m := range maps {
 		md := tsMapData{Name: m.Name, KeyType: mapGoConstTypeToTS(m.KeyType), ValueType: mapGoConstTypeToTS(m.ValueType)}
-		keys := make([]string, 0, len(m.Entries))
-		for k := range m.Entries {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
+		keys := common.SortedStringKeys(m.Entries)
 		for _, k := range keys {
 			v := m.Entries[k]
 			md.Entries = append(md.Entries, tsMapEntry{Key: formatMapKeyTS(k, m.KeyType), Value: formatMapValueTS(v, m.ValueType)})
@@ -152,14 +145,10 @@ func formatMapKeyTS(key string, goType string) string {
 	case "byte", "uint8":
 		// Prefer enum symbolic key if provided (e.g., Key.A)
 		if len(key) > 0 && (key[0] >= 'A' && key[0] <= 'Z') {
-			prefix := common.ExtractPrefix(key)
-			if prefix != "" {
-				member := strings.TrimPrefix(key, prefix)
-				if len(member) > 0 {
-					if member[0] >= '0' && member[0] <= '9' {
-						member = "Num" + member
-					}
-					return fmt.Sprintf("%s.%s", prefix, member)
+			if pfx := common.ExtractPrefix(key); pfx != "" {
+				_, member := common.TrimPrefixAndSanitize(key)
+				if member != "" {
+					return fmt.Sprintf("%s.%s", pfx, member)
 				}
 			}
 		}
@@ -193,13 +182,9 @@ func formatMapValueTS(value interface{}, goType string) string {
 	switch goType {
 	case "byte", "uint8":
 		if str, ok := value.(string); ok && !strings.Contains(str, " ") {
-			prefix := common.ExtractPrefix(str)
-			if prefix != "" {
-				member := strings.TrimPrefix(str, prefix)
-				if len(member) > 0 && member[0] >= '0' && member[0] <= '9' {
-					member = "Num" + member
-				}
-				return fmt.Sprintf("%s.%s", prefix, member)
+			if pfx := common.ExtractPrefix(str); pfx != "" {
+				_, member := common.TrimPrefixAndSanitize(str)
+				return fmt.Sprintf("%s.%s", pfx, member)
 			}
 			return str
 		}

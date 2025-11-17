@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"text/template"
+	"viiper/internal/codegen/common"
 )
 
 const indexTemplate = `{{writeFileHeaderTS}}
@@ -42,14 +43,7 @@ func generateIndex(logger *slog.Logger, srcDir string) error {
 func generateDeviceIndex(logger *slog.Logger, deviceDir, deviceName string) error {
 	logger.Debug("Generating device index.ts", "device", deviceName)
 
-	pascalName := ""
-	for _, char := range deviceName {
-		if len(pascalName) == 0 {
-			pascalName += string(char - 32)
-		} else {
-			pascalName += string(char)
-		}
-	}
+	pascalName := common.ToPascalCase(deviceName)
 
 	hasOutput := false
 	outputPath := filepath.Join(deviceDir, pascalName+"Output.ts")

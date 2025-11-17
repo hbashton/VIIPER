@@ -10,7 +10,7 @@ import (
 func generateDeviceWrapper(logger *slog.Logger, srcDir string) error {
 	logger.Debug("Generating ViiperDevice.ts stream wrapper")
 	content := writeFileHeaderTS() + `import { Socket } from 'net';
-import { BinaryWriter, BinaryReader } from './utils/binary';
+import { BinaryWriter } from './utils/binary';
 import { EventEmitter } from 'events';
 
 export interface IBinarySerializable {

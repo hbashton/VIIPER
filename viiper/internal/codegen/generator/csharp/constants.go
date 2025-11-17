@@ -32,7 +32,7 @@ func generateConstants(logger *slog.Logger, deviceDir string, deviceName string,
 	outputPath := filepath.Join(deviceDir, pascalDevice+"Constants.cs")
 
 	enumGroups := groupConstantsByPrefix(deviceConsts.Constants)
-	maps := convertMapsToCShar(deviceConsts.Maps)
+	maps := convertMapsToCSharp(deviceConsts.Maps)
 
 	data := struct {
 		Device     string
@@ -105,10 +105,7 @@ func groupConstantsByPrefix(constants []scanner.ConstantInfo) []enumGroup {
 			}
 		}
 
-		name := strings.TrimPrefix(c.Name, prefix)
-		if len(name) > 0 && name[0] >= '0' && name[0] <= '9' {
-			name = "Num" + name
-		}
+		_, name := common.TrimPrefixAndSanitize(c.Name)
 		groups[prefix].Constants = append(groups[prefix].Constants, constantInfo{
 			Name:  name,
 			Value: formatConstValue(c.Value),
@@ -243,7 +240,7 @@ func inferValueTypeFromEntries(entries map[string]interface{}) string {
 	return commonPrefix
 }
 
-func convertMapsToCShar(maps []scanner.MapInfo) []mapData {
+func convertMapsToCSharp(maps []scanner.MapInfo) []mapData {
 	result := make([]mapData, 0, len(maps))
 
 	for _, m := range maps {
@@ -262,11 +259,7 @@ func convertMapsToCShar(maps []scanner.MapInfo) []mapData {
 			Entries:   make([]mapEntry, 0, len(m.Entries)),
 		}
 
-		keys := make([]string, 0, len(m.Entries))
-		for k := range m.Entries {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
+		keys := common.SortedStringKeys(m.Entries)
 
 		for _, k := range keys {
 			v := m.Entries[k]
@@ -315,13 +308,9 @@ func formatMapKey(key string, goType string) string {
 			return fmt.Sprintf("(byte)0x%02X", key[0])
 		}
 		if len(key) > 0 && (key[0] >= 'A' && key[0] <= 'Z') {
-			prefix := common.ExtractPrefix(key)
-			if prefix != "" {
-				member := strings.TrimPrefix(key, prefix)
-				if len(member) > 0 && member[0] >= '0' && member[0] <= '9' {
-					member = "Num" + member
-				}
-				return fmt.Sprintf("(byte)%s.%s", prefix, member)
+			if pfx := common.ExtractPrefix(key); pfx != "" {
+				_, member := common.TrimPrefixAndSanitize(key)
+				return fmt.Sprintf("(byte)%s.%s", pfx, member)
 			}
 		}
 		return key
@@ -336,13 +325,9 @@ func formatMapValue(value interface{}, goType string) string {
 	switch goType {
 	case "byte", "uint8":
 		if str, ok := value.(string); ok && !strings.Contains(str, " ") {
-			prefix := common.ExtractPrefix(str)
-			if prefix != "" {
-				member := strings.TrimPrefix(str, prefix)
-				if len(member) > 0 && member[0] >= '0' && member[0] <= '9' {
-					member = "Num" + member
-				}
-				return fmt.Sprintf("%s.%s", prefix, member)
+			if pfx := common.ExtractPrefix(str); pfx != "" {
+				_, member := common.TrimPrefixAndSanitize(str)
+				return fmt.Sprintf("%s.%s", pfx, member)
 			}
 			return str
 		}
