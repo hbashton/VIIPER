@@ -23,6 +23,8 @@ Then generates client SDKs with:
 - Per-device encode/decode functions
 - Typed constants and enums
 
+**Note:** The codegen command requires access to VIIPER source code. It must be executed from the `viiper/` module directory within the repository.
+
 ## Flags
 
 ### `--output`

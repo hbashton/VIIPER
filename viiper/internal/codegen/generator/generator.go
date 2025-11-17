@@ -77,6 +77,13 @@ func (g *Generator) GenerateLang(lang string) error {
 
 // ScanAll runs all scanners to collect metadata
 func (g *Generator) ScanAll() (*meta.Metadata, error) {
+	requiredPaths := []string{"internal/cmd", "pkg/apitypes", "pkg/device"}
+	for _, path := range requiredPaths {
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			return nil, fmt.Errorf("codegen requires VIIPER source code and must be run from the viiper module directory: missing '%s'", path)
+		}
+	}
+
 	g.logger.Info("Scanning codebase for metadata")
 
 	md := &meta.Metadata{
