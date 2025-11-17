@@ -11,11 +11,13 @@ viiper codegen [flags]
 ## Description
 
 Scans the VIIPER server codebase to extract:
+
 - API routes and response DTOs
 - Device wire formats from `viiper:wire` comment tags
 - Device constants (keycodes, modifiers, button masks)
 
-Then generates client SDKs for C, C#, and TypeScript with:
+Then generates client SDKs with:
+
 - Management API clients
 - Device-agnostic stream wrappers
 - Per-device encode/decode functions

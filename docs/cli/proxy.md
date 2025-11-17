@@ -27,7 +27,7 @@ Proxy listen address (where clients connect).
 **Example:**
 
 ```bash
-viiper proxy --listen-addr=:9000 --upstream=192.168.1.100:3241
+viiper proxy --listen-addr=:9000 --upstream=192.168.1.100:3240
 ```
 
 ### `--upstream`
@@ -39,7 +39,7 @@ viiper proxy --listen-addr=:9000 --upstream=192.168.1.100:3241
 **Example:**
 
 ```bash
-viiper proxy --upstream=192.168.1.100:3241
+viiper proxy --upstream=192.168.1.100:3240
 ```
 
 ### `--connection-timeout`
@@ -52,7 +52,7 @@ Connection timeout for proxy operations.
 **Example:**
 
 ```bash
-viiper proxy --upstream=192.168.1.100:3241 --connection-timeout=60s
+viiper proxy --upstream=192.168.1.100:3240 --connection-timeout=60s
 ```
 
 ## Examples
@@ -62,27 +62,27 @@ viiper proxy --upstream=192.168.1.100:3241 --connection-timeout=60s
 Start proxy between local clients and remote USBIP server:
 
 ```bash
-viiper proxy --upstream=192.168.1.100:3241
+viiper proxy --upstream=192.168.1.100:3240
 ```
 
-Clients connect to `localhost:3241`, traffic is proxied to `192.168.1.100:3241`.
+Clients connect to `localhost:3241`, traffic is proxied to `192.168.1.100:3240`.
 
 ### Custom Listen Address
 
 Start proxy on a different port:
 
 ```bash
-viiper proxy --listen-addr=:9000 --upstream=192.168.1.100:3241
+viiper proxy --listen-addr=:9000 --upstream=192.168.1.100:3240
 ```
 
-Clients connect to `localhost:9000`, traffic is proxied to `192.168.1.100:3241`.
+Clients connect to `localhost:9000`, traffic is proxied to `192.168.1.100:3240`.
 
 ### With Raw Packet Logging
 
 Capture all USB traffic for reverse engineering:
 
 ```bash
-viiper proxy --upstream=192.168.1.100:3241 --log.raw-file=usb-capture.log
+viiper proxy --upstream=192.168.1.100:3240 --log.raw-file=usb-capture.log
 ```
 
 All USB packets will be logged to `usb-capture.log`.
@@ -92,7 +92,7 @@ All USB packets will be logged to `usb-capture.log`.
 Enable debug logging to see proxy operations:
 
 ```bash
-viiper proxy --upstream=192.168.1.100:3241 --log.level=debug
+viiper proxy --upstream=192.168.1.100:3240 --log.level=debug
 ```
 
 ## Use Cases
@@ -102,7 +102,7 @@ viiper proxy --upstream=192.168.1.100:3241 --log.level=debug
 Intercept USB traffic between a client and server to understand device protocols:
 
 ```bash
-viiper proxy --upstream=real-server:3241 --log.raw-file=device-capture.log
+viiper proxy --upstream=real-server:3240 --log.raw-file=device-capture.log
 ```
 
 ### Traffic Analysis
@@ -110,7 +110,7 @@ viiper proxy --upstream=real-server:3241 --log.raw-file=device-capture.log
 Monitor USB communication for debugging:
 
 ```bash
-viiper proxy --upstream=real-server:3241 --log.level=trace
+viiper proxy --upstream=real-server:3240 --log.level=trace
 ```
 
 ### Network Inspection
@@ -118,7 +118,7 @@ viiper proxy --upstream=real-server:3241 --log.level=trace
 Route USB traffic through VIIPER to inspect and log all operations:
 
 ```bash
-viiper proxy --upstream=real-server:3241 --log.level=debug --log.raw-file=traffic.log
+viiper proxy --upstream=real-server:3240 --log.level=debug --log.raw-file=traffic.log
 ```
 
 ## Proxy Architecture
