@@ -44,7 +44,6 @@ jobs:
           {
             echo "# Changelog"
             echo
-            echo "This section lists version-specific changelogs."
             echo
           } > docs/changelog/index.md
           for f in docs/changelog/*.md; do
@@ -76,7 +75,6 @@ jobs:
           {
             echo "# Changelog"
             echo
-            echo "This section lists version-specific changelogs."
             echo
           } > docs/changelog/index.md
           for f in docs/changelog/*.md; do

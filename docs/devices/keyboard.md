@@ -1,4 +1,4 @@
-# HID Keyboard (virtual)
+# HID Keyboard
 
 A full-featured HID keyboard with N-key rollover using a 256-bit key bitmap, plus LED status feedback (NumLock, CapsLock, ScrollLock) via an OUT report.
 
@@ -7,6 +7,13 @@ A full-featured HID keyboard with N-key rollover using a 256-bit key bitmap, plu
   - IN: 0x81 (keyboard input report)
   - OUT: 0x01 (LED output report)
 - Device type id (for API add): `keyboard`
+
+## Client SDK Support
+
+The wire protocol is abstracted by client SDKs. The **Go client** includes built-in types (`pkg/device/keyboard`), and **generated SDKs** provide equivalent structures with proper packing.  
+You don't need to manually construct packets, just use the provided types and send them via the device stream.
+
+See: [Go Client](../clients/go.md), [Generated SDKs](../clients/generator.md)
 
 ## HID report format (host-facing)
 

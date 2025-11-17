@@ -1,10 +1,17 @@
-# Xbox 360 Controller (virtual)
+# Xbox 360 Controller
 
 The Xbox 360 virtual gamepad emulates an XInput-compatible controller that most operating systems and games understand out of the box.
 
 - USB IDs: VID 0x045E (Microsoft), PID 0x028E (Xbox 360 Controller)
 - Interfaces/Endpoints: single HID interface with one IN interrupt endpoint and one OUT interrupt endpoint for rumble
 - Device type id (for API add): `xbox360`
+
+## Client SDK Support
+
+The wire protocol is abstracted by client SDKs. The **Go client** includes built-in types (`pkg/device/xbox360`), and **generated SDKs** provide equivalent structures with proper packing.  
+You don't need to manually construct packets, just use the provided types and send them via the device stream.
+
+See: [Go Client](../clients/go.md), [Generated SDKs](../clients/generator.md)
 
 ## Adding the device
 
