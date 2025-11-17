@@ -33,9 +33,9 @@ extern "C" {
 #endif
 
 /* Version information */
-#define VIIPER_VERSION_MAJOR 0
-#define VIIPER_VERSION_MINOR 1
-#define VIIPER_VERSION_PATCH 0
+#define VIIPER_VERSION_MAJOR {{.Major}}
+#define VIIPER_VERSION_MINOR {{.Minor}}
+#define VIIPER_VERSION_PATCH {{.Patch}}
 
 /* Forward declarations */
 typedef struct viiper_client viiper_client_t;
@@ -153,7 +153,7 @@ VIIPER_API void viiper_device_close(viiper_device_t* device);
 #endif /* VIIPER_H */
 `
 
-func generateCommonHeader(logger *slog.Logger, includeDir string, md *meta.Metadata) error {
+func generateCommonHeader(logger *slog.Logger, includeDir string, md *meta.Metadata, major, minor, patch int) error {
 	out := filepath.Join(includeDir, "viiper.h")
 	t := template.Must(template.New("viiper.h").Funcs(tplFuncs(md)).Parse(commonHeaderTmpl))
 	f, err := os.Create(out)
@@ -161,7 +161,21 @@ func generateCommonHeader(logger *slog.Logger, includeDir string, md *meta.Metad
 		return fmt.Errorf("create header: %w", err)
 	}
 	defer f.Close()
-	if err := t.Execute(f, md); err != nil {
+
+	// Create data with version and metadata
+	data := struct {
+		*meta.Metadata
+		Major int
+		Minor int
+		Patch int
+	}{
+		Metadata: md,
+		Major:    major,
+		Minor:    minor,
+		Patch:    patch,
+	}
+
+	if err := t.Execute(f, data); err != nil {
 		return fmt.Errorf("exec header tmpl: %w", err)
 	}
 	logger.Info("Generated C header", "file", out)

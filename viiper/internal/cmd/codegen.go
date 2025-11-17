@@ -15,23 +15,9 @@ func (c *Codegen) Run(logger *slog.Logger) error {
 	logger.Info("Starting VIIPER code generation", "output", c.Output, "lang", c.Lang)
 
 	gen := generator.New(c.Output, logger)
-
-	switch c.Lang {
-	case "c":
-		return gen.GenerateC()
-	case "csharp":
-		return gen.GenerateCSharp()
-	case "typescript":
-		return gen.GenerateTypeScript()
-	case "all":
-		if err := gen.GenerateC(); err != nil {
-			return err
-		}
-		if err := gen.GenerateCSharp(); err != nil {
-			return err
-		}
-		return gen.GenerateTypeScript()
+	if c.Lang == "all" {
+		return gen.GenAll()
 	}
+	return gen.GenerateLang(c.Lang)
 
-	return nil
 }

@@ -70,6 +70,7 @@ nav:
     - Go Client: clients/go.md
     - Generator Documentation: clients/generator.md
     - C SDK: clients/c.md
+    - C# SDK: clients/csharp.md
   - Devices:
     - Xbox 360 Controller: devices/xbox360.md
     - Keyboard: devices/keyboard.md

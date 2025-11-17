@@ -11,7 +11,7 @@ COMMIT := $(shell git rev-parse --short HEAD 2>nul || echo unknown)
 BUILD_TIME := $(shell powershell -NoProfile -NonInteractive -Command "Get-Date -Format 'yyyy-MM-dd_HH:mm:ss'")
 
 # Go build flags
-LDFLAGS := -s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.buildTime=$(BUILD_TIME)
+LDFLAGS := -s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.buildTime=$(BUILD_TIME) -X viiper/internal/codegen/common.Version=$(VERSION)
 BUILD_FLAGS := -trimpath -ldflags "$(LDFLAGS)"
 
 # Windows detection and environment setup

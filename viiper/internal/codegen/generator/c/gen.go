@@ -17,6 +17,13 @@ import (
 // - src/viiper_<device>.c (per-device)
 // - CMakeLists.txt
 func Generate(logger *slog.Logger, outputDir string, md *meta.Metadata) error {
+	version, err := common.GetVersion()
+	if err != nil {
+		return fmt.Errorf("get version: %w", err)
+	}
+	major, minor, patch := common.ParseVersion(version)
+	logger.Info("Using version", "version", version, "major", major, "minor", minor, "patch", patch)
+
 	includeDir := filepath.Join(outputDir, "include", "viiper")
 	srcDir := filepath.Join(outputDir, "src")
 
@@ -27,7 +34,7 @@ func Generate(logger *slog.Logger, outputDir string, md *meta.Metadata) error {
 		return fmt.Errorf("create src dir: %w", err)
 	}
 
-	if err := generateCommonHeader(logger, includeDir, md); err != nil {
+	if err := generateCommonHeader(logger, includeDir, md, major, minor, patch); err != nil {
 		return err
 	}
 

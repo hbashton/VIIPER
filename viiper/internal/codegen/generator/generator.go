@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	cgen "viiper/internal/codegen/generator/c"
+	"viiper/internal/codegen/generator/csharp"
 	"viiper/internal/codegen/meta"
 	"viiper/internal/codegen/scanner"
 )
@@ -16,12 +17,60 @@ type Generator struct {
 	logger    *slog.Logger
 }
 
-// New creates a new Generator instance
+// LanguageGenerator defines a function that generates an SDK for a language into outputDir.
+type LanguageGenerator func(logger *slog.Logger, outputDir string, md *meta.Metadata) error
+
+var generators = map[string]LanguageGenerator{
+	"c":      cgen.Generate,
+	"csharp": csharp.Generate,
+}
+
 func New(outputDir string, logger *slog.Logger) *Generator {
 	return &Generator{
 		outputDir: outputDir,
 		logger:    logger,
 	}
+}
+
+func (g *Generator) GenAll() error {
+	for lang := range generators {
+		if err := g.GenerateLang(lang); err != nil {
+			return fmt.Errorf("generate %s SDK: %w", lang, err)
+		}
+	}
+	return nil
+}
+
+// GenerateLang runs the SDK generator for the provided language key.
+// It scans metadata once per invocation and passes it to the language-specific generator.
+func (g *Generator) GenerateLang(lang string) error {
+	gen, ok := generators[lang]
+	if !ok {
+		var supported []string
+		for k := range generators {
+			supported = append(supported, k)
+		}
+		return fmt.Errorf("unsupported language '%s' (supported: %v)", lang, supported)
+	}
+
+	g.logger.Info("Generating SDK", "language", lang)
+
+	md, err := g.ScanAll()
+	if err != nil {
+		return err
+	}
+
+	outputPath := filepath.Join(g.outputDir, lang)
+	if err := os.MkdirAll(outputPath, 0o755); err != nil {
+		return fmt.Errorf("failed to create %s output directory: %w", lang, err)
+	}
+
+	if err := gen(g.logger, outputPath, md); err != nil {
+		return err
+	}
+
+	g.logger.Info("SDK generation complete", "language", lang, "output", outputPath)
+	return nil
 }
 
 // ScanAll runs all scanners to collect metadata
@@ -32,7 +81,6 @@ func (g *Generator) ScanAll() (*meta.Metadata, error) {
 		DevicePackages: make(map[string]*scanner.DeviceConstants),
 	}
 
-	// Scan routes
 	g.logger.Debug("Scanning API routes")
 	routes, err := scanner.ScanRoutesInPackage("internal/cmd")
 	if err != nil {
@@ -41,7 +89,6 @@ func (g *Generator) ScanAll() (*meta.Metadata, error) {
 	md.Routes = routes
 	g.logger.Info("Found API routes", "count", len(routes))
 
-	// Scan DTOs
 	g.logger.Debug("Scanning DTOs")
 	dtos, err := scanner.ScanDTOsInPackage("pkg/apitypes")
 	if err != nil {
@@ -50,7 +97,6 @@ func (g *Generator) ScanAll() (*meta.Metadata, error) {
 	md.DTOs = dtos
 	g.logger.Info("Found DTOs", "count", len(dtos))
 
-	// Discover and scan device packages
 	g.logger.Debug("Discovering device packages")
 	deviceBaseDir := "pkg/device"
 	entries, err := os.ReadDir(deviceBaseDir)
@@ -82,7 +128,6 @@ func (g *Generator) ScanAll() (*meta.Metadata, error) {
 			"maps", len(deviceConsts.Maps))
 	}
 
-	// Scan wire tags from all device packages
 	g.logger.Debug("Scanning viiper:wire tags")
 	wireTags, err := scanner.ScanWireTags(devicePaths)
 	if err != nil {
@@ -99,41 +144,4 @@ func (g *Generator) ScanAll() (*meta.Metadata, error) {
 	md.Routes = enriched
 
 	return md, nil
-}
-
-// GenerateC generates the C SDK
-func (g *Generator) GenerateC() error {
-	g.logger.Info("Generating C SDK")
-
-	md, err := g.ScanAll()
-	if err != nil {
-		return err
-	}
-
-	outputPath := filepath.Join(g.outputDir, "c")
-	if err := os.MkdirAll(outputPath, 0755); err != nil {
-		return fmt.Errorf("failed to create C output directory: %w", err)
-	}
-
-	// Delegate to C generator subpackage
-	if err := cgen.Generate(g.logger, outputPath, md); err != nil {
-		return err
-	}
-
-	g.logger.Info("C SDK generation complete", "output", outputPath)
-	return nil
-}
-
-// GenerateCSharp generates the C# SDK
-func (g *Generator) GenerateCSharp() error {
-	g.logger.Info("Generating C# SDK")
-	// TODO: Implement in Step 12
-	return fmt.Errorf("C# generation not yet implemented")
-}
-
-// GenerateTypeScript generates the TypeScript SDK
-func (g *Generator) GenerateTypeScript() error {
-	g.logger.Info("Generating TypeScript SDK")
-	// TODO: Implement in Step 13
-	return fmt.Errorf("TypeScript generation not yet implemented")
 }

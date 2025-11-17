@@ -28,7 +28,7 @@ type MapInfo struct {
 
 // DeviceConstants holds all constants and maps for a device package
 type DeviceConstants struct {
-	DeviceType string         `json:"deviceType"` // "keyboard", "mouse", "xbox360"
+	DeviceType string         `json:"deviceType"`
 	Constants  []ConstantInfo `json:"constants"`
 	Maps       []MapInfo      `json:"maps"`
 }
@@ -216,11 +216,10 @@ func extractValue(expr ast.Expr) interface{} {
 				return val
 			}
 		case token.CHAR:
-			val := strings.Trim(e.Value, "'")
-			if len(val) == 1 {
-				return val
+			if unquoted, err := strconv.Unquote(e.Value); err == nil {
+				return unquoted
 			}
-			return val
+			return strings.Trim(e.Value, "'")
 		}
 	case *ast.Ident:
 		return e.Name

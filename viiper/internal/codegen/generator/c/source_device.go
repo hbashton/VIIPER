@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"text/template"
 	"viiper/internal/codegen/meta"
+	"viiper/internal/codegen/scanner"
 )
 
 const deviceSourceTmpl = `/* Auto-generated VIIPER - C SDK: device source ({{.Device}}) */
@@ -14,17 +15,30 @@ const deviceSourceTmpl = `/* Auto-generated VIIPER - C SDK: device source ({{.De
 #include "viiper/viiper.h"
 #include "viiper/viiper_{{.Device}}.h"
 
+/* ========================================================================
+ * {{.Device}} Map Implementations
+ * ======================================================================== */
+{{- range .Pkg.Maps }}
+
+{{mapFuncImpl $.Device .}}
+{{- end}}
 `
 
 type deviceSourceData struct {
 	Device string
 	HasS2C bool
+	Pkg    *scanner.DeviceConstants
 }
 
 func generateDeviceSource(logger *slog.Logger, srcDir, device string, md *meta.Metadata) error {
-	data := deviceSourceData{Device: device, HasS2C: hasWireTag(md, device, "s2c")}
+	pkg := md.DevicePackages[device]
+	data := deviceSourceData{
+		Device: device,
+		HasS2C: hasWireTag(md, device, "s2c"),
+		Pkg:    pkg,
+	}
 	out := filepath.Join(srcDir, fmt.Sprintf("viiper_%s.c", device))
-	t := template.Must(template.New("device.c").Parse(deviceSourceTmpl))
+	t := template.Must(template.New("device.c").Funcs(tplFuncs(md)).Parse(deviceSourceTmpl))
 	f, err := os.Create(out)
 	if err != nil {
 		return fmt.Errorf("create device source: %w", err)

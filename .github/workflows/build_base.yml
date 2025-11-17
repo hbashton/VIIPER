@@ -74,7 +74,8 @@ jobs:
           GOARCH: ${{ matrix.target.goarch }}
           CGO_ENABLED: 0
         run: |
-          go build -trimpath -ldflags "-s -w" -o ../dist/viiper-${{ matrix.target.goos }}-${{ matrix.target.goarch }}${{ matrix.target.ext }} ./cmd/viiper
+          VERSION=$(git describe --tags --match "v[0-9]*.[0-9]*.[0-9]*" --always || echo "v0.0.0-dev")
+          go build -trimpath -ldflags "-s -w -X viiper/internal/codegen/common.Version=${VERSION}" -o ../dist/viiper-${{ matrix.target.goos }}-${{ matrix.target.goarch }}${{ matrix.target.ext }} ./cmd/viiper
           ls -la ../dist
 
       - name: Upload artifact

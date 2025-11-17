@@ -56,10 +56,13 @@ The generator uses lightweight comment tags placed next to device types and cons
 type InputState struct { ... }
 ```
 
-### Constant Export
+### Constant and Map Export
 
-The generator automatically exports all constants from `pkg/device/*/const.go` for each device type.  
-No special tags are required. Exported Go constants are emitted with language-appropriate representations and prefixes.
+The generator automatically exports all constants and map literals from `pkg/device/*/const.go` for each device type.  
+No special tags are required. Exported Go constants and maps are emitted with language-appropriate representations:
+
+- **Constants**: Grouped into enums (C#/TS) or `#define` macros (C) based on common prefixes
+- **Maps**: Converted to Dictionary/Map/lookup functions with helper methods
 
 ## Code Generation Flow
 
@@ -69,7 +72,7 @@ No special tags are required. Exported Go constants are emitted with language-ap
 2. Reflect response DTOs from `pkg/apitypes/*.go`  
 3. Find device types via `RegisterDevice()` calls  
 4. Parse `viiper:wire` comments for packet layouts  
-5. Extract all exported constants from `pkg/device/*/const.go` (automatic)
+5. Extract all exported constants and map literals from `pkg/device/*/const.go` (automatic)
 
 **Emit Phase:**  
 For each language, generate management client, DTO types, device streams, constants, and build configs.
@@ -132,7 +135,7 @@ typedef struct {
 #pragma pack(pop)
 ```
 
-## Example: Constant Export
+## Example: Constant and Map Export
 
 **Go source (`pkg/device/keyboard/const.go`):**
 
@@ -144,6 +147,13 @@ const (
     KeyB = 0x05
     // ...
 )
+
+var CharToKey = map[byte]byte{
+    'a': KeyA,
+    'b': KeyB,
+    '\n': KeyEnter,
+    // ...
+}
 ```
 
 **Emitted C header (`viiper_keyboard.h`):**
@@ -153,7 +163,43 @@ const (
 #define VIIPER_KEYBOARD_MODLEFTSHIFT 0x2
 #define VIIPER_KEYBOARD_KEYA 0x4
 #define VIIPER_KEYBOARD_KEYB 0x5
-// ...
+
+// Map lookup function
+int viiper_keyboard_char_to_key_lookup(uint8_t key, uint8_t* out_value);
+```
+
+**Emitted C# (`KeyboardConstants.cs`):**
+
+```csharp
+public enum Mod : uint
+{
+    LeftCtrl = 0x01,
+    LeftShift = 0x02,
+    // ...
+}
+
+public enum Key : uint
+{
+    A = 0x04,
+    B = 0x05,
+    // ...
+}
+
+public static class CharToKey
+{
+    private static readonly Dictionary<byte, Key> _map = new()
+    {
+        { (byte)'a', Key.A },
+        { (byte)'b', Key.B },
+        { (byte)'\n', Key.Enter },
+        // ...
+    };
+
+    public static bool TryGetValue(byte key, out Key value)
+    {
+        return _map.TryGetValue(key, out value);
+    }
+}
 ```
 
 ## Regeneration Triggers
@@ -162,26 +208,28 @@ Run codegen when any of these change:
 
 - `pkg/apitypes/*.go`: API response structures
 - `pkg/device/*/inputstate.go`: Wire tag annotations
-- `pkg/device/*/const.go`: Exported constants
+- `pkg/device/*/const.go`: Exported constants and map literals
 - `internal/server/api/*.go`: Route registrations
 - `internal/codegen/generator/**/*.go`: Generator templates
+- `internal/codegen/scanner/**/*.go`: Scanner logic (constants, maps, wire tags)
 
 ## Language-Specific Notes
 
-- **C**: manual memory management for variable-length fields; builds with CMake.  
-- **C#**: `ViiperDevice` class with `OnOutput` event; async/await for management API; struct packing via attributes.  
-- **TypeScript**: manual byte encoding; ESM/CJS compatible.  
+- **C**: `#define` macros for constants; switch-based lookup functions for maps; manual memory management for variable-length fields; builds with CMake.  
+- **C#**: Enums for constant groups; `Dictionary<K,V>` with static helper methods for maps; `ViiperDevice` class with `OnOutput` event; async/await for management API; struct packing via attributes.  
+- **TypeScript**: Enums for constant groups; `Map<K,V>` or plain objects for maps; manual byte encoding; ESM/CJS compatible.  
 
 ## Current SDK Status
 
 - **C**: ✅ Complete
-- **C#**: 🚧 Planned
+- **C#**: ✅ Complete
 - **TypeScript**: 🚧 Planned
 
 ## Further Reading
 
 - [Design Document](../design.md): Architectural rationale and detailed generation strategy
 - [C SDK Documentation](c.md): C-specific usage, build, and examples
+- [C# SDK Documentation](csharp.md): C#-specific usage, async patterns, and map helpers
 - [Go Client Documentation](go.md): Go reference client usage
 
 ---
