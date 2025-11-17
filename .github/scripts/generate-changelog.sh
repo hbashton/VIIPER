@@ -44,8 +44,30 @@ MISC=""
 for commit_hash in "${COMMITS[@]}"; do
   commit_msg=$(git log -1 --pretty=format:'%s' "$commit_hash")
   commit_body=$(git log -1 --pretty=format:'%b' "$commit_hash")
-  # Extract changelog type using awk (case-insensitive, robust)
-  changelog_type=$(echo "$commit_body" | awk 'BEGIN{IGNORECASE=1} /changelog[(: ]/ {if ($0 ~ /feature/) print "feature"; else if ($0 ~ /fix/) print "fix"; else if ($0 ~ /misc/) print "misc"; exit}')
+  # Extract changelog type from subject or body (case-insensitive, robust)
+  changelog_type=""
+  # Check subject first
+  if echo "$commit_msg" | grep -iqE 'changelog[(: ]'; then
+    if echo "$commit_msg" | grep -iqE 'changelog\((feature|feat)\)'; then
+      changelog_type="feature"
+    elif echo "$commit_msg" | grep -iqE 'changelog\((fix)\)'; then
+      changelog_type="fix"
+    elif echo "$commit_msg" | grep -iqE 'changelog\((misc)\)'; then
+      changelog_type="misc"
+    fi
+  fi
+  # If not found in subject, check body
+  if [ -z "$changelog_type" ]; then
+    if echo "$commit_body" | grep -iqE 'changelog[(: ]'; then
+      if echo "$commit_body" | grep -iqE 'changelog\((feature|feat)\)'; then
+        changelog_type="feature"
+      elif echo "$commit_body" | grep -iqE 'changelog\((fix)\)'; then
+        changelog_type="fix"
+      elif echo "$commit_body" | grep -iqE 'changelog\((misc)\)'; then
+        changelog_type="misc"
+      fi
+    fi
+  fi
   if [ -n "$changelog_type" ]; then
     body_content=$(echo "$commit_body" | awk 'BEGIN{IGNORECASE=1} !/changelog[(: ]/ && NF')
     entry="- $commit_msg"

@@ -27,7 +27,12 @@ const projectTemplate = `<Project Sdk="Microsoft.NET.Sdk">
     <RepositoryUrl>https://github.com/Alia5/VIIPER</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageTags>viiper;usbip;virtual-device;input-emulation;hid</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="../README.md" Pack="true" PackagePath="/"/>
+  </ItemGroup>
 
 </Project>
 `

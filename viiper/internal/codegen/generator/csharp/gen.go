@@ -68,6 +68,10 @@ func Generate(logger *slog.Logger, outputDir string, md *meta.Metadata) error {
 		return err
 	}
 
+	if err := common.GenerateReadme(logger, outputDir); err != nil {
+		return err
+	}
+
 	logger.Info("Generated C# SDK", "dir", outputDir)
 	return nil
 }

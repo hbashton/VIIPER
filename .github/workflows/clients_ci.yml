@@ -1,0 +1,138 @@
+name: SDK CI
+
+on:
+  pull_request:
+    branches: ["**"]
+  workflow_call:
+    inputs:
+      artifact_suffix:
+        required: false
+        type: string
+        default: ""
+        description: "Suffix to add to artifact names"
+      upload_artifacts:
+        required: false
+        type: boolean
+        default: false
+        description: "Whether to upload SDK artifacts"
+      version:
+        required: false
+        type: string
+        default: ""
+        description: "Override version injected via ldflags (e.g. tag v1.2.3)"
+
+permissions:
+  contents: read
+
+jobs:
+  sdk:
+    name: Codegen and smoke builds
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: true
+          cache-dependency-path: |
+            viiper/go.sum
+
+      - name: Run code generation
+        working-directory: viiper
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "${{ inputs.version }}" ]; then
+            echo "Running codegen with injected version: ${{ inputs.version }}"
+            go run -ldflags "-X viiper/internal/codegen/common.Version=${{ inputs.version }}" ./cmd/viiper codegen
+          else
+            echo "Running codegen with default dev version"
+            go run ./cmd/viiper codegen
+          fi
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: |
+            clients/typescript/package-lock.json
+            examples/typescript/package-lock.json
+
+      - name: Build TypeScript SDK
+        working-directory: clients/typescript
+        run: |
+          npm install
+          npm run build
+          npm pack
+
+      - name: Build TypeScript examples (smoke)
+        working-directory: examples/typescript
+        run: |
+          npm install
+          npm run build
+
+      - name: Set up .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Pack C# SDK (smoke)
+        run: dotnet pack clients/csharp/Viiper.Client/Viiper.Client.csproj -c Release -o artifacts/nuget
+
+      - name: Build C# examples (smoke)
+        run: |
+          dotnet build examples/csharp/virtual_keyboard/VirtualKeyboard.csproj -c Release
+          dotnet build examples/csharp/virtual_mouse/VirtualMouse.csproj -c Release
+          dotnet build examples/csharp/virtual_x360_pad/VirtualX360Pad.csproj -c Release
+
+      - name: Set up CMake
+        uses: jwlawson/actions-setup-cmake@v2
+        with:
+          cmake-version: '3.26.x'
+
+      - name: Build C SDK (smoke)
+        run: |
+          cmake -S clients/c -B clients/c/build
+          cmake --build clients/c/build --config Release --parallel
+
+      - name: Rename TypeScript SDK tarball
+        if: ${{ inputs.upload_artifacts }}
+        working-directory: clients/typescript
+        run: |
+          for file in viiperclient-*.tgz; do
+            if [ -f "$file" ]; then
+              mv "$file" "viiperclient-typescript-sdk${{ inputs.artifact_suffix }}.tgz"
+            fi
+          done
+
+      - name: Upload TypeScript SDK tarball
+        if: ${{ inputs.upload_artifacts }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: typescript-sdk${{ inputs.artifact_suffix }}
+          path: clients/typescript/viiperclient-typescript-sdk${{ inputs.artifact_suffix }}.tgz
+          if-no-files-found: error
+
+      - name: Upload C# SDK nupkg
+        if: ${{ inputs.upload_artifacts }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: csharp-sdk-nupkg${{ inputs.artifact_suffix }}
+          path: artifacts/nuget/*.nupkg
+          if-no-files-found: error
+
+      - name: Archive C SDK source
+        if: ${{ inputs.upload_artifacts }}
+        run: tar -czf c-sdk-source${{ inputs.artifact_suffix }}.tar.gz -C clients/c .
+
+      - name: Upload C SDK source
+        if: ${{ inputs.upload_artifacts }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: c-sdk-source${{ inputs.artifact_suffix }}
+          path: c-sdk-source${{ inputs.artifact_suffix }}.tar.gz
+          if-no-files-found: error

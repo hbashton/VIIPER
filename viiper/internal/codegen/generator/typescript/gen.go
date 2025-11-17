@@ -74,6 +74,10 @@ func Generate(logger *slog.Logger, outputDir string, md *meta.Metadata) error {
 		return err
 	}
 
+	if err := common.GenerateReadme(logger, projectDir); err != nil {
+		return err
+	}
+
 	logger.Info("Generated TypeScript SDK", "dir", projectDir)
 	return nil
 }

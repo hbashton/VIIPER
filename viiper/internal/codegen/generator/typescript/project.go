@@ -16,7 +16,7 @@ const packageTemplate = `{
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Alia5/VIIPER"
+    "url": "git+https://github.com/Alia5/VIIPER.git"
   },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -34,6 +34,9 @@ const packageTemplate = `{
   "scripts": {
     "build": "tsc -p .",
     "clean": "rimraf dist"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "devDependencies": {
     "@types/node": "24.10.1",

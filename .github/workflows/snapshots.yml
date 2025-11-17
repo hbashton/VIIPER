@@ -21,9 +21,16 @@ jobs:
     with:
       mode: snapshot
 
+  client-sdks:
+    name: SDK smoke builds and pack
+    uses: ./.github/workflows/clients_ci.yml
+    with:
+      artifact_suffix: "-Snapshot"
+      upload_artifacts: true
+
   create-pre-release:
     name: Create Pre-Release
-    needs: [build, generate-changelog]
+    needs: [build, generate-changelog, client-sdks]
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/main')
     steps:
