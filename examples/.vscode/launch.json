@@ -9,7 +9,7 @@
             "type": "go",
             "request": "launch",
             "mode": "debug",
-            "program": "${workspaceFolder}/gp/virtual_x360_pad",
+            "program": "${workspaceFolder}/go/virtual_x360_pad",
             "args": [
                 "localhost:3242",
             ],
