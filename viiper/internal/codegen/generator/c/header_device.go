@@ -23,7 +23,7 @@ const deviceHeaderTmpl = `#ifndef VIIPER_{{upper .Device}}_H
 {{- if gt (len .Pkg.Constants) 0 }}
 /* {{.Device}} constants */
 {{range .Pkg.Constants -}}
-#define VIIPER_{{upper $.Device}}_{{upper .Name}} {{printf "0x%X" .Value}}
+#define VIIPER_{{upper $.Device}}_{{upper (snakecase .Name)}} {{printf "0x%X" .Value}}
 {{end}}
 {{- end}}
 

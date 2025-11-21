@@ -105,7 +105,7 @@ int main(void) {
         .modifiers = 0,
         .count = 1
     };
-    uint8_t keys[] = {VIIPER_KEYBOARD_KEYA};
+    uint8_t keys[] = {VIIPER_KEYBOARD_KEY_A};
     input.keys = keys;
     input.keys_count = 1;
 
@@ -195,9 +195,9 @@ void on_led_update(void* user_data, const void* data, size_t len) {
     if (len < 1) return;
     uint8_t leds = ((uint8_t*)data)[0];
     printf("LEDs: NumLock=%d CapsLock=%d ScrollLock=%d\n",
-           !!(leds & VIIPER_KEYBOARD_LEDNUMLOCK),
-           !!(leds & VIIPER_KEYBOARD_LEDCAPSLOCK),
-           !!(leds & VIIPER_KEYBOARD_LEDSCROLLLOCK));
+           !!(leds & VIIPER_KEYBOARD_LED_NUM_LOCK),
+           !!(leds & VIIPER_KEYBOARD_LED_CAPS_LOCK),
+           !!(leds & VIIPER_KEYBOARD_LED_SCROLL_LOCK));
 }
 
 viiper_device_on_output(device, on_led_update, NULL);
@@ -254,9 +254,9 @@ add_custom_command(TARGET your_target POST_BUILD
 **Solution:** Add sufficient delays between key press, release, and next action:
 
 ```c
-press_and_release(dev, VIIPER_KEYBOARD_KEYL, 0);
+press_and_release(dev, VIIPER_KEYBOARD_KEY_L, 0);
 Sleep(100);
-press_and_release(dev, VIIPER_KEYBOARD_KEYL, 0);
+press_and_release(dev, VIIPER_KEYBOARD_KEY_L, 0);
 ```
 
 ### Struct Padding Issues

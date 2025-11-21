@@ -421,7 +421,7 @@ func formatCMapKey(key string, goType string, device string) string {
 		if len(key) > 0 && (key[0] >= 'A' && key[0] <= 'Z') {
 			prefix := common.ExtractPrefix(key)
 			if prefix != "" {
-				constName := strings.ToUpper(key)
+				constName := strings.ToUpper(common.ToSnakeCase(key))
 				return fmt.Sprintf("VIIPER_%s_%s", strings.ToUpper(device), constName)
 			}
 		}
@@ -440,7 +440,7 @@ func formatCMapValue(value interface{}, goType string, device string) string {
 			if len(str) > 0 && (str[0] >= 'A' && str[0] <= 'Z') {
 				prefix := common.ExtractPrefix(str)
 				if prefix != "" {
-					constName := strings.ToUpper(str)
+					constName := strings.ToUpper(common.ToSnakeCase(str))
 					return fmt.Sprintf("VIIPER_%s_%s", strings.ToUpper(device), constName)
 				}
 			}

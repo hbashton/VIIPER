@@ -36,10 +36,28 @@ func ToCamelCase(s string) string {
 }
 
 func ToSnakeCase(s string) string {
+	if s == "" {
+		return ""
+	}
 	var b strings.Builder
-	for i, r := range s {
-		if i > 0 && r >= 'A' && r <= 'Z' {
-			b.WriteByte('_')
+	runes := []rune(s)
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
+		isUpper := r >= 'A' && r <= 'Z'
+
+		if i > 0 && isUpper {
+			// Check if previous char is lowercase (e.g., "someWord" -> "some_word")
+			prevIsLower := runes[i-1] >= 'a' && runes[i-1] <= 'z'
+
+			// Check if next char is lowercase (e.g., "XMLParser" -> "xml_parser", not "x_m_l_parser")
+			nextIsLower := i+1 < len(runes) && runes[i+1] >= 'a' && runes[i+1] <= 'z'
+
+			// Insert underscore if:
+			// - Previous char is lowercase (camelCase boundary)
+			// - Current is uppercase and next is lowercase (end of acronym: "XMLParser" at 'P')
+			if prevIsLower || nextIsLower {
+				b.WriteByte('_')
+			}
 		}
 		b.WriteRune(r)
 	}

@@ -51,11 +51,11 @@ static void on_leds(const void* output, size_t output_size, void* user)
     for (size_t i = 0; i < output_size; ++i) {
         uint8_t b = p[i];
         printf("→ LEDs: Num=%u Caps=%u Scroll=%u Compose=%u Kana=%u\n",
-            (b & VIIPER_KEYBOARD_LEDNUMLOCK) ? 1u : 0u,
-            (b & VIIPER_KEYBOARD_LEDCAPSLOCK) ? 1u : 0u,
-            (b & VIIPER_KEYBOARD_LEDSCROLLLOCK) ? 1u : 0u,
-            (b & VIIPER_KEYBOARD_LEDCOMPOSE) ? 1u : 0u,
-            (b & VIIPER_KEYBOARD_LEDKANA) ? 1u : 0u);
+            (b & VIIPER_KEYBOARD_LED_NUM_LOCK) ? 1u : 0u,
+            (b & VIIPER_KEYBOARD_LED_CAPS_LOCK) ? 1u : 0u,
+            (b & VIIPER_KEYBOARD_LED_SCROLL_LOCK) ? 1u : 0u,
+            (b & VIIPER_KEYBOARD_LED_COMPOSE) ? 1u : 0u,
+            (b & VIIPER_KEYBOARD_LED_KANA) ? 1u : 0u);
     }
 }
 
@@ -86,13 +86,13 @@ static void press_and_release(viiper_device_t* dev, uint8_t modifiers, uint8_t k
 static void type_string_hello(viiper_device_t* dev)
 {
     /* H e l l o ! */
-    press_and_release(dev, VIIPER_KEYBOARD_MODLEFTSHIFT, VIIPER_KEYBOARD_KEYH); /* 'H' */
-    press_and_release(dev, 0, VIIPER_KEYBOARD_KEYE);
-    press_and_release(dev, 0, VIIPER_KEYBOARD_KEYL);
-    press_and_release(dev, 0, VIIPER_KEYBOARD_KEYL);
-    press_and_release(dev, 0, VIIPER_KEYBOARD_KEYO);
+    press_and_release(dev, VIIPER_KEYBOARD_MOD_LEFT_SHIFT, VIIPER_KEYBOARD_KEY_H); /* 'H' */
+    press_and_release(dev, 0, VIIPER_KEYBOARD_KEY_E);
+    press_and_release(dev, 0, VIIPER_KEYBOARD_KEY_L);
+    press_and_release(dev, 0, VIIPER_KEYBOARD_KEY_L);
+    press_and_release(dev, 0, VIIPER_KEYBOARD_KEY_O);
     /* '!' = Shift + '1' */
-    press_and_release(dev, VIIPER_KEYBOARD_MODLEFTSHIFT, VIIPER_KEYBOARD_KEY1);
+    press_and_release(dev, VIIPER_KEYBOARD_MOD_LEFT_SHIFT, VIIPER_KEYBOARD_KEY1);
 }
 
 int main(int argc, char** argv)
@@ -142,7 +142,7 @@ int main(int argc, char** argv)
     for (;;) {
         type_string_hello(dev);
         sleep_ms(100);
-        press_and_release(dev, 0, VIIPER_KEYBOARD_KEYENTER);
+        press_and_release(dev, 0, VIIPER_KEYBOARD_KEY_ENTER);
         printf("→ Typed: Hello!\n");
         sleep_ms(5000);
     }

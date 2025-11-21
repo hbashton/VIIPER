@@ -131,16 +131,16 @@ int main(int argc, char** argv)
         memset(&in, 0, sizeof in);
         switch ((frame / 60) % 4){
             case 0:
-                in.buttons = VIIPER_XBOX360_BUTTONA;
+                in.buttons = VIIPER_XBOX360_BUTTON_A;
                 break;
             case 1:
-                in.buttons = VIIPER_XBOX360_BUTTONB;
+                in.buttons = VIIPER_XBOX360_BUTTON_B;
                 break;
             case 2:
-                in.buttons = VIIPER_XBOX360_BUTTONX;
+                in.buttons = VIIPER_XBOX360_BUTTON_X;
                 break;
             default:
-                in.buttons = VIIPER_XBOX360_BUTTONY;
+                in.buttons = VIIPER_XBOX360_BUTTON_Y;
                 break;
         }
         in.lt = (uint8_t)((frame * 2) % 256);

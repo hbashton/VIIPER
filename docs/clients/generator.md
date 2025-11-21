@@ -159,10 +159,10 @@ var CharToKey = map[byte]byte{
 **Emitted C header (`viiper_keyboard.h`):**
 
 ```c
-#define VIIPER_KEYBOARD_MODLEFTCTRL 0x1
-#define VIIPER_KEYBOARD_MODLEFTSHIFT 0x2
-#define VIIPER_KEYBOARD_KEYA 0x4
-#define VIIPER_KEYBOARD_KEYB 0x5
+#define VIIPER_KEYBOARD_MOD_LEFT_CTRL 0x1
+#define VIIPER_KEYBOARD_MOD_LEFT_SHIFT 0x2
+#define VIIPER_KEYBOARD_KEY_A 0x4
+#define VIIPER_KEYBOARD_KEY_B 0x5
 
 // Map lookup function
 int viiper_keyboard_char_to_key_lookup(uint8_t key, uint8_t* out_value);
