@@ -160,6 +160,35 @@ viiper server --usb.addr=:9000 --api.addr=:9001
 viiper server --usb.addr=:3241 --api.addr=:3242
 ```
 
+### Auto-Attach Not Working
+
+VIIPER will check prerequisites at startup when auto-attach is enabled and log warnings if requirements are missing.
+
+**Linux - USBIP tool not found:**
+
+```bash
+# Ubuntu/Debian
+sudo apt install linux-tools-generic
+
+# Arch Linux
+sudo pacman -S usbip
+```
+
+**Linux - Kernel module not loaded:**
+
+```bash
+# Load for current session
+sudo modprobe vhci-hcd
+
+# Or configure persistent loading (see Installation guide)
+```
+
+See [Linux Kernel Module Setup](installation.md#linux-kernel-module-setup-for-auto-attach) for detailed setup instructions.
+
+**Windows - USBIP tool not found:**
+
+Download and install [usbip-win2](https://github.com/vadimgrn/usbip-win2) and ensure `usbip.exe` is in your PATH.
+
 ### Device Not Attaching
 
 **USBIP tool not found:**

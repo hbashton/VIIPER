@@ -56,6 +56,18 @@ func (s *Server) Run(logger *slog.Logger, rawLogger log.RawLogger) error {
 	r.Register("bus/{id}/add", handler.BusDeviceAdd(usbSrv, apiSrv))
 	r.Register("bus/{id}/remove", handler.BusDeviceRemove(usbSrv))
 	r.RegisterStream("bus/{busId}/{deviceid}", api.DeviceStreamHandler(usbSrv))
+
+	if s.ApiServerConfig.AutoAttachLocalClient {
+		logger.Info("Auto-attach is enabled, checking prerequisites...")
+		if !api.CheckAutoAttachPrerequisites(logger) {
+			logger.Warn("Auto-attach prerequisites not met")
+			logger.Warn("Device auto-attachment will fail until requirements are satisfied")
+			logger.Info("You can disable auto-attach with --api.auto-attach-local-client=false")
+		} else {
+			logger.Info("Auto-attach prerequisites satisfied")
+		}
+	}
+
 	if err := apiSrv.Start(); err != nil {
 		logger.Error("failed to start API server", "error", err)
 		return err
