@@ -153,7 +153,7 @@ using Viiper.Client.Devices.Xbox360;
 
 var input = new Xbox360Input
 {
-    Buttons = (ushort)Button.A,
+    Buttons = (uint)Button.A,
     LeftTrigger = 255,
     RightTrigger = 0,
     ThumbLX = -32768,  // Left stick left
@@ -356,14 +356,14 @@ byte rightMotor = data[1];
 public struct MouseInput
 {
     public byte Buttons;  // Button flags
-    public short X;       // Relative X movement
-    public short Y;       // Relative Y movement
+    public sbyte X;       // Relative X movement (-128 to 127)
+    public sbyte Y;       // Relative Y movement (-128 to 127)
     public sbyte Wheel;   // Vertical scroll
     public sbyte Pan;     // Horizontal scroll
 }
 ```
 
-**Wire format:** Fixed 8 bytes, packed structure
+**Wire format:** Fixed 5 bytes, packed structure
 
 ## Configuration and Advanced Usage
 

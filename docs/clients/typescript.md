@@ -428,14 +428,14 @@ const rightMotor = data.readUInt8(1);
 ```typescript
 interface MouseInput {
   Buttons: number;  // Button flags
-  Dx: number;       // Relative X movement (-32768 to 32767)
-  Dy: number;       // Relative Y movement (-32768 to 32767)
+  Dx: number;       // Relative X movement (-128 to 127)
+  Dy: number;       // Relative Y movement (-128 to 127)
   Wheel: number;    // Vertical scroll (-128 to 127)
   Pan: number;      // Horizontal scroll (-128 to 127)
 }
 ```
 
-**Wire format:** Fixed 8 bytes, packed structure
+**Wire format:** Fixed 5 bytes, packed structure
 
 ## Configuration and Advanced Usage
 
@@ -508,7 +508,13 @@ node dist/virtual_keyboard.js localhost:3242
 
 ## Troubleshooting
 
-TODO
+Some quick troubleshooting tips for the TypeScript SDK and device streams:
+
+- Connection refused / timeout: Verify VIIPER server is running and listening on the expected API port (default 3242). Ensure firewall/ACLs allow TCP connections.
+- Unexpected response or parse errors: The VIIPER API uses null-byte (\x00) terminated requests. Use the provided SDK helper methods or ensure raw sockets append a null terminator when calling the server.
+- Stream closed unexpectedly: Confirm the device stream was opened (device added and connected) and that the device handler did not time out (default 5s reconnect window). Check server logs for reasons.
+- Device not appearing to OS: Remember you must attach the virtual device via USBIP (USB-IP server default port :3241) AFTER you create the device via the API (or enable auto-attach on local host).
+- Use examples: See the repository examples in `examples/typescript/` for working end-to-end samples that demonstrate bus creation, device streams, and cleanup.
 
 ## See Also
 

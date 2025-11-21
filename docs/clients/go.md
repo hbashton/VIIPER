@@ -20,8 +20,9 @@ import (
   "context"
   "log"
   "time"
-  
+
   apiclient "viiper/pkg/apiclient"
+  "viiper/pkg/device"
   "viiper/pkg/device/keyboard"
 )
 
@@ -47,8 +48,9 @@ func main() {
     busID = resp.BusID
   }
   
-  // Add device and connect
-  stream, resp, err := client.AddDeviceAndConnect(ctx, busID, "keyboard")
+  // Add device and connect (optional CreateOptions parameter for VID/PID)
+  // Pass nil to use default VID/PID for the device type.
+  stream, resp, err := client.AddDeviceAndConnect(ctx, busID, "keyboard", nil)
   if err != nil {
     log.Fatal(err)
   }
@@ -78,16 +80,33 @@ func main() {
 
 ### Creating and Connecting
 
-The simplest way to add a device and open its stream:
+// The simplest way to add a device and open its stream (nil opts):
 
 ```go
-stream, resp, err := client.AddDeviceAndConnect(ctx, busID, "xbox360")
+// Use default VID/PID for the device type
+stream, resp, err := client.AddDeviceAndConnect(ctx, busID, "xbox360", nil)
 if err != nil {
   log.Fatal(err)
 }
 defer stream.Close()
 
 log.Printf("Connected to device %s", resp.ID)
+```
+
+// Or specify VID/PID using CreateOptions:
+
+```go
+opts := &device.CreateOptions{
+  IdVendor:  func() *uint16 { v := uint16(0x1234); return &v }(),
+  IdProduct: func() *uint16 { p := uint16(0x5678); return &p }(),
+}
+stream2, resp2, err := client.AddDeviceAndConnect(ctx, busID, "keyboard", opts)
+if err != nil {
+  log.Fatal(err)
+}
+defer stream2.Close()
+
+log.Printf("Connected to device %s (custom VID/PID)", resp2.ID)
 ```
 
 Or connect to an existing device:

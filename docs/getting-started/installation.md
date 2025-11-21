@@ -26,12 +26,12 @@ sudo pacman -S usbip
 
 [usbip-win2](https://github.com/vadimgrn/usbip-win2) is by far the most complete implementation of USBIP for Windows (comes with a **SIGNED** kernel mode driver).
 
-### Linux Kernel Module Setup (for Auto-Attach)
+### Linux Kernel Module Setup
 
-!!! info "Auto-Attach Feature"
-    VIIPER can automatically attach created devices to the local machine (localhost) when enabled. This requires the `vhci-hcd` kernel module on Linux.
+!!! info "USBIP Client Requirement"
+    USBIP requires the `vhci-hcd` (Virtual Host Controller Interface) kernel module on Linux for client operations. This includes VIIPER's auto-attach feature and manual device attachment.
 
-The `vhci-hcd` (Virtual Host Controller Interface) module is required for the auto-attach feature. Most Linux distributions include this module but don't load it automatically.
+Most Linux distributions include this module but don't load it automatically.
 
 #### One-Time Setup
 
