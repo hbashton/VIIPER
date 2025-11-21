@@ -17,6 +17,11 @@ The server exposes two interfaces:
 1. **USBIP Server** - Standard USBIP protocol for device attachment
 2. **API Server** - Management API for device/bus control
 
+!!! info "Automatic Local Attachment"
+    By default, VIIPER automatically attaches newly created devices to the local USBIP client (localhost only).  
+    This means when you create a device via the API, it will be immediately available on the same machine without manual `usbip attach` commands.  
+    This behavior can be disabled with `--api.auto-attach-local-client=false` if you prefer manual control or are running on a remote server.
+
 ## Options
 
 ### `--usb.addr`

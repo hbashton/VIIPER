@@ -44,6 +44,7 @@ All devices _**can and must be**_ controlled programmatically via an API.
   - 🔜 ???  
     🚧 Extensible architecture allows for more device types (other gamepads, specialized HID)
 - ✅ USBIP server mode: expose virtual devices to remote clients
+- ✅ **Automatic local attachment**: automatically controls usbip client on localhost to attach devices (enabled by default)
 - ✅ Proxy mode: forward real USB devices and inspect/record traffic (for reversing)
 - ✅ Cross-platform: works on Linux and Windows
 - ✅ Flexible logging (including raw USB packet logs)
