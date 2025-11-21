@@ -60,8 +60,8 @@ func ExecCmd(t *testing.T, addr string, cmd string) string {
 	}
 	defer c.Close()
 
-	// Send command with double newline delimiter
-	_, _ = fmt.Fprintf(c, "%s\n\n", cmd)
+	// Send command with null terminator (\x00) — this matches API server framing
+	_, _ = fmt.Fprintf(c, "%s\x00", cmd)
 
 	// Read response
 	r := bufio.NewReader(c)
