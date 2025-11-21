@@ -58,13 +58,13 @@ public class ViiperClient : IDisposable
         
         using var stream = client.GetStream();
         
-		// Build command line: "path[ optional-payload]\n\n" (management protocol uses double newline terminator)
+		// Build command line: "path[ optional-payload]\0" (management protocol uses null terminator)
         string commandLine = path.ToLowerInvariant();
         if (!string.IsNullOrEmpty(payload))
         {
             commandLine += " " + payload;
         }
-		commandLine += "\n\n";
+		commandLine += "\0";
         
         var requestBytes = Encoding.UTF8.GetBytes(commandLine);
         await stream.WriteAsync(requestBytes, cancellationToken);
@@ -104,9 +104,8 @@ public class ViiperClient : IDisposable
 		var client = new TcpClient();
 		await client.ConnectAsync(_host, _port, cancellationToken);
 		var stream = client.GetStream();
-		// Streaming handshake uses double newline delimiter (same framing as management).
-		// Server api/server.go reads until two consecutive '\n'; a single '\n' leaves it waiting.
-		var streamPath = $"bus/{{lb}}busId{{rb}}/{{lb}}devId{{rb}}\n\n";
+		// Streaming handshake uses null terminator (same framing as management).
+		var streamPath = $"bus/{{lb}}busId{{rb}}/{{lb}}devId{{rb}}\0";
 		var handshake = Encoding.UTF8.GetBytes(streamPath);
 		await stream.WriteAsync(handshake, cancellationToken);
 		return new ViiperDevice(client, stream);

@@ -229,12 +229,12 @@ static int viiper_send_line(int fd, const char* line) {
 #if defined(_WIN32) || defined(_WIN64)
     int wr = send(fd, line, (int)n, 0);
     if (wr < 0) return -1;
-    wr = send(fd, "\n\n", 2, 0);
+    wr = send(fd, "\0", 1, 0);
     if (wr < 0) return -1;
 #else
     ssize_t wr = send(fd, line, n, 0);
     if (wr < 0) return -1;
-    wr = send(fd, "\n\n", 2, 0);
+    wr = send(fd, "\0", 1, 0);
     if (wr < 0) return -1;
 #endif
     return 0;
@@ -252,7 +252,7 @@ static int viiper_read_line(int fd, char** out) {
         ssize_t rd = recv(fd, &ch, 1, 0);
 #endif
         if (rd <= 0) { free(buf); return -1; }
-        if (ch == '\n') break;
+        if (ch == '\0') break;
         if (len + 1 >= cap) {
             cap *= 2;
             char* nb = (char*)realloc(buf, cap);
@@ -440,7 +440,7 @@ VIIPER_API viiper_error_t viiper_device_create(
     if (!client || !dev_id || !out_device) return VIIPER_ERROR_INVALID_PARAM;
     int fd = viiper_connect(client->host, client->port);
     if (fd < 0) return VIIPER_ERROR_CONNECT;
-    /* Send stream path with double newline terminator for framing */
+    /* Send stream path with null terminator for framing */
     char pathbuf[256];
     snprintf(pathbuf, sizeof pathbuf, "bus/%u/%s", (unsigned)bus_id, dev_id);
     if (viiper_send_line(fd, pathbuf) != 0) {

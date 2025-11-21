@@ -23,7 +23,6 @@ func startTestServer(t *testing.T, response string) (addr string, gotReqLine *st
 		}
 		defer conn.Close()
 		var buf []byte
-		newlineCount := 0
 		var tmp [1]byte
 		for {
 			conn.SetReadDeadline(time.Now().Add(2 * time.Second))
@@ -33,13 +32,8 @@ func startTestServer(t *testing.T, response string) (addr string, gotReqLine *st
 			}
 			b := tmp[0]
 			buf = append(buf, b)
-			if b == '\n' {
-				newlineCount++
-				if newlineCount == 2 {
-					break
-				}
-			} else {
-				newlineCount = 0
+			if b == '\x00' {
+				break
 			}
 		}
 		*got = string(buf)
@@ -66,27 +60,27 @@ func TestTransportPayloadEncoding(t *testing.T) {
 		{
 			name:         "nil payload",
 			payload:      nil,
-			expectedLine: "echo\n\n",
+			expectedLine: "echo\x00",
 		},
 		{
 			name:         "empty string payload",
 			payload:      "",
-			expectedLine: "echo\n\n",
+			expectedLine: "echo\x00",
 		},
 		{
 			name:         "bytes payload",
 			payload:      []byte("rawbytes"),
-			expectedLine: "echo rawbytes\n\n",
+			expectedLine: "echo rawbytes\x00",
 		},
 		{
 			name:         "string payload",
 			payload:      "hello world",
-			expectedLine: "echo hello world\n\n",
+			expectedLine: "echo hello world\x00",
 		},
 		{
 			name:         "string payload with newline",
 			payload:      "multi\nline",
-			expectedLine: "echo multi\nline\n\n",
+			expectedLine: "echo multi\nline\x00",
 		},
 		{
 			name:         "struct payload json marshaled",
@@ -96,7 +90,7 @@ func TestTransportPayloadEncoding(t *testing.T) {
 		{
 			name:         "multi-line JSON string payload",
 			payload:      "{\n\"x\":1\n}",
-			expectedLine: "echo {\n\"x\":1\n}\n\n",
+			expectedLine: "echo {\n\"x\":1\n}\x00",
 		},
 	}
 
@@ -111,9 +105,9 @@ func TestTransportPayloadEncoding(t *testing.T) {
 		if tc.validateJSON {
 			b, merr := json.Marshal(tc.payload)
 			assert.NoError(t, merr, tc.name)
-			expectedPrefix := "echo " + string(b) + "\n\n"
+			expectedPrefix := "echo " + string(b) + "\x00"
 			assert.Equal(t, expectedPrefix, *got, tc.name)
-			line := strings.TrimSuffix(strings.TrimPrefix(*got, "echo "), "\n\n")
+			line := strings.TrimSuffix(strings.TrimPrefix(*got, "echo "), "\x00")
 			var s S
 			assert.NoError(t, json.Unmarshal([]byte(line), &s), tc.name)
 			assert.Equal(t, tc.payload, s, tc.name)
@@ -138,7 +132,6 @@ func TestTransportMultiLineResponse(t *testing.T) {
 		}
 		buf := make([]byte, 0, 128)
 		tmp := make([]byte, 1)
-		newlineCount := 0
 		for {
 			conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 			_, err := conn.Read(tmp)
@@ -147,13 +140,8 @@ func TestTransportMultiLineResponse(t *testing.T) {
 			}
 			b := tmp[0]
 			buf = append(buf, b)
-			if b == '\n' {
-				newlineCount++
-				if newlineCount == 2 { // end of request
-					break
-				}
-			} else {
-				newlineCount = 0
+			if b == '\x00' { // end of request
+				break
 			}
 		}
 		_, _ = conn.Write([]byte(resp))

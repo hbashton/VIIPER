@@ -39,7 +39,7 @@ func (c *Client) OpenStream(ctx context.Context, busID uint32, devID string) (*D
 		return nil, fmt.Errorf("dial: %w", err)
 	}
 
-	streamPath := fmt.Sprintf("bus/%d/%s\n\n", busID, devID)
+	streamPath := fmt.Sprintf("bus/%d/%s\x00", busID, devID)
 	if _, err := conn.Write([]byte(streamPath)); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("write stream path: %w", err)

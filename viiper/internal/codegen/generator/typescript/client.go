@@ -23,7 +23,7 @@ const decoder = new TextDecoder();
 
 /**
  * VIIPER management & streaming API client.
- * Request framing: <path>[ <payload>]\n\n ; Response framing: single JSON line ending in \n then connection close.
+ * Request framing: <path>[ <payload>]\0 (null terminator) ; Response framing: single JSON line ending in \n then connection close.
  */
 export class ViiperClient {
 	private host: string;
@@ -50,7 +50,7 @@ export class ViiperClient {
 			socket.connect(this.port, this.host, () => {
 				let line = path; // preserve case
 				if (payload && payload.length > 0) line += ' ' + payload;
-				line += '\n\n';
+				line += '\0';
 				socket.write(encoder.encode(line));
 			});
 
@@ -88,7 +88,7 @@ export class ViiperClient {
 		return new Promise<ViiperDevice>((resolve, reject) => {
 			const socket = new Socket();
 			socket.connect(this.port, this.host, () => {
-				const line = ` + "`" + `bus/${busId}/${devId}\n\n` + "`" + `;
+				const line = ` + "`" + `bus/${busId}/${devId}\0` + "`" + `;
 				socket.write(encoder.encode(line));
 				resolve(new ViiperDevice(socket));
 			});

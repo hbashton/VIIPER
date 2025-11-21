@@ -122,7 +122,7 @@ func TestAPIServer_StreamRoute_DispatchE2E(t *testing.T) {
 	require.NoError(t, err)
 	defer c.Close()
 
-	_, err = fmt.Fprintf(c, "bus/%d/%s\n\n", bus.BusID(), deviceID)
+	_, err = fmt.Fprintf(c, "bus/%d/%s\x00", bus.BusID(), deviceID)
 	require.NoError(t, err)
 
 	select {

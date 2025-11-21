@@ -18,9 +18,9 @@ VIIPER ships a lightweight TCP API for managing virtual buses/devices and for de
 
 - Transport: TCP
 - Default listen address: `:3242` (configurable via `--api.addr`)
-- Request format: a single ASCII/UTF‑8 line terminated by `\n\n` (double newline)
-- Routing: path followed by optional payload separated by whitespace (e.g., `bus/list\n\n` or `bus/create 5\n\n`)
-- Payload: optional string that can be a JSON object, numeric value, or plain string depending on the endpoint
+- Request format: a single ASCII/UTF‑8 line terminated by `\0` (null byte)
+- Routing: path followed by optional payload separated by whitespace (e.g., `bus/list\0` or `bus/create 5\0`)
+- Payload: optional string that can be a JSON object, numeric value, or plain string depending on the endpoint. The payload may contain newlines (e.g., pretty-printed JSON) as only the null byte terminates the request.
 - Success response: a single line containing a JSON payload (or an empty line for commands that have no payload), followed by `\n`, then connection close
 - Error response: a single line JSON object following RFC 7807 Problem Details format with a `status` field (HTTP-style status code) and other error details, followed by `\n`, then connection close
 
@@ -68,7 +68,7 @@ The server registers the following commands and streams:
 ### Streaming endpoint
 
 - Path: `bus/{busId}/{deviceid}`
-- Handshake: Send the path followed by `\n\n` (e.g., `bus/1/1\n\n`)
+- Handshake: Send the path followed by `\0` (null byte) (e.g., `bus/1/1\0`)
 - Type: long-lived TCP connection
 - Purpose: device-specific, bidirectional stream. The API server hands the socket to the device's registered stream handler.
 - Timeout behavior: When a stream ends, a reconnect timer is started (same `DeviceHandlerConnectTimeout`).  
@@ -135,25 +135,25 @@ Note on protocol compatibility:
 
 ```bash
 # List buses
-printf "bus/list\n\n" | nc localhost 3242
+printf "bus/list\0" | nc localhost 3242
 
 # Create a bus
-printf "bus/create\n\n" | nc localhost 3242
+printf "bus/create\0" | nc localhost 3242
 # → {"busId":1}
 
 # Create a bus with specific ID
-printf "bus/create 5\n\n" | nc localhost 3242
+printf "bus/create 5\0" | nc localhost 3242
 # → {"busId":5}
 
 # Add a virtual Xbox 360 controller to bus 1
-printf 'bus/1/add {"type":"xbox360"}\n\n' | nc localhost 3242
+printf 'bus/1/add {"type":"xbox360"}\0' | nc localhost 3242
 # → {"busId":1,"devId":"1","vid":"0x045e","pid":"0x028e","type":"xbox360"}
 
 # List devices on bus 1
-printf "bus/1/list\n\n" | nc localhost 3242
+printf "bus/1/list\0" | nc localhost 3242
 ```
 
-Then, open a second TCP connection for streaming to `bus/1/1` (the API port, not the USBIP port). First send the handshake `bus/1/1\n\n`, then you'll write 14‑byte input packets and read 2‑byte rumble packets. Any language with raw TCP support works.
+Then, open a second TCP connection for streaming to `bus/1/1` (the API port, not the USBIP port). First send the handshake `bus/1/1\0`, then you'll write 14‑byte input packets and read 2‑byte rumble packets. Any language with raw TCP support works.
 
 ### WIndows (PowerShell)
 
@@ -186,8 +186,8 @@ func main() {
     conn, _ := net.Dial("tcp", "localhost:3242")
     defer conn.Close()
     
-    // Send request with double newline terminator
-    fmt.Fprint(conn, "bus/create\n\n")
+    // Send request with null terminator
+    fmt.Fprint(conn, "bus/create\x00")
     
     // Read entire response until connection closes
     resp, _ := io.ReadAll(conn)

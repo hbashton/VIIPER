@@ -40,10 +40,10 @@ Using the raw API (see [API Reference](../api/overview.md) for details):
 
 ```bash
 # Create a bus
-printf "bus/create\n\n" | nc localhost 3242
+printf "bus/create\0" | nc localhost 3242
 
 # Add mouse device with JSON payload
-printf 'bus/1/add {"type":"mouse"}\n\n' | nc localhost 3242
+printf 'bus/1/add {"type":"mouse"}\0' | nc localhost 3242
 ```
 
 Or use one of the [client SDKs](../clients/generator.md) which handle the protocol automatically.

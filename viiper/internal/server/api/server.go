@@ -107,32 +107,18 @@ func (a *Server) handleConn(conn net.Conn) {
 	r := bufio.NewReader(conn)
 	w := conn
 
-	// Read until double newline delimiter
-	var data strings.Builder
-	newlineCount := 0
-	for {
-		b, err := r.ReadByte()
-		if err != nil {
-			if err == io.EOF {
-				break
-			}
-			connLogger.Error("read api data", "error", err)
-			return
-		}
-		if b == '\n' {
-			newlineCount++
-			if newlineCount >= 2 {
-				break
-			}
+	// Read until null terminator
+	reqData, err := r.ReadString('\x00')
+	if err != nil {
+		if err == io.EOF {
+			connLogger.Error("api incomplete request (no null terminator)")
 		} else {
-			newlineCount = 0
+			connLogger.Error("read api data", "error", err)
 		}
-		data.WriteByte(b)
+		return
 	}
-
-	reqData := data.String()
-	// Remove trailing newline if present
-	reqData = strings.TrimSuffix(reqData, "\n")
+	// Remove null terminator
+	reqData = strings.TrimSuffix(reqData, "\x00")
 
 	if reqData == "" {
 		connLogger.Error("api empty command")

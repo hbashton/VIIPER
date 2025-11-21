@@ -23,7 +23,8 @@ Then generates client SDKs with:
 - Per-device encode/decode functions
 - Typed constants and enums
 
-**Note:** The codegen command requires access to VIIPER source code. It must be executed from the `viiper/` module directory within the repository.
+!!! note "Sourcecode access is required"
+    The codegen command requires access to VIIPER source code. It must be executed from the `viiper/` module directory within the repository.
 
 ## Flags
 
@@ -80,15 +81,6 @@ cd viiper
 go run ./cmd/viiper codegen --lang=c
 cd ../examples/c
 cmake --build build --config Release
-```
-
-### CI/CD Integration
-
-```yaml
-- name: Generate Client SDKs
-  run: |
-    cd viiper
-    go run ./cmd/viiper codegen --lang=all
 ```
 
 ## When to Regenerate

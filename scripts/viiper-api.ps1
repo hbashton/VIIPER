@@ -42,9 +42,9 @@ function Invoke-ViiperApi {
         $writer = New-Object System.IO.StreamWriter($stream)
         $reader = New-Object System.IO.StreamReader($stream)
         
-        # Send command with double newline delimiter
+        # Send command with null terminator
         $writer.Write($Command)
-        $writer.Write("`n`n")
+        $writer.Write("`0")
         $writer.Flush()
         
         # Read single line response

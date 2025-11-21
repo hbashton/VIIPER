@@ -27,8 +27,8 @@ func defaultConfig() Config {
 }
 
 // Transport is the low-level VIIPER management protocol implementation used by higher-level API clients.
-// Request framing: `<path>[ SP <payload>] \n\n` (double newline terminator). The payload may itself
-// contain newlines (e.g. pretty JSON) because only a *double* newline ends the request.
+// Request framing: `<path>[ SP <payload>] \x00` (null terminator). The payload may contain any data
+// including newlines (e.g. pretty JSON, binary) because only \x00 ends the request.
 // Response framing: server writes a single JSON (or empty success) line terminated by `\n` and then
 // closes the connection. We therefore read until EOF (connection close) and trim a single trailing
 // newline if present. Embedded newlines in the response (future multi-line responses) are preserved.
@@ -94,8 +94,8 @@ func (c *Transport) DoCtx(ctx context.Context, path string, payload any, pathPar
 	if c.cfg.WriteTimeout > 0 {
 		_ = conn.SetWriteDeadline(time.Now().Add(c.cfg.WriteTimeout))
 	}
-	// Send request with double newline delimiter
-	if _, err := conn.Write(append(lineBytes, '\n', '\n')); err != nil {
+	// Send request with null terminator
+	if _, err := conn.Write(append(lineBytes, '\x00')); err != nil {
 		return "", fmt.Errorf("write: %w", err)
 	}
 	if c.cfg.ReadTimeout > 0 {
