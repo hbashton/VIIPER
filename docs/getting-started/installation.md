@@ -28,11 +28,35 @@ sudo pacman -S usbip
 
 ## Installing VIIPER
 
-### Pre-built Binaries
+### Pre-built Binaries (Recommended)
 
-Download the latest release from the [GitHub Releases](https://github.com/Alia5/VIIPER/releases) page.
+Download the latest release from the [GitHub Releases](https://github.com/Alia5/VIIPER/releases) page. Pre-built binaries are available for:
+
+- Windows (x64, ARM64)
+- Linux (x64, ARM64)
+
+### Portable Deployment
+
+VIIPER does not require system-wide installation.  
+The `viiper` executable is completely self-contained (and statically linked) and can be:
+
+- Placed in any directory
+- Shipped alongside your application
+- Run directly without installation
+- Bundled with your application's distribution
+
+This makes VIIPER ideal for embedding in applications or distributing as part of a software package.
+
+!!! warning "Daemon/Service Conflicts"
+    If VIIPER is already running as a system service or daemon on the target machine, be aware of potential port conflicts. Applications should either:
+    
+    - Connect to the existing VIIPER instance (if accessible)
+    - Use a custom port via `--api.addr` flag to run a separate instance
+    - Check if VIIPER is already running before starting their own instance
 
 ### Building from Source
+
+Building from source is only necessary if you need to modify VIIPER or target an unsupported platform.
 
 #### Prerequisites
 
