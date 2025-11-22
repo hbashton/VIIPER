@@ -102,20 +102,14 @@ jobs:
           echo "version=$GIT_VERSION" >> $GITHUB_OUTPUT
           echo "Version from git: $GIT_VERSION"
 
-      - name: Delete existing pre-release
-        uses: dev-drprasad/delete-tag-and-release@v0.2.1
-        with:
-          tag_name: dev-latest
-          delete_release: true
+      - name: Update Dev Snapshot Release
+        uses: andelf/nightly-release@main
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Create Release
-        id: create_release
-        uses: softprops/action-gh-release@v1
         with:
-          tag_name: dev-latest
-          name: "Dev Build ${{ steps.build_info.outputs.version }} (${{ steps.build_info.outputs.date }})"
+          tag_name: dev-snapshot
+          name: "Dev Build ${{ steps.build_info.outputs.version }}"
+          prerelease: true
           body: |
             Automated development build.
 
@@ -127,7 +121,5 @@ jobs:
 
             ### Changes
             ${{ needs.generate-changelog.outputs.changelog }}
-          files: release_files/**/*
-          prerelease: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          files: |
+            ./release_files/*
