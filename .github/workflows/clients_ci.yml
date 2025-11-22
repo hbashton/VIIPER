@@ -38,16 +38,15 @@ jobs:
           go-version: stable
           cache: true
           cache-dependency-path: |
-            viiper/go.sum
+            go.sum
 
       - name: Run code generation
-        working-directory: viiper
         shell: bash
         run: |
           set -euo pipefail
           if [ -n "${{ inputs.version }}" ]; then
             echo "Running codegen with injected version: ${{ inputs.version }}"
-            go run -ldflags "-X viiper/internal/codegen/common.Version=${{ inputs.version }}" ./cmd/viiper codegen
+            go run -ldflags "-X github.com/Alia5/VIIPER/internal/codegen/common.Version=${{ inputs.version }}" ./cmd/viiper codegen
           else
             echo "Running codegen with default dev version"
             go run ./cmd/viiper codegen

@@ -65,9 +65,8 @@ Use this when modifying the generator or contributing new device types:
 Only required when enhancing VIIPER itself:
 
 ```bash
-cd viiper
 go run ./cmd/viiper codegen --lang=csharp
-cd ../clients/csharp
+cd clients/csharp
 dotnet build -c Release Viiper.Client
 ```
 
@@ -460,7 +459,7 @@ dotnet run -- localhost
 
 Generated SDK layout:
 
-```
+```text
 clients/csharp/Viiper.Client/
 ├── ViiperClient.cs              # Management API client
 ├── ViiperDevice.cs              # Device stream wrapper
@@ -469,16 +468,16 @@ clients/csharp/Viiper.Client/
 │   ├── BusCreateResponse.cs
 │   └── ...
 └── Devices/
-    ├── Keyboard/
-    │   ├── KeyboardInput.cs     # Wire format struct
-    │   └── KeyboardConstants.cs # Enums + maps
-    ├── Mouse/
-    │   ├── MouseInput.cs
-    │   └── MouseConstants.cs
-    └── Xbox360/
-        ├── Xbox360Input.cs
-        ├── Xbox360Output.cs
-        └── Xbox360Constants.cs
+        ├── Keyboard/
+        │   ├── KeyboardInput.cs     # Wire format struct
+        │   └── KeyboardConstants.cs # Enums + maps
+        ├── Mouse/
+        │   ├── MouseInput.cs
+        │   └── MouseConstants.cs
+        └── Xbox360/
+                ├── Xbox360Input.cs
+                ├── Xbox360Output.cs
+                └── Xbox360Constants.cs
 ```
 
 ## Troubleshooting
@@ -486,16 +485,18 @@ clients/csharp/Viiper.Client/
 **Build Errors:**
 
 Ensure you have .NET 8.0 SDK installed:
+
 ```bash
 dotnet --version  # Should be 8.0 or higher
 ```
+
 **Nullable Reference Warnings:**
 
 The generated code uses nullable annotations. You may see warnings like CS8601/CS8625. These are safe to ignore or suppress in your project file:
 
 ```xml
 <PropertyGroup>
-  <NoWarn>$(NoWarn);CS8601;CS8625</NoWarn>
+    <NoWarn>$(NoWarn);CS8601;CS8625</NoWarn>
 </PropertyGroup>
 ```
 

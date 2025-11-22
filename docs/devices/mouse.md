@@ -8,7 +8,7 @@ A standard 5-button mouse with vertical and horizontal scroll wheels. Reports re
 
 ## Client SDK Support
 
-The wire protocol is abstracted by client SDKs. The **Go client** includes built-in types (`pkg/device/mouse`), and **generated SDKs** provide equivalent structures with proper packing.  
+The wire protocol is abstracted by client SDKs. The **Go client** includes built-in types (`/device/mouse`), and **generated SDKs** provide equivalent structures with proper packing.  
 You don't need to manually construct packets, just use the provided types and send them via the device stream.
 
 See: [Go Client](../clients/go.md), [Generated SDKs](../clients/generator.md)

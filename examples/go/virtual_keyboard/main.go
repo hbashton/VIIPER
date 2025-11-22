@@ -11,8 +11,8 @@ import (
 	"syscall"
 	"time"
 
-	"viiper/pkg/apiclient"
-	"viiper/pkg/device/keyboard"
+	"github.com/Alia5/VIIPER/apiclient"
+	"github.com/Alia5/VIIPER/device/keyboard"
 )
 
 // Minimal example: create a keyboard device, type "Hello!" + Enter every 5 seconds, monitor LEDs.

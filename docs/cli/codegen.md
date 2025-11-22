@@ -24,7 +24,7 @@ Then generates client SDKs with:
 - Typed constants and enums
 
 !!! note "Sourcecode access is required"
-    The codegen command requires access to VIIPER source code. It must be executed from the `viiper/` module directory within the repository.
+    The codegen command requires access to VIIPER source code. Run it from the repository root.
 
 ## Flags
 
@@ -32,7 +32,7 @@ Then generates client SDKs with:
 
 Output directory for generated SDKs (relative to repository root).
 
-**Default:** `../clients`  
+**Default:** `clients`  
 **Environment Variable:** `VIIPER_CODEGEN_OUTPUT`
 
 **Example:**
@@ -70,16 +70,14 @@ viiper codegen --lang=typescript
 ### Generate All SDKs
 
 ```bash
-cd viiper
 go run ./cmd/viiper codegen
 ```
 
 ### Generate C SDK and Rebuild Examples
 
 ```bash
-cd viiper
 go run ./cmd/viiper codegen --lang=c
-cd ../examples/c
+cd examples/c
 cmake --build build --config Release
 ```
 
@@ -87,9 +85,9 @@ cmake --build build --config Release
 
 Run codegen when any of these change:
 
-- `pkg/apitypes/*.go`: API response structures
-- `pkg/device/*/inputstate.go`: Wire format annotations
-- `pkg/device/*/const.go`: Exported constants
+- `/apitypes/*.go`: API response structures
+- `/device/*/inputstate.go`: Wire format annotations
+- `/device/*/const.go`: Exported constants
 - `internal/server/api/*.go`: Route registrations
 - Generator templates in `internal/codegen/generator/`
 

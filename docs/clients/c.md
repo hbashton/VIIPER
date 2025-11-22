@@ -23,7 +23,6 @@ The C SDK features:
 The C SDK is generated from the VIIPER server codebase:
 
 ```bash
-cd viiper
 go run ./cmd/viiper codegen --lang=c
 ```
 

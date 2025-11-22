@@ -11,8 +11,8 @@ import (
 	"syscall"
 	"time"
 
-	"viiper/pkg/apiclient"
-	"viiper/pkg/device/xbox360"
+	"github.com/Alia5/VIIPER/apiclient"
+	"github.com/Alia5/VIIPER/device/xbox360"
 )
 
 // Minimal example: ensure a bus, create an xbox360 device, stream inputs, read rumble, clean up on exit.

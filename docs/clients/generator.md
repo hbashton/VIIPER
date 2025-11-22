@@ -18,10 +18,9 @@ The VIIPER client generator scans Go source code to extract API routes, device w
 ## Running the Generator
 
 ```bash
-cd viiper
-go run ./cmd/viiper codegen --lang=all     # Generate all SDKs
-go run ./cmd/viiper codegen --lang=c       # Generate C SDK only
-go run ./cmd/viiper codegen --lang=csharp  # Generate C# SDK only
+go run ./cmd/viiper codegen --lang=all        # Generate all SDKs
+go run ./cmd/viiper codegen --lang=c          # Generate C SDK only
+go run ./cmd/viiper codegen --lang=csharp     # Generate C# SDK only
 go run ./cmd/viiper codegen --lang=typescript # Generate TypeScript SDK only
 ```
 
@@ -58,7 +57,7 @@ type InputState struct { ... }
 
 ### Constant and Map Export
 
-The generator automatically exports all constants and map literals from `pkg/device/*/const.go` for each device type.  
+The generator automatically exports all constants and map literals from `/device/*/const.go` for each device type.  
 No special tags are required. Exported Go constants and maps are emitted with language-appropriate representations:
 
 - **Constants**: Grouped into enums (C#/TS) or `#define` macros (C) based on common prefixes
@@ -69,10 +68,10 @@ No special tags are required. Exported Go constants and maps are emitted with la
 **Scan Phase:**  
 
 1. Parse API routes from `internal/server/api/*.go`  
-2. Reflect response DTOs from `pkg/apitypes/*.go`  
+2. Reflect response DTOs from `/apitypes/*.go`  
 3. Find device types via `RegisterDevice()` calls  
 4. Parse `viiper:wire` comments for packet layouts  
-5. Extract all exported constants and map literals from `pkg/device/*/const.go` (automatic)
+5. Extract all exported constants and map literals from `/device/*/const.go` (automatic)
 
 **Emit Phase:**  
 For each language, generate management client, DTO types, device streams, constants, and build configs.
@@ -137,7 +136,7 @@ typedef struct {
 
 ## Example: Constant and Map Export
 
-**Go source (`pkg/device/keyboard/const.go`):**
+**Go source (`/device/keyboard/const.go`):**
 
 ```go
 const (
@@ -206,9 +205,9 @@ public static class CharToKey
 
 Run codegen when any of these change:
 
-- `pkg/apitypes/*.go`: API response structures
-- `pkg/device/*/inputstate.go`: Wire tag annotations
-- `pkg/device/*/const.go`: Exported constants and map literals
+- `/apitypes/*.go`: API response structures
+- `/device/*/inputstate.go`: Wire tag annotations
+- `/device/*/const.go`: Exported constants and map literals
 - `internal/server/api/*.go`: Route registrations
 - `internal/codegen/generator/**/*.go`: Generator templates
 - `internal/codegen/scanner/**/*.go`: Scanner logic (constants, maps, wire tags)

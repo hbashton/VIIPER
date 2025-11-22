@@ -8,7 +8,7 @@ The Xbox 360 virtual gamepad emulates an XInput-compatible controller that most 
 
 ## Client SDK Support
 
-The wire protocol is abstracted by client SDKs. The **Go client** includes built-in types (`pkg/device/xbox360`), and **generated SDKs** provide equivalent structures with proper packing.  
+The wire protocol is abstracted by client SDKs. The **Go client** includes built-in types (`/device/xbox360`), and **generated SDKs** provide equivalent structures with proper packing.  
 You don't need to manually construct packets, just use the provided types and send them via the device stream.
 
 See: [Go Client](../clients/go.md), [Generated SDKs](../clients/generator.md)
@@ -45,7 +45,7 @@ Direction: server → client (rumble feedback)
 - 2-byte packets:
   - LeftMotor: uint8, RightMotor: uint8
 
-See `pkg/device/xbox360/inputstate.go` for details.
+See `/device/xbox360/inputstate.go` for details.
 
 ## Example
 

@@ -1,7 +1,0 @@
-package registry
-
-import (
-	_ "viiper/pkg/device/keyboard" // Register keyboard device handler
-	_ "viiper/pkg/device/mouse"    // Register mouse device handler
-	_ "viiper/pkg/device/xbox360"  // Register xbox360 device handler
-)

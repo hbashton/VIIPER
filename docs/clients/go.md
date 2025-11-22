@@ -1,6 +1,6 @@
 # Go Client Documentation
 
-The Go client is the reference implementation for interacting with VIIPER servers. It's included in the repository under `pkg/apiclient` and `pkg/device`.
+The Go client is the reference implementation for interacting with VIIPER servers. It's included in the repository under `/apiclient` and `/device`.
 
 ## Overview
 
@@ -21,9 +21,9 @@ import (
   "log"
   "time"
 
-  apiclient "viiper/pkg/apiclient"
-  "viiper/pkg/device"
-  "viiper/pkg/device/keyboard"
+  apiclient "github.com/Alia5/VIIPER/apiclient"
+  "github.com/Alia5/VIIPER/device"
+  "github.com/Alia5/VIIPER/device/keyboard"
 )
 
 func main() {
@@ -124,7 +124,7 @@ defer stream.Close()
 Device input is sent using structs that implement `encoding.BinaryMarshaler`:
 
 ```go
-import "viiper/pkg/device/xbox360"
+import "github.com/Alia5/VIIPER/device/xbox360"
 
 input := &xbox360.InputState{
   Buttons: xbox360.ButtonA,
@@ -145,7 +145,7 @@ import (
   "bufio"
   "encoding"
   "io"
-  "viiper/pkg/device/xbox360"
+  "github.com/Alia5/VIIPER/device/xbox360"
 )
 
 // Start async reading for rumble commands
@@ -181,7 +181,7 @@ stream.Close()
 
 Each device type has specific wire formats and helper methods. For wire format details and usage patterns, see the [Devices](../devices/) section of the documentation.
 
-The Go client provides device packages under `pkg/device/` with type-safe structs and constants (e.g., `keyboard.InputState`, `keyboard.KeyA`, `mouse.Btn_Left`).
+The Go client provides device packages under `/device/` with type-safe structs and constants (e.g., `keyboard.InputState`, `keyboard.KeyA`, `mouse.Btn_Left`).
 
 ## Configuration and Advanced Usage
 

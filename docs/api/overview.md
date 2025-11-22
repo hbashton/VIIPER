@@ -88,7 +88,7 @@ Direction: server ➜ client (rumble)
 - Fixed 2-byte packets:
     - `LeftMotor` uint8, `RightMotor` uint8
 
-See `pkg/device/xbox360/protocol.go` for full details.
+See `/device/xbox360/protocol.go` for full details.
 
 #### HID keyboard stream (device type: `keyboard`)
 
@@ -105,7 +105,7 @@ Direction: server ➜ client (LED state)
 
 Host-facing HID input report is 34 bytes: [Modifiers (1), Reserved (1), 256-bit key bitmap (32)].
 
-See `pkg/device/keyboard/` for helpers and constants.
+See `/device/keyboard/` for helpers and constants.
 
 #### HID mouse stream (device type: `mouse`)
 
@@ -195,7 +195,7 @@ func main() {
 }
 ```
 
-For a higher-level experience, see the Go client in `pkg/apiclient/`.
+For a higher-level experience, see the Go client in `/apiclient/`.
 
 ## How this relates to USBIP
 

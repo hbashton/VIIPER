@@ -74,9 +74,8 @@ npm run build
 This is only required if you are contributing to VIIPER or adding device types. Normal users should use the npm package.
 
 ```bash
-cd viiper
 go run ./cmd/viiper codegen --lang=typescript
-cd ../clients/typescript
+cd clients/typescript
 npm install
 npm run build
 ```

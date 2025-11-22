@@ -10,7 +10,7 @@ A full-featured HID keyboard with N-key rollover using a 256-bit key bitmap, plu
 
 ## Client SDK Support
 
-The wire protocol is abstracted by client SDKs. The **Go client** includes built-in types (`pkg/device/keyboard`), and **generated SDKs** provide equivalent structures with proper packing.  
+The wire protocol is abstracted by client SDKs. The **Go client** includes built-in types (`/device/keyboard`), and **generated SDKs** provide equivalent structures with proper packing.  
 You don't need to manually construct packets, just use the provided types and send them via the device stream.
 
 See: [Go Client](../clients/go.md), [Generated SDKs](../clients/generator.md)
@@ -53,8 +53,8 @@ The device sends the current LED state (1 byte) back on the same stream whenever
 
 Convenience helpers and key constants are available in the Go package:
 
-- `pkg/device/keyboard/helpers.go`: TypeString, TypeChar, PressKey, Release, etc.
-- `pkg/device/keyboard/const.go`: Modifiers, LED bits, and HID usage IDs, including media keys (Mute, VolumeUp/Down, PlayPause, Stop, Next, Previous)
+- `/device/keyboard/helpers.go`: TypeString, TypeChar, PressKey, Release, etc.
+- `/device/keyboard/const.go`: Modifiers, LED bits, and HID usage IDs, including media keys (Mute, VolumeUp/Down, PlayPause, Stop, Next, Previous)
 
 ## Adding the device
 

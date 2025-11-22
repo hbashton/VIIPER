@@ -35,7 +35,7 @@ Runs use a fixed-iteration benchtime (e.g. `-benchtime=1000x`, `-benchtime=10000
 From repository root:
 
 ```bash
-cd viiper/testing/e2e
+cd testing/e2e
 # Single run, 1000 fixed iterations per sub benchmark
 go run ./scripts/lat_bench.go -benchtime=1000x -count=1 -format markdown
 ```

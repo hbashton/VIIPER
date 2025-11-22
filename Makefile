@@ -9,7 +9,7 @@
 
 BINARY_NAME := viiper
 MAIN_PKG := ./cmd/viiper
-SRC_DIR := viiper
+SRC_DIR := .
 DIST_DIR := dist
 
 # OS-specific helpers
@@ -39,7 +39,7 @@ COMMIT := $(shell git rev-parse --short HEAD 2>$(NULL_DEVICE) || echo unknown)
 BUILD_TIME := $(shell $(DATE_CMD))
 
 # Go build flags
-LDFLAGS := -s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.buildTime=$(BUILD_TIME) -X viiper/internal/codegen/common.Version=$(VERSION)
+LDFLAGS := -s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.buildTime=$(BUILD_TIME) -X github.com/Alia5/VIIPER/internal/codegen/common.Version=$(VERSION)
 BUILD_FLAGS := -trimpath -ldflags "$(LDFLAGS)"
 
 ############################################################
@@ -96,7 +96,7 @@ test-coverage: ## Run tests with coverage
 
 .PHONY: build
 build: ## Build for current platform
-	cd $(SRC_DIR) && go build $(BUILD_FLAGS) -o ../$(DIST_DIR)/$(BINARY_NAME)$(EXE_EXT) $(MAIN_PKG)
+	cd $(SRC_DIR) && go build $(BUILD_FLAGS) -o $(DIST_DIR)/$(BINARY_NAME)$(EXE_EXT) $(MAIN_PKG)
 
 .PHONY: clean
 clean: ## Remove build artifacts

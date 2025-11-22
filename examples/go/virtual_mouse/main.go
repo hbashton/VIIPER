@@ -8,8 +8,8 @@ import (
 	"syscall"
 	"time"
 
-	"viiper/pkg/apiclient"
-	"viiper/pkg/device/mouse"
+	"github.com/Alia5/VIIPER/apiclient"
+	"github.com/Alia5/VIIPER/device/mouse"
 )
 
 // Minimal example: ensure a bus, create a mouse device, stream inputs, clean up on exit.
