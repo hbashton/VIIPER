@@ -1,27 +1,50 @@
 # VIIPER Makefile
 # Cross-platform build automation for VIIPER
 
+############################################################
 # Variables
+# These are defined in a cross-platform way. We branch early
+# so that later variable definitions do not need per-OS logic.
+############################################################
+
 BINARY_NAME := viiper
 MAIN_PKG := ./cmd/viiper
 SRC_DIR := viiper
 DIST_DIR := dist
-VERSION ?= $(shell git describe --tags --match "v[0-9]*.[0-9]*.[0-9]*" --always 2>nul || echo v0.0.0-dev)
-COMMIT := $(shell git rev-parse --short HEAD 2>nul || echo unknown)
-BUILD_TIME := $(shell powershell -NoProfile -NonInteractive -Command "Get-Date -Format 'yyyy-MM-dd_HH:mm:ss'")
+
+# OS-specific helpers
+ifeq ($(OS),Windows_NT)
+	NULL_DEVICE := nul
+	DATE_CMD := powershell -NoProfile -NonInteractive -Command "Get-Date -Format 'yyyy-MM-dd_HH:mm:ss'"
+	EXE_EXT := .exe
+	RM_DIR := rmdir /S /Q
+	RM_FILE := del /Q
+	COVERAGE_OUT := $(SRC_DIR)\coverage.out
+	COVERAGE_HTML := $(SRC_DIR)\coverage.html
+	export CGO_ENABLED=0
+else
+	NULL_DEVICE := /dev/null
+	DATE_CMD := date -u +"%Y-%m-%d_%H:%M:%S"
+	EXE_EXT :=
+	RM_DIR := rm -rf
+	RM_FILE := rm -f
+	COVERAGE_OUT := $(SRC_DIR)/coverage.out
+	COVERAGE_HTML := $(SRC_DIR)/coverage.html
+	export CGO_ENABLED=0
+endif
+
+# Git-derived metadata (robust to missing git by redirecting errors)
+VERSION ?= $(shell git describe --tags --match "v[0-9]*.[0-9]*.[0-9]*" --always 2>$(NULL_DEVICE) || echo v0.0.0-dev)
+COMMIT := $(shell git rev-parse --short HEAD 2>$(NULL_DEVICE) || echo unknown)
+BUILD_TIME := $(shell $(DATE_CMD))
 
 # Go build flags
 LDFLAGS := -s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.buildTime=$(BUILD_TIME) -X viiper/internal/codegen/common.Version=$(VERSION)
 BUILD_FLAGS := -trimpath -ldflags "$(LDFLAGS)"
 
-# Windows detection and environment setup
-ifeq ($(OS),Windows_NT)
-    EXE_EXT := .exe
-    export CGO_ENABLED=0
-else
-    EXE_EXT :=
-    export CGO_ENABLED=0
-endif
+############################################################
+# (Legacy) Windows detection section replaced by unified block
+############################################################
 
 .PHONY: all
 all: test build
@@ -77,9 +100,9 @@ build: ## Build for current platform
 
 .PHONY: clean
 clean: ## Remove build artifacts
-	-@if exist $(DIST_DIR) rmdir /S /Q $(DIST_DIR) 2>nul
-	-@if exist $(SRC_DIR)\coverage.out del /Q $(SRC_DIR)\coverage.out 2>nul
-	-@if exist $(SRC_DIR)\coverage.html del /Q $(SRC_DIR)\coverage.html 2>nul
+	-@$(RM_DIR) $(DIST_DIR) 2>$(NULL_DEVICE)
+	-@$(RM_FILE) $(COVERAGE_OUT) 2>$(NULL_DEVICE)
+	-@$(RM_FILE) $(COVERAGE_HTML) 2>$(NULL_DEVICE)
 
 .PHONY: fmt
 fmt: ## Format Go code
