@@ -28,6 +28,12 @@ Thumbs.db
 # build
 dist/
 
+# Windows version info resources
+resource.syso
+cmd/viiper/resource.syso
+versioninfo.tmp.json
+!viiper.ico
+
 # Logs
 logs/
 log/
