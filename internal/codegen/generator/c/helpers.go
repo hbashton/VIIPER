@@ -115,7 +115,7 @@ func marshalPayload(md *meta.Metadata, pi scanner.PayloadInfo) string {
 				fieldCode = fmt.Sprintf("%ssnprintf(payload, sizeof payload, \"{\\\"%s\\\":\\\"%%s\\\"\", *%s->%s);",
 					condition, f.JSONName, varName, f.Name)
 			} else {
-				fieldCode = fmt.Sprintf("%s{ char tmp[64]; snprintf(tmp, sizeof tmp, \",\\\"%s\\\":\\\"%%s\\\"\", *%s->%s); strncat_s(payload, sizeof(payload), tmp, sizeof(payload) - strlen(payload) - 1); }",
+				fieldCode = fmt.Sprintf("%s{ char tmp[64]; snprintf(tmp, sizeof tmp, \",\\\"%s\\\":\\\"%%s\\\"\", *%s->%s); strncat(payload, tmp, sizeof(payload) - strlen(payload) - 1); }",
 					condition, f.JSONName, varName, f.Name)
 			}
 		case "uint16", "uint32":
@@ -123,7 +123,7 @@ func marshalPayload(md *meta.Metadata, pi scanner.PayloadInfo) string {
 				fieldCode = fmt.Sprintf("%ssnprintf(payload, sizeof payload, \"{\\\"%s\\\":%%u\", (unsigned)*%s->%s);",
 					condition, f.JSONName, varName, f.Name)
 			} else {
-				fieldCode = fmt.Sprintf("%s{ char tmp[64]; snprintf(tmp, sizeof tmp, \",\\\"%s\\\":%%u\", (unsigned)*%s->%s); strncat_s(payload, sizeof(payload), tmp, sizeof(payload) - strlen(payload) - 1); }",
+				fieldCode = fmt.Sprintf("%s{ char tmp[64]; snprintf(tmp, sizeof tmp, \",\\\"%s\\\":%%u\", (unsigned)*%s->%s); strncat(payload, tmp, sizeof(payload) - strlen(payload) - 1); }",
 					condition, f.JSONName, varName, f.Name)
 			}
 		default:
@@ -138,8 +138,7 @@ func marshalPayload(md *meta.Metadata, pi scanner.PayloadInfo) string {
 		lines = append(lines, "        "+fieldCode)
 	}
 
-	// Close JSON object
-	lines = append(lines, "        strncat_s(payload, sizeof(payload), \"}\", sizeof(payload) - strlen(payload) - 1);")
+	lines = append(lines, "        strncat(payload, \"}\", sizeof(payload) - strlen(payload) - 1);")
 	lines = append(lines, "    }")
 
 	return strings.Join(lines, "\n")

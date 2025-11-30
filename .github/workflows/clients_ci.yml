@@ -98,6 +98,10 @@ jobs:
           cmake -S clients/c -B clients/c/build
           cmake --build clients/c/build --config Release --parallel
 
+      - name: Build C examples (smoke)
+        run: |
+          cmake -S examples/c -B examples/c/build
+          cmake --build examples/c/build --config Release --parallel
       - name: Rename TypeScript SDK tarball
         if: ${{ inputs.upload_artifacts }}
         working-directory: clients/typescript

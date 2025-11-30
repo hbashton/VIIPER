@@ -18,26 +18,38 @@ project(viiper C)
 set(CMAKE_C_STANDARD 99)
 
 # Library source files
-add_library(viiper SHARED
+set(VIIPER_SOURCES
     src/viiper.c
 {{range .Devices}}    src/viiper_{{.}}.c
 {{end}})
 
+add_library(viiper SHARED ${VIIPER_SOURCES})
+add_library(viiper_static STATIC ${VIIPER_SOURCES})
+
+if(NOT WIN32)
+    set_target_properties(viiper_static PROPERTIES OUTPUT_NAME viiper)
+endif()
+
 # Include directories
 target_include_directories(viiper PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+target_include_directories(viiper_static PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
 # Platform-specific settings
 if(WIN32)
     target_compile_definitions(viiper PRIVATE VIIPER_BUILD)
+    target_compile_definitions(viiper_static PRIVATE VIIPER_BUILD)
     target_link_libraries(viiper ws2_32)
+    target_link_libraries(viiper_static ws2_32)
 else()
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fvisibility=hidden")
 endif()
 
 # Installation
-install(TARGETS viiper
+install(TARGETS viiper viiper_static
     LIBRARY DESTINATION lib
     ARCHIVE DESTINATION lib
     RUNTIME DESTINATION bin
