@@ -126,7 +126,7 @@ jobs:
 
       - name: Archive C SDK source
         if: ${{ inputs.upload_artifacts }}
-        run: tar -czf c-sdk-source${{ inputs.artifact_suffix }}.tar.gz -C clients/c .
+        run: tar -czf c-sdk-source${{ inputs.artifact_suffix }}.tar.gz -C clients/c --exclude='build' .
 
       - name: Upload C SDK source
         if: ${{ inputs.upload_artifacts }}
