@@ -1,5 +1,5 @@
-#include "viiper/viiper.h"
-#include "viiper/viiper_keyboard.h"
+#include "viiper.h"
+#include "viiper_keyboard.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -42,14 +42,14 @@ static uint32_t choose_or_create_bus(viiper_client_t* client)
     return 0;
 }
 
-static void on_leds(const void* output, size_t output_size, void* user)
+static void on_leds(void* buffer, size_t bytes_read, void* user)
 {
-    (void)user;
-    if (!output || output_size == 0) return;
-    const uint8_t* p = (const uint8_t*)output;
+    const uint8_t* led_data = (const uint8_t*)buffer;
+    (void)user; /* unused */
+    if (bytes_read == 0) return;
     /* Keyboard LED state is 1 byte messages; handle possible coalesced bytes */
-    for (size_t i = 0; i < output_size; ++i) {
-        uint8_t b = p[i];
+    for (size_t i = 0; i < bytes_read; ++i) {
+        uint8_t b = led_data[i];
         printf("→ LEDs: Num=%u Caps=%u Scroll=%u Compose=%u Kana=%u\n",
             (b & VIIPER_KEYBOARD_LED_NUM_LOCK) ? 1u : 0u,
             (b & VIIPER_KEYBOARD_LED_CAPS_LOCK) ? 1u : 0u,
@@ -135,8 +135,9 @@ int main(int argc, char** argv)
     const char* devId = addResp.DevId ? addResp.DevId : "(none)";
     printf("Created and connected device %s on bus %u (type: %s)\n", devId, (unsigned)busId, addResp.Type ? addResp.Type : "unknown");
 
-    /* Register LED callback */
-    viiper_device_on_output(dev, on_leds, NULL);
+    /* Register LED callback with user-allocated buffer */
+    static uint8_t led_buffer[VIIPER_KEYBOARD_OUTPUT_SIZE];
+    viiper_device_on_output(dev, led_buffer, sizeof(led_buffer), on_leds, NULL);
 
     printf("Every 5s: type 'Hello!' + Enter. Press Ctrl+C to stop.\n");
     for (;;) {

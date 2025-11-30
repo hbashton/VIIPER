@@ -46,6 +46,8 @@ struct viiper_device {
     uint32_t bus_id;
     char* dev_id;
     /* Async output handling */
+    void* output_buffer;
+    size_t output_buffer_size;
     viiper_output_cb callback;
     void* callback_user;
     int running;
@@ -252,7 +254,8 @@ static int viiper_read_line(int fd, char** out) {
 #else
         ssize_t rd = recv(fd, &ch, 1, 0);
 #endif
-        if (rd <= 0) { free(buf); return -1; }
+        if (rd < 0) { free(buf); return -1; }
+        if (rd == 0) break;
         if (ch == '\0') break;
         if (len + 1 >= cap) {
             cap *= 2;
@@ -402,7 +405,6 @@ static DWORD WINAPI viiper_device_receiver_thread(LPVOID arg) {
 static void* viiper_device_receiver_thread(void* arg) {
 #endif
     viiper_device_t* dev = (viiper_device_t*)arg;
-    unsigned char buf[4096];
     while (dev->running) {
 #if defined(_WIN32) || defined(_WIN64)
         DWORD timeout_ms = 200;
@@ -411,19 +413,23 @@ static void* viiper_device_receiver_thread(void* arg) {
         int sel = select(0, &rfds, NULL, NULL, &tv);
         if (sel < 0) break;
         if (sel == 0) continue; /* timeout */
-        int rd = recv(dev->socket_fd, (char*)buf, sizeof buf, 0);
+        if (dev->callback && dev->output_buffer && dev->output_buffer_size > 0) {
+            int rd = recv(dev->socket_fd, (char*)dev->output_buffer, (int)dev->output_buffer_size, 0);
+            if (rd <= 0) break;
+            dev->callback(dev->output_buffer, (size_t)rd, dev->callback_user);
+        }
 #else
         fd_set rfds; FD_ZERO(&rfds); FD_SET(dev->socket_fd, &rfds);
         struct timeval tv; tv.tv_sec = 0; tv.tv_usec = 200000;
         int sel = select(dev->socket_fd+1, &rfds, NULL, NULL, &tv);
         if (sel < 0) break;
         if (sel == 0) continue; /* timeout */
-        ssize_t rd = recv(dev->socket_fd, buf, sizeof buf, 0);
-#endif
-        if (rd <= 0) break;
-        if (dev->callback) {
-            dev->callback(buf, (size_t)rd, dev->callback_user);
+        if (dev->callback && dev->output_buffer && dev->output_buffer_size > 0) {
+            ssize_t rd = recv(dev->socket_fd, dev->output_buffer, dev->output_buffer_size, 0);
+            if (rd <= 0) break;
+            dev->callback(dev->output_buffer, (size_t)rd, dev->callback_user);
         }
+#endif
     }
 #if defined(_WIN32) || defined(_WIN64)
     return 0;
@@ -514,10 +520,14 @@ VIIPER_API viiper_error_t viiper_device_send(
 
 VIIPER_API void viiper_device_on_output(
     viiper_device_t* device,
+    void* buffer,
+    size_t buffer_size,
     viiper_output_cb callback,
     void* user_data
 ) {
     if (!device) return;
+    device->output_buffer = buffer;
+    device->output_buffer_size = buffer_size;
     device->callback = callback;
     device->callback_user = user_data;
 }

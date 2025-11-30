@@ -59,7 +59,7 @@ public class ViiperClient : IDisposable
         
         using var stream = client.GetStream();
         
-		// Build command line: "path[ optional-payload]\0" (management protocol uses null terminator)
+		// Build command line: "path[ optional-payload]\0"
         string commandLine = path.ToLowerInvariant();
         if (!string.IsNullOrEmpty(payload))
         {
@@ -70,15 +70,13 @@ public class ViiperClient : IDisposable
         var requestBytes = Encoding.UTF8.GetBytes(commandLine);
         await stream.WriteAsync(requestBytes, cancellationToken);
         
-        var buffer = new byte[8192];
         var responseBuilder = new StringBuilder();
+        var buffer = new byte[128];
         int bytesRead;
         
         while ((bytesRead = await stream.ReadAsync(buffer, cancellationToken)) > 0)
         {
             responseBuilder.Append(Encoding.UTF8.GetString(buffer, 0, bytesRead));
-            if (responseBuilder.ToString().Contains('\n'))
-                break;
         }
         
 		var responseJson = responseBuilder.ToString().TrimEnd('\n');

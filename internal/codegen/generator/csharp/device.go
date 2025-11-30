@@ -32,19 +32,31 @@ public sealed class ViiperDevice : IAsyncDisposable, IDisposable
 	private readonly TcpClient _client;
 	private readonly NetworkStream _stream;
 	private readonly CancellationTokenSource _cts = new();
-	private readonly Task _readLoop;
+	private Task? _readLoop;
 	private bool _disposed;
+	private Func<Stream, Task>? _onOutput;
 
 	/// <summary>
-	/// Raised when output data is received from the device (raw binary frame).
+	/// Callback invoked when output data is available from the device.
+	/// The callback receives the stream and must read the exact number of bytes expected.
 	/// </summary>
-	public event Action<byte[]>? OnOutput;
+	public Func<Stream, Task>? OnOutput
+	{
+		get => _onOutput;
+		set
+		{
+			_onOutput = value;
+			if (_onOutput != null && _readLoop == null)
+			{
+				_readLoop = Task.Run(ReadLoopAsync);
+			}
+		}
+	}
 
 	internal ViiperDevice(TcpClient client, NetworkStream stream)
 	{
 		_client = client;
 		_stream = stream;
-		_readLoop = Task.Run(ReadLoopAsync);
 	}
 
 	/// <summary>
@@ -73,19 +85,11 @@ public sealed class ViiperDevice : IAsyncDisposable, IDisposable
 
 	private async Task ReadLoopAsync()
 	{
-		var buffer = new byte[4096];
 		try
 		{
-			while (!_cts.IsCancellationRequested)
+			while (!_cts.IsCancellationRequested && _onOutput != null)
 			{
-				var read = await _stream.ReadAsync(buffer, 0, buffer.Length, _cts.Token).ConfigureAwait(false);
-				if (read <= 0)
-				{
-					break; // connection closed
-				}
-				var frame = new byte[read];
-				Buffer.BlockCopy(buffer, 0, frame, 0, read);
-				OnOutput?.Invoke(frame);
+				await _onOutput(_stream).ConfigureAwait(false);
 			}
 		}
 		catch (OperationCanceledException)
@@ -112,7 +116,7 @@ public sealed class ViiperDevice : IAsyncDisposable, IDisposable
 		if (_disposed) return;
 		_disposed = true;
 		_cts.Cancel();
-		try { _readLoop.Wait(); } catch { /* ignore */ }
+		try { _readLoop?.Wait(); } catch { /* ignore */ }
 		_stream.Dispose();
 		_client.Dispose();
 		_cts.Dispose();
@@ -127,7 +131,8 @@ public sealed class ViiperDevice : IAsyncDisposable, IDisposable
 		if (_disposed) return;
 		_disposed = true;
 		_cts.Cancel();
-		try { await _readLoop.ConfigureAwait(false); } catch { /* ignore */ }
+		if (_readLoop != null)
+			try { await _readLoop.ConfigureAwait(false); } catch { /* ignore */ }
 		_stream.Dispose();
 		_client.Dispose();
 		_cts.Dispose();

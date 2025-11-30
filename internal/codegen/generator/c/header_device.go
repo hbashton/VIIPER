@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"text/template"
 
+	"github.com/Alia5/VIIPER/internal/codegen/common"
 	"github.com/Alia5/VIIPER/internal/codegen/meta"
 	"github.com/Alia5/VIIPER/internal/codegen/scanner"
 )
@@ -22,6 +23,9 @@ const deviceHeaderTmpl = `#ifndef VIIPER_{{upper .Device}}_H
 /* ========================================================================
  * {{.Device}} Constants
  * ======================================================================== */
+/* Device output size (bytes to read from socket in callback) */
+#define VIIPER_{{upper .Device}}_OUTPUT_SIZE {{.OutputSize}}
+
 {{- if gt (len .Pkg.Constants) 0 }}
 /* {{.Device}} constants */
 {{range .Pkg.Constants -}}
@@ -60,13 +64,27 @@ typedef struct {
 `
 
 type deviceHeaderData struct {
-	Device string
-	Pkg    *scanner.DeviceConstants
+	Device     string
+	Pkg        *scanner.DeviceConstants
+	OutputSize int
 }
 
 func generateDeviceHeader(logger *slog.Logger, includeDir, device string, md *meta.Metadata) error {
 	pkg := md.DevicePackages[device]
-	data := deviceHeaderData{Device: device, Pkg: pkg}
+
+	// Calculate OUTPUT_SIZE from s2c wire tag
+	outputSize := 0
+	if md.WireTags != nil {
+		if s2cTag := md.WireTags.GetTag(device, "s2c"); s2cTag != nil {
+			outputSize = common.CalculateOutputSize(s2cTag)
+		}
+	}
+
+	data := deviceHeaderData{
+		Device:     device,
+		Pkg:        pkg,
+		OutputSize: outputSize,
+	}
 	out := filepath.Join(includeDir, fmt.Sprintf("viiper_%s.h", device))
 	t := template.Must(template.New("device.h").Funcs(tplFuncs(md)).Parse(deviceHeaderTmpl))
 	f, err := os.Create(out)

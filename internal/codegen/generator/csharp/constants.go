@@ -23,7 +23,16 @@ func generateConstants(logger *slog.Logger, deviceDir string, deviceName string,
 		return nil
 	}
 
-	if len(deviceConsts.Constants) == 0 && len(deviceConsts.Maps) == 0 {
+	hasOutputSize := false
+	if md.WireTags != nil {
+		if s2cTag := md.WireTags.GetTag(deviceName, "s2c"); s2cTag != nil {
+			if common.CalculateOutputSize(s2cTag) > 0 {
+				hasOutputSize = true
+			}
+		}
+	}
+
+	if len(deviceConsts.Constants) == 0 && len(deviceConsts.Maps) == 0 && !hasOutputSize {
 		logger.Warn("No constants or maps found for device", "device", deviceName)
 		return nil
 	}
@@ -34,13 +43,23 @@ func generateConstants(logger *slog.Logger, deviceDir string, deviceName string,
 	enumGroups := groupConstantsByPrefix(deviceConsts.Constants)
 	maps := convertMapsToCSharp(deviceConsts.Maps)
 
+	// Calculate OUTPUT_SIZE if device has s2c wire tag
+	outputSize := 0
+	if md.WireTags != nil {
+		if s2cTag := md.WireTags.GetTag(deviceName, "s2c"); s2cTag != nil {
+			outputSize = common.CalculateOutputSize(s2cTag)
+		}
+	}
+
 	data := struct {
 		Device     string
+		OutputSize int
 		EnumGroups []enumGroup
 		Maps       []mapData
 	}{
-		Device: pascalDevice,
-		Maps:   maps,
+		Device:     pascalDevice,
+		OutputSize: outputSize,
+		Maps:       maps,
 	}
 
 	for _, eg := range enumGroups {
@@ -358,6 +377,17 @@ using System.Collections.Generic;
 
 namespace Viiper.Client.Devices.{{.Device}};
 
+{{if gt .OutputSize 0}}
+/// <summary>
+/// Size in bytes of {{.Device}} output (server-to-client) messages.
+/// Use this constant to allocate buffers for reading device output.
+/// </summary>
+public static class {{.Device}}
+{
+    public const int OutputSize = {{.OutputSize}};
+}
+
+{{end}}
 {{range .EnumGroups}}
 /// <summary>
 /// {{.Name}} constants for {{$.Device}} device.

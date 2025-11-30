@@ -59,11 +59,13 @@ async Task Cleanup()
     if (createdBus) { try { await client.BusRemoveAsync(busId); Console.WriteLine($"Removed bus {busId}"); } catch { } }
 }
 
-// Read rumble output (2 bytes) and log
-device.OnOutput += data =>
+// Read rumble output using callback with stream
+device.OnOutput = async stream =>
 {
-    if (data.Length < 2) return;
-    byte left = data[0]; byte right = data[1];
+    var buf = new byte[Xbox360.OutputSize];
+    await stream.ReadAsync(buf, 0, buf.Length);
+    byte left = buf[0]; 
+    byte right = buf[1];
     Console.WriteLine($"← Rumble: Left={left}, Right={right}");
 };
 

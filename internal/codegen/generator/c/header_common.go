@@ -119,8 +119,8 @@ VIIPER_API viiper_error_t viiper_{{snakecase .Handler}}(
  * Device Streaming API
  * ======================================================================== */
 
-/* Callback type for receiving device output (raw bytes) */
-typedef void (*viiper_output_cb)(const void* output, size_t output_size, void* user_data);
+/* Callback type for receiving device output */
+typedef void (*viiper_output_cb)(void* buffer, size_t bytes_read, void* user_data);
 
 /* Create a device stream connection (opens stream socket to bus/busId/devId) */
 VIIPER_API viiper_error_t viiper_device_create(
@@ -137,9 +137,12 @@ VIIPER_API viiper_error_t viiper_device_send(
     size_t input_size
 );
 
-/* Register callback for device output (device → client, async) */
+/* Register callback for device output (device → client, async)
+ * User provides buffer - SDK reads directly into it and calls callback with byte count */
 VIIPER_API void viiper_device_on_output(
     viiper_device_t* device,
+    void* buffer,
+    size_t buffer_size,
     viiper_output_cb callback,
     void* user_data
 );

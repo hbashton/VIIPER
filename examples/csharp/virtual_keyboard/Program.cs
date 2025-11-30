@@ -75,11 +75,12 @@ async Task Cleanup()
     }
 }
 
-// Subscribe to LED output (1 byte frames)
-device.OnOutput += data =>
+// Subscribe to LED output using callback with stream
+device.OnOutput = async stream =>
 {
-    if (data.Length < 1) return;
-    byte leds = data[0];
+    var buf = new byte[Keyboard.OutputSize];
+    await stream.ReadAsync(buf, 0, buf.Length);
+    byte leds = buf[0];
     Console.WriteLine($"→ LEDs: Num={(leds & (byte)LED.NumLock) != 0} Caps={(leds & (byte)LED.CapsLock) != 0} Scroll={(leds & (byte)LED.ScrollLock) != 0} Compose={(leds & (byte)LED.Compose) != 0} Kana={(leds & (byte)LED.Kana) != 0}");
 };
 

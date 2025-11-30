@@ -1,5 +1,5 @@
-#include "viiper/viiper.h"
-#include "viiper/viiper_xbox360.h"
+#include "viiper.h"
+#include "viiper_xbox360.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -55,11 +55,12 @@ static uint32_t choose_or_create_bus(viiper_client_t* client)
     return 0;
 }
 
-static void on_rumble(const void* output, size_t output_size, void* user)
+static void on_rumble(void* buffer, size_t bytes_read, void* user)
 {
-    (void)user;
-    if (output_size >= 2) {
-        const viiper_xbox360_output_t* out = (const viiper_xbox360_output_t*)output;
+    (void)user; /* unused */
+    const uint8_t* rumble_data = (const uint8_t*)buffer;
+    if (bytes_read >= 2) {
+        const viiper_xbox360_output_t* out = (const viiper_xbox360_output_t*)rumble_data;
         printf("← Rumble: Left=%u, Right=%u\n", out->left, out->right);
     }
 }
@@ -120,8 +121,9 @@ int main(int argc, char** argv)
     const char* devId = addResp.DevId ? addResp.DevId : "(none)";
     printf("Created and connected device %s on bus %u (type: %s)\n", devId, (unsigned)busId, addResp.Type ? addResp.Type : "unknown");
 
-    /* Register async backchannel callback */
-    viiper_device_on_output(dev, on_rumble, NULL);
+    /* Register async backchannel callback with user-allocated buffer */
+    static uint8_t rumble_buffer[VIIPER_XBOX360_OUTPUT_SIZE];
+    viiper_device_on_output(dev, rumble_buffer, sizeof(rumble_buffer), on_rumble, NULL);
     printf("Connected to device stream\n");
 
     unsigned long long frame = 0;
