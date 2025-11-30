@@ -87,7 +87,7 @@ import { ViiperClient, Keyboard } from "viiperclient";
 
 const { KeyboardInput, Key, Mod } = Keyboard;
 
-// Connect to management API
+// Create new Viiper client
 const client = new ViiperClient("localhost", 3242);
 
 // Find or create a bus
@@ -288,10 +288,6 @@ const mods = Mod.LeftShift | Mod.LeftCtrl;  // 0x03
 
 ```typescript
 import { Keyboard } from "viiperclient";
-
-const { LED } = Keyboard;
-
-const { LED } = Keyboard;
 
 const numLock = (leds & LED.NumLock) !== 0;
 const capsLock = (leds & LED.CapsLock) !== 0;
@@ -512,7 +508,6 @@ Some quick troubleshooting tips for the TypeScript SDK and device streams:
 - Connection refused / timeout: Verify VIIPER server is running and listening on the expected API port (default 3242). Ensure firewall/ACLs allow TCP connections.
 - Unexpected response or parse errors: The VIIPER API uses null-byte (\x00) terminated requests. Use the provided SDK helper methods or ensure raw sockets append a null terminator when calling the server.
 - Stream closed unexpectedly: Confirm the device stream was opened (device added and connected) and that the device handler did not time out (default 5s reconnect window). Check server logs for reasons.
-- Device not appearing to OS: Remember you must attach the virtual device via USBIP (USB-IP server default port :3241) AFTER you create the device via the API (or enable auto-attach on local host).
 - Use examples: See the repository examples in `examples/typescript/` for working end-to-end samples that demonstrate bus creation, device streams, and cleanup.
 
 ## See Also

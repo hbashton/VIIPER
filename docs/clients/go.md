@@ -27,7 +27,7 @@ import (
 )
 
 func main() {
-  // Connect to management API
+  // Create new Viiper client
   client := apiclient.New("127.0.0.1:3242")
   ctx := context.Background()
   
@@ -223,12 +223,14 @@ if err != nil {
 
 Full working examples are available in the repository:
 
-- **Virtual Mouse**: `examples/virtual_mouse/main.go`
-- **Virtual Keyboard**: `examples/virtual_keyboard/main.go`
-- **Virtual Xbox360 Controller**: `examples/virtual_x360_pad/main.go`
+- **Virtual Mouse**: `examples/go/virtual_mouse/main.go`
+- **Virtual Keyboard**: `examples/go/virtual_keyboard/main.go`
+- **Virtual Xbox360 Controller**: `examples/go/virtual_x360_pad/main.go`
 
 ## See Also
 
 - [Generator Documentation](generator.md): How generated SDKs work
 - [C SDK Documentation](c.md): Generated C SDK usage
+- [C# SDK Documentation](csharp.md): .NET SDK
+- [TypeScript SDK Documentation](typescript.md): Node.js SDK
 - [API Overview](../api/overview.md): Management API reference

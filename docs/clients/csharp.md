@@ -76,7 +76,7 @@ dotnet build -c Release Viiper.Client
 using Viiper.Client;
 using Viiper.Client.Devices.Keyboard;
 
-// Connect to management API
+// Create new Viiper client
 var client = new ViiperClient("localhost", 3242);
 
 // Find or create a bus
@@ -504,6 +504,7 @@ The generated code uses nullable annotations. You may see warnings like CS8601/C
 
 - [Generator Documentation](generator.md): How generated SDKs work
 - [Go SDK Documentation](go.md): Reference implementation patterns
+- [TypeScript SDK Documentation](typescript.md): Node.js SDK
 - [C SDK Documentation](c.md): Alternative SDK for native integration
 - [API Overview](../api/overview.md): Management API reference
 - [Device Documentation](../devices/): Wire formats and device-specific details

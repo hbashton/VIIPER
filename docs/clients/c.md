@@ -68,7 +68,7 @@ endif()
 #include <stdio.h>
 
 int main(void) {
-    // Connect to management API
+    // Create new Viiper client
     viiper_client_t* client = NULL;
     int err = viiper_client_create("127.0.0.1", 3242, &client);
     if (err != 0) {
@@ -289,4 +289,6 @@ cmake --build build --config Release
 
 - [Generator Documentation](generator.md): How the C SDK is generated
 - [Go Client Documentation](go.md): Reference implementation
+- [C# SDK Documentation](csharp.md): .NET SDK
+- [TypeScript SDK Documentation](typescript.md): Node.js SDK
 - [API Overview](../api/overview.md): Management API reference
