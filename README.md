@@ -13,6 +13,8 @@
 [![npm downloads](https://img.shields.io/npm/dm/viiperclient?logo=npm&label=downloads)](https://www.npmjs.com/package/viiperclient)
 [![NuGet version](https://img.shields.io/nuget/v/Viiper.Client?logo=nuget)](https://www.nuget.org/packages/Viiper.Client/)
 [![NuGet downloads](https://img.shields.io/nuget/dt/Viiper.Client?logo=nuget&label=downloads)](https://www.nuget.org/packages/Viiper.Client/)
+[![crates.io version](https://img.shields.io/crates/v/viiper-client?logo=rust)](https://crates.io/crates/viiper-client)
+[![crates.io downloads](https://img.shields.io/crates/d/viiper-client?logo=rust&label=downloads)](https://crates.io/crates/viiper-client)
 [![C SDK](https://img.shields.io/badge/C_SDK-artifact-blueviolet)](https://github.com/Alia5/VIIPER/releases)
 
 
