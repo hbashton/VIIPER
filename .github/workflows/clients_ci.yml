@@ -25,8 +25,8 @@ permissions:
   contents: read
 
 jobs:
-  sdk:
-    name: Codegen and smoke builds
+  codegen:
+    name: Code generation
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -37,8 +37,7 @@ jobs:
         with:
           go-version: stable
           cache: true
-          cache-dependency-path: |
-            go.sum
+          cache-dependency-path: go.sum
 
       - name: Run code generation
         shell: bash
@@ -51,6 +50,27 @@ jobs:
             echo "Running codegen with default dev version"
             go run ./cmd/viiper codegen
           fi
+
+      - name: Upload generated clients
+        uses: actions/upload-artifact@v4
+        with:
+          name: generated-clients
+          path: clients/
+          retention-days: 1
+
+  typescript:
+    name: TypeScript SDK
+    needs: codegen
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download generated clients
+        uses: actions/download-artifact@v4
+        with:
+          name: generated-clients
+          path: clients/
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -74,54 +94,6 @@ jobs:
           npm install
           npm run build
 
-      - name: Set up .NET SDK
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '8.0.x'
-
-      - name: Pack C# SDK (smoke)
-        run: dotnet pack clients/csharp/Viiper.Client/Viiper.Client.csproj -c Release -o artifacts/nuget
-
-      - name: Build C# examples (smoke)
-        run: |
-          dotnet build examples/csharp/virtual_keyboard/VirtualKeyboard.csproj -c Release
-          dotnet build examples/csharp/virtual_mouse/VirtualMouse.csproj -c Release
-          dotnet build examples/csharp/virtual_x360_pad/VirtualX360Pad.csproj -c Release
-
-      - name: Set up CMake
-        uses: jwlawson/actions-setup-cmake@v2
-        with:
-          cmake-version: '3.26.x'
-
-      - name: Build C SDK (smoke)
-        run: |
-          cmake -S clients/c -B clients/c/build
-          cmake --build clients/c/build --config Release --parallel
-
-      - name: Build C examples (smoke)
-        run: |
-          cmake -S examples/c -B examples/c/build
-          cmake --build examples/c/build --config Release --parallel
-
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Build Rust SDK (smoke)
-        working-directory: clients/rust
-        run: |
-          cargo build --release
-          cargo build --release --features async
-
-      - name: Package Rust SDK
-        working-directory: clients/rust
-        run: |
-          cargo package --allow-dirty --no-verify
-
-      - name: Build Rust examples (smoke)
-        working-directory: examples/rust
-        run: |
-          cargo build --release
-
       - name: Rename TypeScript SDK tarball
         if: ${{ inputs.upload_artifacts }}
         working-directory: clients/typescript
@@ -140,6 +112,34 @@ jobs:
           path: clients/typescript/viiperclient-typescript-sdk${{ inputs.artifact_suffix }}.tgz
           if-no-files-found: error
 
+  csharp:
+    name: C# SDK
+    needs: codegen
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download generated clients
+        uses: actions/download-artifact@v4
+        with:
+          name: generated-clients
+          path: clients/
+
+      - name: Set up .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Pack C# SDK
+        run: dotnet pack clients/csharp/Viiper.Client/Viiper.Client.csproj -c Release -o artifacts/nuget
+
+      - name: Build C# examples (smoke)
+        run: |
+          dotnet build examples/csharp/virtual_keyboard/VirtualKeyboard.csproj -c Release
+          dotnet build examples/csharp/virtual_mouse/VirtualMouse.csproj -c Release
+          dotnet build examples/csharp/virtual_x360_pad/VirtualX360Pad.csproj -c Release
+
       - name: Upload C# SDK nupkg
         if: ${{ inputs.upload_artifacts }}
         uses: actions/upload-artifact@v4
@@ -147,6 +147,35 @@ jobs:
           name: csharp-sdk-nupkg${{ inputs.artifact_suffix }}
           path: artifacts/nuget/*.nupkg
           if-no-files-found: error
+
+  c-sdk:
+    name: C SDK
+    needs: codegen
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download generated clients
+        uses: actions/download-artifact@v4
+        with:
+          name: generated-clients
+          path: clients/
+
+      - name: Set up CMake
+        uses: jwlawson/actions-setup-cmake@v2
+        with:
+          cmake-version: '3.26.x'
+
+      - name: Build C SDK
+        run: |
+          cmake -S clients/c -B clients/c/build
+          cmake --build clients/c/build --config Release --parallel
+
+      - name: Build C examples (smoke)
+        run: |
+          cmake -S examples/c -B examples/c/build
+          cmake --build examples/c/build --config Release --parallel
 
       - name: Archive C SDK source
         if: ${{ inputs.upload_artifacts }}
@@ -159,6 +188,37 @@ jobs:
           name: c-sdk-source${{ inputs.artifact_suffix }}
           path: c-sdk-source${{ inputs.artifact_suffix }}.tar.gz
           if-no-files-found: error
+
+  rust:
+    name: Rust SDK
+    needs: codegen
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download generated clients
+        uses: actions/download-artifact@v4
+        with:
+          name: generated-clients
+          path: clients/
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build Rust SDK
+        working-directory: clients/rust
+        run: |
+          cargo build --release
+          cargo build --release --features async
+
+      - name: Package Rust SDK
+        working-directory: clients/rust
+        run: cargo package --allow-dirty --no-verify
+
+      - name: Build Rust examples (smoke)
+        working-directory: examples/rust
+        run: cargo build --release
 
       - name: Rename Rust SDK crate
         if: ${{ inputs.upload_artifacts }}
