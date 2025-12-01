@@ -55,16 +55,47 @@ help: ## Show this help message
 	@echo.
 	@echo Usage: make [target]
 	@echo.
-	@echo Targets:
+	@echo Build Targets:
+	@echo   build                Build VIIPER for current platform
+	@echo   clean                Remove build artifacts
+	@echo   test                 Run tests
+	@echo   test-coverage        Run tests with coverage
+	@echo.
+	@echo SDK Code Generation:
+	@echo   codegen-all          Generate all SDK client libraries
+	@echo   codegen-c            Generate C SDK
+	@echo   codegen-cpp          Generate C++ SDK
+	@echo   codegen-csharp       Generate C# SDK
+	@echo   codegen-rust         Generate Rust SDK
+	@echo   codegen-typescript   Generate TypeScript SDK
+	@echo.
+	@echo SDK Building:
+	@echo   build-sdks           Build all SDK client libraries
+	@echo   build-sdk-c          Build C SDK
+	@echo   build-sdk-cpp        Build C++ SDK
+	@echo   build-sdk-csharp     Build C# SDK
+	@echo   build-sdk-rust       Build Rust SDK
+	@echo   build-sdk-typescript Build TypeScript SDK
+	@echo.
+	@echo Example Building:
+	@echo   build-examples       Build all examples for all SDKs
+	@echo   build-examples-c     Build C examples
+	@echo   build-examples-cpp   Build C++ examples
+	@echo   build-examples-csharp Build C# examples
+	@echo   build-examples-rust  Build Rust examples
+	@echo   build-examples-typescript Build TypeScript examples
+	@echo.
+	@echo Cleaning:
+	@echo   clean-sdks           Clean SDK build artifacts
+	@echo   clean-examples       Clean example build artifacts
+	@echo.
+	@echo Complete Rebuild:
+	@echo   rebuild-all          Clean, regenerate, and build all SDKs and examples
+	@echo.
+	@echo Other Targets:
 	@echo   help                 Show this help message
 	@echo   deps                 Download Go dependencies
 	@echo   tidy                 Tidy Go dependencies
-	@echo   build                Build for current platform
-	@echo   test                 Run tests
-	@echo   test-coverage        Run tests with coverage
-	@echo   clean                Remove build artifacts
-	@echo   generate-versioninfo Generate Windows version info resource
-	@echo   clean-versioninfo    Remove Windows version info resource
 	@echo   fmt                  Format Go code
 	@echo   vet                  Run go vet
 	@echo   lint                 Run golangci-lint
@@ -159,3 +190,142 @@ version: ## Show version information
 	@echo Version: $(VERSION)
 	@echo Commit:  $(COMMIT)
 	@echo Built:   $(BUILD_TIME)
+
+############################################################
+# SDK Code Generation
+############################################################
+
+CLIENTS_DIR := clients
+
+.PHONY: codegen-all
+codegen-all: ## Generate all SDK client libraries (C, C++, C#, Rust, TypeScript)
+	@echo Generating all SDK clients...
+	cd $(SRC_DIR) && go run $(MAIN_PKG) codegen --lang all --output $(CLIENTS_DIR)
+
+.PHONY: codegen-c
+codegen-c: ## Generate C SDK client library
+	cd $(SRC_DIR) && go run $(MAIN_PKG) codegen --lang c --output $(CLIENTS_DIR)
+
+.PHONY: codegen-cpp
+codegen-cpp: ## Generate C++ SDK client library
+	cd $(SRC_DIR) && go run $(MAIN_PKG) codegen --lang cpp --output $(CLIENTS_DIR)
+
+.PHONY: codegen-csharp
+codegen-csharp: ## Generate C# SDK client library
+	cd $(SRC_DIR) && go run $(MAIN_PKG) codegen --lang csharp --output $(CLIENTS_DIR)
+
+.PHONY: codegen-rust
+codegen-rust: ## Generate Rust SDK client library
+	cd $(SRC_DIR) && go run $(MAIN_PKG) codegen --lang rust --output $(CLIENTS_DIR)
+
+.PHONY: codegen-typescript
+codegen-typescript: ## Generate TypeScript SDK client library
+	cd $(SRC_DIR) && go run $(MAIN_PKG) codegen --lang typescript --output $(CLIENTS_DIR)
+
+############################################################
+# SDK Building
+############################################################
+
+.PHONY: build-sdks
+build-sdks: build-sdk-c build-sdk-cpp build-sdk-csharp build-sdk-rust build-sdk-typescript ## Build all SDK client libraries
+
+.PHONY: build-sdk-c
+build-sdk-c: ## Build C SDK
+	@echo Building C SDK...
+	@if exist $(CLIENTS_DIR)\c (cd $(CLIENTS_DIR)\c && cmake -B build -S . -DCMAKE_BUILD_TYPE=Release && cmake --build build --config Release) else (echo C SDK not generated yet. Run 'make codegen-c' first.)
+
+.PHONY: build-sdk-cpp
+build-sdk-cpp: ## Build C++ SDK (header-only, no build needed)
+	@echo C++ SDK is header-only - no build needed.
+
+.PHONY: build-sdk-csharp
+build-sdk-csharp: ## Build C# SDK
+	@echo Building C# SDK...
+	@if exist $(CLIENTS_DIR)\csharp (cd $(CLIENTS_DIR)\csharp\Viiper.Client && dotnet build) else (echo C# SDK not generated yet. Run 'make codegen-csharp' first.)
+
+.PHONY: build-sdk-rust
+build-sdk-rust: ## Build Rust SDK
+	@echo Building Rust SDK...
+	@if exist $(CLIENTS_DIR)\rust (cd $(CLIENTS_DIR)\rust && cargo build) else (echo Rust SDK not generated yet. Run 'make codegen-rust' first.)
+
+.PHONY: build-sdk-typescript
+build-sdk-typescript: ## Build TypeScript SDK
+	@echo Building TypeScript SDK...
+	cd $(CLIENTS_DIR)\typescript && npm install && npm run build
+
+############################################################
+# Example Building
+############################################################
+
+.PHONY: build-examples
+build-examples: build-examples-c build-examples-cpp build-examples-csharp build-examples-rust build-examples-typescript ## Build all examples for all SDKs
+
+.PHONY: build-examples-c
+build-examples-c: ## Build C examples
+	@echo Building C examples...
+	cd examples\c && cmake -B build -S . -DCMAKE_BUILD_TYPE=Release && cmake --build build --config Release
+
+.PHONY: build-examples-cpp
+build-examples-cpp: ## Build C++ examples
+	@echo Building C++ examples...
+	cd examples\cpp && cmake -B build -S . -DCMAKE_BUILD_TYPE=Release && cmake --build build --config Release
+
+.PHONY: build-examples-csharp
+build-examples-csharp: ## Build C# examples
+	@echo Building C# examples...
+	cd examples\csharp\virtual_keyboard && dotnet build
+	cd examples\csharp\virtual_mouse && dotnet build
+	cd examples\csharp\virtual_x360_pad && dotnet build
+
+.PHONY: build-examples-rust
+build-examples-rust: ## Build Rust examples
+	@echo Building Rust examples...
+	cd examples\rust && cargo build --workspace
+
+.PHONY: build-examples-typescript
+build-examples-typescript: build-sdk-typescript ## Build TypeScript examples
+	@echo Building TypeScript examples...
+	cd examples\typescript && npm install && npm run build
+
+############################################################
+# Cleaning
+############################################################
+
+.PHONY: clean-sdks
+clean-sdks: ## Clean all SDK build artifacts
+	@echo Cleaning SDK build artifacts...
+	-@$(RM_DIR) $(CLIENTS_DIR)\c\build 2>$(NULL_DEVICE)
+	-@$(RM_DIR) $(CLIENTS_DIR)\csharp\Viiper.Client\bin 2>$(NULL_DEVICE)
+	-@$(RM_DIR) $(CLIENTS_DIR)\csharp\Viiper.Client\obj 2>$(NULL_DEVICE)
+	-@$(RM_DIR) $(CLIENTS_DIR)\rust\target 2>$(NULL_DEVICE)
+	-@$(RM_DIR) $(CLIENTS_DIR)\typescript\node_modules 2>$(NULL_DEVICE)
+	-@$(RM_DIR) $(CLIENTS_DIR)\typescript\dist 2>$(NULL_DEVICE)
+
+.PHONY: clean-examples
+clean-examples: ## Clean all example build artifacts
+	@echo Cleaning example build artifacts...
+	-@$(RM_DIR) examples\c\build 2>$(NULL_DEVICE)
+	-@$(RM_DIR) examples\cpp\build 2>$(NULL_DEVICE)
+	-@$(RM_DIR) examples\csharp\virtual_keyboard\bin 2>$(NULL_DEVICE)
+	-@$(RM_DIR) examples\csharp\virtual_keyboard\obj 2>$(NULL_DEVICE)
+	-@$(RM_DIR) examples\csharp\virtual_mouse\bin 2>$(NULL_DEVICE)
+	-@$(RM_DIR) examples\csharp\virtual_mouse\obj 2>$(NULL_DEVICE)
+	-@$(RM_DIR) examples\csharp\virtual_x360_pad\bin 2>$(NULL_DEVICE)
+	-@$(RM_DIR) examples\csharp\virtual_x360_pad\obj 2>$(NULL_DEVICE)
+	-@$(RM_DIR) examples\rust\target 2>$(NULL_DEVICE)
+	-@$(RM_DIR) examples\typescript\node_modules 2>$(NULL_DEVICE)
+	-@$(RM_DIR) examples\typescript\dist 2>$(NULL_DEVICE)
+
+############################################################
+# Complete Rebuild
+############################################################
+
+.PHONY: rebuild-all
+rebuild-all: clean-sdks clean-examples codegen-all build-sdks build-examples ## Complete rebuild: clean, regenerate all SDKs, build all SDKs and examples
+	@echo.
+	@echo ============================================================
+	@echo REBUILD COMPLETE
+	@echo ============================================================
+	@echo All SDKs have been regenerated and built.
+	@echo All examples have been built.
+	@echo ============================================================
