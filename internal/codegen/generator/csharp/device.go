@@ -35,6 +35,7 @@ public sealed class ViiperDevice : IAsyncDisposable, IDisposable
 	private Task? _readLoop;
 	private bool _disposed;
 	private Func<Stream, Task>? _onOutput;
+	private Action? _onDisconnect;
 
 	/// <summary>
 	/// Callback invoked when output data is available from the device.
@@ -51,6 +52,12 @@ public sealed class ViiperDevice : IAsyncDisposable, IDisposable
 				_readLoop = Task.Run(ReadLoopAsync);
 			}
 		}
+	}
+
+	public Action? OnDisconnect
+	{
+		get => _onDisconnect;
+		set => _onDisconnect = value;
 	}
 
 	internal ViiperDevice(TcpClient client, NetworkStream stream)
@@ -100,6 +107,7 @@ public sealed class ViiperDevice : IAsyncDisposable, IDisposable
 		{
 			// swallow; user can detect via absence of further events
 		}
+		_onDisconnect?.Invoke();
 	}
 
 	private void ThrowIfDisposed()
@@ -116,7 +124,7 @@ public sealed class ViiperDevice : IAsyncDisposable, IDisposable
 		if (_disposed) return;
 		_disposed = true;
 		_cts.Cancel();
-		try { _readLoop?.Wait(); } catch { /* ignore */ }
+		try { _readLoop?.Wait(); } catch { }
 		_stream.Dispose();
 		_client.Dispose();
 		_cts.Dispose();
@@ -132,7 +140,7 @@ public sealed class ViiperDevice : IAsyncDisposable, IDisposable
 		_disposed = true;
 		_cts.Cancel();
 		if (_readLoop != null)
-			try { await _readLoop.ConfigureAwait(false); } catch { /* ignore */ }
+			try { await _readLoop.ConfigureAwait(false); } catch { }
 		_stream.Dispose();
 		_client.Dispose();
 		_cts.Dispose();

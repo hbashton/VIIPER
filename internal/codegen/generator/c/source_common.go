@@ -50,6 +50,9 @@ struct viiper_device {
     size_t output_buffer_size;
     viiper_output_cb callback;
     void* callback_user;
+    /* Disconnect callback */
+    viiper_disconnect_cb disconnect_callback;
+    void* disconnect_user;
     int running;
 #if defined(_WIN32) || defined(_WIN64)
     HANDLE recv_thread;
@@ -431,6 +434,10 @@ static void* viiper_device_receiver_thread(void* arg) {
         }
 #endif
     }
+    /* Call disconnect callback if registered */
+    if (dev->disconnect_callback) {
+        dev->disconnect_callback(dev->disconnect_user);
+    }
 #if defined(_WIN32) || defined(_WIN64)
     return 0;
 #else
@@ -530,6 +537,16 @@ VIIPER_API void viiper_device_on_output(
     device->output_buffer_size = buffer_size;
     device->callback = callback;
     device->callback_user = user_data;
+}
+
+VIIPER_API void viiper_device_on_disconnect(
+    viiper_device_t* device,
+    viiper_disconnect_cb callback,
+    void* user_data
+) {
+    if (!device) return;
+    device->disconnect_callback = callback;
+    device->disconnect_user = user_data;
 }
 
 VIIPER_API void viiper_device_close(viiper_device_t* device) {

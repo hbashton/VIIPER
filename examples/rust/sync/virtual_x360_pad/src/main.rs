@@ -78,6 +78,13 @@ fn main() {
     );
 
     stream
+        .on_disconnect(|| {
+            eprintln!("Device disconnected by server");
+            std::process::exit(0);
+        })
+        .expect("Failed to register disconnect callback");
+
+    stream
         .on_output(|reader| {
             let mut buf = [0u8; OUTPUT_SIZE];
             reader.read_exact(&mut buf)?;

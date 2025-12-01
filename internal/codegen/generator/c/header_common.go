@@ -122,6 +122,9 @@ VIIPER_API viiper_error_t viiper_{{snakecase .Handler}}(
 /* Callback type for receiving device output */
 typedef void (*viiper_output_cb)(void* buffer, size_t bytes_read, void* user_data);
 
+/* Callback type for disconnect notification */
+typedef void (*viiper_disconnect_cb)(void* user_data);
+
 /* Create a device stream connection (opens stream socket to bus/busId/devId) */
 VIIPER_API viiper_error_t viiper_device_create(
     viiper_client_t* client,
@@ -144,6 +147,13 @@ VIIPER_API void viiper_device_on_output(
     void* buffer,
     size_t buffer_size,
     viiper_output_cb callback,
+    void* user_data
+);
+
+/* Register callback for disconnect notification (called when connection is lost) */
+VIIPER_API void viiper_device_on_disconnect(
+    viiper_device_t* device,
+    viiper_disconnect_cb callback,
     void* user_data
 );
 

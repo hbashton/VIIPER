@@ -77,6 +77,7 @@ impl ViiperClient {
 pub struct DeviceStream {
     stream: TcpStream,
     output_thread: Option<std::thread::JoinHandle<()>>,
+    disconnect_callback: Option<Box<dyn FnOnce() + Send + 'static>>,
 }
 
 impl DeviceStream {
@@ -87,6 +88,7 @@ impl DeviceStream {
         Ok(Self { 
             stream,
             output_thread: None,
+            disconnect_callback: None,
         })
     }
 
@@ -110,11 +112,23 @@ impl DeviceStream {
         }
 
         let stream = self.stream.try_clone()?;
+        let disconnect = self.disconnect_callback.take();
         let handle = std::thread::spawn(move || {
             let mut reader = std::io::BufReader::new(stream);
             while callback(&mut reader).is_ok() {}
+            if let Some(on_disconnect) = disconnect {
+                on_disconnect();
+            }
         });
         self.output_thread = Some(handle);
+        Ok(())
+    }
+
+    pub fn on_disconnect<F>(&mut self, callback: F) -> Result<(), ViiperError>
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        self.disconnect_callback = Some(Box::new(callback));
         Ok(())
     }
 

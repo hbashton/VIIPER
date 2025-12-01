@@ -73,6 +73,11 @@ async fn main() {
 
     println!("Created and connected to device {} on bus {}", device_info.dev_id, device_info.bus_id);
 
+    stream.on_disconnect(|| {
+        eprintln!("Device disconnected by server");
+        std::process::exit(0);
+    }).expect("Failed to register disconnect callback");
+
     stream.on_output(|stream| async move {
         use tokio::io::AsyncReadExt;
         let mut buf = [0u8; OUTPUT_SIZE];

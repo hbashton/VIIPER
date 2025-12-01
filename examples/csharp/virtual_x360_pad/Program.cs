@@ -69,6 +69,9 @@ device.OnOutput = async stream =>
     Console.WriteLine($"← Rumble: Left={left}, Right={right}");
 };
 
+// Handle disconnect
+device.OnDisconnect = () => Console.WriteLine("!!! Server disconnected");
+
 // Send inputs at ~60 FPS
 var sw = new PeriodicTimer(TimeSpan.FromMilliseconds(16));
 ulong frame = 0;

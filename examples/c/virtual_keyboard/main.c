@@ -42,6 +42,12 @@ static uint32_t choose_or_create_bus(viiper_client_t* client)
     return 0;
 }
 
+static void on_disconnect(void* user)
+{
+    (void)user; /* unused */
+    printf("!!! Server disconnected\n");
+}
+
 static void on_leds(void* buffer, size_t bytes_read, void* user)
 {
     const uint8_t* led_data = (const uint8_t*)buffer;
@@ -138,6 +144,9 @@ int main(int argc, char** argv)
     /* Register LED callback with user-allocated buffer */
     static uint8_t led_buffer[VIIPER_KEYBOARD_OUTPUT_SIZE];
     viiper_device_on_output(dev, led_buffer, sizeof(led_buffer), on_leds, NULL);
+
+    /* Register disconnect callback */
+    viiper_device_on_disconnect(dev, on_disconnect, NULL);
 
     printf("Every 5s: type 'Hello!' + Enter. Press Ctrl+C to stop.\n");
     for (;;) {

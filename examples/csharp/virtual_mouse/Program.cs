@@ -59,6 +59,9 @@ async Task Cleanup()
     if (createdBus) { try { await client.BusRemoveAsync(busId); Console.WriteLine($"Removed bus {busId}"); } catch { } }
 }
 
+// Handle disconnect
+device.OnDisconnect = () => Console.WriteLine("!!! Server disconnected");
+
 // Send movement/click/scroll every 3s
 var timer = new PeriodicTimer(TimeSpan.FromSeconds(3));
 sbyte dir = 1; const sbyte step = 50;

@@ -84,6 +84,9 @@ device.OnOutput = async stream =>
     Console.WriteLine($"→ LEDs: Num={(leds & (byte)LED.NumLock) != 0} Caps={(leds & (byte)LED.CapsLock) != 0} Scroll={(leds & (byte)LED.ScrollLock) != 0} Compose={(leds & (byte)LED.Compose) != 0} Kana={(leds & (byte)LED.Kana) != 0}");
 };
 
+// Handle disconnect
+device.OnDisconnect = () => Console.WriteLine("!!! Server disconnected");
+
 Console.WriteLine("Every 5s: type 'Hello!' + Enter. Press Ctrl+C to stop.");
 var timer = new PeriodicTimer(TimeSpan.FromSeconds(5));
 

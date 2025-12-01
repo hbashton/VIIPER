@@ -55,6 +55,12 @@ static uint32_t choose_or_create_bus(viiper_client_t* client)
     return 0;
 }
 
+static void on_disconnect(void* user)
+{
+    (void)user; /* unused */
+    printf("!!! Server disconnected\n");
+}
+
 static void on_rumble(void* buffer, size_t bytes_read, void* user)
 {
     (void)user; /* unused */
@@ -124,6 +130,9 @@ int main(int argc, char** argv)
     /* Register async backchannel callback with user-allocated buffer */
     static uint8_t rumble_buffer[VIIPER_XBOX360_OUTPUT_SIZE];
     viiper_device_on_output(dev, rumble_buffer, sizeof(rumble_buffer), on_rumble, NULL);
+
+    /* Register disconnect callback */
+    viiper_device_on_disconnect(dev, on_disconnect, NULL);
     printf("Connected to device stream\n");
 
     unsigned long long frame = 0;

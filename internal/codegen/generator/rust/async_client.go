@@ -84,6 +84,7 @@ pub struct AsyncDeviceStream {
     reader: std::sync::Arc<tokio::sync::Mutex<OwnedReadHalf>>,
     writer: std::sync::Arc<tokio::sync::Mutex<OwnedWriteHalf>>,
     cancel_token: Option<tokio_util::sync::CancellationToken>,
+    disconnect_callback: Option<Box<dyn FnOnce() + Send + 'static>>,
 }
 
 #[cfg(feature = "async")]
@@ -97,6 +98,7 @@ impl AsyncDeviceStream {
             reader: std::sync::Arc::new(tokio::sync::Mutex::new(reader)),
             writer: std::sync::Arc::new(tokio::sync::Mutex::new(writer)),
             cancel_token: None,
+            disconnect_callback: None,
         })
     }
 
@@ -145,6 +147,7 @@ impl AsyncDeviceStream {
         let reader = self.reader.clone();
         let cancel_token = tokio_util::sync::CancellationToken::new();
         let cancel_clone = cancel_token.clone();
+        let disconnect = self.disconnect_callback.take();
 
         tokio::spawn(async move {
             loop {
@@ -158,8 +161,19 @@ impl AsyncDeviceStream {
                     }
                 }
             }
+            if let Some(on_disconnect) = disconnect {
+                on_disconnect();
+            }
         });
         self.cancel_token = Some(cancel_token);
+        Ok(())
+    }
+
+    pub fn on_disconnect<F>(&mut self, callback: F) -> Result<(), ViiperError>
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        self.disconnect_callback = Some(Box::new(callback));
         Ok(())
     }
 
