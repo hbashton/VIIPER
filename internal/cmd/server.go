@@ -63,7 +63,7 @@ func (s *Server) StartServer(ctx context.Context, logger *slog.Logger, rawLogger
 
 	if s.ApiServerConfig.AutoAttachLocalClient {
 		logger.Info("Auto-attach is enabled, checking prerequisites...")
-		if !api.CheckAutoAttachPrerequisites(logger) {
+		if !api.CheckAutoAttachPrerequisites(s.ApiServerConfig.AutoAttachWindowsNative, logger) {
 			logger.Warn("Auto-attach prerequisites not met")
 			logger.Warn("Device auto-attachment will fail until requirements are satisfied")
 			logger.Info("You can disable auto-attach with --api.auto-attach-local-client=false")

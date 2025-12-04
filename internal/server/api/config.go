@@ -8,4 +8,5 @@ type ServerConfig struct {
 	DeviceHandlerConnectTimeout time.Duration `help:"Time before auto-cleanup occurs when device handler has no active connection" default:"5s" env:"VIIPER_API_DEVICE_HANDLER_TIMEOUT"`
 	AutoAttachLocalClient       bool          `help:"Controls usbip-client on localhost to auto-attach devices added to the virtual bus" default:"true" env:"VIIPER_API_AUTO_ATTACH_LOCAL_CLIENT"`
 	ConnectionTimeout           time.Duration `kong:"-"`
+	platformOpts                `embed:""`
 }

@@ -87,6 +87,7 @@ func BusDeviceAdd(s *usbs.Server, apiSrv *api.Server) api.HandlerFunc {
 				req.Ctx,
 				exportMeta,
 				s.GetListenPort(),
+				apiSrv.Config().AutoAttachWindowsNative,
 				logger,
 			)
 			if err != nil {
