@@ -24,8 +24,8 @@ func New(o *device.CreateOptions) *Xbox360 {
 		descriptor: defaultDescriptor,
 	}
 	if o != nil {
-		if o.IdProduct != nil {
-			d.descriptor.Device.IDProduct = *o.IdProduct
+		if o.IdVendor != nil {
+			d.descriptor.Device.IDVendor = *o.IdVendor
 		}
 		if o.IdProduct != nil {
 			d.descriptor.Device.IDProduct = *o.IdProduct
@@ -170,7 +170,7 @@ var defaultDescriptor = usb.Descriptor{
 	Strings: map[uint8]string{
 		0: "\x04\x09", // LangID: en-US (0x0409)
 		1: "©Microsoft Corporation",
-		2: "Controller",
+		2: "VIIPER Controller", //"Controller",
 		3: "296013F",
 	},
 }

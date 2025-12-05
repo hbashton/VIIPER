@@ -26,8 +26,8 @@ func New(o *device.CreateOptions) *Keyboard {
 		descriptor: defaultDescriptor,
 	}
 	if o != nil {
-		if o.IdProduct != nil {
-			d.descriptor.Device.IDProduct = *o.IdProduct
+		if o.IdVendor != nil {
+			d.descriptor.Device.IDVendor = *o.IdVendor
 		}
 		if o.IdProduct != nil {
 			d.descriptor.Device.IDProduct = *o.IdProduct
