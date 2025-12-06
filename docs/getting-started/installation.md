@@ -1,8 +1,15 @@
 # Installation
 
+VIIPER _currently_ comes in a single flavor:
+
+- a standalone executable that exposes an API over TCP.
+- There will eventually be a shared-library version (libVIIPER) that you can link against directly from your application.  
+For more information, see [FAQ](https://github.com/Alia5/VIIPER#why-is-this-a-standalone-executable-that-i-have-to-interface-via-tcp-and-not-a-shared-object-library-in-itself)
+
 ## Requirements
 
-VIIPER relies on USBIP. You must have USBIP installed on your system.
+VIIPER relies on USBIP.  
+You must have a USBIP-Client implementation available on your system to use VIIPER's virtual devices.
 
 ### Linux
 
@@ -62,13 +69,6 @@ If you don't plan to use the auto-attach feature, you can skip this setup and di
 
 ## Installing VIIPER
 
-### Pre-built Binaries (Recommended)
-
-Download the latest release from the [GitHub Releases](https://github.com/Alia5/VIIPER/releases) page. Pre-built binaries are available for:
-
-- Windows (x64, ARM64)
-- Linux (x64, ARM64)
-
 ### Portable Deployment
 
 VIIPER does not require system-wide installation.  
@@ -87,6 +87,13 @@ This makes VIIPER ideal for embedding in applications or distributing as part of
     - Connect to the existing VIIPER instance (if accessible)
     - Use a custom port via `--api.addr` flag to run a separate instance
     - Check if VIIPER is already running before starting their own instance
+
+### Pre-built Binaries
+
+Download the latest release from the [GitHub Releases](https://github.com/Alia5/VIIPER/releases) page. Pre-built binaries are available for:
+
+- Windows (x64, ARM64)
+- Linux (x64, ARM64)
 
 ### Building from Source
 
