@@ -26,17 +26,17 @@ type InputState struct {
 //	Bytes 3-4: DY (int16 little-endian)
 //	Bytes 5-6: Wheel (int16 little-endian)
 //	Bytes 7-8: Pan (int16 little-endian)
-func (st InputState) BuildReport() []byte {
+func (m *InputState) BuildReport() []byte {
 	b := make([]byte, 9)
-	b[0] = st.Buttons & 0x1F // 5 buttons, mask upper bits
-	b[1] = byte(st.DX)
-	b[2] = byte(st.DX >> 8)
-	b[3] = byte(st.DY)
-	b[4] = byte(st.DY >> 8)
-	b[5] = byte(st.Wheel)
-	b[6] = byte(st.Wheel >> 8)
-	b[7] = byte(st.Pan)
-	b[8] = byte(st.Pan >> 8)
+	b[0] = m.Buttons & 0x1F // 5 buttons, mask upper bits
+	b[1] = byte(m.DX)
+	b[2] = byte(m.DX >> 8)
+	b[3] = byte(m.DY)
+	b[4] = byte(m.DY >> 8)
+	b[5] = byte(m.Wheel)
+	b[6] = byte(m.Wheel >> 8)
+	b[7] = byte(m.Pan)
+	b[8] = byte(m.Pan >> 8)
 	return b
 }
 

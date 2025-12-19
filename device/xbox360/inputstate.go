@@ -32,17 +32,17 @@ type InputState struct {
 //	10-11: RX (little-endian int16)
 //	12-13: RY (little-endian int16)
 //	14-19: Reserved / zero
-func (st InputState) BuildReport() []byte {
+func (x *InputState) BuildReport() []byte {
 	b := make([]byte, 20)
 	b[0] = 0x00
 	b[1] = 0x14
-	binary.LittleEndian.PutUint16(b[2:4], uint16(st.Buttons&0xffff))
-	b[4] = st.LT
-	b[5] = st.RT
-	binary.LittleEndian.PutUint16(b[6:8], uint16(st.LX))
-	binary.LittleEndian.PutUint16(b[8:10], uint16(st.LY))
-	binary.LittleEndian.PutUint16(b[10:12], uint16(st.RX))
-	binary.LittleEndian.PutUint16(b[12:14], uint16(st.RY))
+	binary.LittleEndian.PutUint16(b[2:4], uint16(x.Buttons&0xffff))
+	b[4] = x.LT
+	b[5] = x.RT
+	binary.LittleEndian.PutUint16(b[6:8], uint16(x.LX))
+	binary.LittleEndian.PutUint16(b[8:10], uint16(x.LY))
+	binary.LittleEndian.PutUint16(b[10:12], uint16(x.RX))
+	binary.LittleEndian.PutUint16(b[12:14], uint16(x.RY))
 	// Remaining bytes (14-19) are left zeroed
 	return b
 }
