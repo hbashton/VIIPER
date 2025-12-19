@@ -162,7 +162,6 @@ func parse[T any](data string) (*T, error) {
 	}
 	var out T
 	dec := json.NewDecoder(bytes.NewReader([]byte(data)))
-	dec.DisallowUnknownFields()
 	if err := dec.Decode(&out); err != nil {
 		return nil, fmt.Errorf("decode: %w", err)
 	}

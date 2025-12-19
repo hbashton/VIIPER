@@ -115,11 +115,3 @@ func TestContextCancellation(t *testing.T) {
 	_, err := c.BusListCtx(ctx)
 	assert.Error(t, err)
 }
-
-func TestStrictJSONDecode(t *testing.T) {
-	responses := map[string]string{}
-	responses["bus/list"] = `{"buses":[1,2,3],"extra":true}` // extra field should cause decode error
-	c := testClient(responses, nil)
-	_, err := c.BusList()
-	assert.Error(t, err)
-}

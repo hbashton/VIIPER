@@ -65,14 +65,6 @@ func TestAddDeviceAndConnect(t *testing.T) {
 			},
 			wantErrSubstr: "bus 42 not found",
 		},
-		{
-			name: "strict JSON decode error (extra field)",
-			setup: func(responses map[string]string) error {
-				responses["bus/{id}/add"] = `{"busId":42,"devId":"7","vid":"0x1234","pid":"0xabcd","type":"test","extra":true}`
-				return nil
-			},
-			wantErrSubstr: "decode:",
-		},
 	}
 
 	for _, tt := range tests {
