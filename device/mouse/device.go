@@ -157,7 +157,7 @@ var defaultDescriptor = usb.Descriptor{
 					BEndpointAddress: 0x81,
 					BMAttributes:     0x03,   // Interrupt
 					WMaxPacketSize:   0x0010, // 16 bytes (9 needed)
-					BInterval:        0x0A,   // 10 ms
+					BInterval:        0x05,   // 5 ms
 				},
 			},
 		},
