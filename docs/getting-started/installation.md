@@ -11,6 +11,21 @@ For more information, see [FAQ](https://github.com/Alia5/VIIPER#why-is-this-a-st
 VIIPER relies on USBIP.  
 You must have a USBIP-Client implementation available on your system to use VIIPER's virtual devices.
 
+### Windows
+
+[usbip-win2](https://github.com/vadimgrn/usbip-win2) is by far the most complete implementation of USBIP for Windows (comes with a **SIGNED** kernel mode driver).
+
+**Install and done 😉**
+
+!!! warning "USBIP-Win2 security issue"
+    The releases of usbip-win2 **currently** (at the time of writing) install the publicly available test signing CA as a _trusted root CA_ on your system.  
+    You can safely remove this CA after installation using `certmgr.msc` (run as admin) and removing the "USBIP" from the "Trusted Root Certification Authorities" -> "Certificates" list.
+
+    **Alternativly**, you can download and istall the **latest pre-release** driver manually from the
+    [OSSign repository](https://github.com/OSSign/vadimgrn--usbip-win2/releases), which has this issue fixed already.  
+    _Note_ that the installer does not work, only the driver `.cat,.inf,.sys` files.
+
+
 ### Linux
 
 #### Ubuntu/Debian
@@ -28,10 +43,6 @@ sudo pacman -S usbip
 ```
 
 [Arch Wiki: USBIP](https://wiki.archlinux.org/title/USB/IP)
-
-### Windows
-
-[usbip-win2](https://github.com/vadimgrn/usbip-win2) is by far the most complete implementation of USBIP for Windows (comes with a **SIGNED** kernel mode driver).
 
 ### Linux Kernel Module Setup
 
