@@ -25,7 +25,6 @@ You must have a USBIP-Client implementation available on your system to use VIIP
     [OSSign repository](https://github.com/OSSign/vadimgrn--usbip-win2/releases), which has this issue fixed already.  
     _Note_ that the installer does not work, only the driver `.cat,.inf,.sys` files.
 
-
 ### Linux
 
 #### Ubuntu/Debian
@@ -123,7 +122,7 @@ The following scripts will download a VIIPER release, install it to a system loc
 **Linux:**
 
 ```bash
-curl -fsSL https://alia5.github.io/VIIPER/install.sh | sh
+curl -fsSL https://alia5.github.io/VIIPER/stable/install.sh | sh
 ```
 
 Installs to: `/usr/local/bin/viiper`
@@ -131,7 +130,7 @@ Installs to: `/usr/local/bin/viiper`
 **Windows (PowerShell):**
 
 ```powershell
-irm https://alia5.github.io/VIIPER/install.ps1 | iex
+irm https://alia5.github.io/VIIPER/stable/install.ps1 | iex
 ```
 
 Installs to: `%LOCALAPPDATA%\VIIPER\viiper.exe`
@@ -148,7 +147,7 @@ The scripts will:
 The install scripts are version-aware based on where you download them from:
 
 - **Latest stable release:**  
-  `curl -fsSL https://alia5.github.io/VIIPER/install.sh | sh`
+  `curl -fsSL https://alia5.github.io/VIIPER/stable/install.sh | sh`
 
 - **Specific version (e.g., v0.2.2):**  
   `curl -fsSL https://alia5.github.io/VIIPER/0.2.2/install.sh | sh`

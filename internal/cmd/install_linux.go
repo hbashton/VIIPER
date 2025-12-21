@@ -80,7 +80,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 ExecStart=%q server
-WorkingDirectory=%q
+WorkingDirectory=%s
 Restart=on-failure
 
 [Install]
