@@ -115,9 +115,13 @@ The following scripts will download a VIIPER release, install it to a system loc
     Instead, bundle the (no dependencies, portable) VIIPER binary with your application and start/stop the server directly from your application as needed.  
     You may need to check for existing VIIPER instances or use a custom port via `--api.addr` to avoid conflicts.   
 
-!!! warning "USBIP not included"
-    The install scripts do **not** install/setup USBIP.  
-    Make sure a USBIP-client is installed and configured before installing VIIPER.
+!!! info "USBIP installed by scripts"
+    The install scripts install and configure USBIP for you:
+
+    - **Windows:** installs the usbip-win2 driver (admin prompt) and prompts for a reboot when drivers were added.
+    - **Linux:** installs USBIP via the distro package manager (when available), loads `vhci_hcd`, and configures it to autoload.
+
+    If the automated USBIP setup fails, follow the [USBIP guide](usbip.md) to finish manually.
 
 **Linux:**
 
@@ -139,8 +143,9 @@ The scripts will:
 
 1. Download the specified VIIPER binary version
 2. Install it to the system location
-3. Configure automatic startup (Registry RunKey on Windows, systemd service on Linux)
-4. Start the VIIPER server
+3. Install and configure USBIP (driver on Windows; packages/modules on Linux)
+4. Configure automatic startup (Registry RunKey on Windows, systemd service on Linux)
+5. Start/restart the VIIPER service
 
 **Version-Specific Installation:**
 
