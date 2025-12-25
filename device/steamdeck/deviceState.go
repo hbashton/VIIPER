@@ -12,7 +12,7 @@ import (
 // This struct mirrors SDL's `SteamDeckStatePacket_t` fields (minus unPacketNum)
 //
 // Wire format (client -> device stream): fixed 52 bytes, little-endian.
-// viiper:wire steamdeck c2s buttons:u64 lpX:i16 lpY:i16 rpX:i16 rpY:i16 ax:i16 ay:i16 az:i16 gx:i16 gy:i16 gz:i16 qw:i16 qx:i16 qy:i16 qz:i16 tl:u16 tr:u16 lsx:i16 lsy:i16 rsx:i16 rsy:i16 pl:u16 pr:u16
+// viiper:wire steamdeck c2s buttons:u64 leftPadX:i16 leftPadY:i16 rightPadX:i16 rightPadY:i16 accelX:i16 accelY:i16 accelZ:i16 gyroX:i16 gyroY:i16 gyroZ:i16 gyroQuatW:i16 gyroQuatX:i16 gyroQuatY:i16 gyroQuatZ:i16 triggerL:u16 triggerR:u16 leftStickX:i16 leftStickY:i16 rightStickX:i16 rightStickY:i16 pressurePadLeft:u16 pressurePadRight:u16
 type InputState struct {
 	Buttons uint64
 
@@ -151,6 +151,7 @@ func (s *InputState) UnmarshalBinary(data []byte) error {
 
 // HapticState is the client-facing representation of Steam Deck haptic feedback.
 // Values are 16-bit "motor" speeds as used by SDL's Steam Deck HID driver.
+// viiper:wire steamdeck s2c leftMotor:u16 rightMotor:u16
 type HapticState struct {
 	LeftMotor  uint16
 	RightMotor uint16
