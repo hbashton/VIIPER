@@ -653,10 +653,15 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 
 		respData := s.processSubmit(dev, ep, dir, setup, outPayload)
 
+		actualLen := uint32(len(respData))
+		if dir == usbip.DirOut {
+			actualLen = uint32(len(outPayload))
+		}
+
 		ret := usbip.RetSubmit{
 			Basic:           usbip.HeaderBasic{Command: usbip.RetSubmitCode, Seqnum: seq, Devid: 0, Dir: 0, Ep: 0},
 			Status:          0,
-			ActualLength:    uint32(len(respData)),
+			ActualLength:    actualLen,
 			StartFrame:      0,
 			NumberOfPackets: 0,
 			ErrorCount:      0,
@@ -794,8 +799,19 @@ func (s *Server) processSubmit(dev usb.Device, ep uint32, dir uint32, setup []by
 		}
 		return data
 	}
-	_ = wIndex
-	_ = out
+
+	if cd, ok := dev.(usb.ControlDevice); ok {
+		if resp, handled := cd.HandleControl(bm, breq, wValue, wIndex, wLength, out); handled {
+			if resp == nil {
+				return nil
+			}
+			if int(wLength) < len(resp) {
+				return resp[:wLength]
+			}
+			return resp
+		}
+	}
+
 	return nil
 }
 

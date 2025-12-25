@@ -260,7 +260,8 @@ func (c *TestUsbIpClient) SubmitWithTimeout(conn net.Conn, dir uint32, ep uint32
 	if status != 0 {
 		return fmt.Errorf("ret status %d", status)
 	}
-	if actual > 0 {
+
+	if dir == usbip.DirIn && actual > 0 {
 		discard := make([]byte, int(actual))
 		if err := usbip.ReadExactly(conn, discard); err != nil {
 			return err
