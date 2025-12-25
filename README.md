@@ -44,6 +44,7 @@ Beyond device emulation, VIIPER can proxy real USB devices for traffic inspectio
   - ✅ Xbox 360 controller emulation; see [Devices › Xbox 360 Controller](docs/devices/xbox360.md)
   - ✅ HID Keyboard with N-key rollover and LED feedback; see [Devices › Keyboard](docs/devices/keyboard.md)
   - ✅ HID Mouse with 5 buttons and horizontal/vertical wheel; see [Devices › Mouse](docs/devices/mouse.md)
+  - ✅ Steam Deck (jupiter) controller emulation
   - 🔜 Xbox One / Series(?) controller emulation
   - 🔜 PS4 controller emulation
   - 🔜 ???  
@@ -214,4 +215,15 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 ## Credits / Inspiration
 
-[REDACTED-Bus aka ViGEmBus](https://github.com/nefarius/ViGEmBus) - (Retired) Windows kernel-mode driver emulating well-known USB game controllers.
+- [REDACTED-Bus aka ViGEmBus](https://github.com/nefarius/ViGEmBus)  
+  (Retired, but still widely used) Windows kernel-mode driver emulating well-known USB game controllers  
+  Shoutout and thank you to @nefarius for paving the way and always being a super decent guy!
+- [Valve Software](https://www.valvesoftware.com/)  
+  For creating the OG Steam Controller (2015) and Steam Input (and the way it, understandably, works...)  
+  that sent me down this rabbit hole in the first place  
+  <sup>I kinda hate you guys... in good way(?) ;)</sup>
+- **USBIP** without VIIPER would not be possible.
+  - [USBIP](https://usbip.sourceforge.net/)
+  - [USBIP-Win2](https://github.com/vadimgrn/usbip-win2)  
+- [SDL](https://www.libsdl.org/)  
+  For their excellent work on input device handling, reducing reversing efforts to a minimum.
