@@ -224,7 +224,56 @@ func extractValue(expr ast.Expr) interface{} {
 	case *ast.Ident:
 		return e.Name
 	case *ast.BinaryExpr:
-		return fmt.Sprintf("%s %s %s", extractValue(e.X), e.Op.String(), extractValue(e.Y))
+		lx := extractValue(e.X)
+		ry := extractValue(e.Y)
+
+		toU64 := func(v interface{}) (uint64, bool) {
+			switch n := v.(type) {
+			case uint64:
+				return n, true
+			case int64:
+				if n < 0 {
+					return 0, false
+				}
+				return uint64(n), true
+			case int:
+				if n < 0 {
+					return 0, false
+				}
+				return uint64(n), true
+			default:
+				return 0, false
+			}
+		}
+
+		lu, lok := toU64(lx)
+		ru, rok := toU64(ry)
+		if lok && rok {
+			switch e.Op {
+			case token.SHL:
+				if ru < 64 {
+					return lu << ru
+				}
+			case token.SHR:
+				if ru < 64 {
+					return lu >> ru
+				}
+			case token.OR:
+				return lu | ru
+			case token.AND:
+				return lu & ru
+			case token.XOR:
+				return lu ^ ru
+			case token.ADD:
+				return lu + ru
+			case token.SUB:
+				if lu >= ru {
+					return lu - ru
+				}
+			}
+		}
+
+		return fmt.Sprintf("%v %s %v", lx, e.Op.String(), ry)
 	case *ast.UnaryExpr:
 		return fmt.Sprintf("%s%v", e.Op.String(), extractValue(e.X))
 	}

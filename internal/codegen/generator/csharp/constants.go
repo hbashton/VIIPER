@@ -151,7 +151,56 @@ func shouldGenerateEnum(eg enumGroup) bool {
 }
 
 func inferEnumType(constants []constantInfo) string {
-	return "uint"
+
+	max := uint64(0)
+	parsedAny := false
+	for _, c := range constants {
+		var v uint64
+		var n int
+		var err error
+		if strings.HasPrefix(c.Value, "0x") {
+			n, err = fmt.Sscanf(c.Value, "0x%x", &v)
+		} else {
+			n, err = fmt.Sscanf(c.Value, "%d", &v)
+		}
+		if err == nil && n == 1 {
+			parsedAny = true
+			if v > max {
+				max = v
+			}
+		}
+	}
+	if parsedAny {
+		switch {
+		case max <= 0xFF:
+			return "byte"
+		case max <= 0xFFFF:
+			return "ushort"
+		case max <= 0xFFFFFFFF:
+			return "uint"
+		default:
+			return "ulong"
+		}
+	}
+
+	best := "uint"
+	for _, c := range constants {
+		switch c.Type {
+		case "ulong":
+			return "ulong"
+		case "uint":
+			best = "uint"
+		case "ushort":
+			if best != "uint" {
+				best = "ushort"
+			}
+		case "byte":
+			if best != "uint" && best != "ushort" {
+				best = "byte"
+			}
+		}
+	}
+	return best
 }
 
 func isFlags(constants []constantInfo) bool {
