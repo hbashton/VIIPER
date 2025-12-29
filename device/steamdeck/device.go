@@ -3,8 +3,10 @@ package steamdeck
 
 import (
 	"encoding/binary"
+	"log/slog"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/Alia5/VIIPER/device"
 	"github.com/Alia5/VIIPER/usb"
@@ -15,8 +17,9 @@ import (
 type SteamDeck struct {
 	tick uint64
 
-	stateMu    sync.Mutex
-	inputState *InputState
+	stateMu        sync.Mutex
+	inputState     *InputState
+	lastReportSent time.Time
 
 	featureMu       sync.Mutex
 	featureResponse []byte // cached 65-byte (or 64-byte) feature response
@@ -24,6 +27,8 @@ type SteamDeck struct {
 	hapticFunc func(HapticState)
 	descriptor usb.Descriptor
 }
+
+const USB_SEND_TIMEOUT_MS = 1000
 
 // New returns a new SteamDeck Controller device.
 func New(o *device.CreateOptions) *SteamDeck {
@@ -52,20 +57,9 @@ func (s *SteamDeck) SetRumbleCallback(f func(HapticState)) {
 // The latest state is used to build the 64-byte interrupt IN report.
 func (s *SteamDeck) UpdateInputState(st InputState) {
 	s.stateMu.Lock()
-	if s.inputState == nil {
-		s.inputState = &InputState{}
-	}
-	*s.inputState = st
+	newState := st
+	s.inputState = &newState
 	s.stateMu.Unlock()
-}
-
-func (s *SteamDeck) getInputStateSnapshot() InputState {
-	s.stateMu.Lock()
-	defer s.stateMu.Unlock()
-	if s.inputState == nil {
-		return InputState{}
-	}
-	return *s.inputState
 }
 
 // HandleTransfer implements interrupt IN for the Steam Deck controller interface.
@@ -83,9 +77,24 @@ func (s *SteamDeck) HandleTransfer(ep uint32, dir uint32, _ []byte) []byte {
 		atomic.AddUint64(&s.tick, 1)
 		return make([]byte, 4)
 	case 1: // 0x81 - controller input reports
-		seq := uint32(atomic.AddUint64(&s.tick, 1))
-		st := s.getInputStateSnapshot()
-		return buildInReport(seq, st)
+		s.stateMu.Lock()
+		if s.inputState != nil {
+			seq := uint32(atomic.AddUint64(&s.tick, 1))
+			st := *s.inputState
+			s.inputState = nil
+			s.lastReportSent = time.Now()
+			s.stateMu.Unlock()
+			return buildInReport(seq, st)
+		}
+		if time.Since(s.lastReportSent) > USB_SEND_TIMEOUT_MS*time.Millisecond {
+			slog.Debug("SteamDeck input timeout, sending empty report")
+			seq := uint32(atomic.AddUint64(&s.tick, 1))
+			s.lastReportSent = time.Now()
+			s.stateMu.Unlock()
+			return buildInReport(seq, InputState{})
+		}
+		s.stateMu.Unlock()
+		return nil
 	default:
 		return nil
 	}
@@ -154,8 +163,7 @@ func (s *SteamDeck) HandleControl(bmRequestType, bRequest uint8, wValue, wIndex,
 
 		switch reportType {
 		case hidReportTypeInput:
-			st := s.getInputStateSnapshot()
-			report := buildInReport(0, st)
+			report := buildInReport(0, InputState{})
 			if want == 65 {
 				resp := make([]byte, 65)
 				resp[0] = 0x00
