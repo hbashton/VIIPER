@@ -25,16 +25,17 @@ type Server struct {
 	ln     net.Listener
 	logger *slog.Logger
 	router *Router
-	config ServerConfig
+	config *ServerConfig
 }
 
 // New creates a new ApiServer bound to a server.Server instance.
 func New(s *usb.Server, addr string, config ServerConfig, logger *slog.Logger) *Server {
+	cfg := config
 	a := &Server{
 		usbs:   s,
 		addr:   addr,
 		logger: logger,
-		config: config,
+		config: &cfg,
 	}
 	a.router = NewRouter()
 	return a
@@ -47,7 +48,7 @@ func (a *Server) Router() *Router { return a.router }
 func (a *Server) USB() *usb.Server { return a.usbs }
 
 // Config returns the server configuration.
-func (a *Server) Config() ServerConfig { return a.config }
+func (a *Server) Config() *ServerConfig { return a.config }
 
 // Addr returns the actual address the server is listening on.
 // If Start hasn't been called yet, it returns the configured address.

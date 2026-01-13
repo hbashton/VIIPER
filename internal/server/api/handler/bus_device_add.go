@@ -93,6 +93,9 @@ func BusDeviceAdd(s *usbs.Server, apiSrv *api.Server) api.HandlerFunc {
 			if err != nil {
 				logger.Error("failed to auto-attach localhost client", "error", err)
 			}
+			return api.ErrConflict(fmt.Sprintf(
+				"Failed to auto-attach device: %v", err,
+			))
 		}
 
 		payload, err := json.Marshal(apitypes.Device{

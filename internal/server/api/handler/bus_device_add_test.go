@@ -1,6 +1,7 @@
 package handler_test
 
 import (
+	"encoding/json"
 	"log/slog"
 	"net"
 	"testing"
@@ -24,14 +25,15 @@ import (
 func TestBusDeviceAdd(t *testing.T) {
 	tests := []struct {
 		name             string
-		setup            func(t *testing.T, s *usb.Server)
+		setup            func(t *testing.T, s *usb.Server, as *api.Server)
 		pathParams       map[string]string
 		payload          any
 		expectedResponse string
+		extraChecks      func(t *testing.T, response string, srv *usb.Server, apiSrv *api.Server)
 	}{
 		{
 			name: "add device to existing bus",
-			setup: func(t *testing.T, s *usb.Server) {
+			setup: func(t *testing.T, s *usb.Server, as *api.Server) {
 				b, err := virtualbus.NewWithBusId(80001)
 				if err != nil {
 					t.Fatalf("create bus failed: %v", err)
@@ -60,7 +62,7 @@ func TestBusDeviceAdd(t *testing.T) {
 		},
 		{
 			name: "invalid json",
-			setup: func(t *testing.T, s *usb.Server) {
+			setup: func(t *testing.T, s *usb.Server, as *api.Server) {
 				b, err := virtualbus.NewWithBusId(2)
 				if err != nil {
 					t.Fatalf("create bus failed: %v", err)
@@ -75,7 +77,7 @@ func TestBusDeviceAdd(t *testing.T) {
 		},
 		{
 			name: "invalid payload",
-			setup: func(t *testing.T, s *usb.Server) {
+			setup: func(t *testing.T, s *usb.Server, as *api.Server) {
 				b, err := virtualbus.NewWithBusId(3)
 				if err != nil {
 					t.Fatalf("create bus failed: %v", err)
@@ -90,7 +92,7 @@ func TestBusDeviceAdd(t *testing.T) {
 		},
 		{
 			name: "correct device id after add/remove",
-			setup: func(t *testing.T, s *usb.Server) {
+			setup: func(t *testing.T, s *usb.Server, as *api.Server) {
 				b, err := virtualbus.NewWithBusId(80005)
 				if err != nil {
 					t.Fatalf("create bus failed: %v", err)
@@ -109,23 +111,56 @@ func TestBusDeviceAdd(t *testing.T) {
 			payload:          `{"type": "xbox360"}`,
 			expectedResponse: `{"busId":80005, "devId": "1", "vid":"0x045e", "pid":"0x028e", "type":"xbox360"}`,
 		},
+		{
+			name: "autoattach fails returns error",
+			setup: func(t *testing.T, s *usb.Server, as *api.Server) {
+				as.Config().AutoAttachLocalClient = true
+				b, err := virtualbus.NewWithBusId(80250)
+				if err != nil {
+					t.Fatalf("create bus failed: %v", err)
+				}
+				if err := s.AddBus(b); err != nil {
+					t.Fatalf("add bus failed: %v", err)
+				}
+			},
+			pathParams: map[string]string{"id": "80250"},
+			payload:    `{"type": "xbox360"}`,
+			extraChecks: func(t *testing.T, response string, srv *usb.Server, apiSrv *api.Server) {
+				var errResp map[string]interface{}
+				err := json.Unmarshal([]byte(response), &errResp)
+				require.NoError(t, err)
+				require.Equal(t, float64(409), errResp["status"])
+				require.Equal(t, "Conflict", errResp["title"])
+				detail := errResp["detail"].(string)
+				require.Contains(t, detail, "Failed to auto-attach device:")
+			},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			var as *api.Server
 			addr, srv, done := th.StartAPIServer(t, func(r *api.Router, s *usb.Server, apiSrv *api.Server) {
 				r.Register("bus/create", handler.BusCreate(s))
 				r.Register("bus/{id}/add", handler.BusDeviceAdd(s, apiSrv))
+				as = apiSrv
 			})
 			defer done()
 
 			c := apiclient.NewTransport(addr)
 			if tt.setup != nil {
-				tt.setup(t, srv)
+				tt.setup(t, srv, as)
 			}
 			line, err := c.Do("bus/{id}/add", tt.payload, tt.pathParams)
 			assert.NoError(t, err)
-			assert.JSONEq(t, tt.expectedResponse, line)
+
+			if tt.expectedResponse != "" {
+				assert.JSONEq(t, tt.expectedResponse, line)
+			}
+
+			if tt.extraChecks != nil {
+				tt.extraChecks(t, line, srv, as)
+			}
 		})
 	}
 }
