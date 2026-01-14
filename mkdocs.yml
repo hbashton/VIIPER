@@ -77,6 +77,7 @@ nav:
     - TypeScript Client Library: clients/typescript.md
   - Devices:
     - Xbox 360 Controller: devices/xbox360.md
+    - DualShock 4 Controller: devices/dualshock4.md
     - Keyboard: devices/keyboard.md
     - Mouse: devices/mouse.md
   - Changelog: changelog/

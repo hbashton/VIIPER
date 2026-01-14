@@ -21,6 +21,7 @@ extern "C" {
 
 #include <stdint.h>
 #include <stddef.h>
+#include <stdbool.h>
 
 /* Platform-specific exports */
 #if defined(_WIN32) || defined(_WIN64)

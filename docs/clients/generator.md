@@ -220,7 +220,6 @@ Run codegen when any of these change:
 
 ## Further Reading
 
-- [Design Document](../design.md): Architectural rationale and detailed generation strategy
 - [Go Client Documentation](go.md): Go reference client usage
 - [C Client Library Documentation](c.md): C-specific usage, build, and examples
 - [C# Client Library Documentation](csharp.md): C#-specific usage, async patterns, and map helpers

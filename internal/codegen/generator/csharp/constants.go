@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"text/template"
 
@@ -127,7 +128,7 @@ func groupConstantsByPrefix(constants []scanner.ConstantInfo) []enumGroup {
 		_, name := common.TrimPrefixAndSanitize(c.Name)
 		groups[prefix].Constants = append(groups[prefix].Constants, constantInfo{
 			Name:  name,
-			Value: formatConstValue(c.Value),
+			Value: formatConstValue(c.Value, c.Type),
 			Type:  mapGoConstTypeToCSharp(c.Type),
 		})
 	}
@@ -151,32 +152,67 @@ func shouldGenerateEnum(eg enumGroup) bool {
 }
 
 func inferEnumType(constants []constantInfo) string {
-
-	max := uint64(0)
+	minI := int64(0)
+	maxI := int64(0)
 	parsedAny := false
+
 	for _, c := range constants {
-		var v uint64
-		var n int
-		var err error
 		if strings.HasPrefix(c.Value, "0x") {
-			n, err = fmt.Sscanf(c.Value, "0x%x", &v)
-		} else {
-			n, err = fmt.Sscanf(c.Value, "%d", &v)
+			var u uint64
+			if n, err := fmt.Sscanf(c.Value, "0x%x", &u); err == nil && n == 1 {
+				v := int64(u)
+				if !parsedAny {
+					minI, maxI = v, v
+					parsedAny = true
+					continue
+				}
+				if v < minI {
+					minI = v
+				}
+				if v > maxI {
+					maxI = v
+				}
+			}
+			continue
 		}
-		if err == nil && n == 1 {
-			parsedAny = true
-			if v > max {
-				max = v
+
+		var s int64
+		if n, err := fmt.Sscanf(c.Value, "%d", &s); err == nil && n == 1 {
+			if !parsedAny {
+				minI, maxI = s, s
+				parsedAny = true
+				continue
+			}
+			if s < minI {
+				minI = s
+			}
+			if s > maxI {
+				maxI = s
 			}
 		}
 	}
+
 	if parsedAny {
+		if minI < 0 {
+			switch {
+			case minI >= -128 && maxI <= 127:
+				return "sbyte"
+			case minI >= -32768 && maxI <= 32767:
+				return "short"
+			case minI >= -2147483648 && maxI <= 2147483647:
+				return "int"
+			default:
+				return "long"
+			}
+		}
+
+		uMax := uint64(maxI)
 		switch {
-		case max <= 0xFF:
+		case uMax <= 0xFF:
 			return "byte"
-		case max <= 0xFFFF:
+		case uMax <= 0xFFFF:
 			return "ushort"
-		case max <= 0xFFFFFFFF:
+		case uMax <= 0xFFFFFFFF:
 			return "uint"
 		default:
 			return "ulong"
@@ -219,7 +255,9 @@ func isFlags(constants []constantInfo) bool {
 	return false
 }
 
-func formatConstValue(value interface{}) string {
+func formatConstValue(value interface{}, goType string) string {
+	base, _, _ := common.NormalizeGoType(goType)
+
 	switch v := value.(type) {
 	case int64:
 		return fmt.Sprintf("0x%X", v)
@@ -227,10 +265,30 @@ func formatConstValue(value interface{}) string {
 		return fmt.Sprintf("0x%X", v)
 	case int:
 		return fmt.Sprintf("0x%X", v)
-	case string:
-		return fmt.Sprintf("\"%s\"", v)
 	case float64:
 		return fmt.Sprintf("%f", v)
+	case string:
+		if base == "string" {
+			return fmt.Sprintf("\"%s\"", v)
+		}
+		if base == "char" {
+			if len(v) == 1 {
+				return fmt.Sprintf("'%s'", v)
+			}
+			return fmt.Sprintf("'%s'", v)
+		}
+
+		if _, err := strconv.ParseInt(v, 0, 64); err == nil {
+			return v
+		}
+		if _, err := strconv.ParseUint(v, 0, 64); err == nil {
+			return v
+		}
+		if _, err := strconv.ParseFloat(v, 64); err == nil {
+			return v
+		}
+
+		return v
 	default:
 		return fmt.Sprintf("%v", v)
 	}
@@ -397,7 +455,7 @@ func formatMapValue(value interface{}, goType string) string {
 			}
 			return str
 		}
-		return formatConstValue(value)
+		return formatConstValue(value, goType)
 	case "bool":
 		if b, ok := value.(bool); ok {
 			if b {
@@ -413,9 +471,9 @@ func formatMapValue(value interface{}, goType string) string {
 		if str, ok := value.(string); ok {
 			return fmt.Sprintf("\"%s\"", str)
 		}
-		return formatConstValue(value)
+		return formatConstValue(value, goType)
 	default:
-		return formatConstValue(value)
+		return formatConstValue(value, goType)
 	}
 }
 

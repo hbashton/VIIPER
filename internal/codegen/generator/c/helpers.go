@@ -2,6 +2,7 @@ package cgen
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"text/template"
 
@@ -19,6 +20,7 @@ func tplFuncs(md *meta.Metadata) template.FuncMap {
 		"wireFields":     func(device, direction string) string { return wireFieldsString(md, device, direction) },
 		"indent":         indent,
 		"fieldDecl":      func(f scanner.FieldInfo) string { return fieldDecl(md, f) },
+		"cConstValue":    cConstValue,
 		"pathParams":     common.ExtractPathParams,
 		"join":           strings.Join,
 		"mapFuncDecl":    mapFuncDecl,
@@ -28,6 +30,46 @@ func tplFuncs(md *meta.Metadata) template.FuncMap {
 		"marshalPayload": func(pi scanner.PayloadInfo) string { return marshalPayload(md, pi) },
 		"genFreeFunc":    func(dto scanner.DTOSchema) string { return generateFreeFunction(md, dto) },
 		"genParser":      func(dto scanner.DTOSchema) string { return generateParser(md, dto) },
+	}
+}
+
+func cConstValue(c scanner.ConstantInfo) string {
+	base, _, _ := common.NormalizeGoType(c.Type)
+
+	if s, ok := c.Value.(string); ok {
+		if base == "string" {
+			return fmt.Sprintf("\"%s\"", s)
+		}
+		if _, err := strconv.ParseInt(s, 0, 64); err == nil {
+			return s
+		}
+		if _, err := strconv.ParseUint(s, 0, 64); err == nil {
+			return s
+		}
+		if _, err := strconv.ParseFloat(s, 64); err == nil {
+			return s
+		}
+		return s
+	}
+
+	switch v := c.Value.(type) {
+	case uint64:
+		if strings.HasPrefix(base, "uint") || base == "byte" {
+			return fmt.Sprintf("0x%X", v)
+		}
+		return fmt.Sprintf("%d", v)
+	case int64:
+		if strings.HasPrefix(base, "uint") || base == "byte" {
+			if v < 0 {
+				return fmt.Sprintf("%d", v)
+			}
+			return fmt.Sprintf("0x%X", uint64(v))
+		}
+		return fmt.Sprintf("%d", v)
+	case float64:
+		return strconv.FormatFloat(v, 'f', -1, 64)
+	default:
+		return fmt.Sprintf("%v", c.Value)
 	}
 }
 

@@ -44,8 +44,8 @@ Beyond device emulation, VIIPER can proxy real USB devices for traffic inspectio
   - ✅ Xbox 360 controller emulation; see [Devices › Xbox 360 Controller](docs/devices/xbox360.md)
   - ✅ HID Keyboard with N-key rollover and LED feedback; see [Devices › Keyboard](docs/devices/keyboard.md)
   - ✅ HID Mouse with 5 buttons and horizontal/vertical wheel; see [Devices › Mouse](docs/devices/mouse.md)
+  - ✅ PS4 controller emulation; see [Devices › DualShock 4 Controller](docs/devices/dualshock4.md)
   - 🔜 Xbox One / Series(?) controller emulation
-  - 🔜 PS4 controller emulation
   - 🔜 ???  
     🔜 Future plugin system allows for more device types (other gamepads, specialized HID)
 - ✅ **Automatic local attachment**: automatically controls usbip client on localhost to attach devices (enabled by default)

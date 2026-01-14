@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"text/template"
 
 	"github.com/Alia5/VIIPER/internal/codegen/common"
@@ -166,6 +168,30 @@ func formatConstValue(val interface{}, goType string) string {
 	switch base {
 	case "string":
 		return fmt.Sprintf(`"%v"`, val)
+	case "float32", "float64":
+		var f float64
+		switch v := val.(type) {
+		case float64:
+			f = v
+		case int64:
+			f = float64(v)
+		case uint64:
+			f = float64(v)
+		case string:
+			parsed, err := strconv.ParseFloat(v, 64)
+			if err != nil {
+				return fmt.Sprintf("%v", val)
+			}
+			f = parsed
+		default:
+			return fmt.Sprintf("%v", val)
+		}
+
+		s := strconv.FormatFloat(f, 'f', -1, 64)
+		if !strings.ContainsAny(s, ".eE") {
+			s += ".0"
+		}
+		return s
 	default:
 		return fmt.Sprintf("%v", val)
 	}
