@@ -4,7 +4,8 @@ import "time"
 
 // ServerConfig represents the server subcommand configuration.
 type ServerConfig struct {
-	Addr              string        `help:"USB-IP server listen address" default:":3241" env:"VIIPER_USB_ADDR"`
-	ConnectionTimeout time.Duration `kong:"-"`
-	BusCleanupTimeout time.Duration `help:"-"`
+	Addr                    string        `help:"USB-IP server listen address" default:":3241" env:"VIIPER_USB_ADDR"`
+	ConnectionTimeout       time.Duration `kong:"-"`
+	BusCleanupTimeout       time.Duration `help:"-"`
+	WriteBatchFlushInterval time.Duration `help:"Interval to flush write batches to clients; 0 to disable" default:"1ms" env:"VIIPER_USB_WRITE_BATCH_FLUSH_INTERVAL"`
 }

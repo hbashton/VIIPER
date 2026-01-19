@@ -36,7 +36,6 @@ const (
 
 	// avoid windows socket overhead while keeping latency very low.
 	writeBatcherBufferSize   = 256 * 1024
-	writeBatcherFlushEvery   = 1 * time.Millisecond
 	writeBatcherFlushAtBytes = 64 * 1024
 )
 
@@ -558,8 +557,15 @@ func (lc *logConn) Write(p []byte) (int, error) {
 func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 	_ = conn.SetDeadline(time.Time{})
 
-	bw := newBatchingWriter(conn, writeBatcherBufferSize, writeBatcherFlushEvery, writeBatcherFlushAtBytes)
-	defer func() { _ = bw.Close() }()
+	var writer io.Writer
+	var bw *batchingWriter
+	if s.config.WriteBatchFlushInterval > 0 {
+		bw = newBatchingWriter(conn, writeBatcherBufferSize, s.config.WriteBatchFlushInterval, writeBatcherFlushAtBytes)
+		writer = bw
+		defer func() { _ = bw.Close() }()
+	} else {
+		writer = conn
+	}
 
 	var owningBus *virtualbus.VirtualBus
 	for _, b := range s.busses {
@@ -633,7 +639,7 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 			s.logger.Debug("USBIP_CMD_UNLINK", "seq", seq, "unlink", unlinkSeq)
 			// Reply with -ECONNRESET
 			ret := usbip.RetUnlink{Basic: usbip.HeaderBasic{Command: usbip.RetUnlinkCode, Seqnum: seq, Devid: 0, Dir: 0, Ep: 0}, Status: errConnReset}
-			_ = ret.Write(bw)
+			_ = ret.Write(writer)
 			continue
 		}
 		if cmd != usbip.CmdSubmitCode {
@@ -671,11 +677,11 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 		if err := ret.Write(&out); err != nil {
 			return fmt.Errorf("build RET_SUBMIT header: %w", err)
 		}
-		if _, err := bw.Write(out.Bytes()); err != nil {
+		if _, err := writer.Write(out.Bytes()); err != nil {
 			return fmt.Errorf("write RET_SUBMIT: %w", err)
 		}
 		if len(respData) > 0 {
-			if _, err := bw.Write(respData); err != nil {
+			if _, err := writer.Write(respData); err != nil {
 				return fmt.Errorf("write RET_SUBMIT payload: %w", err)
 			}
 		}

@@ -107,11 +107,12 @@ func Benchmark_Xbox360_Delay(b *testing.B) {
 
 	s := cmd.Server{
 		UsbServerConfig: usb.ServerConfig{
-			Addr:              ":3241",
-			BusCleanupTimeout: 1 * time.Second,
+			Addr:                    ":3244",
+			BusCleanupTimeout:       1 * time.Second,
+			WriteBatchFlushInterval: 0,
 		},
 		ApiServerConfig: api.ServerConfig{
-			Addr:                        ":3242",
+			Addr:                        ":3245",
 			AutoAttachLocalClient:       true,
 			DeviceHandlerConnectTimeout: time.Second * 5,
 		},
@@ -125,7 +126,7 @@ func Benchmark_Xbox360_Delay(b *testing.B) {
 			panic(err)
 		}
 	}()
-	c := apiclient.New("localhost:3242")
+	c := apiclient.New("localhost:3245")
 	var busResp *apitypes.BusCreateResponse
 	var err error
 	for range 10 {
