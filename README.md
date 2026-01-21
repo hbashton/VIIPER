@@ -27,6 +27,7 @@ These virtual devices are indistinguishable from real hardware to the operating 
 
 - VIIPER abstracts away all USB / USBIP details.  
 - Device emulation happens in userspace code instead of kernel drivers, so no kernel programming is required to add new device types.  
+   (USBIP still requires a kernel driver, but this is generic and device _emulation_ code still lives in Userspace)    
 - Users need USBIP installed once (built into Linux, usbip-win2 for Windows), after that VIIPER can run without additional dependencies or system-wide installation.  
 
 VIIPER _currently_ comes in a single flavor:
@@ -168,7 +169,8 @@ This works with Steam, native Windows games, and any other application supportin
 ### How is VIIPER different from other controller emulators?
 
 Most controller emulators require custom kernel drivers for each device type.  
-VIIPER uses USBIP to handle the USB protocol layer, allowing device emulation in userspace without kernel drivers.  
+VIIPER uses USBIP to handle the USB protocol layer, allowing device emulation in userspace without needing to develop specialized kernel drivers.  
+(On Windows, a USBIP-Kernel driver is still required, but that driver is generic and doesn't care about the type of USB devices; Device _emulation_ code still lives in Userspace)
 This makes VIIPER portable, easier to extend, and simpler to bundle with applications.
 
 ### Can I add support for other device types?
