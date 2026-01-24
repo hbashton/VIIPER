@@ -199,7 +199,7 @@ _Note_: Actual device polling rates may be lower depending on the device type an
 ```license
 VIIPER - Virtual Input over IP EmulatoR
 
-Copyright (C) 2025 Peter Repukat
+Copyright (C) 2025-2026 Peter Repukat
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
