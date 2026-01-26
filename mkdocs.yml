@@ -80,4 +80,5 @@ nav:
     - DualShock 4 Controller: devices/dualshock4.md
     - Keyboard: devices/keyboard.md
     - Mouse: devices/mouse.md
+  - Community & Support: misc/support.md
   - Changelog: changelog/
