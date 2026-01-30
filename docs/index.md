@@ -49,17 +49,26 @@ It's designed to be trivial to drive from any language that can open a TCP socke
     Most of the time, you don't need to implement that raw protocol yourself, as client libraries are available.  
     See [Client Libraries Available](api/overview.md).
 
-- The TCP API uses a string-based request/response protocol terminated by null bytes (`\0`) for device and bus management.  
-  - Requests have a "_path_" and optional payload (sometimes  JSON).  
+- The TCP API uses a string-based request/response protocol
+  terminated by null bytes (`\0`) for device and bus management.  
+    - Requests have a "_path_" and optional payload (sometimes  JSON).  
     eg. `bus/{id}/add {"type": "keyboard", "idVendor": "0x6969"}\0`  
-  - Responses are often JSON as well!
-  - Errors are reported using JSON objectes similar to [RFC 7807 Problem Details](https://datatracker.ietf.org/doc/html/rfc7807)  
+    - Responses are often JSON as well!
+    - Errors are reported using JSON objectes similar to
+    - [RFC 7807 Problem Details](https://datatracker.ietf.org/doc/html/rfc7807)  
  <sup>The use of JSON allows for future extenability without breaking compatibility ;)<sup>
 - For controlling, or feeding, a device a long lived TCP stream is used, with a wire-protocol specific to each device type.  
   After an initial "_handshake_" (`bus/{busId}/{deviceId}\0`) a _device-specific **binary protocol**_ is used to send input reports and receive output reports (e.g., rumble commands).
 
 VIIPER takes care of all USBIP protocol details, so you can focus on implementing the device logic only.  
 On `localhost` VIIPER also automatically attached the USBIP client, so you don't have to worry about USBIP details at all.
+
+!!! info "Security: Authentication & Encryption"
+    VIIPER **requires authentication for remote connections**
+    to prevent unauthorized device creation.  
+    All authenticated connections use fast **ChaCha20-Poly1305 encryption**
+    to protect against man-in-the-middle attacks.  
+    Localhost connections are exempt from authentication by default for convenience.
 
 See the [API documentation](api/overview) for details
 
@@ -75,9 +84,9 @@ VIIPER uses it because it's already built into Linux and available for Windows, 
 ### Why is this a standalone executable that I have to interface via TCP, and not a (shared-object) library in itself
 
 - Flexibility
-  - allows one to use VIIPER as a service on the same host as the USBIP-Client and use the feeder on a different, remote machine.
-  - allows for software written utilizing VIIPER to **not be** licensed under the terms of the GPLv3
-  - **_future versions_**: Users can enhance VIIPER with device plugins, sharing a common wire-protocol, which can be dynamically incorporated.
+    - allows one to use VIIPER as a service on the same host as the USBIP-Client and use the feeder on a different, remote machine.
+    - allows for software written utilizing VIIPER to **not be** licensed under the terms of the GPLv3
+    - **_future versions_**: Users can enhance VIIPER with device plugins, sharing a common wire-protocol, which can be dynamically incorporated.
 - **That said**, there **will be** a _libVIIPER_  that you can link against, eleminating multi-process and potential firewall issues.  
   Note that this **will require** your application to be licensed under the terms of the GPLv3 (or comptible license)
 
