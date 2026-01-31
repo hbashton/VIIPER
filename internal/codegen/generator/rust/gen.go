@@ -54,6 +54,10 @@ func Generate(logger *slog.Logger, outputDir string, md *meta.Metadata) error {
 		return err
 	}
 
+	if err := generateAuth(logger, srcDir); err != nil {
+		return err
+	}
+
 	for deviceName := range md.DevicePackages {
 		deviceDir := filepath.Join(devicesDir, deviceName)
 		if err := os.MkdirAll(deviceDir, 0o755); err != nil {
@@ -102,6 +106,7 @@ pub mod error;
 pub mod wire;
 pub mod types;
 pub mod client;
+pub mod auth;
 
 #[cfg(feature = "async")]
 pub mod async_client;

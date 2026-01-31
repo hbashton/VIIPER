@@ -29,6 +29,13 @@ serde_json = "1.0"
 thiserror = "2.0"
 lazy_static = "1.5"
 
+# Authentication and encryption dependencies
+pbkdf2 = { version = "0.12", features = ["simple"] }
+sha2 = "0.10"
+hmac = "0.12"
+chacha20poly1305 = "0.10"
+rand = "0.8"
+
 [dependencies.tokio]
 version = "1.0"
 features = ["net", "io-util", "rt", "time", "macros"]
