@@ -313,16 +313,16 @@ finally
 Full working examples are available in the repository:
 
 - **Virtual Keyboard**: `examples/csharp/virtual_keyboard/Program.cs`
-  - Types "Hello!" every 5 seconds using generated maps
-  - Displays LED feedback in console
+    - Types "Hello!" every 5 seconds using generated maps
+    - Displays LED feedback in console
   
 - **Virtual Mouse**: `examples/csharp/virtual_mouse/Program.cs`
-  - Moves cursor in a circle pattern
-  - Demonstrates button clicks and scroll wheel
+    - Moves cursor in a circle pattern
+    - Demonstrates button clicks and scroll wheel
 
 - **Virtual Xbox360 Controller**: `examples/csharp/virtual_x360_pad/Program.cs`
-  - Presses buttons and moves sticks
-  - Handles rumble feedback
+    - Presses buttons and moves sticks
+    - Handles rumble feedback
 
 ### Running Examples
 
@@ -357,7 +357,6 @@ The generated code uses nullable annotations. You may see warnings like CS8601/C
 - [Go Client Documentation](go.md): Reference implementation patterns
 - [Rust Client Library Documentation](rust.md): Rust client library with sync/async support
 - [TypeScript Client Library Documentation](typescript.md): Node.js client library
-- [C Client Library Documentation](c.md): Alternative client library for native integration
 - [C++ Client Library Documentation](cpp.md): Header-only C++ client library
 - [API Overview](../api/overview.md): Management API reference
 - [Device Documentation](../devices/): Wire formats and device-specific details

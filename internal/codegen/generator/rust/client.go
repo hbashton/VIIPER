@@ -16,17 +16,72 @@ const clientTemplate = `{{.Header}}
 use crate::error::{ProblemJson, ViiperError};
 use crate::types::*;
 use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpStream};
+use std::net::{SocketAddr, TcpStream, Shutdown};
+
+/// Stream wrapper that can be either plain or encrypted
+enum StreamWrapper {
+    Plain(TcpStream),
+    Encrypted(crate::auth::EncryptedStream),
+}
+
+impl StreamWrapper {
+    fn try_clone(&self) -> std::io::Result<Self> {
+        match self {
+            StreamWrapper::Plain(s) => Ok(StreamWrapper::Plain(s.try_clone()?)),
+            StreamWrapper::Encrypted(s) => Ok(StreamWrapper::Encrypted(s.try_clone()?)),
+        }
+    }
+    
+    fn shutdown(&self, how: Shutdown) -> std::io::Result<()> {
+        match self {
+            StreamWrapper::Plain(s) => s.shutdown(how),
+            StreamWrapper::Encrypted(s) => s.shutdown(how),
+        }
+    }
+}
+
+impl Read for StreamWrapper {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            StreamWrapper::Plain(s) => s.read(buf),
+            StreamWrapper::Encrypted(s) => s.read(buf),
+        }
+    }
+}
+
+impl Write for StreamWrapper {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        match self {
+            StreamWrapper::Plain(s) => s.write(buf),
+            StreamWrapper::Encrypted(s) => s.write(buf),
+        }
+    }
+    
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self {
+            StreamWrapper::Plain(s) => s.flush(),
+            StreamWrapper::Encrypted(s) => s.flush(),
+        }
+    }
+}
 
 /// VIIPER management API client (synchronous).
 pub struct ViiperClient {
     addr: SocketAddr,
+    password: Option<String>,
 }
 
 impl ViiperClient {
     /// Create a new VIIPER client connecting to the specified address.
     pub fn new(addr: SocketAddr) -> Self {
-        Self { addr }
+        Self { addr, password: None }
+    }
+
+    /// Create a new VIIPER client with password authentication.
+    /// Empty password string explicitly means no authentication.
+    pub fn new_with_password(addr: SocketAddr, password: String) -> Self {
+        let password = if password.is_empty() { None } else { Some(password) };
+        Self { addr, password }
     }
 
     fn do_request<T: for<'de> serde::Deserialize<'de>>(
@@ -34,8 +89,14 @@ impl ViiperClient {
         path: &str,
         payload: Option<&str>,
     ) -> Result<T, ViiperError> {
-        let mut stream = TcpStream::connect(self.addr)?;
-        stream.set_nodelay(true)?;
+        let tcp_stream = TcpStream::connect(self.addr)?;
+        tcp_stream.set_nodelay(true)?;
+
+        let mut stream = if let Some(ref pwd) = self.password {
+            StreamWrapper::Encrypted(crate::auth::perform_handshake(tcp_stream, pwd)?)
+        } else {
+            StreamWrapper::Plain(tcp_stream)
+        };
 
         stream.write_all(path.as_bytes())?;
         if let Some(p) = payload {
@@ -70,21 +131,28 @@ impl ViiperClient {
 {{end}}{{end}}
     /// Connect to a device stream for sending input and receiving output.
     pub fn connect_device(&self, bus_id: u32, dev_id: &str) -> Result<DeviceStream, ViiperError> {
-        DeviceStream::connect(self.addr, bus_id, dev_id)
+        DeviceStream::connect(self.addr, bus_id, dev_id, self.password.as_deref())
     }
 }
 
 /// A connected device stream for bidirectional communication.
 pub struct DeviceStream {
-    stream: TcpStream,
+    stream: StreamWrapper,
     output_thread: Option<std::thread::JoinHandle<()>>,
     disconnect_callback: Option<Box<dyn FnOnce() + Send + 'static>>,
 }
 
 impl DeviceStream {
-    pub fn connect(addr: SocketAddr, bus_id: u32, dev_id: &str) -> Result<Self, ViiperError> {
-        let mut stream = TcpStream::connect(addr)?;
-		stream.set_nodelay(true)?;
+    pub fn connect(addr: SocketAddr, bus_id: u32, dev_id: &str, password: Option<&str>) -> Result<Self, ViiperError> {
+        let tcp_stream = TcpStream::connect(addr)?;
+		tcp_stream.set_nodelay(true)?;
+		
+		let mut stream = if let Some(pwd) = password {
+		    StreamWrapper::Encrypted(crate::auth::perform_handshake(tcp_stream, pwd)?)
+		} else {
+		    StreamWrapper::Plain(tcp_stream)
+		};
+		
 		let handshake = format!("bus/{}/{}\0", bus_id, dev_id);
         stream.write_all(handshake.as_bytes())?;
         Ok(Self { 

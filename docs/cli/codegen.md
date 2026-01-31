@@ -40,7 +40,7 @@ Output directory for generated client libraries (relative to repository root).
 
 Target language to generate.
 
-**Values:** `c`, `csharp`, `typescript`, `all`  
+**Values:** `csharp`, `typescript`, `all`  
 **Default:** `all`  
 **Environment Variable:** `VIIPER_CODEGEN_LANG`
 
@@ -52,12 +52,10 @@ Target language to generate.
 go run ./cmd/viiper codegen
 ```
 
-### Generate C Client Library and Rebuild Examples
+### Generate a Single Client Library
 
 ```bash
-go run ./cmd/viiper codegen --lang=c
-cd examples/c
-cmake --build build --config Release
+go run ./cmd/viiper codegen --lang=csharp
 ```
 
 ## When to Regenerate

@@ -18,6 +18,20 @@ The server exposes two interfaces:
 1. **USBIP Server** - Standard USBIP protocol for device attachment
 2. **VIIPER API Server** - Management API for device/bus control
 
+!!! warning "Authentication Required for Remote Connections"
+    VIIPER requires **authentication for all remote (non-localhost) connections** to prevent unauthorized device creation.  
+
+    On first start, VIIPER generates a random password
+    and saves it to `<USER_CONFIG_DIR>/viiper.key.txt`.  
+    Windows: `%APPDATA%\VIIPER\viiper.key.txt`  
+    Linux: `~/.config/viiper/viiper.key.txt`
+    
+    - **Localhost clients** (`127.0.0.1`, `::1`): Authentication is optional by default
+    - **Remote clients**: Authentication is required and enforced
+    - All authenticated connections use **ChaCha20-Poly1305 encryption**
+    
+    See the `--api.require-localhost-auth` option below to require authentication for localhost connections.
+
 !!! info "Automatic Local Attachment"
     By default, VIIPER automatically attaches newly created devices to the local USBIP client (localhost only).  
     This means when you create a device via the API, it will be immediately available on the same machine without manual `usbip attach` commands.  
@@ -59,6 +73,22 @@ Disable example:
 
 ```bash
 viiper server --api.auto-attach-local-client=false
+```
+
+### `--api.require-localhost-auth`
+
+Require authentication even for clients connecting from localhost (`127.0.0.1`, `::1`, `localhost`).
+
+By default, localhost clients are exempt from authentication for convenience during local development.  
+Enable this option if you want to enforce authentication for all connections regardless of origin.
+
+**Default:** `false`  
+**Environment Variable:** `VIIPER_API_REQUIRE_LOCALHOST_AUTH`
+
+Enable example:
+
+```bash
+viiper server --api.require-localhost-auth=true
 ```
 
 ### `--connection-timeout`

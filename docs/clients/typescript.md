@@ -340,16 +340,16 @@ try {
 Full working examples are available in the repository:
 
 - **Virtual Keyboard**: `examples/typescript/virtual_keyboard.ts`
-  - Types "Hello!" every 5 seconds using generated maps
-  - Displays LED feedback in console
+    - Types "Hello!" every 5 seconds using generated maps
+    - Displays LED feedback in console
   
 - **Virtual Mouse**: `examples/typescript/virtual_mouse.ts`
-  - Moves cursor diagonally
-  - Demonstrates button clicks and scroll wheel
+    - Moves cursor diagonally
+    - Demonstrates button clicks and scroll wheel
 
 - **Virtual Xbox360 Controller**: `examples/typescript/virtual_x360_pad.ts`
-  - Runs at 60fps with cycling buttons and animated triggers
-  - Handles rumble feedback
+    - Runs at 60fps with cycling buttons and animated triggers
+    - Handles rumble feedback
 
 ### Running Examples
 
@@ -367,7 +367,6 @@ node dist/virtual_keyboard.js localhost:3242
 - [Go Client Documentation](go.md): Reference implementation patterns
 - [C# Client Library Documentation](csharp.md): Alternative managed language client library
 - [Rust Client Library Documentation](rust.md): Rust client library with sync/async support
-- [C Client Library Documentation](c.md): Alternative client library for native integration
 - [C++ Client Library Documentation](cpp.md): Header-only C++ client library
 - [API Overview](../api/overview.md): Management API reference
 - [Device Documentation](../devices/): Wire formats and device-specific details

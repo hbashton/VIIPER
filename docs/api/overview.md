@@ -62,7 +62,6 @@ It's designed to be trivial to drive from any language that can open a TCP socke
 
     - [Go Client](../clients/go.md): Reference implementation included in the repository
     - [Generator Documentation](../clients/generator.md): Information about code generation
-    - [C Client Library](../clients/c.md): Generated C library with type-safe device streams
     - [C++ Client Library](../clients/cpp.md): Header-only C++20 library (requires external JSON parser)
     - [C# Client Library](../clients/csharp.md): Generated .NET library with async/await support
     - [TypeScript Client Library](../clients/typescript.md): Generated Node.js library with EventEmitter streams
@@ -77,8 +76,10 @@ The TCP API is inspired by the ubiquitous HTTP REST style, but is more lightweig
 If you ever worked with HTTP APIs before, you'll feel right at home.  
 The exception to this are the device-control and feedback streams, which are raw binary streams specific to each device type.
 
-- **Transport**: TCP
+- **Transport**: TCP with optional encryption (ChaCha20-Poly1305)
 - **Default listen address**: `:3242` (configurable via `--api.addr`)
+- **Authentication**: Required for remote connections, optional for localhost (password-based with HMAC validation)
+- **Encryption**: Automatic for authenticated connections (ChaCha20-Poly1305 with unique session keys)
 - **Request format**: a single ASCII/UTF‑8 line terminated by `\0`
 - **Routing**: path followed by optional payload separated by whitespace  
   (e.g., `bus/list\0` or `bus/create 5\0`)
@@ -92,6 +93,21 @@ The exception to this are the device-control and feedback streams, which are raw
 
 !!! warning "Connection timing and auto‑cleanup"
     After you add a device with `bus/{id}/add`, you must connect to its streaming endpoint within the configured `DeviceHandlerConnectTimeout` (default: 5s). If no stream connection is established in time, the device is automatically removed. Likewise, when a stream disconnects, a reconnection timer with the same timeout starts; if the client doesn’t reconnect before it expires, the device is removed.
+
+!!! warning "Authentication Required for Remote Connections"
+    **VIIPER requires authentication for all non-localhost connections.**  
+
+    - **Localhost clients** (`127.0.0.1`, `::1`, `localhost`): Authentication is **optional** (but supported) by default
+    - **Remote clients**: Authentication is **required** and enforced
+    
+    On first start, VIIPER generates a random password
+    and saves it to `<USER_CONFIG_DIR>/viiper.key.txt`.  
+    Windows: `%APPDATA%\VIIPER\viiper.key.txt`  
+    Linux: `~/.config/viiper/viiper.key.txt`
+
+    Remote clients must provide this password to establish a connection.  
+
+    See the [Configuration](../cli/configuration.md) documentation for details on password management and the `--api.require-localhost-auth` option.
 
 ## Endpoints
 

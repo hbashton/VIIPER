@@ -24,6 +24,7 @@ All command-line flags have corresponding environment variables for easier deplo
 | `VIIPER_API_ADDR` | `--api.addr` | `:3242` | API server listen address |
 | `VIIPER_API_DEVICE_HANDLER_TIMEOUT` | `--api.device-handler-timeout` | `5s` | Device handler auto-cleanup timeout |
 | `VIIPER_API_AUTO_ATTACH_LOCAL_CLIENT` | `--api.auto-attach-local-client` | `true` | Auto-attach exported devices to local usbip client |
+| `VIIPER_API_REQUIRE_LOCALHOST_AUTH` | `--api.require-localhost-auth` | `false` | Require authentication even for localhost connections |
 | `VIIPER_CONNECTION_TIMEOUT` | `--connection-timeout` | `30s` | Connection operation timeout |
 
 ### Proxy Configuration
@@ -62,6 +63,32 @@ If --config is not provided, VIIPER will search for configuration in this order 
 1. Working directory: server.(json|yaml|yml|toml), proxy.(json|yaml|yml|toml), viiper.(json|yaml|yml|toml), config.(json|yaml|yml|toml)
 2. Platform config directory (see above): server.(json|yaml|yml|toml), proxy.(json|yaml|yml|toml), config.(json|yaml|yml|toml)
 3. Linux system-wide: /etc/viiper/server.(json|yaml|yml|toml), /etc/viiper/proxy.(json|yaml|yml|toml), /etc/viiper/config.(json|yaml|yml|toml)
+
+## Authentication and Security
+
+VIIPER requires authentication for remote (non-localhost) connections
+to prevent unauthorized device creation.  
+
+The password file is _intentionally_ separated from the main configuration
+
+**Password File:** `viiper.key.txt`  
+
+- **Location:**  
+    - **Windows:** `%APPDATA%\viiper\`  
+    - **Linux/macOS:** `~/.config/viiper/`  
+- **Auto-generation:** If the file doesn't exist,  
+VIIPER generates a random 16-character password on first start and displays it in the console
+- **Custom passwords:** You can edit `viiper.key.txt` and replace it with any password of any length
+- **Encryption:** All authenticated connections use fast ChaCha20-Poly1305 encryption with unique session keys
+
+### Localhost Exemption
+
+By default, clients connecting from `localhost`, `127.0.0.1`, or `::1` do NOT require authentication (they can optionally provide it).  
+To require authentication even for localhost connections, use `--api.require-localhost-auth=true`.
+
+### Remote Connections
+
+All remote clients MUST authenticate using the password from `viiper.key.txt`.
 
 ## Configuration Examples
 

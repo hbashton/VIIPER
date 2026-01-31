@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 
-	cgen "github.com/Alia5/VIIPER/internal/codegen/generator/c"
 	"github.com/Alia5/VIIPER/internal/codegen/generator/cpp"
 	"github.com/Alia5/VIIPER/internal/codegen/generator/csharp"
 	"github.com/Alia5/VIIPER/internal/codegen/generator/rust"
@@ -23,7 +22,6 @@ type Generator struct {
 type LanguageGenerator func(logger *slog.Logger, outputDir string, md *meta.Metadata) error
 
 var generators = map[string]LanguageGenerator{
-	"c":          cgen.Generate,
 	"cpp":        cpp.Generate,
 	"csharp":     csharp.Generate,
 	"rust":       rust.Generate,

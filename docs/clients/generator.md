@@ -19,7 +19,6 @@ The VIIPER client generator scans Go source code to extract API routes, device w
 
 ```bash
 go run ./cmd/viiper codegen --lang=all        # Generate all client libraries
-go run ./cmd/viiper codegen --lang=c          # Generate C client library only
 go run ./cmd/viiper codegen --lang=csharp     # Generate C# client library only
 go run ./cmd/viiper codegen --lang=typescript # Generate TypeScript client library only
 ```
@@ -60,7 +59,7 @@ type InputState struct { ... }
 The generator automatically exports all constants and map literals from `/device/*/const.go` for each device type.  
 No special tags are required. Exported Go constants and maps are emitted with language-appropriate representations:
 
-- **Constants**: Grouped into enums (C#/TS) or `#define` macros (C) based on common prefixes
+- **Constants**: Grouped into enums or language-appropriate constants based on common prefixes
 - **Maps**: Converted to Dictionary/Map/lookup functions with helper methods
 
 ## Code Generation Flow
@@ -105,7 +104,6 @@ Each target language emits appropriate types for dynamic arrays (pointers with c
 
 For wire compatibility, all device I/O structs are tightly packed (no padding).
 
-- **C:** `#pragma pack(push, 1)` / `#pragma pack(pop)`
 - **C#:** `[StructLayout(LayoutKind.Sequential, Pack = 1)]`
 - **TypeScript:** Manual byte-level encoding/decoding
 
@@ -119,19 +117,6 @@ type InputState struct {
     Modifiers uint8
     KeyBitmap [32]uint8  // Internal: 256-bit NKR bitmap
 }
-```
-
-**Emitted C struct:**
-
-```c
-#pragma pack(push, 1)
-typedef struct {
-    uint8_t modifiers;
-    uint8_t count;
-    uint8_t* keys;
-    size_t keys_count;
-} viiper_keyboard_input_t;
-#pragma pack(pop)
 ```
 
 ## Example: Constant and Map Export
@@ -153,18 +138,6 @@ var CharToKey = map[byte]byte{
     '\n': KeyEnter,
     // ...
 }
-```
-
-**Emitted C header (`viiper_keyboard.h`):**
-
-```c
-#define VIIPER_KEYBOARD_MOD_LEFT_CTRL 0x1
-#define VIIPER_KEYBOARD_MOD_LEFT_SHIFT 0x2
-#define VIIPER_KEYBOARD_KEY_A 0x4
-#define VIIPER_KEYBOARD_KEY_B 0x5
-
-// Map lookup function
-int viiper_keyboard_char_to_key_lookup(uint8_t key, uint8_t* out_value);
 ```
 
 **Emitted C# (`KeyboardConstants.cs`):**
@@ -214,13 +187,11 @@ Run codegen when any of these change:
 
 ## Language-Specific Notes
 
-- **C**: `#define` macros for constants; switch-based lookup functions for maps; manual memory management for variable-length fields; builds with CMake.  
 - **C#**: Enums for constant groups; `Dictionary<K,V>` with static helper methods for maps; `ViiperDevice` class with `OnOutput` event; async/await for management API; struct packing via attributes.  
 - **TypeScript**: Enums for constant groups; `Record<K, V>` objects with `Get`/`Has` helper functions for maps; manual byte encoding via `BinaryWriter`/`BinaryReader`; `ViiperDevice` class with EventEmitter for output; `addDeviceAndConnect` convenience method; builds with `tsc`.  
 
 ## Further Reading
 
 - [Go Client Documentation](go.md): Go reference client usage
-- [C Client Library Documentation](c.md): C-specific usage, build, and examples
 - [C# Client Library Documentation](csharp.md): C#-specific usage, async patterns, and map helpers
 - [TypeScript Client Library Documentation](typescript.md): TypeScript-specific usage, EventEmitter patterns, and examples

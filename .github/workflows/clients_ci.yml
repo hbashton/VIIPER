@@ -148,47 +148,6 @@ jobs:
                   path: artifacts/nuget/*.nupkg
                   if-no-files-found: error
 
-    c-sdk:
-        name: C Client Library
-        needs: codegen
-        runs-on: ubuntu-latest
-        steps:
-            - name: Checkout
-              uses: actions/checkout@v4
-
-            - name: Download generated clients
-              uses: actions/download-artifact@v4
-              with:
-                  name: generated-clients
-                  path: clients/
-
-            - name: Set up CMake
-              uses: jwlawson/actions-setup-cmake@v2
-              with:
-                  cmake-version: "3.26.x"
-
-            - name: Build C Client Library
-              run: |
-                  cmake -S clients/c -B clients/c/build
-                  cmake --build clients/c/build --config Release --parallel
-
-            - name: Build C examples (smoke)
-              run: |
-                  cmake -S examples/c -B examples/c/build
-                  cmake --build examples/c/build --config Release --parallel
-
-            - name: Archive C Client Library source
-              if: ${{ inputs.upload_artifacts }}
-              run: tar -czf c-client-library-source${{ inputs.artifact_suffix }}.tar.gz -C clients/c --exclude='build' .
-
-            - name: Upload C Client Library source
-              if: ${{ inputs.upload_artifacts }}
-              uses: actions/upload-artifact@v4
-              with:
-                  name: c-client-library-source${{ inputs.artifact_suffix }}
-                  path: c-client-library-source${{ inputs.artifact_suffix }}.tar.gz
-                  if-no-files-found: error
-
     cpp-sdk:
         name: C++ Client Library
         needs: codegen
@@ -207,6 +166,11 @@ jobs:
               uses: jwlawson/actions-setup-cmake@v2
               with:
                   cmake-version: "3.26.x"
+
+            - name: Install OpenSSL (libssl-dev)
+              run: |
+                  sudo apt-get update
+                  sudo apt-get install -y libssl-dev
 
             - name: Build C++ examples (smoke)
               run: |
