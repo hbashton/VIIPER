@@ -69,7 +69,6 @@ nav:
   - API & Clients:
     - API Overview: api/overview.md
     - Go Client: clients/go.md
-    - C Client Library: clients/c.md
     - C++ Client Library: clients/cpp.md
     - C# Client Library: clients/csharp.md
     - Rust Client Library: clients/rust.md

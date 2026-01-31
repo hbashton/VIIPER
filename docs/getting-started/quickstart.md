@@ -53,11 +53,10 @@ Choose the method that works best for you.
 
 ### Option 1: Using Client Libraries (Recommended)
 
-Client libraries are (at time of writing) available for C, C++, C#, Go, Rust, and TypeScript. They handle the protocol details automatically, providing type-safe interfaces and device-specific helpers.
+Client libraries are (at time of writing) available for C++, C#, Go, Rust, and TypeScript. They handle the protocol details automatically, providing type-safe interfaces and device-specific helpers.
 
 For complete client library documentation and code examples, see:
 
-- [C Client Library Documentation](../clients/c.md)
 - [C++ Client Library Documentation](../clients/cpp.md)
 - [C# Client Library Documentation](../clients/csharp.md)
 - [TypeScript Client Library Documentation](../clients/typescript.md)
@@ -191,7 +190,7 @@ For a complete list of supported devices, their specifications, and wire protoco
 
 Now that you have a working setup:
 
-1. **Explore Examples**: Check the `examples/` directory for complete working programs in C, C#, Go, and TypeScript
+1. **Explore Examples**: Check the `examples/` directory for complete working programs in C#, Go, Rust, TypeScript, and C++
 2. **Read API Documentation**: Learn about all available [API commands](../api/overview.md)
 3. **Choose a Client Library**: Pick a [client library](../clients/generator.md) for your preferred language
 4. **Review Device Specs**: Understand device-specific protocols in [Devices](../devices/keyboard.md)

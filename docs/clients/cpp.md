@@ -441,7 +441,6 @@ viiper server --api-addr localhost:3242
 ## See Also
 
 - [Generator Documentation](generator.md): How generated client libraries work
-- [C Client Library Documentation](c.md): Pure C alternative
 - [Rust Client Library Documentation](rust.md): Rust client library with sync/async support
 - [C# Client Library Documentation](csharp.md): .NET client library
 - [TypeScript Client Library Documentation](typescript.md): Node.js client library

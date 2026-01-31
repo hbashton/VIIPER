@@ -393,19 +393,19 @@ viiper-client = { version = "0.1", features = ["async"] }
 Full working examples are available in the repository:
 
 - **Virtual Keyboard (sync)**: `examples/rust/sync/virtual_keyboard/`
-  - Types "Hello!" every 5 seconds using generated maps
-  - Displays LED feedback in console
+    - Types "Hello!" every 5 seconds using generated maps
+    - Displays LED feedback in console
   
 - **Virtual Keyboard (async)**: `examples/rust/async/virtual_keyboard/`
-  - Async version using Tokio runtime
+    - Async version using Tokio runtime
 
 - **Virtual Mouse (sync/async)**: `examples/rust/sync/virtual_mouse/`, `examples/rust/async/virtual_mouse/`
-  - Moves cursor diagonally
-  - Demonstrates button clicks and scroll wheel
+    - Moves cursor diagonally
+    - Demonstrates button clicks and scroll wheel
 
 - **Virtual Xbox360 Controller (sync/async)**: `examples/rust/sync/virtual_x360_pad/`, `examples/rust/async/virtual_x360_pad/`
-  - Cycles through buttons
-  - Handles rumble feedback
+    - Cycles through buttons
+    - Handles rumble feedback
 
 ## See Also
 
@@ -413,7 +413,6 @@ Full working examples are available in the repository:
 - [Go Client Documentation](go.md): Reference implementation patterns
 - [C# Client Library Documentation](csharp.md): Alternative managed language client library
 - [TypeScript Client Library Documentation](typescript.md): Node.js client library
-- [C Client Library Documentation](c.md): Native C client library
 - [C++ Client Library Documentation](cpp.md): Header-only C++ client library
 - [API Overview](../api/overview.md): Management API reference
 - [Device Documentation](../devices/): Wire formats and device-specific details

@@ -62,7 +62,6 @@ It's designed to be trivial to drive from any language that can open a TCP socke
 
     - [Go Client](../clients/go.md): Reference implementation included in the repository
     - [Generator Documentation](../clients/generator.md): Information about code generation
-    - [C Client Library](../clients/c.md): Generated C library with type-safe device streams
     - [C++ Client Library](../clients/cpp.md): Header-only C++20 library (requires external JSON parser)
     - [C# Client Library](../clients/csharp.md): Generated .NET library with async/await support
     - [TypeScript Client Library](../clients/typescript.md): Generated Node.js library with EventEmitter streams
