@@ -48,6 +48,10 @@ func Generate(logger *slog.Logger, outputDir string, md *meta.Metadata) error {
 		return err
 	}
 
+	if err := generateAuthHeader(logger, detailDir); err != nil {
+		return err
+	}
+
 	if err := generateClient(logger, includeDir, md); err != nil {
 		return err
 	}

@@ -20,6 +20,7 @@ const clientTemplate = `{{.Header}}
 #include "device.hpp"
 #include "detail/socket.hpp"
 #include "detail/json.hpp"
+#include "detail/auth.hpp"
 #include <string>
 #include <memory>
 #include <sstream>
@@ -33,8 +34,8 @@ namespace viiper {
 
 class ViiperClient {
 public:
-    ViiperClient(std::string host, std::uint16_t port = 3242)
-        : host_(std::move(host)), port_(port) {}
+    ViiperClient(std::string host, std::uint16_t port = 3242, std::string password = "")
+        : host_(std::move(host)), port_(port), password_(std::move(password)) {}
 
     ~ViiperClient() = default;
 
@@ -45,6 +46,7 @@ public:
 
     [[nodiscard]] const std::string& host() const noexcept { return host_; }
     [[nodiscard]] std::uint16_t port() const noexcept { return port_; }
+    [[nodiscard]] const std::string& password() const noexcept { return password_; }
 
     // ========================================================================
     // Management API Methods (all return Result<T>)
@@ -74,10 +76,22 @@ public:
         if (conn_result.is_error()) return conn_result.error();
 
         std::string handshake = "bus/" + std::to_string(bus_id) + "/" + dev_id + '\0';
-        auto send_result = socket.send(handshake);
-        if (send_result.is_error()) return send_result.error();
 
-        return std::unique_ptr<ViiperDevice>(new ViiperDevice(std::move(socket)));
+        if (!password_.empty()) {
+            auto handshake_result = detail::perform_handshake(std::move(socket), password_);
+            if (handshake_result.is_error()) return handshake_result.error();
+            
+            auto encrypted_socket = std::move(handshake_result.value());
+            auto send_result = encrypted_socket->send(handshake);
+            if (send_result.is_error()) return send_result.error();
+            
+            return std::unique_ptr<ViiperDevice>(new ViiperDevice(std::move(encrypted_socket)));
+        } else {
+            auto send_result = socket.send(handshake);
+            if (send_result.is_error()) return send_result.error();
+
+            return std::unique_ptr<ViiperDevice>(new ViiperDevice(std::move(socket)));
+        }
     }
 
     /// Create a device and connect to its stream in one step
@@ -109,13 +123,27 @@ private:
         }
         request += '\0';
 
-        auto send_result = socket.send(request);
-        if (send_result.is_error()) return send_result.error();
+        if (!password_.empty()) {
+            auto handshake_result = detail::perform_handshake(std::move(socket), password_);
+            if (handshake_result.is_error()) return handshake_result.error();
+            
+            auto encrypted_socket = std::move(handshake_result.value());
+            auto send_result = encrypted_socket->send(request);
+            if (send_result.is_error()) return send_result.error();
 
-        auto recv_result = socket.recv_line();
-        if (recv_result.is_error()) return recv_result.error();
+            auto recv_result = encrypted_socket->recv_line();
+            if (recv_result.is_error()) return recv_result.error();
 
-        return detail::parse_json_response(recv_result.value());
+            return detail::parse_json_response(recv_result.value());
+        } else {
+            auto send_result = socket.send(request);
+            if (send_result.is_error()) return send_result.error();
+
+            auto recv_result = socket.recv_line();
+            if (recv_result.is_error()) return recv_result.error();
+
+            return detail::parse_json_response(recv_result.value());
+        }
     }
 
     static std::string format_path(const std::string& pattern,
@@ -133,6 +161,7 @@ private:
 
     std::string host_;
     std::uint16_t port_;
+    std::string password_;
     mutable std::mutex request_mutex_;
 };
 

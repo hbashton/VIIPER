@@ -25,9 +25,12 @@ FetchContent_Declare(json
 )
 FetchContent_MakeAvailable(json)
 
+find_package(OpenSSL REQUIRED)
+
 # Create interface library for VIIPER includes
 add_library(viiper_sdk INTERFACE)
 target_include_directories(viiper_sdk INTERFACE ${VIIPER_INCLUDE_DIR})
+target_link_libraries(viiper_sdk INTERFACE OpenSSL::SSL OpenSSL::Crypto)
 target_link_libraries(viiper_sdk INTERFACE nlohmann_json::nlohmann_json)
 
 # Example: virtual_keyboard

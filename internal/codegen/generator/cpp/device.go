@@ -17,6 +17,7 @@ const deviceTemplate = `// Auto-generated VIIPER C++ Client Library
 #include "config.hpp"
 #include "error.hpp"
 #include "detail/socket.hpp"
+#include "detail/auth_impl.hpp"
 #include <string>
 #include <memory>
 #include <functional>
@@ -24,6 +25,7 @@ const deviceTemplate = `// Auto-generated VIIPER C++ Client Library
 #include <atomic>
 #include <mutex>
 #include <concepts>
+#include <variant>
 
 namespace viiper {
 
@@ -59,12 +61,24 @@ public:
     Result<void> send(const T& input) {
         std::lock_guard<std::mutex> lock(send_mutex_);
         auto bytes = input.to_bytes();
-        return socket_.send(bytes.data(), bytes.size());
+        return std::visit([&](auto& sock) -> Result<void> {
+            if constexpr (std::is_same_v<std::decay_t<decltype(sock)>, std::unique_ptr<detail::EncryptedSocket>>) {
+                return sock->send(bytes.data(), bytes.size());
+            } else {
+                return sock.send(bytes.data(), bytes.size());
+            }
+        }, socket_);
     }
 
     Result<void> send_raw(const std::uint8_t* data, std::size_t size) {
         std::lock_guard<std::mutex> lock(send_mutex_);
-        return socket_.send(data, size);
+        return std::visit([&](auto& sock) -> Result<void> {
+            if constexpr (std::is_same_v<std::decay_t<decltype(sock)>, std::unique_ptr<detail::EncryptedSocket>>) {
+                return sock->send(data, size);
+            } else {
+                return sock.send(data, size);
+            }
+        }, socket_);
     }
 
     // ========================================================================
@@ -86,7 +100,14 @@ public:
             auto buffer = std::make_unique<std::uint8_t[]>(output_buffer_size_);
 
             while (running_) {
-                auto recv_result = socket_.recv(buffer.get(), output_buffer_size_);
+                auto recv_result = std::visit([&](auto& sock) -> Result<std::size_t> {
+                    if constexpr (std::is_same_v<std::decay_t<decltype(sock)>, std::unique_ptr<detail::EncryptedSocket>>) {
+                        return sock->recv(buffer.get(), output_buffer_size_);
+                    } else {
+                        return sock.recv(buffer.get(), output_buffer_size_);
+                    }
+                }, socket_);
+                
                 if (recv_result.is_error()) {
                     if (error_callback_) {
                         error_callback_(recv_result.error());
@@ -128,21 +149,36 @@ public:
 
     void stop() {
         running_ = false;
-        socket_.force_close();
+        std::visit([](auto& sock) {
+            if constexpr (std::is_same_v<std::decay_t<decltype(sock)>, std::unique_ptr<detail::EncryptedSocket>>) {
+                sock->force_close();
+            } else {
+                sock.force_close();
+            }
+        }, socket_);
         if (output_thread_.joinable()) {
             output_thread_.join();
         }
     }
 
     [[nodiscard]] bool is_connected() const noexcept {
-        return running_.load() && socket_.is_valid();
+        return running_.load() && std::visit([](const auto& sock) -> bool {
+            if constexpr (std::is_same_v<std::decay_t<decltype(sock)>, std::unique_ptr<detail::EncryptedSocket>>) {
+                return sock->is_valid();
+            } else {
+                return sock.is_valid();
+            }
+        }, socket_);
     }
 
     explicit ViiperDevice(detail::Socket socket)
         : socket_(std::move(socket)), running_(false), output_buffer_size_(0) {}
 
+    explicit ViiperDevice(std::unique_ptr<detail::EncryptedSocket> encrypted_socket)
+        : socket_(std::move(encrypted_socket)), running_(false), output_buffer_size_(0) {}
+
 private:
-    detail::Socket socket_;
+    std::variant<detail::Socket, std::unique_ptr<detail::EncryptedSocket>> socket_;
     std::atomic<bool> running_;
     std::size_t output_buffer_size_;
     OutputCallback output_callback_;

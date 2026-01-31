@@ -16,6 +16,10 @@ The C++ client library features:
 
     **Recommended**: [nlohmann/json](https://github.com/nlohmann/json) - a header-only JSON library that can be easily integrated.
 
+!!! warning "OpenSSL Required"
+    The C++ client library requires OpenSSL for encrypted connections to VIIPER servers with authentication enabled.  
+    Ensure OpenSSL is installed and linked in your project.
+
 !!! note "License"
     The C++ client library is licensed under the **MIT License**, providing maximum flexibility for integration into your projects.  
     The core VIIPER server remains under its original license.
@@ -376,16 +380,16 @@ auto buses = client.buslist().value();
 Full working examples are available in the repository:
 
 - **Virtual Keyboard**: `examples/cpp/virtual_keyboard.cpp`
-  - Types "Hello!" every 5 seconds using generated maps
-  - Displays LED feedback in console
+    - Types "Hello!" every 5 seconds using generated maps
+    - Displays LED feedback in console
   
 - **Virtual Mouse**: `examples/cpp/virtual_mouse.cpp`
-  - Moves cursor in a circle pattern
-  - Demonstrates button clicks
+    - Moves cursor in a circle pattern
+    - Demonstrates button clicks
 
 - **Virtual Xbox360 Controller**: `examples/cpp/virtual_x360_pad.cpp`
-  - Cycles through buttons A, B, X, Y
-  - Handles rumble feedback
+    - Cycles through buttons A, B, X, Y
+    - Handles rumble feedback
 
 ### Building Examples
 

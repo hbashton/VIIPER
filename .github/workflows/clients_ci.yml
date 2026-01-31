@@ -208,6 +208,11 @@ jobs:
               with:
                   cmake-version: "3.26.x"
 
+            - name: Install OpenSSL (libssl-dev)
+              run: |
+                  sudo apt-get update
+                  sudo apt-get install -y libssl-dev
+
             - name: Build C++ examples (smoke)
               run: |
                   cmake -S examples/cpp -B examples/cpp/build -DCMAKE_BUILD_TYPE=Release
