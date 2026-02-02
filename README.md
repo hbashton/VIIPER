@@ -40,23 +40,13 @@ For more information, see [FAQ](#why-is-this-a-standalone-executable-that-i-have
 
 Beyond device emulation, VIIPER can proxy real USB devices for traffic inspection and reverse engineering.
 
-### ✨🛣️ Features / Roadmap
+**Emulatable devices:**
 
-- ✅ Virtual input device emulation over IP using USBIP
-    - ✅ Xbox 360 controller emulation; see [Devices › Xbox 360 Controller](docs/devices/xbox360.md)
-    - ✅ HID Keyboard with N-key rollover and LED feedback; see [Devices › Keyboard](docs/devices/keyboard.md)
-    - ✅ HID Mouse with 5 buttons and horizontal/vertical wheel; see [Devices › Mouse](docs/devices/mouse.md)
-    - ✅ PS4 controller emulation; see [Devices › DualShock 4 Controller](docs/devices/dualshock4.md)
-    - 🔜 Xbox One / Series(?) controller emulation
-    - 🔜 ???  
-    🔜 Future plugin system allows for more device types (other gamepads, specialized HID)
-- ✅ **Automatic local attachment**: automatically controls usbip client on localhost to attach devices (enabled by default)
-- ✅ Proxy mode: forward real USB devices and inspect/record traffic (for reversing)
-- ✅ Cross-platform: works on Linux and Windows, **0** dependencies portable binary
-- ✅ Flexible logging (including raw USB packet logs)
-- ✅ Multiple client libraries for easy integration; see [Client Libraries](docs/api/overview.md)  
-  MIT Licensed
-- 🔜 _libVIIPER_ to link against, directly incoporating VIIPER into your feeder application.  
+   -  Xbox 360 controller emulation; see [Devices › Xbox 360 Controller](docs/devices/xbox360.md)
+   -  HID Keyboard with N-key rollover and LED feedback; see [Devices › Keyboard](docs/devices/keyboard.md)
+   -  HID Mouse with 5 buttons and horizontal/vertical wheel; see [Devices › Mouse](docs/devices/mouse.md)
+   -  PS4 controller emulation; see [Devices › DualShock 4 Controller](docs/devices/dualshock4.md)
+   - 🔜 Future plugin system allows for more device types (other gamepads, specialized HID)
 
 ## 🔌 Requirements
 
@@ -180,10 +170,10 @@ Yes! VIIPER's architecture is designed to be extensible.
 Check the [xbox360 device implementation](./device/xbox360/) as a reference for creating new device types.  
 In the future there will be a plugin system to load and expose device types dynamically.
 
-### What about the proxy mode?
+### You mentioned proxying USBIP?
 
-Proxy mode sits between a USBIP client and a USBIP server (like a Linux machine sharing real USB devices).  
-VIIPER intercepts and logs all USB traffic passing through, without handling the devices directly.  
+VIIPER as a proxy mode that sits between a USBIP client and a USBIP server (like a Linux machine sharing real USB devices).  
+THis intercepts and logs all URBs passing through, without handling the devices directly.  
 Useful for reverse engineering USB protocols and understanding how devices communicate.
 
 ### What about TCP overhead or input latency performance?
