@@ -225,3 +225,29 @@ func (x *Xbox360) GetDescriptor() *usb.Descriptor {
 func (x *Xbox360) GetDeviceSpecificArgs() map[string]any {
 	return map[string]any{"subType": x.descriptor.Interfaces[0].ClassDescriptors[0].Payload[2]}
 }
+
+
+func (x *Xbox360) HandleControl(bmRequestType, bRequest uint8, wValue, wIndex, wLength uint16, _ []byte) ([]byte, bool) {
+	if bmRequestType == 0xC1 && bRequest == 0x01 && wValue == 0x0100 {
+		subType := x.descriptor.Interfaces[0].ClassDescriptors[0].Payload[2]
+		var extra [6]byte
+		switch subType {
+		case 0x01: // standard gamepad: vibration motor capabilities
+			extra = [6]byte{0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00}
+		default: // drums, guitars, etc.: all extended bytes declared capable
+			extra = [6]byte{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}
+		}
+		return []byte{
+			0x00, 0x14, // report ID, size
+			0xFF, 0xFF, // all buttons supported
+			0xFF,       // LT 
+			0xFF,       // RT
+			0xFF, 0x7F, // LX
+			0xFF, 0x7F, // LY
+			0xFF, 0x7F, // RX 
+			0xFF, 0x7F, // RY
+			extra[0], extra[1], extra[2], extra[3], extra[4], extra[5],
+		}, true
+	}
+	return nil, false
+}
