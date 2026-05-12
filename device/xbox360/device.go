@@ -210,7 +210,7 @@ func MakeDescriptor() usb.Descriptor {
 			},
 		},
 		Strings: map[uint8]string{
-			0: "\x04\x09", // LangID: en-US (0x0409)
+			0: "\u0409", // LangID: en-US (0x0409)
 			1: "©Microsoft Corporation",
 			2: "VIIPER Controller", //"Controller",
 			3: "296013F",
