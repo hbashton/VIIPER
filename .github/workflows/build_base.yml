@@ -35,6 +35,12 @@ jobs:
             - name: Setup just
               uses: extractions/setup-just@v3
 
+            - name: Install goversioninfo (Windows)
+              if: ${{ matrix.target.goos == 'windows' }}
+              shell: pwsh
+              run: |
+                  go install github.com/josephspurrier/goversioninfo/cmd/goversioninfo@v1.7.0
+
             - name: Show Go version
               run: go version
 
@@ -56,16 +62,16 @@ jobs:
 
     build:
         name: Build binaries (${{ matrix.target.goos }}/${{ matrix.target.goarch }})
-        runs-on: ubuntu-latest
+        runs-on: ${{ matrix.target.runner }}
         needs: test
         strategy:
             fail-fast: false
             matrix:
                 target:
-                    - { goos: linux, goarch: amd64, ext: "" }
-                    - { goos: linux, goarch: arm64, ext: "" }
-                    - { goos: windows, goarch: amd64, ext: ".exe" }
-                    - { goos: windows, goarch: arm64, ext: ".exe" }
+                    - { goos: linux, goarch: amd64, ext: "", runner: ubuntu-latest }
+                    - { goos: linux, goarch: arm64, ext: "", runner: ubuntu-latest }
+                    - { goos: windows, goarch: amd64, ext: ".exe", runner: windows-latest }
+                    - { goos: windows, goarch: arm64, ext: ".exe", runner: windows-latest }
         steps:
             - name: Checkout code
               uses: actions/checkout@v6
@@ -83,6 +89,11 @@ jobs:
             - name: Setup just
               uses: extractions/setup-just@v3
 
+            - name: Install goversioninfo
+              shell: pwsh
+              run: |
+                  go install github.com/josephspurrier/goversioninfo/cmd/goversioninfo@v1.7.0
+
             - name: Build
               env:
                   GOOS: ${{ matrix.target.goos }}
@@ -92,7 +103,6 @@ jobs:
                   OUTPUT_NAME: viiper-${{ matrix.target.goos }}-${{ matrix.target.goarch }}${{ matrix.target.ext }}
               run: |
                   just build Release
-                  ls -la dist
 
             - name: Upload artifact
               if: ${{ inputs.upload_artifacts }}
