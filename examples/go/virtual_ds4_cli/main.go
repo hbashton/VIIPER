@@ -14,8 +14,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Alia5/VIIPER/apiclient"
 	"github.com/Alia5/VIIPER/device/dualshock4"
+	"github.com/Alia5/VIIPER/viiperclient"
 )
 
 // Usage:
@@ -51,7 +51,7 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	api := apiclient.New(addr)
+	api := viiperclient.New(addr)
 
 	busesResp, err := api.BusListCtx(ctx)
 	if err != nil {
@@ -88,9 +88,9 @@ func main() {
 		}
 		os.Exit(1)
 	}
-	defer stream.Close()
+	defer stream.Close() //nolint:errcheck
 
-	fmt.Printf("Connected to DualShock 4 device %s on bus %d\n", addResp.DevId, addResp.BusID)
+	fmt.Printf("Connected to DualShock 4 device %s on bus %d\n", addResp.DevID, addResp.BusID)
 
 	defer func() {
 		if _, err := api.DeviceRemoveCtx(ctx, stream.BusID, stream.DevID); err != nil {
@@ -248,7 +248,7 @@ func main() {
 			after := box.state
 			box.timers[id] = time.AfterFunc(dur, func() {
 				box.mu.Lock()
-				_ = revertKey(&box.state, id, before, after)
+				revertKey(&box.state, id, before, after)
 				box.mu.Unlock()
 			})
 		}
@@ -529,25 +529,25 @@ func applyKeyValue(st *dualshock4.InputState, key string, val string) error {
 		if err != nil {
 			return err
 		}
-		setButton(uint16(dualshock4.ButtonSquare), on)
+		setButton((dualshock4.ButtonSquare), on)
 	case "cross", "x":
 		on, err := parseBool()
 		if err != nil {
 			return err
 		}
-		setButton(uint16(dualshock4.ButtonCross), on)
+		setButton((dualshock4.ButtonCross), on)
 	case "circle":
 		on, err := parseBool()
 		if err != nil {
 			return err
 		}
-		setButton(uint16(dualshock4.ButtonCircle), on)
+		setButton((dualshock4.ButtonCircle), on)
 	case "triangle":
 		on, err := parseBool()
 		if err != nil {
 			return err
 		}
-		setButton(uint16(dualshock4.ButtonTriangle), on)
+		setButton((dualshock4.ButtonTriangle), on)
 
 	case "l1":
 		on, err := parseBool()
@@ -629,7 +629,7 @@ func applyKeyValue(st *dualshock4.InputState, key string, val string) error {
 	return nil
 }
 
-func revertKey(st *dualshock4.InputState, key string, before dualshock4.InputState, after dualshock4.InputState) error {
+func revertKey(st *dualshock4.InputState, key string, before dualshock4.InputState, after dualshock4.InputState) {
 	switch key {
 	case "lx":
 		st.LX = before.LX
@@ -678,5 +678,4 @@ func revertKey(st *dualshock4.InputState, key string, before dualshock4.InputSta
 	default:
 		_ = after
 	}
-	return nil
 }

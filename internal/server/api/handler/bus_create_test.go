@@ -5,11 +5,11 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/Alia5/VIIPER/apiclient"
 	handlerTest "github.com/Alia5/VIIPER/internal/_testing"
 	"github.com/Alia5/VIIPER/internal/server/api"
 	"github.com/Alia5/VIIPER/internal/server/api/handler"
 	"github.com/Alia5/VIIPER/internal/server/usb"
+	"github.com/Alia5/VIIPER/viiperclient"
 	"github.com/Alia5/VIIPER/virtualbus"
 )
 
@@ -29,7 +29,7 @@ func TestBusCreate(t *testing.T) {
 		{
 			name: "duplicate bus",
 			setup: func(t *testing.T, s *usb.Server) {
-				b, err := virtualbus.NewWithBusId(60002)
+				b, err := virtualbus.NewWithBusID(60002)
 				if err != nil {
 					t.Fatalf("create bus failed: %v", err)
 				}
@@ -43,7 +43,7 @@ func TestBusCreate(t *testing.T) {
 		{
 			name: "create after remove allows reuse",
 			setup: func(t *testing.T, s *usb.Server) {
-				b, err := virtualbus.NewWithBusId(60003)
+				b, err := virtualbus.NewWithBusID(60003)
 				if err != nil {
 					t.Fatalf("create bus failed: %v", err)
 				}
@@ -83,7 +83,7 @@ func TestBusCreate(t *testing.T) {
 				r.Register("bus/create", handler.BusCreate(s))
 			})
 			defer done()
-			c := apiclient.NewTransport(addr)
+			c := viiperclient.NewTransport(addr)
 			if tt.setup != nil {
 				tt.setup(t, srv)
 			}

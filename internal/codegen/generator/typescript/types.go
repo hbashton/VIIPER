@@ -43,7 +43,7 @@ func generateTypes(logger *slog.Logger, typesDir string, md *meta.Metadata) erro
 	if err != nil {
 		return fmt.Errorf("create file: %w", err)
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck
 	data := struct{ DTOs interface{} }{DTOs: md.DTOs}
 	if err := tmpl.Execute(f, data); err != nil {
 		return fmt.Errorf("execute template: %w", err)

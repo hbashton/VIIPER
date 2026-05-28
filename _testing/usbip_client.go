@@ -61,7 +61,7 @@ func (c *TestUsbIpClient) ListDevices() ([]Device, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer conn.Close()
+	defer conn.Close() //nolint:errcheck
 
 	if err := (&usbip.MgmtHeader{Version: usbip.Version, Command: usbip.OpReqDevlist}).Write(conn); err != nil {
 		return nil, err

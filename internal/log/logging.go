@@ -154,7 +154,7 @@ func (h *colorHandler) Handle(_ context.Context, r slog.Record) error {
 		color = "\033[0m"
 	}
 	buf.WriteString(color)
-	buf.WriteString(fmt.Sprintf("%5s", r.Level.String()))
+	fmt.Fprintf(&buf, "%5s", r.Level.String())
 	buf.WriteString("\033[0m")
 
 	buf.WriteString(" ")

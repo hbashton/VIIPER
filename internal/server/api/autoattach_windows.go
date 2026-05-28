@@ -24,18 +24,18 @@ var (
 )
 
 const (
-	DIGCF_PRESENT         = 0x00000002
-	DIGCF_DEVICEINTERFACE = 0x00000010
+	DigcfPresent         = 0x00000002
+	DigcfDeviceInterface = 0x00000010
 )
 
-type SP_DEVICE_INTERFACE_DATA struct {
+type SpDeviceInterfaceData struct {
 	CbSize             uint32
-	InterfaceClassGuid windows.GUID
+	InterfaceClassGUID windows.GUID
 	Flags              uint32
 	Reserved           uintptr
 }
 
-type SP_DEVICE_INTERFACE_DETAIL_DATA struct {
+type SpDeviceInterfaceDetailData struct {
 	CbSize     uint32
 	DevicePath [1]uint16
 }
@@ -77,18 +77,18 @@ func attachLocalhostClientImpl(ctx context.Context, deviceExportMeta *usbip.Expo
 	return attachViaCommand(ctx, deviceExportMeta, usbipServerPort, logger)
 }
 
-func attachViaIOCTL(ctx context.Context, deviceExportMeta *usbip.ExportMeta, usbipServerPort uint16, logger *slog.Logger) error {
+func attachViaIOCTL(_ context.Context, deviceExportMeta *usbip.ExportMeta, usbipServerPort uint16, logger *slog.Logger) error {
 	logger.Info("Auto-attaching localhost client via native IOCTL",
-		"busID", deviceExportMeta.BusId,
-		"deviceID", deviceExportMeta.DevId)
+		"busID", deviceExportMeta.BusID,
+		"deviceID", deviceExportMeta.DevID)
 
 	if usbipServerPort == 0 {
-		return fmt.Errorf("ArgumentValidation: invalid TCP port number (0)")
+		return fmt.Errorf("argumentValidation: invalid TCP port number (0)")
 	}
 
 	devicePath, err := getDeviceInterfacePath(&deviceGUID)
 	if err != nil {
-		return fmt.Errorf("Discovery: %w", err)
+		return fmt.Errorf("discovery: %w", err)
 	}
 
 	logger.Debug("Found usbip-win2 device", "path", devicePath)
@@ -96,22 +96,22 @@ func attachViaIOCTL(ctx context.Context, deviceExportMeta *usbip.ExportMeta, usb
 	var ioctlData attachIOCTL
 	ioctlData.Size = uint32(unsafe.Sizeof(ioctlData))
 
-	busID := fmt.Sprintf("%d-%d", deviceExportMeta.BusId, deviceExportMeta.DevId)
+	busID := fmt.Sprintf("%d-%d", deviceExportMeta.BusID, deviceExportMeta.DevID)
 	if len(busID) >= len(ioctlData.BusID) {
-		return fmt.Errorf("ArgumentValidation: bus ID too long: %s", busID)
+		return fmt.Errorf("argumentValidation: bus ID too long: %s", busID)
 	}
 	copy(ioctlData.BusID[:], busID)
 
 	service := fmt.Sprintf("%d", usbipServerPort)
 	if len(service) >= len(ioctlData.Service) {
-		return fmt.Errorf("ArgumentValidation: service string too long: %s", service)
+		return fmt.Errorf("argumentValidation: service string too long: %s", service)
 	}
 	copy(ioctlData.Service[:], service)
 	copy(ioctlData.Host[:], "localhost")
 
 	devicePathUTF16, err := windows.UTF16PtrFromString(devicePath)
 	if err != nil {
-		return fmt.Errorf("Open: failed to convert device path: %w", err)
+		return fmt.Errorf("open: failed to convert device path: %w", err)
 	}
 
 	handle, err := windows.CreateFile(
@@ -124,9 +124,9 @@ func attachViaIOCTL(ctx context.Context, deviceExportMeta *usbip.ExportMeta, usb
 		0,
 	)
 	if err != nil {
-		return fmt.Errorf("Open: failed to open usbip-win2 device: %w", err)
+		return fmt.Errorf("open: failed to open usbip-win2 device: %w", err)
 	}
-	defer windows.CloseHandle(handle)
+	defer windows.CloseHandle(handle) // nolint
 
 	logger.Debug("Opened device handle")
 
@@ -152,15 +152,15 @@ func attachViaIOCTL(ctx context.Context, deviceExportMeta *usbip.ExportMeta, usb
 	}
 
 	logger.Info("Successfully attached device via IOCTL",
-		"busID", deviceExportMeta.BusId,
-		"deviceID", deviceExportMeta.DevId,
+		"busID", deviceExportMeta.BusID,
+		"deviceID", deviceExportMeta.DevID,
 		"usbPort", ioctlData.PortOutput)
 
 	return nil
 }
 
 func attachViaCommand(ctx context.Context, deviceExportMeta *usbip.ExportMeta, usbipServerPort uint16, logger *slog.Logger) error {
-	logger.Info("Auto-attaching localhost client", "busID", deviceExportMeta.BusId, "deviceID", deviceExportMeta.DevId)
+	logger.Info("Auto-attaching localhost client", "busID", deviceExportMeta.BusID, "deviceID", deviceExportMeta.DevID)
 
 	cmd := exec.CommandContext(
 		ctx,
@@ -169,7 +169,7 @@ func attachViaCommand(ctx context.Context, deviceExportMeta *usbip.ExportMeta, u
 		strconv.FormatUint(uint64(usbipServerPort), 10),
 		"attach",
 		"-r", "localhost",
-		"-b", fmt.Sprintf("%d-%d", deviceExportMeta.BusId, deviceExportMeta.DevId),
+		"-b", fmt.Sprintf("%d-%d", deviceExportMeta.BusID, deviceExportMeta.DevID),
 	)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -189,20 +189,23 @@ func getDeviceInterfacePath(guid *windows.GUID) (string, error) {
 		uintptr(unsafe.Pointer(guid)),
 		0,
 		0,
-		uintptr(DIGCF_PRESENT|DIGCF_DEVICEINTERFACE))
+		uintptr(DigcfPresent|DigcfDeviceInterface))
 
 	devInfo := windows.Handle(r0)
 	if devInfo == windows.InvalidHandle {
 		if e1 != 0 {
-			return "", fmt.Errorf("Discovery: SetupDiGetClassDevsW failed: %w", e1)
+			return "", fmt.Errorf("discovery: SetupDiGetClassDevsW failed: %w", e1)
 		}
-		return "", fmt.Errorf("Discovery: SetupDiGetClassDevsW failed with invalid handle")
+		return "", fmt.Errorf("discovery: SetupDiGetClassDevsW failed with invalid handle")
 	}
 	defer func() {
-		syscall.SyscallN(procSetupDiDestroyDeviceInfoList.Addr(), uintptr(devInfo))
+		_, _, err := syscall.SyscallN(procSetupDiDestroyDeviceInfoList.Addr(), uintptr(devInfo))
+		if err != 0 {
+			slog.Error("SetupDiDestroyDeviceInfoList failed", "error", err)
+		}
 	}()
 
-	var interfaceData SP_DEVICE_INTERFACE_DATA
+	var interfaceData SpDeviceInterfaceData
 	interfaceData.CbSize = uint32(unsafe.Sizeof(interfaceData))
 
 	r1, _, e2 := syscall.SyscallN(procSetupDiEnumDeviceInterfaces.Addr(),
@@ -214,23 +217,26 @@ func getDeviceInterfacePath(guid *windows.GUID) (string, error) {
 
 	if r1 == 0 {
 		if e2 != 0 {
-			return "", fmt.Errorf("Discovery: usbip-win2 driver not found: %w", e2)
+			return "", fmt.Errorf("discovery: usbip-win2 driver not found: %w", e2)
 		}
-		return "", fmt.Errorf("Discovery: usbip-win2 driver not found")
+		return "", fmt.Errorf("discovery: usbip-win2 driver not found")
 	}
 
 	var requiredSize uint32
-	syscall.SyscallN(procSetupDiGetDeviceInterfaceDetailW.Addr(),
+	_, _, err := syscall.SyscallN(procSetupDiGetDeviceInterfaceDetailW.Addr(),
 		uintptr(devInfo),
 		uintptr(unsafe.Pointer(&interfaceData)),
 		0,
 		0,
 		uintptr(unsafe.Pointer(&requiredSize)),
 		0)
+	if err != 0 {
+		return "", fmt.Errorf("discovery: SetupDiGetDeviceInterfaceDetailW (size query) failed: %w", err)
+	}
 
 	detailData := make([]byte, requiredSize)
-	detailHeader := (*SP_DEVICE_INTERFACE_DETAIL_DATA)(unsafe.Pointer(&detailData[0]))
-	detailHeader.CbSize = uint32(unsafe.Sizeof(SP_DEVICE_INTERFACE_DETAIL_DATA{}))
+	detailHeader := (*SpDeviceInterfaceDetailData)(unsafe.Pointer(&detailData[0]))
+	detailHeader.CbSize = uint32(unsafe.Sizeof(SpDeviceInterfaceDetailData{}))
 
 	r2, _, e3 := syscall.SyscallN(procSetupDiGetDeviceInterfaceDetailW.Addr(),
 		uintptr(devInfo),
@@ -242,9 +248,9 @@ func getDeviceInterfacePath(guid *windows.GUID) (string, error) {
 
 	if r2 == 0 {
 		if e3 != 0 {
-			return "", fmt.Errorf("Discovery: SetupDiGetDeviceInterfaceDetailW failed: %w", e3)
+			return "", fmt.Errorf("discovery: SetupDiGetDeviceInterfaceDetailW failed: %w", e3)
 		}
-		return "", fmt.Errorf("Discovery: SetupDiGetDeviceInterfaceDetailW failed")
+		return "", fmt.Errorf("discovery: SetupDiGetDeviceInterfaceDetailW failed")
 	}
 
 	path := windows.UTF16PtrToString(&detailHeader.DevicePath[0])

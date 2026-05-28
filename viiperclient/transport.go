@@ -1,4 +1,4 @@
-package apiclient
+package viiperclient
 
 import (
 	"bufio"
@@ -102,7 +102,7 @@ func (t *Transport) DoCtx(ctx context.Context, path string, payload any, pathPar
 	if err != nil {
 		return "", fmt.Errorf("dial: %w", err)
 	}
-	defer conn.Close()
+	defer conn.Close() //nolint:errcheck
 
 	if tcpConn, ok := conn.(*net.TCPConn); ok {
 		if err := tcpConn.SetNoDelay(true); err != nil {
@@ -131,7 +131,7 @@ func (t *Transport) DoCtx(ctx context.Context, path string, payload any, pathPar
 		sessionKey := auth.DeriveSessionKey(key, serverNonce, clientNonce)
 		conn, err = auth.WrapConn(conn, sessionKey)
 		if err != nil {
-			conn.Close()
+			conn.Close() // nolint
 			return "", err
 		}
 	}

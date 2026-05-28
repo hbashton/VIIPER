@@ -48,9 +48,10 @@ func (c *ConfigInit) Run() error {
 	dest := c.Output
 	if dest == "" {
 		ext := "json"
-		if format == "yaml" {
+		switch format {
+		case "yaml":
 			ext = "yaml"
-		} else if format == "toml" {
+		case "toml":
 			ext = "toml"
 		}
 		dest = c.Command + "." + ext

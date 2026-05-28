@@ -55,7 +55,7 @@ func getParentProcessName() string {
 	if err != nil {
 		return ""
 	}
-	defer windows.CloseHandle(snapshot)
+	defer windows.CloseHandle(snapshot) // nolint
 
 	var pe windows.ProcessEntry32
 	pe.Size = uint32(unsafe.Sizeof(pe))

@@ -58,9 +58,9 @@ func (d *DevListReplyHeader) Write(w io.Writer) error {
 // Uses fixed-size arrays matching the wire protocol format.
 type ExportMeta struct {
 	Path     [256]byte
-	USBBusId [32]byte
-	BusId    uint32
-	DevId    uint32
+	USBBusID [32]byte
+	BusID    uint32
+	DevID    uint32
 }
 
 // ExportedDevice describes one exported device in devlist/import replies.
@@ -89,27 +89,18 @@ type InterfaceDesc struct {
 	Protocol uint8
 }
 
-func putFixedString(dst []byte, s string) {
-	n := copy(dst, []byte(s))
-	if n < len(dst) {
-		for i := n; i < len(dst); i++ {
-			dst[i] = 0
-		}
-	}
-}
-
 // WriteDevlist writes the device entry for OP_REP_DEVLIST (includes interface triplets).
 func (d *ExportedDevice) WriteDevlist(w io.Writer) error {
 	if _, err := w.Write(d.Path[:]); err != nil {
 		return err
 	}
-	if _, err := w.Write(d.USBBusId[:]); err != nil {
+	if _, err := w.Write(d.USBBusID[:]); err != nil {
 		return err
 	}
-	if err := binary.Write(w, binary.BigEndian, d.BusId); err != nil {
+	if err := binary.Write(w, binary.BigEndian, d.BusID); err != nil {
 		return err
 	}
-	if err := binary.Write(w, binary.BigEndian, d.DevId); err != nil {
+	if err := binary.Write(w, binary.BigEndian, d.DevID); err != nil {
 		return err
 	}
 	if err := binary.Write(w, binary.BigEndian, d.Speed); err != nil {
@@ -148,13 +139,13 @@ func (d *ExportedDevice) WriteImport(w io.Writer) error {
 	if _, err := w.Write(d.Path[:]); err != nil {
 		return err
 	}
-	if _, err := w.Write(d.USBBusId[:]); err != nil {
+	if _, err := w.Write(d.USBBusID[:]); err != nil {
 		return err
 	}
-	if err := binary.Write(w, binary.BigEndian, d.BusId); err != nil {
+	if err := binary.Write(w, binary.BigEndian, d.BusID); err != nil {
 		return err
 	}
-	if err := binary.Write(w, binary.BigEndian, d.DevId); err != nil {
+	if err := binary.Write(w, binary.BigEndian, d.DevID); err != nil {
 		return err
 	}
 	if err := binary.Write(w, binary.BigEndian, d.Speed); err != nil {

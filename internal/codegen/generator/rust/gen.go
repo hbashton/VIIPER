@@ -97,7 +97,7 @@ func Generate(logger *slog.Logger, outputDir string, md *meta.Metadata) error {
 	return nil
 }
 
-func generateLibFile(logger *slog.Logger, srcDir string, md *meta.Metadata) error {
+func generateLibFile(logger *slog.Logger, srcDir string, _ *meta.Metadata) error {
 	logger.Debug("Generating lib.rs")
 	outputFile := filepath.Join(srcDir, "lib.rs")
 

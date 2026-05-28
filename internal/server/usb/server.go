@@ -379,7 +379,7 @@ func (s *Server) GetListenPort() uint16 {
 // --
 
 func (s *Server) handleConn(conn net.Conn) error {
-	defer conn.Close()
+	defer conn.Close() //nolint:errcheck
 	conn = &logConn{Conn: conn, s: s}
 	if err := conn.SetDeadline(time.Now().Add(s.config.ConnectionTimeout)); err != nil {
 		s.logger.Warn("Failed to set deadline", "error", err)
@@ -401,7 +401,7 @@ func (s *Server) handleConn(conn net.Conn) error {
 			return s.handleDevList(conn)
 		case usbip.OpReqImport:
 			s.logger.Info("OP_REQ_IMPORT")
-			dev, err := s.handleImport(conn, hdrBuf[:])
+			dev, err := s.handleImport(conn)
 			if err != nil {
 				return fmt.Errorf("handle import: %w", err)
 			}
@@ -454,7 +454,7 @@ func (s *Server) handleDevList(conn net.Conn) error {
 	return nil
 }
 
-func (s *Server) handleImport(conn net.Conn, first8 []byte) (usb.Device, error) {
+func (s *Server) handleImport(conn net.Conn) (usb.Device, error) {
 	var rest [busIDSize]byte
 	if err := usbip.ReadExactly(conn, rest[:]); err != nil {
 		return nil, fmt.Errorf("read import busid: %w", err)
@@ -466,8 +466,8 @@ func (s *Server) handleImport(conn net.Conn, first8 []byte) (usb.Device, error) 
 	var chosenDesc *usb.Descriptor
 	for _, m := range s.getAllDeviceMetas() {
 		meta := m.Meta
-		end := bytes.IndexByte(meta.USBBusId[:], 0)
-		bid := string(meta.USBBusId[:end])
+		end := bytes.IndexByte(meta.USBBusID[:], 0)
+		bid := string(meta.USBBusID[:end])
 		if bid == reqBus {
 			chosen = m.Dev
 			chosenMeta = &meta
@@ -517,20 +517,6 @@ func (s *Server) getAllDeviceMetas() []virtualbus.DeviceMeta {
 		out = append(out, b.GetAllDeviceMetas()...)
 	}
 	return out
-}
-
-type readBufferConn struct {
-	net.Conn
-	buf []byte
-}
-
-func (r *readBufferConn) Read(p []byte) (int, error) {
-	if len(r.buf) > 0 {
-		n := copy(p, r.buf)
-		r.buf = r.buf[n:]
-		return n, nil
-	}
-	return r.Conn.Read(p)
 }
 
 type logConn struct {

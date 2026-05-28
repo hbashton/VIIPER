@@ -67,7 +67,7 @@ func generateProject(logger *slog.Logger, projectDir string, version string) err
 	if err != nil {
 		return fmt.Errorf("create file: %w", err)
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck
 
 	data := struct {
 		Version string

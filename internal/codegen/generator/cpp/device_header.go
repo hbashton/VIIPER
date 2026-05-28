@@ -239,7 +239,7 @@ func generateDeviceHeader(logger *slog.Logger, devicesDir, deviceName string, md
 	if err != nil {
 		return fmt.Errorf("create device header: %w", err)
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck
 
 	hasMaps := false
 	for _, m := range devicePkg.Maps {

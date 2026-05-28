@@ -40,8 +40,8 @@ Device resp; ViiperDevice device;
 try
 {
     resp = await client.BusDeviceAddAsync(busId, new Viiper.Client.Types.DeviceCreateRequest { Type = "mouse" });
-    device = await client.ConnectDeviceAsync(resp.BusID, resp.DevId);
-    Console.WriteLine($"Created and connected to device {resp.DevId} on bus {resp.BusID}");
+    device = await client.ConnectDeviceAsync(resp.BusID, resp.DevID);
+    Console.WriteLine($"Created and connected to device {resp.DevID} on bus {resp.BusID}");
 }
 catch (Exception ex)
 {
@@ -55,7 +55,7 @@ Console.CancelKeyPress += async (_, e) => { e.Cancel = true; await Cleanup(); En
 
 async Task Cleanup()
 {
-    try { await client.BusDeviceRemoveAsync(resp.BusID, resp.DevId); Console.WriteLine($"Removed device {resp.DevId}"); } catch { }
+    try { await client.BusDeviceRemoveAsync(resp.BusID, resp.DevID); Console.WriteLine($"Removed device {resp.DevID}"); } catch { }
     if (createdBus) { try { await client.BusRemoveAsync(busId); Console.WriteLine($"Removed bus {busId}"); } catch { } }
 }
 
@@ -79,7 +79,7 @@ while (await timer.WaitForNextTickAsync())
     await device.SendAsync(new MouseInput { Buttons = 0, Dx = 0, Dy = 0, Wheel = 0, Pan = 0 }); // zero state
 
     await Task.Delay(50);
-    await device.SendAsync(new MouseInput { Buttons = (byte)Btn_.Left, Dx = 0, Dy = 0, Wheel = 0, Pan = 0 });
+    await device.SendAsync(new MouseInput { Buttons = (byte)Btn.Left, Dx = 0, Dy = 0, Wheel = 0, Pan = 0 });
     await Task.Delay(60);
     await device.SendAsync(new MouseInput { Buttons = 0, Dx = 0, Dy = 0, Wheel = 0, Pan = 0 });
     Console.WriteLine("→ Clicked (left)");

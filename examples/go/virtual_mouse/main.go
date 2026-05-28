@@ -8,8 +8,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Alia5/VIIPER/apiclient"
 	"github.com/Alia5/VIIPER/device/mouse"
+	"github.com/Alia5/VIIPER/viiperclient"
 )
 
 func main() {
@@ -21,7 +21,7 @@ func main() {
 
 	addr := os.Args[1]
 	ctx := context.Background()
-	api := apiclient.New(addr)
+	api := viiperclient.New(addr)
 
 	// Find or create a bus
 	busesResp, err := api.BusListCtx(ctx)
@@ -59,16 +59,16 @@ func main() {
 		}
 		os.Exit(1)
 	}
-	defer stream.Close()
+	defer stream.Close() //nolint:errcheck
 
-	fmt.Printf("Created and connected to device %s on bus %d\n", addResp.DevId, addResp.BusID)
+	fmt.Printf("Created and connected to device %s on bus %d\n", addResp.DevID, addResp.BusID)
 
 	// Cleanup on exit
 	defer func() {
 		if _, err := api.DeviceRemoveCtx(ctx, stream.BusID, stream.DevID); err != nil {
 			fmt.Printf("DeviceRemove error: %v\n", err)
 		} else {
-			fmt.Printf("Removed device %d-%s\n", addResp.BusID, addResp.DevId)
+			fmt.Printf("Removed device %d-%s\n", addResp.BusID, addResp.DevID)
 		}
 		if createdBus {
 			if _, err := api.BusRemoveCtx(ctx, busID); err != nil {
@@ -117,7 +117,7 @@ func main() {
 
 			// Simulate a short left click: press then release
 			time.Sleep(50 * time.Millisecond)
-			press := &mouse.InputState{Buttons: mouse.Btn_Left}
+			press := &mouse.InputState{Buttons: mouse.BtnLeft}
 			if err := stream.WriteBinary(press); err != nil {
 				fmt.Printf("Write error (press): %v\n", err)
 				return

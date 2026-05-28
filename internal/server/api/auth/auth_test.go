@@ -51,7 +51,7 @@ func TestDeriveKey(t *testing.T) {
 			name:        "empty password",
 			password:    "",
 			expectedKey: []byte{},
-			expectedErr: errors.New("Password cannot be empty"),
+			expectedErr: errors.New("password cannot be empty"),
 		},
 		{
 			name:        "long password",

@@ -192,7 +192,7 @@ private:
 } // namespace viiper
 `
 
-func generateDevice(logger *slog.Logger, includeDir string, md *meta.Metadata) error {
+func generateDevice(logger *slog.Logger, includeDir string, _ *meta.Metadata) error {
 	logger.Debug("Generating device.hpp")
 	outputFile := filepath.Join(includeDir, "device.hpp")
 

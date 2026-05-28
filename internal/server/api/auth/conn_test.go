@@ -129,9 +129,9 @@ func TestConn(t *testing.T) {
 			if err != nil {
 				t.Fatalf("failed to accept connection: %v", err)
 			}
-			defer ln.Close()
-			defer clientConn.Close()
-			defer serverConn.Close()
+			defer ln.Close()         //nolint:errcheck
+			defer clientConn.Close() //nolint:errcheck
+			defer serverConn.Close() //nolint:errcheck
 
 			var clientKey, serverKey []byte
 			if tc.setupFn != nil {

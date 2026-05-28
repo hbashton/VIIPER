@@ -9,12 +9,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Alia5/VIIPER/apiclient"
-	"github.com/Alia5/VIIPER/apitypes"
 	"github.com/Alia5/VIIPER/device/xbox360"
 	"github.com/Alia5/VIIPER/internal/cmd"
 	"github.com/Alia5/VIIPER/internal/server/api"
 	"github.com/Alia5/VIIPER/internal/server/usb"
+	"github.com/Alia5/VIIPER/viiperclient"
+	"github.com/Alia5/VIIPER/viipertypes"
 
 	_ "github.com/Alia5/VIIPER/internal/registry" // Register all device handlers
 
@@ -163,12 +163,12 @@ func Benchmark_Xbox360_Delay(b *testing.B) {
 	}
 
 	s := cmd.Server{
-		UsbServerConfig: usb.ServerConfig{
+		USBServerConfig: usb.ServerConfig{
 			Addr:                    ":3244",
 			BusCleanupTimeout:       1 * time.Second,
 			WriteBatchFlushInterval: 0,
 		},
-		ApiServerConfig: api.ServerConfig{
+		APIServerConfig: api.ServerConfig{
 			Addr:                        ":3245",
 			AutoAttachLocalClient:       true,
 			DeviceHandlerConnectTimeout: time.Second * 5,
@@ -185,10 +185,10 @@ func Benchmark_Xbox360_Delay(b *testing.B) {
 		}
 	}()
 
-	var c *apiclient.Client
+	var c *viiperclient.Client
 
-	c = apiclient.New("localhost:3245")
-	var busResp *apitypes.BusCreateResponse
+	c = viiperclient.New("localhost:3245")
+	var busResp *viipertypes.BusCreateResponse
 	var err error
 	for range 10 {
 		busResp, err = c.BusCreate(1)
@@ -208,11 +208,11 @@ func Benchmark_Xbox360_Delay(b *testing.B) {
 		b.Fatalf("DeviceAdd failed: %v", err)
 	}
 
-	devStream, err := c.OpenStream(ctx, busID, devInfo.DevId)
+	devStream, err := c.OpenStream(ctx, busID, devInfo.DevID)
 	if err != nil {
 		b.Fatalf("OpenStream failed: %v", err)
 	}
-	defer devStream.Close()
+	defer devStream.Close() //nolint:errcheck
 
 	var gamepad *sdl.Gamepad
 	for range 10 {
@@ -224,7 +224,7 @@ func Benchmark_Xbox360_Delay(b *testing.B) {
 				if err != nil {
 					b.Fatalf("OpenGamepad failed: %v", err)
 				}
-				defer gamepad.Close()
+				defer gamepad.Close() //nolint:errcheck
 				break
 			}
 		}
@@ -257,7 +257,7 @@ func Benchmark_Xbox360_Delay(b *testing.B) {
 
 	for _, bench := range benches {
 		if bench.useEncryption {
-			c = apiclient.NewWithPassword("localhost:3245", "testpassword1234")
+			c = viiperclient.NewWithPassword("localhost:3245", "testpassword1234")
 		}
 		b.Run(bench.name, func(b *testing.B) {
 			for b.Loop() {

@@ -27,11 +27,11 @@ func New(o *device.CreateOptions) (*Keyboard, error) {
 		descriptor: defaultDescriptor,
 	}
 	if o != nil {
-		if o.IdVendor != nil {
-			d.descriptor.Device.IDVendor = *o.IdVendor
+		if o.IDVendor != nil {
+			d.descriptor.Device.IDVendor = *o.IDVendor
 		}
-		if o.IdProduct != nil {
-			d.descriptor.Device.IDProduct = *o.IdProduct
+		if o.IDProduct != nil {
+			d.descriptor.Device.IDProduct = *o.IDProduct
 		}
 	}
 	return d, nil
@@ -217,6 +217,6 @@ func (k *Keyboard) GetDescriptor() *usb.Descriptor {
 	return &k.descriptor
 }
 
-func (x *Keyboard) GetDeviceSpecificArgs() map[string]any {
+func (k *Keyboard) GetDeviceSpecificArgs() map[string]any {
 	return map[string]any{}
 }

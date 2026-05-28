@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Alia5/VIIPER/apiclient"
 	"github.com/Alia5/VIIPER/internal/server/api"
 	"github.com/Alia5/VIIPER/internal/server/api/handler"
+	"github.com/Alia5/VIIPER/viiperclient"
 	"github.com/Alia5/VIIPER/virtualbus"
 	"github.com/stretchr/testify/assert"
 
@@ -34,8 +34,8 @@ func TestDeviceAttach(t *testing.T) {
 		t.Run(tc.deviceType, func(t *testing.T) {
 
 			s := viiperTesting.NewTestServer(t)
-			defer s.UsbServer.Close()
-			defer s.ApiServer.Close()
+			defer s.UsbServer.Close() // nolint
+			defer s.ApiServer.Close() // nolint
 
 			r := s.ApiServer.Router()
 			r.Register("bus/{id}/add", handler.BusDeviceAdd(s.UsbServer, s.ApiServer))
@@ -44,14 +44,17 @@ func TestDeviceAttach(t *testing.T) {
 			if err := s.ApiServer.Start(); err != nil {
 				t.Fatalf("Failed to start API server: %v", err)
 			}
-			b, err := virtualbus.NewWithBusId(1)
+			b, err := virtualbus.NewWithBusID(1)
 			if err != nil {
 				t.Fatalf("Failed to create virtual bus: %v", err)
 			}
-			defer b.Close()
-			s.UsbServer.AddBus(b)
+			defer b.Close() // nolint
+			err = s.UsbServer.AddBus(b)
+			if err != nil {
+				t.Fatalf("Failed to add bus to USB server: %v", err)
+			}
 
-			c := apiclient.New(s.ApiServer.Addr())
+			c := viiperclient.New(s.ApiServer.Addr())
 
 			stream, addResp, err := c.AddDeviceAndConnect(context.Background(), b.BusID(), tc.deviceType, nil)
 			if !assert.NoError(t, err) {
@@ -61,10 +64,10 @@ func TestDeviceAttach(t *testing.T) {
 			assert.NotNil(t, addResp)
 			assert.Equal(t, tc.deviceType, addResp.Type)
 			assert.Equal(t, b.BusID(), addResp.BusID)
-			assert.Equal(t, "1", addResp.DevId)
+			assert.Equal(t, "1", addResp.DevID)
 
 			if stream != nil {
-				defer stream.Close()
+				defer stream.Close() //nolint:errcheck
 			}
 
 			usbipClient := viiperTesting.NewUsbIpClient(t, s.UsbServer.Addr())
@@ -90,7 +93,7 @@ func TestDeviceAttach(t *testing.T) {
 				return
 			}
 			if imp.Conn != nil {
-				defer imp.Conn.Close()
+				defer imp.Conn.Close() // nolint
 			}
 			if !assert.NotNil(t, imp.Conn) {
 				return

@@ -71,7 +71,7 @@ func generateMainHeader(logger *slog.Logger, includeDir string, md *meta.Metadat
 	if err != nil {
 		return fmt.Errorf("create viiper.hpp: %w", err)
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck
 
 	devices := make([]string, 0, len(md.DevicePackages))
 	for deviceName := range md.DevicePackages {

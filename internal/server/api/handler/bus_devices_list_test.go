@@ -5,12 +5,12 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/Alia5/VIIPER/apiclient"
 	"github.com/Alia5/VIIPER/device/xbox360"
 	handlerTest "github.com/Alia5/VIIPER/internal/_testing"
 	"github.com/Alia5/VIIPER/internal/server/api"
 	"github.com/Alia5/VIIPER/internal/server/api/handler"
 	"github.com/Alia5/VIIPER/internal/server/usb"
+	"github.com/Alia5/VIIPER/viiperclient"
 	"github.com/Alia5/VIIPER/virtualbus"
 )
 
@@ -24,7 +24,7 @@ func TestBusDevicesList(t *testing.T) {
 		{
 			name: "list devices on existing bus",
 			setup: func(t *testing.T, s *usb.Server) {
-				b, err := virtualbus.NewWithBusId(60008)
+				b, err := virtualbus.NewWithBusID(60008)
 				if err != nil {
 					t.Fatalf("create bus failed: %v", err)
 				}
@@ -38,7 +38,7 @@ func TestBusDevicesList(t *testing.T) {
 		{
 			name: "list devices after adding one",
 			setup: func(t *testing.T, s *usb.Server) {
-				b, err := virtualbus.NewWithBusId(60009)
+				b, err := virtualbus.NewWithBusID(60009)
 				if err != nil {
 					t.Fatalf("create bus failed: %v", err)
 				}
@@ -59,7 +59,7 @@ func TestBusDevicesList(t *testing.T) {
 		{
 			name: "list devices with multiple additions",
 			setup: func(t *testing.T, s *usb.Server) {
-				b, err := virtualbus.NewWithBusId(60010)
+				b, err := virtualbus.NewWithBusID(60010)
 				if err != nil {
 					t.Fatalf("create bus failed: %v", err)
 				}
@@ -105,7 +105,7 @@ func TestBusDevicesList(t *testing.T) {
 			})
 			defer done()
 
-			c := apiclient.NewTransport(addr)
+			c := viiperclient.NewTransport(addr)
 			if tt.setup != nil {
 				tt.setup(t, srv)
 			}

@@ -1,4 +1,4 @@
-package apiclient_test
+package viiperclient_test
 
 import (
 	"bufio"
@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Alia5/VIIPER/apiclient"
-	apitypes "github.com/Alia5/VIIPER/apitypes"
 	"github.com/Alia5/VIIPER/internal/server/api/auth"
+	"github.com/Alia5/VIIPER/viiperclient"
+	"github.com/Alia5/VIIPER/viipertypes"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -26,11 +26,14 @@ func startTestServer(t *testing.T, response string) (addr string, gotReqLine *st
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer conn.Close() //nolint:errcheck
 		var buf []byte
 		var tmp [1]byte
 		for {
-			conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+			err := conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+			if err != nil {
+				slog.Error("Failed to set connectionReadDeadline", "error", err)
+			}
 			_, rerr := conn.Read(tmp[:])
 			if rerr != nil {
 				break
@@ -101,7 +104,7 @@ func TestTransportPayloadEncoding(t *testing.T) {
 
 	for _, tc := range cases {
 		addr, got, closeFn := startTestServer(t, "ok\n")
-		client := apiclient.NewTransport(addr)
+		client := viiperclient.NewTransport(addr)
 		out, err := client.Do("echo", tc.payload, nil)
 		closeFn()
 		assert.NoError(t, err, tc.name)
@@ -126,7 +129,7 @@ func TestTransportPayloadEncoding(t *testing.T) {
 func TestTransportMultiLineResponse(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	assert.NoError(t, err)
-	defer ln.Close()
+	defer ln.Close() // nolint
 
 	resp := "{\n  \"a\": 1,\n  \"b\": 2\n}\n" // multi-line + trailing newline
 
@@ -138,22 +141,25 @@ func TestTransportMultiLineResponse(t *testing.T) {
 		buf := make([]byte, 0, 128)
 		tmp := make([]byte, 1)
 		for {
-			conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-			_, err := conn.Read(tmp)
+			err := conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+			if err != nil {
+				slog.Error("Failed to set connectionReadDeadline", "error", err)
+			}
+			_, err = conn.Read(tmp)
 			if err != nil {
 				break
 			}
 			b := tmp[0]
-			buf = append(buf, b)
-			if b == '\x00' { // end of request
+			buf = append(buf, b) // nolint
+			if b == '\x00' {     // end of request
 				break
 			}
 		}
 		_, _ = conn.Write([]byte(resp))
-		conn.Close()
+		conn.Close() // nolint
 	}()
 
-	client := apiclient.NewTransport(ln.Addr().String())
+	client := viiperclient.NewTransport(ln.Addr().String())
 	out, err := client.Do("echo", nil, nil)
 	assert.NoError(t, err)
 	assert.Equal(t, "{\n  \"a\": 1,\n  \"b\": 2\n}", out)
@@ -169,7 +175,7 @@ func TestEncryptedTransport(t *testing.T) {
 	}
 
 	echoHandler := func(t *testing.T, conn net.Conn) {
-		defer conn.Close()
+		defer conn.Close() //nolint:errcheck
 		r := bufio.NewReader(conn)
 
 		key, err := auth.DeriveKey("test123")
@@ -177,7 +183,7 @@ func TestEncryptedTransport(t *testing.T) {
 
 		clientNonce, serverNonce, err := auth.HandleAuthHandshake(r, conn, key, false)
 		if err != nil {
-			var apiErr apitypes.ApiError
+			var apiErr viipertypes.APIError
 			if errors.As(err, &apiErr) {
 				b, err := json.Marshal(apiErr)
 				if err != nil {
@@ -221,7 +227,7 @@ func TestEncryptedTransport(t *testing.T) {
 			name:     "bad handshake response",
 			password: "test123",
 			serverHandler: func(t *testing.T, conn net.Conn) {
-				defer conn.Close()
+				defer conn.Close() //nolint:errcheck
 				_, _ = conn.Write([]byte("NO\x00" + strings.Repeat("x", 32)))
 			},
 			expectedErr: errors.New(""),
@@ -240,7 +246,7 @@ func TestEncryptedTransport(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ln, err := net.Listen("tcp", "127.0.0.1:0")
 			assert.NoError(t, err)
-			defer ln.Close()
+			defer ln.Close() // nolint
 
 			go func() {
 				conn, err := ln.Accept()
@@ -250,7 +256,7 @@ func TestEncryptedTransport(t *testing.T) {
 				tc.serverHandler(t, conn)
 			}()
 
-			client := apiclient.NewTransportWithPassword(ln.Addr().String(), tc.password)
+			client := viiperclient.NewTransportWithPassword(ln.Addr().String(), tc.password)
 			path, payload, _ := strings.Cut(tc.line, " ")
 			out, err := client.Do(path, payload, nil)
 

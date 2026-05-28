@@ -38,7 +38,7 @@ const projectTemplate = `<Project Sdk="Microsoft.NET.Sdk">
 </Project>
 `
 
-func generateProject(logger *slog.Logger, projectDir string, md *meta.Metadata, version string) error {
+func generateProject(logger *slog.Logger, projectDir string, _ *meta.Metadata, version string) error {
 	logger.Debug("Generating Viiper.Client.csproj")
 
 	tmpl, err := template.New("csproj").Parse(projectTemplate)
@@ -50,7 +50,7 @@ func generateProject(logger *slog.Logger, projectDir string, md *meta.Metadata, 
 	if err != nil {
 		return fmt.Errorf("create csproj file: %w", err)
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck
 
 	data := struct {
 		Version string

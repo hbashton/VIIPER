@@ -1,4 +1,4 @@
-package apitypes
+package viipertypes
 
 import (
 	"encoding/json"
@@ -10,8 +10,8 @@ import (
 	"golang.org/x/exp/constraints"
 )
 
-// ApiError represents an RFC 7807 (problem+json) error response.
-type ApiError struct {
+// APIError represents an RFC 7807 (problem+json) error response.
+type APIError struct {
 	// Status is the HTTP-style status code (e.g., 400, 404, 500)
 	Status int `json:"status"`
 	// Title is a short, human-readable summary of the problem type
@@ -20,7 +20,7 @@ type ApiError struct {
 	Detail string `json:"detail"`
 }
 
-func (e ApiError) Error() string {
+func (e APIError) Error() string {
 	if e.Status == 0 && e.Title == "" {
 		return "unknown error"
 	}
@@ -51,7 +51,7 @@ type BusRemoveResponse struct {
 
 type Device struct {
 	BusID          uint32         `json:"busId"`
-	DevId          string         `json:"devId"`
+	DevID          string         `json:"devId"`
 	Vid            string         `json:"vid"`
 	Pid            string         `json:"pid"`
 	Type           string         `json:"type"`
@@ -64,13 +64,13 @@ type DevicesListResponse struct {
 
 type DeviceRemoveResponse struct {
 	BusID uint32 `json:"busId"`
-	DevId string `json:"devId"`
+	DevID string `json:"devId"`
 }
 
 type DeviceCreateRequest struct {
 	Type           *string        `json:"type"`
-	IdVendor       *uint16        `json:"idVendor,omitempty"`
-	IdProduct      *uint16        `json:"idProduct,omitempty"`
+	IDVendor       *uint16        `json:"idVendor,omitempty"`
+	IDProduct      *uint16        `json:"idProduct,omitempty"`
 	DeviceSpecific map[string]any `json:"deviceSpecific,omitempty"`
 }
 
@@ -80,8 +80,8 @@ func (d *DeviceCreateRequest) UnmarshalJSON(data []byte) error {
 	// Parse into a temporary structure with flexible types
 	var raw struct {
 		Type           *string        `json:"type"`
-		IdVendor       any            `json:"idVendor,omitempty"`
-		IdProduct      any            `json:"idProduct,omitempty"`
+		IDVendor       any            `json:"idVendor,omitempty"`
+		IDProduct      any            `json:"idProduct,omitempty"`
 		DeviceSpecific map[string]any `json:"deviceSpecific,omitempty"`
 	}
 
@@ -91,20 +91,20 @@ func (d *DeviceCreateRequest) UnmarshalJSON(data []byte) error {
 
 	d.Type = raw.Type
 
-	if raw.IdVendor != nil {
-		val, err := parseNumberOrHex[uint16](raw.IdVendor)
+	if raw.IDVendor != nil {
+		val, err := parseNumberOrHex[uint16](raw.IDVendor)
 		if err != nil {
 			return fmt.Errorf("idVendor: %w", err)
 		}
-		d.IdVendor = &val
+		d.IDVendor = &val
 	}
 
-	if raw.IdProduct != nil {
-		val, err := parseNumberOrHex[uint16](raw.IdProduct)
+	if raw.IDProduct != nil {
+		val, err := parseNumberOrHex[uint16](raw.IDProduct)
 		if err != nil {
 			return fmt.Errorf("idProduct: %w", err)
 		}
-		d.IdProduct = &val
+		d.IDProduct = &val
 	}
 
 	d.DeviceSpecific = raw.DeviceSpecific

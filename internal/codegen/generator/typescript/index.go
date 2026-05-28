@@ -31,7 +31,7 @@ func generateIndex(logger *slog.Logger, srcDir string) error {
 	if err != nil {
 		return fmt.Errorf("write index.ts: %w", err)
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck
 	tmpl := template.Must(template.New("index").Funcs(template.FuncMap{
 		"writeFileHeaderTS": writeFileHeaderTS,
 	}).Parse(indexTemplate))
@@ -56,7 +56,7 @@ func generateDeviceIndex(logger *slog.Logger, deviceDir, deviceName string) erro
 	if err != nil {
 		return fmt.Errorf("write device index.ts: %w", err)
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck
 
 	tmpl := template.Must(template.New("deviceIndex").Funcs(template.FuncMap{
 		"writeFileHeaderTS": writeFileHeaderTS,

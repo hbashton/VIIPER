@@ -87,7 +87,7 @@ func TestWriteServerHandshake(t *testing.T) {
 			name: "Err closed writer",
 			writer: func() io.Writer {
 				_, w := io.Pipe()
-				w.Close()
+				w.Close() // nolint
 				return w
 			}(),
 			expectedErr: fmt.Errorf("write response: io: read/write on closed pipe"),
@@ -224,7 +224,7 @@ func TestFullHandshake(t *testing.T) {
 			reader: bufio.NewReader(bytes.NewBuffer(validHandshake)),
 			writer: func() io.Writer {
 				_, w := io.Pipe()
-				w.Close()
+				w.Close() // nolint
 				return w
 			}(),
 			key:         validKey,

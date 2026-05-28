@@ -26,11 +26,11 @@ func New(o *device.CreateOptions) (*Mouse, error) {
 		descriptor: defaultDescriptor,
 	}
 	if o != nil {
-		if o.IdVendor != nil {
-			d.descriptor.Device.IDVendor = *o.IdVendor
+		if o.IDVendor != nil {
+			d.descriptor.Device.IDVendor = *o.IDVendor
 		}
-		if o.IdProduct != nil {
-			d.descriptor.Device.IDProduct = *o.IdProduct
+		if o.IDProduct != nil {
+			d.descriptor.Device.IDProduct = *o.IDProduct
 		}
 	}
 	return d, nil
@@ -180,6 +180,6 @@ func (m *Mouse) GetDescriptor() *usb.Descriptor {
 	return &m.descriptor
 }
 
-func (x *Mouse) GetDeviceSpecificArgs() map[string]any {
+func (m *Mouse) GetDeviceSpecificArgs() map[string]any {
 	return map[string]any{}
 }

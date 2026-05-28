@@ -6,10 +6,10 @@ import (
 	"log/slog"
 	"strconv"
 
-	"github.com/Alia5/VIIPER/apitypes"
 	"github.com/Alia5/VIIPER/internal/server/api"
 	apierror "github.com/Alia5/VIIPER/internal/server/api/error"
 	"github.com/Alia5/VIIPER/internal/server/usb"
+	"github.com/Alia5/VIIPER/viipertypes"
 )
 
 // BusDeviceRemove returns a handler that removes a device by device number.
@@ -36,7 +36,7 @@ func BusDeviceRemove(s *usb.Server) api.HandlerFunc {
 			return apierror.ErrNotFound(fmt.Sprintf("device %s not found on bus %d", deviceID, busID))
 		}
 
-		j, err := json.Marshal(apitypes.DeviceRemoveResponse{BusID: uint32(busID), DevId: deviceID})
+		j, err := json.Marshal(viipertypes.DeviceRemoveResponse{BusID: uint32(busID), DevID: deviceID})
 		if err != nil {
 			return apierror.ErrInternal(fmt.Sprintf("failed to marshal response: %v", err))
 		}

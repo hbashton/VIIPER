@@ -6,10 +6,10 @@ import (
 	"log/slog"
 	"strconv"
 
-	"github.com/Alia5/VIIPER/apitypes"
 	"github.com/Alia5/VIIPER/internal/server/api"
 	apierror "github.com/Alia5/VIIPER/internal/server/api/error"
 	"github.com/Alia5/VIIPER/internal/server/usb"
+	"github.com/Alia5/VIIPER/viipertypes"
 	"github.com/Alia5/VIIPER/virtualbus"
 )
 
@@ -17,23 +17,23 @@ import (
 func BusCreate(s *usb.Server) api.HandlerFunc {
 	return func(req *api.Request, res *api.Response, logger *slog.Logger) error {
 		if req.Payload != "" {
-			busId, err := strconv.ParseUint(req.Payload, 10, 32)
+			busID, err := strconv.ParseUint(req.Payload, 10, 32)
 			if err != nil {
 				return apierror.ErrBadRequest(fmt.Sprintf("invalid busId: %v", err))
 			}
 
-			if busId == 0 {
-				busId = uint64(s.NextFreeBusID())
+			if busID == 0 {
+				busID = uint64(s.NextFreeBusID())
 			}
 
-			b, err := virtualbus.NewWithBusId(uint32(busId))
+			b, err := virtualbus.NewWithBusID(uint32(busID))
 			if err != nil {
 				return apierror.ErrBadRequest(fmt.Sprintf("invalid busId: %v", err))
 			}
 			if err := s.AddBus(b); err != nil {
-				return apierror.ErrConflict(fmt.Sprintf("bus %d already exists", busId))
+				return apierror.ErrConflict(fmt.Sprintf("bus %d already exists", busID))
 			}
-			out, err := json.Marshal(apitypes.BusCreateResponse{BusID: b.BusID()})
+			out, err := json.Marshal(viipertypes.BusCreateResponse{BusID: b.BusID()})
 			if err != nil {
 				return apierror.ErrInternal(fmt.Sprintf("failed to marshal response: %v", err))
 			}
@@ -41,12 +41,12 @@ func BusCreate(s *usb.Server) api.HandlerFunc {
 			return nil
 		}
 
-		busId := s.NextFreeBusID()
-		b := virtualbus.New(busId)
+		busID := s.NextFreeBusID()
+		b := virtualbus.New(busID)
 		if err := s.AddBus(b); err != nil {
 			return apierror.ErrInternal(fmt.Sprintf("failed to add bus: %v", err))
 		}
-		out, err := json.Marshal(apitypes.BusCreateResponse{BusID: b.BusID()})
+		out, err := json.Marshal(viipertypes.BusCreateResponse{BusID: b.BusID()})
 		if err != nil {
 			return apierror.ErrInternal(fmt.Sprintf("failed to marshal response: %v", err))
 		}

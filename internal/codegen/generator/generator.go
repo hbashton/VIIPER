@@ -75,7 +75,7 @@ func (g *Generator) GenerateLang(lang string) error {
 }
 
 func (g *Generator) ScanAll() (*meta.Metadata, error) {
-	requiredPaths := []string{"internal/cmd", "apitypes", "device"}
+	requiredPaths := []string{"internal/cmd", "viipertypes", "device"}
 	for _, path := range requiredPaths {
 		if _, err := os.Stat(path); os.IsNotExist(err) {
 			return nil, fmt.Errorf("codegen requires VIIPER source code and must be run from the viiper module directory: missing '%s'", path)
@@ -98,7 +98,7 @@ func (g *Generator) ScanAll() (*meta.Metadata, error) {
 	g.logger.Info("Found API routes", "count", len(routes))
 
 	g.logger.Debug("Scanning DTOs")
-	dtos, err := scanner.ScanDTOsInPackage("apitypes")
+	dtos, err := scanner.ScanDTOsInPackage("viipertypes")
 	if err != nil {
 		return nil, fmt.Errorf("failed to scan DTOs: %w", err)
 	}

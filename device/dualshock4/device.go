@@ -27,11 +27,11 @@ func New(o *device.CreateOptions) (*DualShock4, error) {
 		descriptor: defaultDescriptor,
 	}
 	if o != nil {
-		if o.IdVendor != nil {
-			d.descriptor.Device.IDVendor = *o.IdVendor
+		if o.IDVendor != nil {
+			d.descriptor.Device.IDVendor = *o.IDVendor
 		}
-		if o.IdProduct != nil {
-			d.descriptor.Device.IDProduct = *o.IdProduct
+		if o.IDProduct != nil {
+			d.descriptor.Device.IDProduct = *o.IDProduct
 		}
 	}
 
@@ -174,7 +174,7 @@ func (d *DualShock4) GetDescriptor() *usb.Descriptor {
 	return &d.descriptor
 }
 
-func (x *DualShock4) GetDeviceSpecificArgs() map[string]any {
+func (d *DualShock4) GetDeviceSpecificArgs() map[string]any {
 	return map[string]any{}
 }
 

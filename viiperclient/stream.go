@@ -1,4 +1,4 @@
-package apiclient
+package viiperclient
 
 import (
 	"bufio"
@@ -11,9 +11,9 @@ import (
 	"sync"
 	"time"
 
-	apitypes "github.com/Alia5/VIIPER/apitypes"
 	"github.com/Alia5/VIIPER/device"
 	"github.com/Alia5/VIIPER/internal/server/api/auth"
+	"github.com/Alia5/VIIPER/viipertypes"
 )
 
 // DeviceStream represents a bidirectional connection to a device stream.
@@ -60,14 +60,14 @@ func (c *Client) OpenStream(ctx context.Context, busID uint32, devID string) (*D
 		sessionKey := auth.DeriveSessionKey(key, serverNonce, clientNonce)
 		conn, err = auth.WrapConn(conn, sessionKey)
 		if err != nil {
-			conn.Close()
+			conn.Close() // nolint
 			return nil, err
 		}
 	}
 
 	streamPath := fmt.Sprintf("bus/%d/%s\x00", busID, devID)
 	if _, err := conn.Write([]byte(streamPath)); err != nil {
-		conn.Close()
+		conn.Close() // nolint
 		return nil, fmt.Errorf("write stream path: %w", err)
 	}
 
@@ -81,13 +81,13 @@ func (c *Client) OpenStream(ctx context.Context, busID uint32, devID string) (*D
 
 // AddDeviceAndConnect creates a device on the specified bus and immediately connects to its stream.
 // This is a convenience wrapper that combines DeviceAdd + OpenStream in one call.
-func (c *Client) AddDeviceAndConnect(ctx context.Context, busID uint32, deviceType string, o *device.CreateOptions) (*DeviceStream, *apitypes.Device, error) {
+func (c *Client) AddDeviceAndConnect(ctx context.Context, busID uint32, deviceType string, o *device.CreateOptions) (*DeviceStream, *viipertypes.Device, error) {
 	resp, err := c.DeviceAddCtx(ctx, busID, deviceType, o)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	stream, err := c.OpenStream(ctx, busID, resp.DevId)
+	stream, err := c.OpenStream(ctx, busID, resp.DevID)
 	if err != nil {
 		return nil, resp, err
 	}

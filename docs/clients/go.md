@@ -27,7 +27,7 @@ import (
 
 func main() {
   // Create new Viiper client
-  client := apiclient.New("127.0.0.1:3242")
+  client := viiperclient.New("127.0.0.1:3242")
   ctx := context.Background()
   
   // Create or find a bus
@@ -165,12 +165,12 @@ The Go client provides device packages under `/device/` with type-safe structs a
 ### Custom Timeouts
 
 ```go
-cfg := &apiclient.Config{
+cfg := &viiperclient.Config{
   DialTimeout:  2 * time.Second,
   ReadTimeout:  3 * time.Second,
   WriteTimeout: 3 * time.Second,
 }
-client := apiclient.NewWithConfig("127.0.0.1:3242", cfg)
+client := viiperclient.NewWithConfig("127.0.0.1:3242", cfg)
 ```
 
 Default timeouts are: Dial 3s, Read/Write 5s.

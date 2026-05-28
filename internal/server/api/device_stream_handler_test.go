@@ -12,8 +12,8 @@ import (
 
 	"github.com/Alia5/VIIPER/device"
 	"github.com/Alia5/VIIPER/device/keyboard"
-	htesting "github.com/Alia5/VIIPER/internal/_testing"
-	th "github.com/Alia5/VIIPER/internal/_testing"
+	htesting "github.com/Alia5/VIIPER/internal/_testing" // nolint
+	th "github.com/Alia5/VIIPER/internal/_testing"       // nolint
 	"github.com/Alia5/VIIPER/internal/log"
 	"github.com/Alia5/VIIPER/internal/server/api"
 	srvusb "github.com/Alia5/VIIPER/internal/server/usb"
@@ -26,7 +26,7 @@ func TestDeviceStreamHandler_Dispatch(t *testing.T) {
 	srv := srvusb.New(cfg, slog.Default(), log.NewRaw(nil))
 	logger := slog.Default()
 
-	bus, err := virtualbus.NewWithBusId(90001)
+	bus, err := virtualbus.NewWithBusID(90001)
 	require.NoError(t, err)
 	require.NoError(t, srv.AddBus(bus))
 	dev, err := keyboard.New(nil)
@@ -41,13 +41,13 @@ func TestDeviceStreamHandler_Dispatch(t *testing.T) {
 	metas := bus.GetAllDeviceMetas()
 	for _, m := range metas {
 		var busid string
-		for i, b := range m.Meta.USBBusId {
+		for i, b := range m.Meta.USBBusID {
 			if b == 0 {
-				busid = string(m.Meta.USBBusId[:i])
+				busid = string(m.Meta.USBBusID[:i])
 				break
 			}
 		}
-		if string(meta.USBBusId[:len(busid)]) == busid {
+		if string(meta.USBBusID[:len(busid)]) == busid {
 			dv = m.Dev
 			break
 		}
@@ -66,7 +66,7 @@ func TestDeviceStreamHandler_Dispatch(t *testing.T) {
 	api.RegisterDevice("keyboard", testReg)
 
 	clientConn, serverConn := net.Pipe()
-	defer clientConn.Close()
+	defer clientConn.Close() //nolint:errcheck
 
 	handler := api.DeviceStreamHandler(srv)
 	dvUSB := dv.(pusb.Device)
@@ -89,7 +89,7 @@ func TestAPIServer_StreamRoute_DispatchE2E(t *testing.T) {
 	})
 	defer done()
 
-	bus, err := virtualbus.NewWithBusId(70001)
+	bus, err := virtualbus.NewWithBusID(70001)
 	require.NoError(t, err)
 	require.NoError(t, srv.AddBus(bus))
 	dev, err := keyboard.New(nil)
@@ -100,9 +100,9 @@ func TestAPIServer_StreamRoute_DispatchE2E(t *testing.T) {
 	require.NotNil(t, meta)
 
 	var deviceID string
-	for i, b := range meta.USBBusId {
+	for i, b := range meta.USBBusID {
 		if b == 0 {
-			fullId := string(meta.USBBusId[:i])
+			fullId := string(meta.USBBusID[:i])
 			splits := strings.Split(fullId, "-")
 			deviceID = splits[1]
 			break
@@ -122,7 +122,7 @@ func TestAPIServer_StreamRoute_DispatchE2E(t *testing.T) {
 
 	c, err := net.Dial("tcp", addr)
 	require.NoError(t, err)
-	defer c.Close()
+	defer c.Close() //nolint:errcheck
 
 	_, err = fmt.Fprintf(c, "bus/%d/%s\x00", bus.BusID(), deviceID)
 	require.NoError(t, err)

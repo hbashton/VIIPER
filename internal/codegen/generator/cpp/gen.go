@@ -44,7 +44,7 @@ func Generate(logger *slog.Logger, outputDir string, md *meta.Metadata) error {
 		return err
 	}
 
-	if err := generateJson(logger, detailDir); err != nil {
+	if err := generateJSON(logger, detailDir); err != nil {
 		return err
 	}
 

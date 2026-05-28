@@ -5,6 +5,7 @@ import (
 	"io"
 )
 
+// nolint
 // viiper:wire dualshock4 c2s stickLX:i8 stickLY:i8 stickRX:i8 stickRY:i8 buttons:u16 dpad:u8 triggerL2:u8 triggerR2:u8 touch1X:u16 touch1Y:u16 touch1Active:bool touch2X:u16 touch2Y:u16 touch2Active:bool gyroX:i16 gyroY:i16 gyroZ:i16 accelX:i16 accelY:i16 accelZ:i16
 type InputState struct {
 	LX, LY  int8
@@ -82,6 +83,7 @@ func (s *InputState) UnmarshalBinary(data []byte) error {
 	return nil
 }
 
+// nolint
 // viiper:wire dualshock4 s2c rumbleSmall:u8 rumbleLarge:u8 ledRed:u8 ledGreen:u8 ledBlue:u8 flashOn:u8 flashOff:u8
 type OutputState struct {
 	RumbleSmall uint8 // (0-255)

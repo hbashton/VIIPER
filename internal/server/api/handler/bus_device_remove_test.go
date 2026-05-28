@@ -5,12 +5,12 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/Alia5/VIIPER/apiclient"
 	"github.com/Alia5/VIIPER/device/xbox360"
 	handlerTest "github.com/Alia5/VIIPER/internal/_testing"
 	"github.com/Alia5/VIIPER/internal/server/api"
 	"github.com/Alia5/VIIPER/internal/server/api/handler"
 	"github.com/Alia5/VIIPER/internal/server/usb"
+	"github.com/Alia5/VIIPER/viiperclient"
 	"github.com/Alia5/VIIPER/virtualbus"
 )
 
@@ -25,7 +25,7 @@ func TestBusDeviceRemove(t *testing.T) {
 		{
 			name: "remove existing device",
 			setup: func(t *testing.T, s *usb.Server) {
-				b, err := virtualbus.NewWithBusId(90001)
+				b, err := virtualbus.NewWithBusID(90001)
 				if err != nil {
 					t.Fatalf("create bus failed: %v", err)
 				}
@@ -54,7 +54,7 @@ func TestBusDeviceRemove(t *testing.T) {
 		{
 			name: "remove non-existing device",
 			setup: func(t *testing.T, s *usb.Server) {
-				b, err := virtualbus.NewWithBusId(90002)
+				b, err := virtualbus.NewWithBusID(90002)
 				if err != nil {
 					t.Fatalf("create bus failed: %v", err)
 				}
@@ -82,7 +82,7 @@ func TestBusDeviceRemove(t *testing.T) {
 			})
 			defer done()
 
-			c := apiclient.NewTransport(addr)
+			c := viiperclient.NewTransport(addr)
 			if tt.setup != nil {
 				tt.setup(t, srv)
 			}

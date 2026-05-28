@@ -8,11 +8,11 @@ import (
 	"time"
 
 	viiperTesting "github.com/Alia5/VIIPER/_testing"
-	"github.com/Alia5/VIIPER/apiclient"
 	"github.com/Alia5/VIIPER/device/dualshock4"
 	"github.com/Alia5/VIIPER/internal/server/api"
 	"github.com/Alia5/VIIPER/internal/server/api/handler"
 	"github.com/Alia5/VIIPER/usbip"
+	"github.com/Alia5/VIIPER/viiperclient"
 	"github.com/Alia5/VIIPER/virtualbus"
 	"github.com/stretchr/testify/assert"
 
@@ -102,7 +102,7 @@ func TestInputReports(t *testing.T) {
 				LY:           0,
 				RX:           0,
 				RY:           0,
-				Buttons:      uint16(dualshock4.ButtonSquare),
+				Buttons:      dualshock4.ButtonSquare,
 				DPad:         0,
 				Touch1Active: false,
 				Touch2Active: false,
@@ -235,8 +235,8 @@ func TestInputReports(t *testing.T) {
 	}
 
 	s := viiperTesting.NewTestServer(t)
-	defer s.UsbServer.Close()
-	defer s.ApiServer.Close()
+	defer s.UsbServer.Close() //nolint:errcheck
+	defer s.ApiServer.Close() //nolint:errcheck
 
 	r := s.ApiServer.Router()
 	r.Register("bus/{id}/add", handler.BusDeviceAdd(s.UsbServer, s.ApiServer))
@@ -246,19 +246,19 @@ func TestInputReports(t *testing.T) {
 		t.Fatalf("Failed to start API server: %v", err)
 	}
 
-	b, err := virtualbus.NewWithBusId(1)
+	b, err := virtualbus.NewWithBusID(1)
 	if err != nil {
 		t.Fatalf("Failed to create virtual bus: %v", err)
 	}
-	defer b.Close()
+	defer b.Close() //nolint:errcheck
 	_ = s.UsbServer.AddBus(b)
 
-	client := apiclient.New(s.ApiServer.Addr())
+	client := viiperclient.New(s.ApiServer.Addr())
 	stream, _, err := client.AddDeviceAndConnect(context.Background(), b.BusID(), "dualshock4", nil)
 	if !assert.NoError(t, err) {
 		return
 	}
-	defer stream.Close()
+	defer stream.Close() //nolint:errcheck
 
 	usbipClient := viiperTesting.NewUsbIpClient(t, s.UsbServer.Addr())
 	devs, err := usbipClient.ListDevices()
@@ -273,7 +273,7 @@ func TestInputReports(t *testing.T) {
 		return
 	}
 	if imp != nil && imp.Conn != nil {
-		defer imp.Conn.Close()
+		defer imp.Conn.Close() //nolint:errcheck
 	}
 
 	var seq uint32
@@ -412,8 +412,8 @@ func TestFeedback(t *testing.T) {
 	}
 
 	s := viiperTesting.NewTestServer(t)
-	defer s.UsbServer.Close()
-	defer s.ApiServer.Close()
+	defer s.UsbServer.Close() //nolint:errcheck
+	defer s.ApiServer.Close() //nolint:errcheck
 
 	r := s.ApiServer.Router()
 	r.Register("bus/{id}/add", handler.BusDeviceAdd(s.UsbServer, s.ApiServer))
@@ -423,19 +423,19 @@ func TestFeedback(t *testing.T) {
 		t.Fatalf("Failed to start API server: %v", err)
 	}
 
-	b, err := virtualbus.NewWithBusId(1)
+	b, err := virtualbus.NewWithBusID(1)
 	if err != nil {
 		t.Fatalf("Failed to create virtual bus: %v", err)
 	}
-	defer b.Close()
+	defer b.Close() //nolint:errcheck
 	_ = s.UsbServer.AddBus(b)
 
-	client := apiclient.New(s.ApiServer.Addr())
+	client := viiperclient.New(s.ApiServer.Addr())
 	stream, _, err := client.AddDeviceAndConnect(context.Background(), b.BusID(), "dualshock4", nil)
 	if !assert.NoError(t, err) {
 		return
 	}
-	defer stream.Close()
+	defer stream.Close() //nolint:errcheck
 
 	usbipClient := viiperTesting.NewUsbIpClient(t, s.UsbServer.Addr())
 	devs, err := usbipClient.ListDevices()
@@ -450,7 +450,7 @@ func TestFeedback(t *testing.T) {
 		return
 	}
 	if imp != nil && imp.Conn != nil {
-		defer imp.Conn.Close()
+		defer imp.Conn.Close() //nolint:errcheck
 	}
 
 	for _, tc := range cases {

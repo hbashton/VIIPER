@@ -249,7 +249,7 @@ func generateClient(logger *slog.Logger, srcDir string, md *meta.Metadata) error
 	if err != nil {
 		return fmt.Errorf("create file: %w", err)
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck
 
 	data := struct {
 		Header string

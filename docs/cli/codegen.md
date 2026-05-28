@@ -62,7 +62,7 @@ go run ./cmd/viiper codegen --lang=csharp
 
 Run codegen when any of these change:
 
-- `/apitypes/*.go`: API response structures
+- `/viipertypes/*.go`: API response structures
 - `/device/*/inputstate.go`: Wire format annotations
 - `/device/*/const.go`: Exported constants
 - `internal/server/api/*.go`: Route registrations

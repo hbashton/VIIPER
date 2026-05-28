@@ -40,8 +40,8 @@ Device resp; ViiperDevice device;
 try
 {
     resp = await client.BusDeviceAddAsync(busId, new DeviceCreateRequest { Type = "dualshock4" });
-    device = await client.ConnectDeviceAsync(resp.BusID, resp.DevId);
-    Console.WriteLine($"Created and connected to device {resp.DevId} on bus {resp.BusID}");
+    device = await client.ConnectDeviceAsync(resp.BusID, resp.DevID);
+    Console.WriteLine($"Created and connected to device {resp.DevID} on bus {resp.BusID}");
 }
 catch (Exception ex)
 {
@@ -55,7 +55,7 @@ Console.CancelKeyPress += async (_, e) => { e.Cancel = true; await Cleanup(); En
 
 async Task Cleanup()
 {
-    try { await client.BusDeviceRemoveAsync(resp.BusID, resp.DevId); Console.WriteLine($"Removed device {resp.DevId}"); } catch { }
+    try { await client.BusDeviceRemoveAsync(resp.BusID, resp.DevID); Console.WriteLine($"Removed device {resp.DevID}"); } catch { }
     if (createdBus) { try { await client.BusRemoveAsync(busId); Console.WriteLine($"Removed bus {busId}"); } catch { } }
 }
 

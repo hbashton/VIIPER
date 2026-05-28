@@ -109,7 +109,7 @@ func generateWireClassTS(outputPath, device, className string, tag *scanner.Wire
 	if err != nil {
 		return fmt.Errorf("create file: %w", err)
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck
 	data := struct {
 		Device    string
 		ClassName string

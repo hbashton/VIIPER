@@ -45,7 +45,7 @@ func generateBinaryUtils(logger *slog.Logger, utilsDir string) error {
 	if err != nil {
 		return fmt.Errorf("write binary.ts: %w", err)
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck
 	tmpl := template.Must(template.New("binaryts").Funcs(template.FuncMap{
 		"writeFileHeaderTS": writeFileHeaderTS,
 	}).Parse(binaryUtilsTemplate))

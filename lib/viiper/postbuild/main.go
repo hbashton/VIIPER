@@ -43,7 +43,7 @@ func main() {
 
 	data, _ := os.ReadFile("dist/libVIIPER/libVIIPER.h")
 	var out []string
-	for _, line := range strings.Split(string(data), "\n") {
+	for line := range strings.SplitSeq(string(data), "\n") {
 		if strings.HasPrefix(strings.TrimSpace(line), "extern ") {
 			for _, p := range strings.Fields(line)[1:] {
 				if before, _, ok := strings.Cut(p, "("); ok {
@@ -60,5 +60,5 @@ func main() {
 		}
 		out = append(out, line)
 	}
-	os.WriteFile("dist/libVIIPER/libVIIPER.h", []byte(strings.Join(out, "\n")), 0644)
+	os.WriteFile("dist/libVIIPER/libVIIPER.h", []byte(strings.Join(out, "\n")), 0644) // nolint
 }

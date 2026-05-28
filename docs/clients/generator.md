@@ -67,7 +67,7 @@ No special tags are required. Exported Go constants and maps are emitted with la
 **Scan Phase:**  
 
 1. Parse API routes from `internal/server/api/*.go`  
-2. Reflect response DTOs from `/apitypes/*.go`  
+2. Reflect response DTOs from `/viipertypes/*.go`  
 3. Find device types via `RegisterDevice()` calls  
 4. Parse `viiper:wire` comments for packet layouts  
 5. Extract all exported constants and map literals from `/device/*/const.go` (automatic)
@@ -178,7 +178,7 @@ public static class CharToKey
 
 Run codegen when any of these change:
 
-- `/apitypes/*.go`: API response structures
+- `/viipertypes/*.go`: API response structures
 - `/device/*/inputstate.go`: Wire tag annotations
 - `/device/*/const.go`: Exported constants and map literals
 - `internal/server/api/*.go`: Route registrations

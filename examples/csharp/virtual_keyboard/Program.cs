@@ -49,8 +49,8 @@ try
 {
     // 2) Add device and connect
     deviceInfo = await client.BusDeviceAddAsync(busId, new DeviceCreateRequest { Type = "keyboard" });
-    device = await client.ConnectDeviceAsync(deviceInfo.BusID, deviceInfo.DevId);
-    Console.WriteLine($"Created and connected to device {deviceInfo.DevId} on bus {deviceInfo.BusID}");
+    device = await client.ConnectDeviceAsync(deviceInfo.BusID, deviceInfo.DevID);
+    Console.WriteLine($"Created and connected to device {deviceInfo.DevID} on bus {deviceInfo.BusID}");
 }
 catch (Exception ex)
 {
@@ -68,7 +68,7 @@ Console.CancelKeyPress += async (_, e) => { e.Cancel = true; await Cleanup(); En
 
 async Task Cleanup()
 {
-    try { await client.BusDeviceRemoveAsync(deviceInfo.BusID, deviceInfo.DevId); Console.WriteLine($"Removed device {deviceInfo.DevId}"); } catch { }
+    try { await client.BusDeviceRemoveAsync(deviceInfo.BusID, deviceInfo.DevID); Console.WriteLine($"Removed device {deviceInfo.DevID}"); } catch { }
     if (createdBus)
     {
         try { await client.BusRemoveAsync(busId); Console.WriteLine($"Removed bus {busId}"); } catch { }

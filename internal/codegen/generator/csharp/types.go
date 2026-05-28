@@ -52,7 +52,7 @@ func generateTypes(logger *slog.Logger, typesDir string, md *meta.Metadata) erro
 	if err != nil {
 		return fmt.Errorf("create file: %w", err)
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck
 
 	data := struct {
 		DTOs interface{}

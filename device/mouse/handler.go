@@ -19,7 +19,7 @@ type handler struct{}
 
 func (h *handler) CreateDevice(o *device.CreateOptions) (usb.Device, error) { return New(o) }
 
-func (r *handler) StreamHandler() api.StreamHandlerFunc {
+func (h *handler) StreamHandler() api.StreamHandlerFunc {
 	return func(conn net.Conn, devPtr *usb.Device, logger *slog.Logger) error {
 		if devPtr == nil || *devPtr == nil {
 			return fmt.Errorf("nil device")

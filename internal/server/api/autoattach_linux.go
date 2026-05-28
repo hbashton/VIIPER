@@ -15,7 +15,7 @@ import (
 )
 
 func attachLocalhostClientImpl(ctx context.Context, deviceExportMeta *usbip.ExportMeta, usbipServerPort uint16, _ bool, logger *slog.Logger) error {
-	logger.Info("Auto-attaching localhost client", "busID", deviceExportMeta.BusId, "deviceID", deviceExportMeta.DevId)
+	logger.Info("Auto-attaching localhost client", "busID", deviceExportMeta.BusID, "deviceID", deviceExportMeta.DevID)
 
 	cmd := exec.CommandContext(
 		ctx,
@@ -24,7 +24,7 @@ func attachLocalhostClientImpl(ctx context.Context, deviceExportMeta *usbip.Expo
 		strconv.FormatUint(uint64(usbipServerPort), 10),
 		"attach",
 		"-r", "localhost",
-		"-b", fmt.Sprintf("%d-%d", deviceExportMeta.BusId, deviceExportMeta.DevId),
+		"-b", fmt.Sprintf("%d-%d", deviceExportMeta.BusID, deviceExportMeta.DevID),
 	)
 	output, err := cmd.CombinedOutput()
 	if err != nil {

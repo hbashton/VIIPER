@@ -73,7 +73,7 @@ func generateConstants(logger *slog.Logger, deviceDir string, deviceName string,
 	if err != nil {
 		return fmt.Errorf("creating file: %w", err)
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck
 
 	tmpl := template.Must(template.New("constants").Parse(constantsTemplate))
 	if err := tmpl.Execute(f, data); err != nil {
@@ -243,7 +243,11 @@ func isFlags(constants []constantInfo) bool {
 	for _, c := range constants {
 		if strings.HasPrefix(c.Value, "0x") {
 			var val uint64
-			fmt.Sscanf(c.Value, "0x%x", &val)
+			_, err := fmt.Sscanf(c.Value, "0x%x", &val)
+			if err != nil {
+				slog.Error("Failed to parse constant value for flags inference", "value", c.Value, "error", err)
+				continue
+			}
 			if val > 0 && (val&(val-1)) == 0 {
 				return true
 			}
@@ -422,9 +426,10 @@ func formatMapKey(key string, goType string) string {
 		}
 		if len(key) == 1 {
 			if key[0] >= 32 && key[0] <= 126 {
-				if key[0] == '\'' {
+				switch key[0] {
+				case '\'':
 					return "(byte)'\\''"
-				} else if key[0] == '\\' {
+				case '\\':
 					return "(byte)'\\\\'"
 				}
 				return fmt.Sprintf("(byte)'%s'", key)

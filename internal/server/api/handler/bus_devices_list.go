@@ -9,10 +9,10 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/Alia5/VIIPER/apitypes"
 	"github.com/Alia5/VIIPER/internal/server/api"
 	apierror "github.com/Alia5/VIIPER/internal/server/api/error"
 	"github.com/Alia5/VIIPER/internal/server/usb"
+	"github.com/Alia5/VIIPER/viipertypes"
 )
 
 // BusDevicesList returns a handler that lists devices on a bus.
@@ -31,19 +31,19 @@ func BusDevicesList(s *usb.Server) api.HandlerFunc {
 			return apierror.ErrNotFound(fmt.Sprintf("bus %d not found", busID))
 		}
 		metas := b.GetAllDeviceMetas()
-		out := make([]apitypes.Device, 0, len(metas))
+		out := make([]viipertypes.Device, 0, len(metas))
 		for _, m := range metas {
 			dtype := inferDeviceType(m.Dev)
-			out = append(out, apitypes.Device{
-				BusID:          m.Meta.BusId,
-				DevId:          fmt.Sprintf("%d", m.Meta.DevId),
+			out = append(out, viipertypes.Device{
+				BusID:          m.Meta.BusID,
+				DevID:          fmt.Sprintf("%d", m.Meta.DevID),
 				Vid:            fmt.Sprintf("0x%04x", m.Dev.GetDescriptor().Device.IDVendor),
 				Pid:            fmt.Sprintf("0x%04x", m.Dev.GetDescriptor().Device.IDProduct),
 				Type:           dtype,
 				DeviceSpecific: m.Dev.GetDeviceSpecificArgs(),
 			})
 		}
-		payload, err := json.Marshal(apitypes.DevicesListResponse{Devices: out})
+		payload, err := json.Marshal(viipertypes.DevicesListResponse{Devices: out})
 		if err != nil {
 			return apierror.ErrInternal(fmt.Sprintf("failed to marshal response: %v", err))
 		}
@@ -60,7 +60,7 @@ func inferDeviceType(dev any) string {
 		return ""
 	}
 	t := reflect.TypeOf(dev)
-	if t.Kind() == reflect.Ptr {
+	if t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 	pkg := t.PkgPath() // e.g., "github.com/Alia5/VIIPER/device/xbox360"

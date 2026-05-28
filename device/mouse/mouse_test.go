@@ -6,10 +6,10 @@ import (
 	"time"
 
 	viiperTesting "github.com/Alia5/VIIPER/_testing"
-	"github.com/Alia5/VIIPER/apiclient"
 	"github.com/Alia5/VIIPER/device/mouse"
 	"github.com/Alia5/VIIPER/internal/server/api"
 	"github.com/Alia5/VIIPER/internal/server/api/handler"
+	"github.com/Alia5/VIIPER/viiperclient"
 	"github.com/Alia5/VIIPER/virtualbus"
 	"github.com/stretchr/testify/assert"
 
@@ -38,7 +38,7 @@ func TestInputReports(t *testing.T) {
 		{
 			name: "Left down",
 			inputState: mouse.InputState{
-				Buttons: mouse.Btn_Left,
+				Buttons: mouse.BtnLeft,
 				DX:      0,
 				DY:      0,
 				Pan:     0,
@@ -49,7 +49,7 @@ func TestInputReports(t *testing.T) {
 		{
 			name: "right down",
 			inputState: mouse.InputState{
-				Buttons: mouse.Btn_Right,
+				Buttons: mouse.BtnRight,
 				DX:      0,
 				DY:      0,
 				Pan:     0,
@@ -60,7 +60,7 @@ func TestInputReports(t *testing.T) {
 		{
 			name: "all down",
 			inputState: mouse.InputState{
-				Buttons: mouse.Btn_Right | mouse.Btn_Left | mouse.Btn_Middle | mouse.Btn_Back | mouse.Btn_Forward,
+				Buttons: mouse.BtnRight | mouse.BtnLeft | mouse.BtnMiddle | mouse.BtnBack | mouse.BtnForward,
 				DX:      0,
 				DY:      0,
 				Pan:     0,
@@ -126,7 +126,7 @@ func TestInputReports(t *testing.T) {
 		{
 			name: "Move right 100, down 50, left button",
 			inputState: mouse.InputState{
-				Buttons: mouse.Btn_Left,
+				Buttons: mouse.BtnLeft,
 				DX:      100,
 				DY:      50,
 				Pan:     0,
@@ -137,8 +137,8 @@ func TestInputReports(t *testing.T) {
 	}
 
 	s := viiperTesting.NewTestServer(t)
-	defer s.UsbServer.Close()
-	defer s.ApiServer.Close()
+	defer s.UsbServer.Close() //nolint:errcheck
+	defer s.ApiServer.Close() //nolint:errcheck
 
 	r := s.ApiServer.Router()
 	r.Register("bus/{id}/add", handler.BusDeviceAdd(s.UsbServer, s.ApiServer))
@@ -148,19 +148,19 @@ func TestInputReports(t *testing.T) {
 		t.Fatalf("Failed to start API server: %v", err)
 	}
 
-	b, err := virtualbus.NewWithBusId(1)
+	b, err := virtualbus.NewWithBusID(1)
 	if err != nil {
 		t.Fatalf("Failed to create virtual bus: %v", err)
 	}
-	defer b.Close()
+	defer b.Close() //nolint:errcheck
 	_ = s.UsbServer.AddBus(b)
 
-	client := apiclient.New(s.ApiServer.Addr())
+	client := viiperclient.New(s.ApiServer.Addr())
 	stream, _, err := client.AddDeviceAndConnect(context.Background(), b.BusID(), "mouse", nil)
 	if !assert.NoError(t, err) {
 		return
 	}
-	defer stream.Close()
+	defer stream.Close() //nolint:errcheck
 
 	usbipClient := viiperTesting.NewUsbIpClient(t, s.UsbServer.Addr())
 	devs, err := usbipClient.ListDevices()
@@ -175,7 +175,7 @@ func TestInputReports(t *testing.T) {
 		return
 	}
 	if imp != nil && imp.Conn != nil {
-		defer imp.Conn.Close()
+		defer imp.Conn.Close() //nolint:errcheck
 	}
 
 	for _, tc := range cases {

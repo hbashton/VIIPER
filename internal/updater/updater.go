@@ -102,7 +102,7 @@ func CheckUpdate(currentVersion string, notify config.UpdateNotify) {
 			slog.Error("failed to fetch releases", "error", err)
 			return
 		}
-		defer resp.Body.Close()
+		defer resp.Body.Close() //nolint:errcheck
 		if resp.StatusCode != http.StatusOK {
 			slog.Error("unexpected status from GitHub API", "status", resp.StatusCode)
 			return
@@ -122,7 +122,7 @@ func CheckUpdate(currentVersion string, notify config.UpdateNotify) {
 			slog.Error("failed to fetch latest release", "error", err)
 			return
 		}
-		defer resp.Body.Close()
+		defer resp.Body.Close() //nolint:errcheck
 		if resp.StatusCode != http.StatusOK {
 			slog.Error("unexpected status from GitHub API", "status", resp.StatusCode)
 			return

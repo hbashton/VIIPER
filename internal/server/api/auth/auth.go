@@ -32,7 +32,7 @@ func GenerateKey() (string, error) {
 // DeriveKey uses PBKDF2 to stretch any password to 32 bytes
 func DeriveKey(password string) ([]byte, error) {
 	if password == "" {
-		return nil, errors.New("Password cannot be empty")
+		return nil, errors.New("password cannot be empty")
 	}
 	return pbkdf2.Key(
 		sha256.New,

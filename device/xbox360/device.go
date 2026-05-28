@@ -30,11 +30,11 @@ func New(o *device.CreateOptions) (*Xbox360, error) {
 		descriptor: MakeDescriptor(),
 	}
 	if o != nil {
-		if o.IdVendor != nil {
-			d.descriptor.Device.IDVendor = *o.IdVendor
+		if o.IDVendor != nil {
+			d.descriptor.Device.IDVendor = *o.IDVendor
 		}
-		if o.IdProduct != nil {
-			d.descriptor.Device.IDProduct = *o.IdProduct
+		if o.IDProduct != nil {
+			d.descriptor.Device.IDProduct = *o.IDProduct
 		}
 		if o.DeviceSpecific != nil {
 			data, err := json.Marshal(o.DeviceSpecific)

@@ -103,7 +103,7 @@ inline std::vector<T> get_array(const json_type& j, const std::string& key) {
 } // namespace viiper
 `
 
-func generateJson(logger *slog.Logger, detailDir string) error {
+func generateJSON(logger *slog.Logger, detailDir string) error {
 	logger.Debug("Generating detail/json.hpp")
 	outputFile := filepath.Join(detailDir, "json.hpp")
 

@@ -164,7 +164,7 @@ func generateClient(logger *slog.Logger, srcDir string, md *meta.Metadata) error
 	if err != nil {
 		return fmt.Errorf("create file: %w", err)
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck
 	data := struct{ Routes []scanner.RouteInfo }{Routes: md.Routes}
 	if err := tmpl.Execute(f, data); err != nil {
 		return fmt.Errorf("execute template: %w", err)

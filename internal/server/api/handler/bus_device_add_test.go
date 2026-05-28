@@ -10,7 +10,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/Alia5/VIIPER/apiclient"
 	"github.com/Alia5/VIIPER/device"
 	"github.com/Alia5/VIIPER/device/xbox360"
 	th "github.com/Alia5/VIIPER/internal/_testing"
@@ -19,6 +18,7 @@ import (
 	"github.com/Alia5/VIIPER/internal/server/api/handler"
 	"github.com/Alia5/VIIPER/internal/server/usb"
 	pusb "github.com/Alia5/VIIPER/usb"
+	"github.com/Alia5/VIIPER/viiperclient"
 	"github.com/Alia5/VIIPER/virtualbus"
 )
 
@@ -34,7 +34,7 @@ func TestBusDeviceAdd(t *testing.T) {
 		{
 			name: "add device to existing bus",
 			setup: func(t *testing.T, s *usb.Server, as *api.Server) {
-				b, err := virtualbus.NewWithBusId(80001)
+				b, err := virtualbus.NewWithBusID(80001)
 				if err != nil {
 					t.Fatalf("create bus failed: %v", err)
 				}
@@ -49,7 +49,7 @@ func TestBusDeviceAdd(t *testing.T) {
 		{
 			name: "add device to existing bus with device specific args",
 			setup: func(t *testing.T, s *usb.Server, as *api.Server) {
-				b, err := virtualbus.NewWithBusId(80001)
+				b, err := virtualbus.NewWithBusID(80001)
 				if err != nil {
 					t.Fatalf("create bus failed: %v", err)
 				}
@@ -64,7 +64,7 @@ func TestBusDeviceAdd(t *testing.T) {
 		{
 			name: "invalid device specific args",
 			setup: func(t *testing.T, s *usb.Server, as *api.Server) {
-				b, err := virtualbus.NewWithBusId(80001)
+				b, err := virtualbus.NewWithBusID(80001)
 				if err != nil {
 					t.Fatalf("create bus failed: %v", err)
 				}
@@ -93,7 +93,7 @@ func TestBusDeviceAdd(t *testing.T) {
 		{
 			name: "invalid json",
 			setup: func(t *testing.T, s *usb.Server, as *api.Server) {
-				b, err := virtualbus.NewWithBusId(2)
+				b, err := virtualbus.NewWithBusID(2)
 				if err != nil {
 					t.Fatalf("create bus failed: %v", err)
 				}
@@ -108,7 +108,7 @@ func TestBusDeviceAdd(t *testing.T) {
 		{
 			name: "invalid payload",
 			setup: func(t *testing.T, s *usb.Server, as *api.Server) {
-				b, err := virtualbus.NewWithBusId(3)
+				b, err := virtualbus.NewWithBusID(3)
 				if err != nil {
 					t.Fatalf("create bus failed: %v", err)
 				}
@@ -123,7 +123,7 @@ func TestBusDeviceAdd(t *testing.T) {
 		{
 			name: "correct device id after add/remove",
 			setup: func(t *testing.T, s *usb.Server, as *api.Server) {
-				b, err := virtualbus.NewWithBusId(80005)
+				b, err := virtualbus.NewWithBusID(80005)
 				if err != nil {
 					t.Fatalf("create bus failed: %v", err)
 				}
@@ -149,7 +149,7 @@ func TestBusDeviceAdd(t *testing.T) {
 			name: "autoattach fails returns error",
 			setup: func(t *testing.T, s *usb.Server, as *api.Server) {
 				as.Config().AutoAttachLocalClient = true
-				b, err := virtualbus.NewWithBusId(80250)
+				b, err := virtualbus.NewWithBusID(80250)
 				if err != nil {
 					t.Fatalf("create bus failed: %v", err)
 				}
@@ -181,7 +181,7 @@ func TestBusDeviceAdd(t *testing.T) {
 			})
 			defer done()
 
-			c := apiclient.NewTransport(addr)
+			c := viiperclient.NewTransport(addr)
 			if tt.setup != nil {
 				tt.setup(t, srv, as)
 			}
@@ -207,7 +207,7 @@ func TestBusDeviceAdd_NoConnection_TimeoutCleanup(t *testing.T) {
 		BusCleanupTimeout: time.Millisecond * 500,
 	}, slog.Default(), log.NewRaw(nil))
 
-	b, err := virtualbus.NewWithBusId(80100)
+	b, err := virtualbus.NewWithBusID(80100)
 	require.NoError(t, err)
 	require.NoError(t, usbSrv.AddBus(b))
 
@@ -222,7 +222,7 @@ func TestBusDeviceAdd_NoConnection_TimeoutCleanup(t *testing.T) {
 	r.Register("bus/{id}/add", handler.BusDeviceAdd(usbSrv, apiSrv))
 	r.Register("bus/{id}/list", handler.BusDevicesList(usbSrv))
 	require.NoError(t, apiSrv.Start())
-	defer apiSrv.Close()
+	defer apiSrv.Close() //nolint:errcheck
 
 	testReg := th.CreateMockRegistration(t, "xbox360",
 		func(o *device.CreateOptions) (pusb.Device, error) { return xbox360.New(o) },
@@ -231,7 +231,7 @@ func TestBusDeviceAdd_NoConnection_TimeoutCleanup(t *testing.T) {
 
 	api.RegisterDevice("xbox360", testReg)
 
-	c := apiclient.New(addr)
+	c := viiperclient.New(addr)
 	_, err = c.DeviceAdd(80100, "xbox360", nil)
 	require.NoError(t, err)
 

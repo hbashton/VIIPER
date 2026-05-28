@@ -61,9 +61,10 @@ func ScanDeviceConstants(devicePkgPath string) (*DeviceConstants, error) {
 
 		for _, decl := range file.Decls {
 			if genDecl, ok := decl.(*ast.GenDecl); ok {
-				if genDecl.Tok == token.CONST {
+				switch genDecl.Tok {
+				case token.CONST:
 					result.Constants = append(result.Constants, extractConstants(genDecl)...)
-				} else if genDecl.Tok == token.VAR {
+				case token.VAR:
 					maps := extractMaps(genDecl)
 					result.Maps = append(result.Maps, maps...)
 				}

@@ -4,9 +4,9 @@ import (
 	"encoding/json"
 	"log/slog"
 
-	"github.com/Alia5/VIIPER/apitypes"
 	"github.com/Alia5/VIIPER/internal/server/api"
 	"github.com/Alia5/VIIPER/internal/server/usb"
+	"github.com/Alia5/VIIPER/viipertypes"
 )
 
 // BusList returns a handler that lists registered busses.
@@ -14,7 +14,7 @@ import (
 func BusList(s *usb.Server) api.HandlerFunc {
 	return func(req *api.Request, res *api.Response, logger *slog.Logger) error {
 		buses := s.ListBuses()
-		payload := apitypes.BusListResponse{Buses: buses}
+		payload := viipertypes.BusListResponse{Buses: buses}
 		b, err := json.Marshal(payload)
 		if err != nil {
 			return err

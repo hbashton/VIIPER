@@ -1,6 +1,6 @@
 import { ViiperClient, ViiperDevice, Mouse, Types } from "viiperclient";
 
-const { MouseInput, Btn_ } = Mouse;
+const { MouseInput, Btn } = Mouse;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -101,7 +101,7 @@ async function main() {
 
       // Simulate a short left click: press then release
       await sleep(50);
-      const press = new MouseInput({ Buttons: Btn_.Left, Dx: 0, Dy: 0, Wheel: 0, Pan: 0 });
+      const press = new MouseInput({ Buttons: Btn.Left, Dx: 0, Dy: 0, Wheel: 0, Pan: 0 });
       await dev.send(press);
       await sleep(60);
       const rel = new MouseInput({ Buttons: 0x00, Dx: 0, Dy: 0, Wheel: 0, Pan: 0 });

@@ -13,12 +13,12 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/Alia5/VIIPER/apitypes"
 	"github.com/Alia5/VIIPER/device"
 	"github.com/Alia5/VIIPER/internal/server/api/auth"
 	apierror "github.com/Alia5/VIIPER/internal/server/api/error"
 	"github.com/Alia5/VIIPER/internal/server/usb"
 	pusb "github.com/Alia5/VIIPER/usb"
+	"github.com/Alia5/VIIPER/viipertypes"
 )
 
 // Server implements a small TCP API for managing virtual bus topology.
@@ -107,19 +107,28 @@ func (s *Server) serve() {
 func (s *Server) writeError(w io.Writer, err error) {
 	apiErr := apierror.WrapError(err)
 	problemJSON, _ := json.Marshal(apiErr)
-	fmt.Fprintf(w, "%s\n", string(problemJSON))
+	_, err = fmt.Fprintf(w, "%s\n", string(problemJSON))
+	if err != nil {
+		s.logger.Error("failed to write error response", "error", err)
+	}
 }
 
 func (s *Server) writeOK(w io.Writer, rest string) {
 	if rest == "" {
-		fmt.Fprintln(w)
+		_, err := fmt.Fprintln(w)
+		if err != nil {
+			s.logger.Error("failed to write OK response", "error", err)
+		}
 	} else {
-		fmt.Fprintf(w, "%s\n", rest)
+		_, err := fmt.Fprintf(w, "%s\n", rest)
+		if err != nil {
+			s.logger.Error("failed to write OK response", "error", err)
+		}
 	}
 }
 
 func (s *Server) handleConn(conn net.Conn) {
-	defer conn.Close()
+	defer conn.Close() //nolint:errcheck
 
 	connCtx, connCancel := context.WithCancel(context.Background())
 	defer connCancel()
@@ -150,10 +159,9 @@ func (s *Server) handleConn(conn net.Conn) {
 
 		clientNonce, serverNonce, err := auth.HandleAuthHandshake(r, w, key, false)
 		if err != nil {
-			var apiErr apitypes.ApiError
-			if errors.As(err, &apiErr) {
-				connLogger.Error("auth handshake failed", "error", err)
-				s.writeError(w, err)
+			if apiErr, ok := errors.AsType[viipertypes.APIError](err); ok {
+				connLogger.Error("auth handshake failed", "error", apiErr)
+				s.writeError(w, apiErr)
 				return
 			}
 			connLogger.Error("auth handshake failed", "error", err)
@@ -254,7 +262,7 @@ func (s *Server) handleConn(conn net.Conn) {
 		var devCtx context.Context
 		metas := bus.GetAllDeviceMetas()
 		for _, meta := range metas {
-			if fmt.Sprintf("%d", meta.Meta.DevId) == devIDStr {
+			if fmt.Sprintf("%d", meta.Meta.DevID) == devIDStr {
 				dev = meta.Dev
 				devCtx = bus.GetDeviceContext(dev)
 				break
@@ -287,7 +295,7 @@ func (s *Server) handleConn(conn net.Conn) {
 				case <-connTimer.C:
 					exportMeta := device.GetDeviceMeta(devCtx)
 					if exportMeta != nil {
-						deviceIDStr := fmt.Sprintf("%d", exportMeta.DevId)
+						deviceIDStr := fmt.Sprintf("%d", exportMeta.DevID)
 						if err := bus.RemoveDeviceByID(deviceIDStr); err != nil {
 							connLogger.Error("disconnect timeout: failed to remove device", "busID", busID, "deviceID", deviceIDStr, "error", err)
 						} else {

@@ -159,7 +159,7 @@ func generateDevice(logger *slog.Logger, projectDir string, md *meta.Metadata) e
 	if err != nil {
 		return fmt.Errorf("create ViiperDevice.cs: %w", err)
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck
 	if err := tmpl.Execute(f, md); err != nil {
 		return fmt.Errorf("execute device template: %w", err)
 	}

@@ -58,7 +58,7 @@ func generateConstants(logger *slog.Logger, deviceDir string, deviceName string,
 	if err != nil {
 		return fmt.Errorf("create file: %w", err)
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck
 	tmpl := template.Must(template.New("constsTS").Funcs(template.FuncMap{
 		"writeFileHeaderTS": writeFileHeaderTS,
 	}).Parse(constantsTemplateTS))

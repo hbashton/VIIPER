@@ -16,13 +16,13 @@ const basepath = "/sys/devices/pci0000:00/0000:00:08.1/0000:00:04:00.3/usb"
 
 var (
 	allocatedBusIds = make(map[uint32]bool)
-	globalMutex     sync.Mutex
+	globalMtx       sync.Mutex
 )
 
 // VirtualBus manages USB bus topology and auto-assigns device addresses.
 type VirtualBus struct {
-	mutex           sync.Mutex
-	busId           uint32
+	mtx             sync.Mutex
+	busID           uint32
 	nextDevID       uint32
 	allocatedDevIDs map[uint32]bool
 	devices         []busDevice
@@ -38,31 +38,31 @@ type DeviceMeta struct {
 
 // New creates a new VirtualBus instance with a unique auto-assigned bus number.
 func New(busID uint32) *VirtualBus {
-	globalMutex.Lock()
-	defer globalMutex.Unlock()
+	globalMtx.Lock()
+	defer globalMtx.Unlock()
 
 	allocatedBusIds[busID] = true
 
 	return &VirtualBus{
-		busId:           busID,
+		busID:           busID,
 		nextDevID:       0,
 		allocatedDevIDs: make(map[uint32]bool),
 	}
 }
 
-// NewWithBusId creates a new VirtualBus instance starting at a specific bus number.
+// NewWithBusID creates a new VirtualBus instance starting at a specific bus number.
 // Returns an error if the bus number is already allocated.
-func NewWithBusId(busId uint32) (*VirtualBus, error) {
-	globalMutex.Lock()
-	defer globalMutex.Unlock()
+func NewWithBusID(busID uint32) (*VirtualBus, error) {
+	globalMtx.Lock()
+	defer globalMtx.Unlock()
 
-	if allocatedBusIds[busId] {
-		return nil, fmt.Errorf("bus number %d already allocated", busId)
+	if allocatedBusIds[busID] {
+		return nil, fmt.Errorf("bus number %d already allocated", busID)
 	}
-	allocatedBusIds[busId] = true
+	allocatedBusIds[busID] = true
 
 	return &VirtualBus{
-		busId:           busId,
+		busID:           busID,
 		nextDevID:       0,
 		allocatedDevIDs: make(map[uint32]bool),
 	}, nil
@@ -77,8 +77,8 @@ func NewWithBusId(busId uint32) (*VirtualBus, error) {
 // which returns a static descriptor that will be used for bus registration.
 // Returns a context containing the device's lifecycle and metadata (use GetDeviceMeta to extract).
 func (vb *VirtualBus) Add(dev usb.Device) (context.Context, error) {
-	vb.mutex.Lock()
-	defer vb.mutex.Unlock()
+	vb.mtx.Lock()
+	defer vb.mtx.Unlock()
 
 	if vb.emptyCancel != nil {
 		vb.emptyCancel()
@@ -91,7 +91,7 @@ func (vb *VirtualBus) Add(dev usb.Device) (context.Context, error) {
 			return nil, fmt.Errorf("device already registered on this bus")
 		}
 	}
-	busID := vb.busId
+	busID := vb.busID
 	var devID uint32
 	for i := uint32(1); ; i++ {
 		if !vb.allocatedDevIDs[i] {
@@ -106,9 +106,9 @@ func (vb *VirtualBus) Add(dev usb.Device) (context.Context, error) {
 
 	var meta usbip.ExportMeta
 	copy(meta.Path[:], path)
-	copy(meta.USBBusId[:], busDevID)
-	meta.BusId = busID
-	meta.DevId = devID
+	copy(meta.USBBusID[:], busDevID)
+	meta.BusID = busID
+	meta.DevID = devID
 	connTimer := time.NewTimer(0)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -121,8 +121,8 @@ func (vb *VirtualBus) Add(dev usb.Device) (context.Context, error) {
 
 // GetAllDeviceMetas returns a copy of all registered devices with their descriptors and export metadata.
 func (vb *VirtualBus) GetAllDeviceMetas() []DeviceMeta {
-	vb.mutex.Lock()
-	defer vb.mutex.Unlock()
+	vb.mtx.Lock()
+	defer vb.mtx.Unlock()
 	out := make([]DeviceMeta, 0, len(vb.devices))
 	for _, d := range vb.devices {
 		out = append(out, DeviceMeta{Dev: d.dev, Meta: d.meta})
@@ -132,15 +132,15 @@ func (vb *VirtualBus) GetAllDeviceMetas() []DeviceMeta {
 
 // BusID returns the bus number for this VirtualBus.
 func (vb *VirtualBus) BusID() uint32 {
-	vb.mutex.Lock()
-	defer vb.mutex.Unlock()
-	return vb.busId
+	vb.mtx.Lock()
+	defer vb.mtx.Unlock()
+	return vb.busID
 }
 
 // Devices returns all devices currently attached to this bus.
 func (vb *VirtualBus) Devices() []usb.Device {
-	vb.mutex.Lock()
-	defer vb.mutex.Unlock()
+	vb.mtx.Lock()
+	defer vb.mtx.Unlock()
 	out := make([]usb.Device, 0, len(vb.devices))
 	for _, d := range vb.devices {
 		out = append(out, d.dev)
@@ -149,8 +149,8 @@ func (vb *VirtualBus) Devices() []usb.Device {
 }
 
 func (vb *VirtualBus) GetBusEmptyContext() context.Context {
-	vb.mutex.Lock()
-	defer vb.mutex.Unlock()
+	vb.mtx.Lock()
+	defer vb.mtx.Unlock()
 	if len(vb.devices) > 0 {
 		return nil
 	}
@@ -163,20 +163,20 @@ func (vb *VirtualBus) GetBusEmptyContext() context.Context {
 // RemoveDeviceByID removes a device by its  ID (e.g., "1").
 // Returns error if not found.
 func (vb *VirtualBus) RemoveDeviceByID(deviceID string) error {
-	vb.mutex.Lock()
-	defer vb.mutex.Unlock()
+	vb.mtx.Lock()
+	defer vb.mtx.Unlock()
 	for i, d := range vb.devices {
-		if fmt.Sprintf("%d", d.meta.DevId) == deviceID {
+		if fmt.Sprintf("%d", d.meta.DevID) == deviceID {
 			if d.cancel != nil {
 				d.cancel()
 			}
-			delete(vb.allocatedDevIDs, d.meta.DevId)
+			delete(vb.allocatedDevIDs, d.meta.DevID)
 			vb.devices = append(vb.devices[:i], vb.devices[i+1:]...)
 
 			return nil
 		}
 	}
-	return fmt.Errorf("device with id %s not found on bus %d", deviceID, vb.busId)
+	return fmt.Errorf("device with id %s not found on bus %d", deviceID, vb.busID)
 }
 
 // Remove unregisters a device from the bus.
@@ -184,14 +184,14 @@ func (vb *VirtualBus) RemoveDeviceByID(deviceID string) error {
 // the global bus number. Removal should be used for dynamic device teardown
 // during runtime.
 func (vb *VirtualBus) Remove(dev usb.Device) error {
-	vb.mutex.Lock()
-	defer vb.mutex.Unlock()
+	vb.mtx.Lock()
+	defer vb.mtx.Unlock()
 	for i, d := range vb.devices {
 		if d.dev == dev {
 			if d.cancel != nil {
 				d.cancel()
 			}
-			delete(vb.allocatedDevIDs, d.meta.DevId)
+			delete(vb.allocatedDevIDs, d.meta.DevID)
 			vb.devices = append(vb.devices[:i], vb.devices[i+1:]...)
 			return nil
 		}
@@ -202,8 +202,8 @@ func (vb *VirtualBus) Remove(dev usb.Device) error {
 // Close frees the bus number allocated to this VirtualBus, allowing it to be
 // reused. After calling Close, this VirtualBus instance should not be used.
 func (vb *VirtualBus) Close() error {
-	vb.mutex.Lock()
-	defer vb.mutex.Unlock()
+	vb.mtx.Lock()
+	defer vb.mtx.Unlock()
 
 	for i := range vb.devices {
 		if vb.devices[i].cancel != nil {
@@ -213,10 +213,10 @@ func (vb *VirtualBus) Close() error {
 		vb.devices[i].cancel = nil
 	}
 
-	globalMutex.Lock()
-	defer globalMutex.Unlock()
+	globalMtx.Lock()
+	defer globalMtx.Unlock()
 
-	delete(allocatedBusIds, vb.busId)
+	delete(allocatedBusIds, vb.busID)
 	return nil
 }
 
@@ -226,8 +226,8 @@ func (vb *VirtualBus) Close() error {
 // GetDeviceContext returns the context for a specific device.
 // Returns nil if the device is not found or has no active context.
 func (vb *VirtualBus) GetDeviceContext(dev usb.Device) context.Context {
-	vb.mutex.Lock()
-	defer vb.mutex.Unlock()
+	vb.mtx.Lock()
+	defer vb.mtx.Unlock()
 	for i := range vb.devices {
 		if vb.devices[i].dev == dev {
 			return vb.devices[i].ctx

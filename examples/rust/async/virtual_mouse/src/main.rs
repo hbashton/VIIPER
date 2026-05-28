@@ -127,7 +127,7 @@ async fn main() {
         // Simulate a short left click: press then release
         sleep(Duration::from_millis(50)).await;
         let _ = stream.send(&MouseInput {
-            buttons: BTN__LEFT,
+            buttons: BTN_LEFT,
             dx: 0,
             dy: 0,
             wheel: 0,

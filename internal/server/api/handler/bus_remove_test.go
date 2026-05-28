@@ -5,12 +5,12 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/Alia5/VIIPER/apiclient"
 	"github.com/Alia5/VIIPER/device/xbox360"
 	handlerTest "github.com/Alia5/VIIPER/internal/_testing"
 	"github.com/Alia5/VIIPER/internal/server/api"
 	"github.com/Alia5/VIIPER/internal/server/api/handler"
 	"github.com/Alia5/VIIPER/internal/server/usb"
+	"github.com/Alia5/VIIPER/viiperclient"
 	"github.com/Alia5/VIIPER/virtualbus"
 )
 
@@ -24,7 +24,7 @@ func TestBusRemove(t *testing.T) {
 		{
 			name: "remove existing bus",
 			setup: func(t *testing.T, s *usb.Server) {
-				b, err := virtualbus.NewWithBusId(70001)
+				b, err := virtualbus.NewWithBusID(70001)
 				if err != nil {
 					t.Fatalf("create bus failed: %v", err)
 				}
@@ -38,7 +38,7 @@ func TestBusRemove(t *testing.T) {
 		{
 			name: "remove bus and reuse bus number",
 			setup: func(t *testing.T, s *usb.Server) {
-				b, err := virtualbus.NewWithBusId(70002)
+				b, err := virtualbus.NewWithBusID(70002)
 				if err != nil {
 					t.Fatalf("create bus failed: %v", err)
 				}
@@ -58,7 +58,7 @@ func TestBusRemove(t *testing.T) {
 		{
 			name: "remove bus with devices attached",
 			setup: func(t *testing.T, s *usb.Server) {
-				b, err := virtualbus.NewWithBusId(70004)
+				b, err := virtualbus.NewWithBusID(70004)
 				if err != nil {
 					t.Fatalf("create bus failed: %v", err)
 				}
@@ -99,7 +99,7 @@ func TestBusRemove(t *testing.T) {
 			})
 			defer done()
 
-			c := apiclient.NewTransport(addr)
+			c := viiperclient.NewTransport(addr)
 			if tt.setup != nil {
 				tt.setup(t, srv)
 			}
@@ -112,7 +112,7 @@ func TestBusRemove(t *testing.T) {
 			}
 
 			if tt.name == "remove bus and reuse bus number" {
-				b, err := virtualbus.NewWithBusId(70002)
+				b, err := virtualbus.NewWithBusID(70002)
 				assert.NoError(t, err, "should be able to reuse bus number after removal")
 				err = srv.AddBus(b)
 				assert.NoError(t, err, "should be able to add bus with reused number")

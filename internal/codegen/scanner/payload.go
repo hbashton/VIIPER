@@ -399,7 +399,7 @@ func usesPayloadDirect(expr ast.Expr) bool {
 func extractTypeName(expr ast.Expr) string {
 	switch v := expr.(type) {
 	case *ast.SelectorExpr:
-		// e.g., apitypes.DeviceCreateRequest
+		// e.g., viipertypes.DeviceCreateRequest
 		left := extractTypeName(v.X)
 		if left == "" {
 			return v.Sel.Name

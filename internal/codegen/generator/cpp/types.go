@@ -110,7 +110,7 @@ func generateTypes(logger *slog.Logger, includeDir string, md *meta.Metadata) er
 	if err != nil {
 		return fmt.Errorf("create types.hpp: %w", err)
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck
 
 	data := struct {
 		Header string

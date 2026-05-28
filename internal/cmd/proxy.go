@@ -25,7 +25,7 @@ func (p *Proxy) Run(logger *slog.Logger, rawLogger log.RawLogger) error {
 	defer stop()
 
 	if p.UpstreamAddr == "" {
-		return errors.New("Upstream address is empty")
+		return errors.New("upstream address is empty")
 	}
 
 	logger.Info("Starting VIIPER USB-IP proxy", "listen", p.ListenAddr, "upstream", p.UpstreamAddr)
@@ -40,7 +40,7 @@ func (p *Proxy) Run(logger *slog.Logger, rawLogger log.RawLogger) error {
 	case <-ctx.Done():
 		logger.Info("Shutting down proxy server")
 		_ = proxySrv.Close()
-		_ = <-proxyErrCh
+		_ = <-proxyErrCh // nolint
 		return nil
 	case err := <-proxyErrCh:
 		return err

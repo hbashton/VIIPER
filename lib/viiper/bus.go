@@ -32,7 +32,7 @@ func CreateUSBBus(handle C.USBServerHandle, busID *uint32) bool {
 		*busID = hw.s.NextFreeBusID()
 	}
 
-	b, err := virtualbus.NewWithBusId(*busID)
+	b, err := virtualbus.NewWithBusID(*busID)
 	if err != nil {
 		return false
 	}

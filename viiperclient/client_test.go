@@ -1,12 +1,12 @@
-package apiclient_test
+package viiperclient_test
 
 import (
 	"context"
 	"errors"
 	"testing"
 
-	apiclient "github.com/Alia5/VIIPER/apiclient"
-	apitypes "github.com/Alia5/VIIPER/apitypes"
+	"github.com/Alia5/VIIPER/viiperclient"
+	"github.com/Alia5/VIIPER/viipertypes"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -14,8 +14,8 @@ import (
 // testClient constructs a client backed by a simple in-memory responder.
 // responses maps full, already-filled paths (after path param substitution) to raw JSON payloads.
 // If err is non-nil, every request returns that error, simulating dial failures.
-func testClient(responses map[string]string, err error) *apiclient.Client {
-	return apiclient.WithTransport(apiclient.NewMockTransport(func(path string, _ any, _ map[string]string) (string, error) {
+func testClient(responses map[string]string, err error) *viiperclient.Client {
+	return viiperclient.WithTransport(viiperclient.NewMockTransport(func(path string, _ any, _ map[string]string) (string, error) {
 		if err != nil {
 			return "", err
 		}
@@ -30,17 +30,17 @@ func TestHighLevelClient(t *testing.T) {
 	tests := []struct {
 		name       string
 		setup      func(responses map[string]string) (err error)
-		call       func(c *apiclient.Client) (any, error)
+		call       func(c *viiperclient.Client) (any, error)
 		wantErr    string
 		assertFunc func(t *testing.T, got any)
 	}{
 		{
 			name:  "bus create success",
 			setup: func(responses map[string]string) error { responses["bus/create"] = `{"busId":42}`; return nil },
-			call:  func(c *apiclient.Client) (any, error) { return c.BusCreate(42) },
+			call:  func(c *viiperclient.Client) (any, error) { return c.BusCreate(42) },
 			assertFunc: func(t *testing.T, got any) {
-				_, ok := got.(*apitypes.BusCreateResponse)
-				assert.True(t, ok, "expected *apitypes.BusCreateResponse type")
+				_, ok := got.(*viipertypes.BusCreateResponse)
+				assert.True(t, ok, "expected *viipertypes.BusCreateResponse type")
 			},
 		},
 		{
@@ -49,7 +49,7 @@ func TestHighLevelClient(t *testing.T) {
 				responses["bus/create"] = `{"status":400,"title":"Bad Request","detail":"invalid busId"}`
 				return nil
 			},
-			call:    func(c *apiclient.Client) (any, error) { return c.BusCreate(0) },
+			call:    func(c *viiperclient.Client) (any, error) { return c.BusCreate(0) },
 			wantErr: "400 Bad Request: invalid busId",
 		},
 		{
@@ -58,27 +58,27 @@ func TestHighLevelClient(t *testing.T) {
 				responses["bus/{id}/list"] = `{"devices":[{"busId":1,"devId":"1","vid":"0x1234","pid":"0xabcd","type":"x"}]}`
 				return nil
 			},
-			call:       func(c *apiclient.Client) (any, error) { return c.DevicesList(1) },
+			call:       func(c *viiperclient.Client) (any, error) { return c.DevicesList(1) },
 			assertFunc: func(t *testing.T, got any) { assert.NotNil(t, got) },
 		},
 		{
 			name:    "transport failure",
 			setup:   func(responses map[string]string) error { return errors.New("dial fail") },
-			call:    func(c *apiclient.Client) (any, error) { return c.BusList() },
+			call:    func(c *viiperclient.Client) (any, error) { return c.BusList() },
 			wantErr: "dial fail",
 		},
 		{
 			name:    "blank response error",
 			setup:   func(responses map[string]string) error { return nil },
-			call:    func(c *apiclient.Client) (any, error) { return c.BusList() },
+			call:    func(c *viiperclient.Client) (any, error) { return c.BusList() },
 			wantErr: "empty response",
 		},
 		{
 			name:  "devices list empty",
 			setup: func(responses map[string]string) error { responses["bus/{id}/list"] = `{"devices":[]}`; return nil },
-			call:  func(c *apiclient.Client) (any, error) { return c.DevicesList(1) },
+			call:  func(c *viiperclient.Client) (any, error) { return c.DevicesList(1) },
 			assertFunc: func(t *testing.T, got any) {
-				resp := got.(*apitypes.DevicesListResponse)
+				resp := got.(*viipertypes.DevicesListResponse)
 				assert.Len(t, resp.Devices, 0)
 			},
 		},
@@ -109,7 +109,7 @@ func TestHighLevelClient(t *testing.T) {
 }
 
 func TestContextCancellation(t *testing.T) {
-	c := apiclient.WithTransport(apiclient.NewTransport("127.0.0.1:9")) // address irrelevant due to early cancel
+	c := viiperclient.WithTransport(viiperclient.NewTransport("127.0.0.1:9")) // address irrelevant due to early cancel
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	_, err := c.BusListCtx(ctx)

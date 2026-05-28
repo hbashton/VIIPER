@@ -157,7 +157,7 @@ func generateClient(logger *slog.Logger, projectDir string, md *meta.Metadata) e
 	if err != nil {
 		return fmt.Errorf("create file: %w", err)
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck
 
 	data := struct {
 		Routes []scanner.RouteInfo
