@@ -118,25 +118,28 @@ See the [API documentation](./docs/api) for details
 
 - [Go](https://go.dev/) 1.26 or newer
 - USBIP installed
-- (Optional) [Make](https://www.gnu.org/software/make/)
-    - Linux/macOS: Usually pre-installed
-    - Windows: `winget install ezwinports.make`
+- (Optional) [just](https://github.com/casey/just)
+    - Windows: `winget install --id Casey.Just --exact`
+    - Linux/macOS: `cargo install just` or use your package manager
+- Windows compiler (required for `build-libVIIPER`):
+    - `winget install -e --id MartinStorsjo.LLVM-MinGW.UCRT`
+      `--accept-package-agreements --accept-source-agreements`
 
 ### 🔄 Building from Source
 
 ```bash
 git clone https://github.com/Alia5/VIIPER.git
 cd VIIPER
-make build
+just build Release
 ```
 
-The binary will be in `dist/viiper` (or `dist/viiper.exe` on Windows).
+The binary will be in `dist/viiper-<goos>-<goarch>` (for example `dist/viiper-windows-amd64.exe`).
 
 For more build options:
 
 ```bash
-make help              # Show all available targets
-make test              # Run tests
+just --list            # Show all available targets
+just test              # Run tests
 ```
 
 ---
