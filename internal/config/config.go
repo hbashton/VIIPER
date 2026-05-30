@@ -26,7 +26,7 @@ type CLI struct {
 	UpdateNotify UpdateNotify `help:"Update notification level: none, stable, prerelease" default:"stable" env:"VIIPER_UPDATE_NOTIFY"`
 	Log          `embed:"" prefix:"log."`
 
-	Server cmd.Server `cmd:"" help:"Start the VIIPER USB-IP server"`
+	Server cmd.Server `cmd:"" help:"Start the VIIPER USB-IP server" default:""`
 	Proxy  cmd.Proxy  `cmd:"" help:"Start the VIIPER USB-IP proxy"`
 
 	Config    cmd.ConfigCommand `cmd:"" help:"Manage configuration files"`
