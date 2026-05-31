@@ -75,14 +75,14 @@ clean-versioninfo:
 [windows]
 build type=build_type: generate-versioninfo
 	{{ mkdir_p }} {{ dist_dir }}
-	$env:CGO_ENABLED='0'; go build -trimpath -ldflags "{{ if type == "Release" { ldflags_release } else { ldflags_common } }}" -o {{ build_path }} {{ main_pkg }}
+	$env:CGO_ENABLED='0'; go build {{ if type == "Release" { "-tags release" } else { "" } }} -trimpath -ldflags "{{ if type == "Release" { ldflags_release } else { ldflags_common } }}" -o {{ build_path }} {{ main_pkg }}
 	just licenses
 
 [arg("type", pattern="Debug|Release")]
 [unix]
 build type=build_type:
 	{{ mkdir_p }} {{ dist_dir }}
-	CGO_ENABLED=0 go build -trimpath -ldflags "{{ if type == "Release" { ldflags_release } else { ldflags_common } }}" -o {{ build_path }} {{ main_pkg }}
+	CGO_ENABLED=0 go build {{ if type == "Release" { "-tags release" } else { "" } }} -trimpath -ldflags "{{ if type == "Release" { ldflags_release } else { ldflags_common } }}" -o {{ build_path }} {{ main_pkg }}
 	just licenses
 
 [arg("type", pattern="Debug|Release")]
