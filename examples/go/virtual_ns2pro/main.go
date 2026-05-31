@@ -107,19 +107,17 @@ func main() {
 			angle := float64(frame) * 0.045
 
 			state := ns2pro.InputState{
-				Buttons:       demoButtons(frame),
-				LX:            stickAxis(math.Cos(angle)),
-				LY:            stickAxis(math.Sin(angle)),
-				RX:            ns2pro.StickCenter,
-				RY:            ns2pro.StickCenter,
-				AccelX:        int16(800 * math.Sin(angle*0.5)),
-				AccelY:        int16(800 * math.Cos(angle*0.5)),
-				AccelZ:        -4096,
-				GyroX:         int16(500 * math.Sin(angle)),
-				GyroY:         int16(500 * math.Cos(angle)),
-				GyroZ:         int16(250 * math.Sin(angle*0.33)),
-				BatteryLevel:  ns2pro.BatteryMax,
-				ExternalPower: true,
+				Buttons: demoButtons(frame),
+				LX:      stickAxis(math.Cos(angle)),
+				LY:      stickAxis(math.Sin(angle)),
+				RX:      ns2pro.StickCenter,
+				RY:      ns2pro.StickCenter,
+				AccelX:  int16(800 * math.Sin(angle*0.5)),
+				AccelY:  int16(800 * math.Cos(angle*0.5)),
+				AccelZ:  -4096,
+				GyroX:   int16(500 * math.Sin(angle)),
+				GyroY:   int16(500 * math.Cos(angle)),
+				GyroZ:   int16(250 * math.Sin(angle*0.33)),
 			}
 
 			if err := stream.WriteBinary(&state); err != nil {

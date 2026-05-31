@@ -27,22 +27,26 @@ func TestBuildReport05(t *testing.T) {
 	require.NoError(t, err)
 
 	state := InputState{
-		Buttons:       ButtonA | ButtonB | ButtonR | ButtonZR | ButtonMinus | ButtonPlus | ButtonLeftStick | ButtonRightStick | ButtonHome | ButtonCapture | ButtonC | ButtonDown | ButtonRight | ButtonLeft | ButtonUp | ButtonL | ButtonZL | ButtonGR | ButtonGL | ButtonHeadset,
-		LX:            0x0123,
-		LY:            0x0456,
-		RX:            0x0789,
-		RY:            0x0ABC,
-		AccelX:        0x1122,
-		AccelY:        -0x1234,
-		AccelZ:        0x3344,
-		GyroX:         -0x0102,
-		GyroY:         0x5566,
-		GyroZ:         -0x0777,
+		Buttons: ButtonA | ButtonB | ButtonR | ButtonZR | ButtonMinus | ButtonPlus | ButtonLeftStick | ButtonRightStick | ButtonHome | ButtonCapture | ButtonC | ButtonDown | ButtonRight | ButtonLeft | ButtonUp | ButtonL | ButtonZL | ButtonGR | ButtonGL | ButtonHeadset,
+		LX:      0x0123,
+		LY:      0x0456,
+		RX:      0x0789,
+		RY:      0x0ABC,
+		AccelX:  0x1122,
+		AccelY:  -0x1234,
+		AccelZ:  0x3344,
+		GyroX:   -0x0102,
+		GyroY:   0x5566,
+		GyroZ:   -0x0777,
+	}
+	dev.UpdateInputState(state)
+	dev.SetMetaState(MetaState{
+		SerialNumber:  DefaultSerial,
 		BatteryLevel:  7,
 		Charging:      true,
 		ExternalPower: true,
-	}
-	dev.UpdateInputState(state)
+		BatteryVolts:  DefaultBatteryVolts,
+	})
 
 	dev.HandleTransfer(2, usbip.DirOut, featureCommand(0x02, FeatureButtons|FeatureSticks|FeatureIMU|FeatureRumble))
 	dev.HandleTransfer(2, usbip.DirOut, featureCommand(0x04, FeatureButtons|FeatureSticks|FeatureIMU|FeatureRumble))
@@ -60,7 +64,7 @@ func TestBuildReport05(t *testing.T) {
 	packStick12(rightStick[:], state.RX, state.RY)
 	assert.Equal(t, leftStick[:], report[11:14])
 	assert.Equal(t, rightStick[:], report[14:17])
-	assert.Equal(t, BatteryVolts, binary.LittleEndian.Uint16(report[0x20:0x22]))
+	assert.Equal(t, DefaultBatteryVolts, binary.LittleEndian.Uint16(report[0x20:0x22]))
 	assert.Equal(t, byte(0x34), report[0x22])
 	assert.Equal(t, byte(0x01), report[0x2A])
 	assert.Equal(t, uint32(4000), binary.LittleEndian.Uint32(report[0x2B:0x2F]))
@@ -92,7 +96,7 @@ func TestDescriptor(t *testing.T) {
 	assert.Equal(t, uint16(DefaultPID), desc.Device.IDProduct)
 	assert.Equal(t, uint16(0x0200), desc.Device.BcdDevice)
 	assert.Equal(t, "Switch 2 Pro Controller", desc.Strings[2])
-	assert.Equal(t, DefaultSerial, desc.Strings[3])
+	assert.Equal(t, DefaultSerialEnding, desc.Strings[3])
 	assert.Equal(t, "Nintendo Switch 2 Pro Controller", desc.Strings[4])
 	assert.Equal(t, "Nintendo Switch 2 Pro Controller", desc.Strings[5])
 	assert.Equal(t, "Pro Controller", desc.Strings[6])
@@ -122,20 +126,49 @@ func TestDescriptor(t *testing.T) {
 	assert.Equal(t, byte(EndpointBulkIn), bulkIface.Endpoints[1].BEndpointAddress)
 }
 
+func TestCreateDeviceDeduplicatesSerial(t *testing.T) {
+	serials = map[string]struct{}{}
+	t.Cleanup(func() {
+		serials = map[string]struct{}{}
+	})
+
+	h := &handler{}
+	dev1, err := h.CreateDevice(nil)
+	require.NoError(t, err)
+	dev2, err := h.CreateDevice(nil)
+	require.NoError(t, err)
+
+	ns1, ok := dev1.(*NS2Pro)
+	require.True(t, ok)
+	ns2, ok := dev2.(*NS2Pro)
+	require.True(t, ok)
+
+	serial1 := ns1.GetDescriptor().Strings[3]
+	serial2 := ns2.GetDescriptor().Strings[3]
+
+	assert.Equal(t, "00", serial1)
+	assert.Equal(t, "01", serial2)
+	assert.NotEqual(t, serial1, serial2)
+}
+
 func TestBuildReport09(t *testing.T) {
 	dev, err := New(nil)
 	require.NoError(t, err)
 
 	state := InputState{
-		Buttons:       ButtonB | ButtonA | ButtonX | ButtonZR | ButtonPlus | ButtonRightStick | ButtonDown | ButtonUp | ButtonL | ButtonZL | ButtonMinus | ButtonLeftStick | ButtonHome | ButtonCapture | ButtonGR | ButtonGL | ButtonC,
-		LX:            0x0001,
-		LY:            0x0002,
-		RX:            0x0FFE,
-		RY:            0x0FFF,
-		BatteryLevel:  5,
-		ExternalPower: true,
+		Buttons: ButtonB | ButtonA | ButtonX | ButtonZR | ButtonPlus | ButtonRightStick | ButtonDown | ButtonUp | ButtonL | ButtonZL | ButtonMinus | ButtonLeftStick | ButtonHome | ButtonCapture | ButtonGR | ButtonGL | ButtonC,
+		LX:      0x0001,
+		LY:      0x0002,
+		RX:      0x0FFE,
+		RY:      0x0FFF,
 	}
 	dev.UpdateInputState(state)
+	dev.SetMetaState(MetaState{
+		SerialNumber:  DefaultSerial,
+		BatteryLevel:  5,
+		ExternalPower: true,
+		BatteryVolts:  DefaultBatteryVolts,
+	})
 	dev.HandleTransfer(2, usbip.DirOut, selectReportCommand(ReportIDPro))
 	assert.NotEmpty(t, dev.HandleTransfer(2, usbip.DirIn, nil))
 
@@ -211,7 +244,13 @@ func TestSDLUSBInitializationSequence(t *testing.T) {
 		assert.NotEmpty(t, dev.HandleTransfer(2, usbip.DirIn, nil), "cmd %#x sub %#x", cmd[0], cmd[3])
 	}
 
-	dev.UpdateInputState(InputState{BatteryLevel: 9})
+	dev.SetMetaState(MetaState{
+		SerialNumber:  DefaultSerial,
+		BatteryLevel:  9,
+		ExternalPower: true,
+		BatteryVolts:  DefaultBatteryVolts,
+	})
+	dev.UpdateInputState(InputState{})
 	report := dev.HandleTransfer(1, usbip.DirIn, nil)
 	require.Len(t, report, InputReportSize)
 	assert.Equal(t, byte(ReportIDCommon), report[0])
@@ -348,7 +387,7 @@ func TestStreamInputAndRumble(t *testing.T) {
 
 	serialString, err := controlIn(imp.Conn, controlSetup(0x0303, 0, 64))
 	require.NoError(t, err)
-	assert.Equal(t, usb.EncodeStringDescriptor(DefaultSerial), serialString)
+	assert.Equal(t, usb.EncodeStringDescriptor(DefaultSerialEnding), serialString)
 
 	msOSString, err := controlIn(imp.Conn, controlSetup(0x03EE, 0, 18))
 	require.NoError(t, err)
@@ -374,17 +413,15 @@ func TestStreamInputAndRumble(t *testing.T) {
 	require.NoError(t, usbipClient.Submit(imp.Conn, usbip.DirOut, 2, selectReportCommand(ReportIDPro), nil))
 
 	state := InputState{
-		Buttons:       ButtonA | ButtonHome | ButtonRight,
-		LX:            0x0123,
-		LY:            0x0456,
-		RX:            0x0789,
-		RY:            0x0ABC,
-		BatteryLevel:  6,
-		ExternalPower: true,
+		Buttons: ButtonA | ButtonHome | ButtonRight,
+		LX:      0x0123,
+		LY:      0x0456,
+		RX:      0x0789,
+		RY:      0x0ABC,
 	}
 	require.NoError(t, stream.WriteBinary(&state))
 
-	expected := state.buildProReport(0, FeatureButtons|FeatureSticks)
+	expected := state.buildProReport(0, FeatureButtons|FeatureSticks, *defaultMetaState())
 	got := pollInputIgnoringCounter(t, usbipClient, imp.Conn, expected, 750*time.Millisecond)
 	require.Len(t, got, InputReportSize)
 	got[1] = 0
@@ -442,7 +479,7 @@ func utf16leToString(b []byte) string {
 	return string(utf16.Decode(units))
 }
 
-func controlSetup(wValue, wIndex, wLength uint16) [8]byte {
+func controlSetup(wValue, wIndex, wLength uint16) [8]byte { // nolint:unparam
 	var setup [8]byte
 	setup[0] = 0x80 // bmRequestType
 	setup[1] = 0x06 // bRequest

@@ -2,6 +2,8 @@
 package ns2pro
 
 import (
+	"encoding/json"
+	"fmt"
 	"sync"
 
 	"github.com/Alia5/VIIPER/device"
@@ -12,12 +14,11 @@ import (
 type NS2Pro struct {
 	stateMu        sync.Mutex
 	inputState     *InputState
+	metaState      *MetaState
 	outputMu       sync.RWMutex
 	outputCallback func(OutputState)
 	outputVersion  uint64
 	descriptor     usb.Descriptor
-
-	batteryVolts uint16
 
 	protoMu           sync.Mutex
 	activeReportID    uint8
@@ -31,13 +32,26 @@ type NS2Pro struct {
 }
 
 func New(o *device.CreateOptions) (*NS2Pro, error) {
+	metaState := defaultMetaState()
+	if o != nil && o.DeviceSpecific != "" {
+		if err := json.Unmarshal([]byte(o.DeviceSpecific), metaState); err != nil {
+			return nil, fmt.Errorf("invalid device specific JSON: %w", err)
+		}
+	}
+
 	d := &NS2Pro{
 		inputState:     defaultInputState(),
+		metaState:      metaState,
 		descriptor:     MakeDescriptor(),
 		activeReportID: ReportIDPro,
 		featureFlags:   FeatureButtons | FeatureSticks,
-		batteryVolts:   BatteryVolts,
 	}
+	serialEnding := DefaultSerialEnding
+	if len(metaState.SerialNumber) >= 2 {
+		serialEnding = metaState.SerialNumber[len(metaState.SerialNumber)-2:]
+	}
+	d.descriptor.Strings[3] = serialEnding
+
 	if o != nil {
 		if o.IDVendor != nil {
 			d.descriptor.Device.IDVendor = *o.IDVendor
@@ -69,6 +83,19 @@ func (d *NS2Pro) UpdateInputState(state InputState) {
 	d.stateMu.Lock()
 	defer d.stateMu.Unlock()
 	d.inputState = &state
+}
+
+func (d *NS2Pro) SetMetaState(meta MetaState) {
+	d.stateMu.Lock()
+	defer d.stateMu.Unlock()
+	d.metaState = &meta
+	if d.descriptor.Strings != nil {
+		serialEnding := DefaultSerialEnding
+		if len(meta.SerialNumber) >= 2 {
+			serialEnding = meta.SerialNumber[len(meta.SerialNumber)-2:]
+		}
+		d.descriptor.Strings[3] = serialEnding
+	}
 }
 
 func (d *NS2Pro) HandleTransfer(ep uint32, dir uint32, out []byte) []byte {
@@ -139,7 +166,20 @@ func (d *NS2Pro) GetDescriptor() *usb.Descriptor {
 }
 
 func (d *NS2Pro) GetDeviceSpecificArgs() map[string]any {
-	return nil
+	d.stateMu.Lock()
+	defer d.stateMu.Unlock()
+	if d.metaState == nil {
+		return map[string]any{}
+	}
+	b, err := json.Marshal(d.metaState)
+	if err != nil {
+		return map[string]any{}
+	}
+	var out map[string]any
+	if err := json.Unmarshal(b, &out); err != nil {
+		return map[string]any{}
+	}
+	return out
 }
 
 func (d *NS2Pro) nextInputReport() []byte {
@@ -152,6 +192,7 @@ func (d *NS2Pro) nextInputReport() []byte {
 func (d *NS2Pro) inputReportForID(reportID uint8) []byte {
 	d.stateMu.Lock()
 	st := *d.inputState
+	meta := *d.metaState
 	d.stateMu.Unlock()
 
 	d.protoMu.Lock()
@@ -166,13 +207,22 @@ func (d *NS2Pro) inputReportForID(reportID uint8) []byte {
 		if features&FeatureIMU != 0 {
 			d.motionTimestamp += 4000
 		}
-		report = st.buildCommonReport(d.reportCounter32, d.motionTimestamp, features, d.batteryVolts)
+		report = st.buildCommonReport(d.reportCounter32, d.motionTimestamp, features, meta)
 	default:
 		d.reportCounter8++
-		report = st.buildProReport(d.reportCounter8, features)
+		report = st.buildProReport(d.reportCounter8, features, meta)
 	}
 	d.protoMu.Unlock()
 	return report
+}
+
+func (d *NS2Pro) serialNumber() string {
+	d.stateMu.Lock()
+	defer d.stateMu.Unlock()
+	if d.metaState == nil {
+		return ""
+	}
+	return d.metaState.SerialNumber
 }
 
 func (d *NS2Pro) handleOutputReport(out []byte) {
