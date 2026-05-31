@@ -1,9 +1,11 @@
 package ns2pro
 
 const (
-	DefaultVID    = 0x057E
-	DefaultPID    = 0x2069
-	DefaultSerial = "00"
+	DefaultVID                 = 0x057E
+	DefaultPID                 = 0x2069
+	DefaultSerialEnding        = "00"
+	DefaultSerial              = "VIIPER-NS2PRO-" + DefaultSerialEnding
+	DefaultBatteryVolts uint16 = 3800
 )
 
 const (
@@ -22,7 +24,7 @@ const (
 const (
 	InputReportSize  = 64
 	OutputReportSize = 64
-	InputWireSize    = 27
+	InputWireSize    = 24
 	OutputRumbleSize = 32
 	OutputWireSize   = 34
 )
@@ -33,11 +35,10 @@ const (
 )
 
 const (
-	StickMin     uint16 = 0
-	StickCenter  uint16 = 0x0800
-	StickMax     uint16 = 0x0FFF
-	BatteryMax   uint8  = 9
-	BatteryVolts uint16 = 3800
+	StickMin    uint16 = 0
+	StickCenter uint16 = 0x0800
+	StickMax    uint16 = 0x0FFF
+	BatteryMax  uint8  = 9
 )
 
 const (

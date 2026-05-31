@@ -6,7 +6,7 @@ import (
 )
 
 // nolint
-// viiper:wire ns2pro c2s buttons:u32 lx:u16 ly:u16 rx:u16 ry:u16 accelX:i16 accelY:i16 accelZ:i16 gyroX:i16 gyroY:i16 gyroZ:i16 batteryLevel:u8 charging:bool externalPower:bool
+// viiper:wire ns2pro c2s buttons:u32 lx:u16 ly:u16 rx:u16 ry:u16 accelX:i16 accelY:i16 accelZ:i16 gyroX:i16 gyroY:i16 gyroZ:i16
 type InputState struct {
 	Buttons uint32
 
@@ -15,20 +15,31 @@ type InputState struct {
 
 	AccelX, AccelY, AccelZ int16
 	GyroX, GyroY, GyroZ    int16
-
-	BatteryLevel  uint8
-	Charging      bool
-	ExternalPower bool
 }
 
 func defaultInputState() *InputState {
 	return &InputState{
-		LX:            StickCenter,
-		LY:            StickCenter,
-		RX:            StickCenter,
-		RY:            StickCenter,
+		LX: StickCenter,
+		LY: StickCenter,
+		RX: StickCenter,
+		RY: StickCenter,
+	}
+}
+
+type MetaState struct {
+	SerialNumber  string `json:"serial_number"`
+	BatteryLevel  uint8  `json:"battery_level"`
+	Charging      bool   `json:"charging"`
+	ExternalPower bool   `json:"external_power"`
+	BatteryVolts  uint16 `json:"battery_volts"`
+}
+
+func defaultMetaState() *MetaState {
+	return &MetaState{
+		SerialNumber:  DefaultSerial,
 		BatteryLevel:  BatteryMax,
 		ExternalPower: true,
+		BatteryVolts:  DefaultBatteryVolts,
 	}
 }
 
@@ -45,13 +56,6 @@ func (s *InputState) MarshalBinary() ([]byte, error) {
 	binary.LittleEndian.PutUint16(b[18:20], uint16(s.GyroX))
 	binary.LittleEndian.PutUint16(b[20:22], uint16(s.GyroY))
 	binary.LittleEndian.PutUint16(b[22:24], uint16(s.GyroZ))
-	b[24] = s.BatteryLevel
-	if s.Charging {
-		b[25] = 1
-	}
-	if s.ExternalPower {
-		b[26] = 1
-	}
 	return b, nil
 }
 
@@ -70,9 +74,6 @@ func (s *InputState) UnmarshalBinary(data []byte) error {
 	s.GyroX = int16(binary.LittleEndian.Uint16(data[18:20]))
 	s.GyroY = int16(binary.LittleEndian.Uint16(data[20:22]))
 	s.GyroZ = int16(binary.LittleEndian.Uint16(data[22:24]))
-	s.BatteryLevel = data[24]
-	s.Charging = data[25] != 0
-	s.ExternalPower = data[26] != 0
 	return nil
 }
 
@@ -105,7 +106,7 @@ func (o *OutputState) UnmarshalBinary(data []byte) error {
 	return nil
 }
 
-func (s InputState) buildCommonReport(counter, motionTimestamp uint32, features uint8, batteryVolts uint16) []byte {
+func (s InputState) buildCommonReport(counter, motionTimestamp uint32, features uint8, meta MetaState) []byte {
 	b := make([]byte, InputReportSize)
 	b[0] = ReportIDCommon
 	binary.LittleEndian.PutUint32(b[1:5], counter)
@@ -115,8 +116,8 @@ func (s InputState) buildCommonReport(counter, motionTimestamp uint32, features 
 	packStick12(b[11:14], s.LX, s.LY)
 	packStick12(b[14:17], s.RX, s.RY)
 
-	binary.LittleEndian.PutUint16(b[0x20:0x22], batteryVolts)
-	b[0x22] = chargingState(s)
+	binary.LittleEndian.PutUint16(b[0x20:0x22], meta.BatteryVolts)
+	b[0x22] = chargingState(meta)
 	b[0x2A] = 0x01
 
 	if features&FeatureIMU != 0 {
@@ -132,11 +133,11 @@ func (s InputState) buildCommonReport(counter, motionTimestamp uint32, features 
 	return b
 }
 
-func (s InputState) buildProReport(counter uint8, features uint8) []byte {
+func (s InputState) buildProReport(counter uint8, features uint8, meta MetaState) []byte {
 	b := make([]byte, InputReportSize)
 	b[0] = ReportIDPro
 	b[1] = counter
-	b[2] = powerInfo(s)
+	b[2] = powerInfo(meta)
 
 	buttons := s.proButtonBytes()
 	copy(b[3:6], buttons[:])
@@ -247,23 +248,23 @@ func clampStick(v uint16) uint16 {
 	return v
 }
 
-func powerInfo(s InputState) uint8 {
-	level := s.BatteryLevel
+func powerInfo(meta MetaState) uint8 {
+	level := meta.BatteryLevel
 	if level > BatteryMax {
 		level = BatteryMax
 	}
 	out := (level & 0x0F) << 2
-	if s.ExternalPower {
+	if meta.ExternalPower {
 		out |= 0x01
 	}
-	if s.Charging {
+	if meta.Charging {
 		out |= 0x02
 	}
 	return out
 }
 
-func chargingState(s InputState) uint8 {
-	if s.Charging {
+func chargingState(meta MetaState) uint8 {
+	if meta.Charging {
 		return 0x34
 	}
 	return 0x20
