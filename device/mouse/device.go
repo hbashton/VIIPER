@@ -73,7 +73,7 @@ func (m *Mouse) HandleTransfer(ep uint32, dir uint32, out []byte) []byte {
 
 // HID Report Descriptor for a 5-button mouse with vertical and horizontal wheels.
 // Boot protocol compatible.
-var reportDescriptor = hid.Report{
+var reportDescriptor = hid.ReportDescriptor{
 	Items: []hid.Item{
 		hid.UsagePage{Page: hid.UsagePageGenericDesktop},
 		hid.Usage{Usage: hid.UsageMouse},
@@ -156,7 +156,7 @@ var defaultDescriptor = usb.Descriptor{
 						{Type: usb.ReportDescType},
 					},
 				},
-				Report: reportDescriptor,
+				ReportDescriptor: reportDescriptor,
 			},
 			Endpoints: []usb.EndpointDescriptor{
 				{

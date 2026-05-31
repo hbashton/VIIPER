@@ -32,13 +32,13 @@ type Item interface {
 	encode(e *encoder) error
 }
 
-// Report is a complete HID report descriptor (type 0x22).
-type Report struct {
+// ReportDescriptor is a complete HID report descriptor (type 0x22).
+type ReportDescriptor struct {
 	Items []Item
 }
 
 // Bytes encodes the report descriptor.
-func (r Report) Bytes() (Data, error) {
+func (r ReportDescriptor) Bytes() (Data, error) {
 	e := &encoder{}
 	for _, it := range r.Items {
 		if it == nil {

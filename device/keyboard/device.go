@@ -102,7 +102,7 @@ func (k *Keyboard) HandleTransfer(ep uint32, dir uint32, out []byte) []byte {
 }
 
 // HID Report Descriptor for a full keyboard with 256-bit key bitmap and LED output.
-var reportDescriptor = hid.Report{
+var reportDescriptor = hid.ReportDescriptor{
 	Items: []hid.Item{
 		hid.UsagePage{Page: hid.UsagePageGenericDesktop},
 		hid.Usage{Usage: hid.UsageKeyboard},
@@ -187,7 +187,7 @@ var defaultDescriptor = usb.Descriptor{
 						{Type: usb.ReportDescType}, // Length auto-filled from Report
 					},
 				},
-				Report: reportDescriptor,
+				ReportDescriptor: reportDescriptor,
 			},
 			Endpoints: []usb.EndpointDescriptor{
 				{

@@ -240,12 +240,23 @@ func (d ClassSpecificDescriptor) Bytes() Data {
 // HIDFunction bundles the HID class descriptor (0x21) and the report descriptor (0x22)
 // for a HID-class interface.
 type HIDFunction struct {
-	Descriptor HIDDescriptor
-	Report     hid.Report
+	Descriptor       HIDDescriptor
+	ReportDescriptor hid.ReportDescriptor
+	// ReportDescriptorBytes, when non-empty, is returned verbatim as the HID report
+	// descriptor (0x22) and used for HID report length calculation. This is useful for
+	// complex, vendor-specific descriptors that are easier to provide as raw bytes.
+	ReportDescriptorBytes Data
 }
 
 func (f HIDFunction) reportLen() (uint16, error) {
-	rb, err := f.Report.Bytes()
+	if len(f.ReportDescriptorBytes) > 0 {
+		if len(f.ReportDescriptorBytes) > 0xFFFF {
+			return 0, fmt.Errorf("usb: HID raw report descriptor too large: %d", len(f.ReportDescriptorBytes))
+		}
+		return uint16(len(f.ReportDescriptorBytes)), nil
+	}
+
+	rb, err := f.ReportDescriptor.Bytes()
 	if err != nil {
 		return 0, err
 	}
@@ -270,7 +281,13 @@ func (f HIDFunction) DescriptorBytes() (Data, error) {
 
 // ReportBytes returns the HID report descriptor (0x22) bytes.
 func (f HIDFunction) ReportBytes() (Data, error) {
-	rb, err := f.Report.Bytes()
+	if len(f.ReportDescriptorBytes) > 0 {
+		out := make([]uint8, len(f.ReportDescriptorBytes))
+		copy(out, f.ReportDescriptorBytes)
+		return Data(out), nil
+	}
+
+	rb, err := f.ReportDescriptor.Bytes()
 	if err != nil {
 		return nil, err
 	}

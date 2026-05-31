@@ -97,3 +97,31 @@ type Feature struct{ Flags MainFlags }
 func (f Feature) encode(e *encoder) error {
 	return e.short(0xB, ItemTypeMain, Data{uint8(f.Flags)})
 }
+
+// ReportID sets the report ID (Global item, tag 0x8).
+type ReportID struct{ ID uint8 }
+
+func (r ReportID) encode(e *encoder) error {
+	return e.short(0x8, ItemTypeGlobal, Data{r.ID})
+}
+
+// PhysicalMinimum sets the physical minimum (Global item, tag 0x3).
+type PhysicalMinimum struct{ Min int32 }
+
+func (p PhysicalMinimum) encode(e *encoder) error {
+	return e.short(0x3, ItemTypeGlobal, dataI32(p.Min))
+}
+
+// PhysicalMaximum sets the physical maximum (Global item, tag 0x4).
+type PhysicalMaximum struct{ Max int32 }
+
+func (p PhysicalMaximum) encode(e *encoder) error {
+	return e.short(0x4, ItemTypeGlobal, dataI32(p.Max))
+}
+
+// Unit sets the unit system and exponents (Global item, tag 0x6). Use 0 to clear units.
+type Unit struct{ Value uint32 }
+
+func (u Unit) encode(e *encoder) error {
+	return e.short(0x6, ItemTypeGlobal, dataU32(u.Value))
+}
