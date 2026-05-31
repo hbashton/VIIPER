@@ -47,3 +47,7 @@ func (h *handler) StreamHandler() api.StreamHandlerFunc {
 		}
 	}
 }
+
+func (h *handler) UpdateMetaState(meta string, dev *usb.Device) error {
+	return nil
+}

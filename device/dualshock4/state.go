@@ -2,7 +2,10 @@ package dualshock4
 
 import (
 	"encoding/binary"
+	"encoding/json"
 	"io"
+	"log/slog"
+	"time"
 )
 
 // nolint
@@ -119,4 +122,61 @@ func (f *OutputState) UnmarshalBinary(data []byte) error {
 	f.FlashOn = data[5]
 	f.FlashOff = data[6]
 	return nil
+}
+
+type MetaState struct {
+	SerialNumber string    `json:"serial_number"`
+	Board        string    `json:"board"`
+	BuildTime    time.Time `json:"build_time"`
+
+	BatteryStatus      byte    `json:"battery_status"`
+	TemperatureCelsius float64 `json:"temperature_celsius"`
+	BatteryVoltage     float64 `json:"battery_voltage"`
+}
+
+func (m *MetaState) ToMap() map[string]any {
+	bytes, err := json.Marshal(m)
+	if err != nil {
+		slog.Error("marshal meta state for map", "error", err)
+		return map[string]any{}
+	}
+	var res map[string]any
+	err = json.Unmarshal(bytes, &res)
+	if err != nil {
+		slog.Error("unmarshal meta state for map", "error", err)
+		return map[string]any{}
+	}
+	return res
+}
+
+func (m *MetaState) UpdateFromMap(data map[string]any) {
+	bytes, err := json.Marshal(data)
+	if err != nil {
+		slog.Error("marshal meta state for update", "error", err)
+		return
+	}
+	var newMeta MetaState
+	err = json.Unmarshal(bytes, &newMeta)
+	if err != nil {
+		slog.Error("unmarshal meta state for update", "error", err)
+		return
+	}
+	if newMeta.SerialNumber != "" {
+		m.SerialNumber = newMeta.SerialNumber
+	}
+	if newMeta.Board != "" {
+		m.Board = newMeta.Board
+	}
+	if !newMeta.BuildTime.IsZero() {
+		m.BuildTime = newMeta.BuildTime
+	}
+	if newMeta.BatteryStatus != 0 {
+		m.BatteryStatus = newMeta.BatteryStatus
+	}
+	if newMeta.TemperatureCelsius != 0 {
+		m.TemperatureCelsius = newMeta.TemperatureCelsius
+	}
+	if newMeta.BatteryVoltage != 0 {
+		m.BatteryVoltage = newMeta.BatteryVoltage
+	}
 }

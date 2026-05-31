@@ -1,9 +1,21 @@
 package dualshock4
 
+import "time"
+
 const (
 	DefaultVID = 0x054C
-	DefaultPID = 0x05C4
+	DefaultPID = 0x09CC
 )
+
+const (
+	DefaultSerialString  = "1111020BF619A500"
+	DefaultBoardString   = "JDM-055"
+	DefaultTemperature   = 28.0
+	DefaultVoltage       = 4.2
+	DefaultBatteryStatus = BatteryChargingFlag | BatteryFullyCharged
+)
+
+var DefaultBuildTime = time.Date(2021, time.September, 17, 11, 34, 0, 0, time.UTC)
 
 const (
 	EndpointIn  = 0x84
@@ -11,14 +23,12 @@ const (
 )
 
 const (
-	ReportIDInput   = 0x01
-	ReportIDOutput  = 0x05
-	ReportIDFeature = 0x02
+	ReportIDInput  = 0x01
+	ReportIDOutput = 0x05
 )
 
 const (
-	InputReportSize  = 64
-	OutputReportSize = 32
+	InputReportSize = 64
 )
 
 const (
@@ -48,7 +58,6 @@ const (
 	ButtonPSUSB            uint8 = 0x01
 	ButtonTouchpadClickUSB uint8 = 0x02
 
-	CounterMask  = 0xFC
 	CounterShift = 2
 )
 
@@ -98,6 +107,12 @@ const (
 )
 
 const (
+	DefaultLedRed   = 0x00
+	DefaultLedGreen = 0x00
+	DefaultLedBlue  = 0x40
+)
+
+const (
 	TouchpadMinX uint16 = 0
 	TouchpadMaxX uint16 = 1920
 	TouchpadMinY uint16 = 0
@@ -109,24 +124,43 @@ const (
 const (
 	BatteryLevelMask    = 0x0F
 	BatteryChargingFlag = 0x10
-	BatteryFullyCharged = 0x0B
-	BatteryDefault      = 0x1B
+	BatteryFullyCharged = 0x0A
+)
+const (
+	HardwareVersionMajor uint16 = 0x0001
+	HardwareVersionMinor uint16 = 0xB400
+	SoftwareVersionMajor uint32 = 0x00000001
+	SoftwareVersionMinor uint16 = 0xA00B
 )
 
 const (
-	OutOffsetReportID    = 0
-	OutOffsetFlags       = 1
-	OutOffsetRumbleSmall = 4
-	OutOffsetRumbleLarge = 5
-	OutOffsetLedRed      = 6
-	OutOffsetLedGreen    = 7
-	OutOffsetLedBlue     = 8
-	OutOffsetFlashOn     = 9  // Flash on time (units of 2.5ms)
-	OutOffsetFlashOff    = 10 // Flash off time (units of 2.5ms)
+	hidClassIN  uint8 = 0xA1 // bmRequestType: HID class IN  (device→host)
+	hidClassOUT uint8 = 0x21 // bmRequestType: HID class OUT (host→device)
 )
 
 const (
-	DefaultLedRed   = 0x00
-	DefaultLedGreen = 0x00
-	DefaultLedBlue  = 0x40
+	hidGetReport   uint8 = 0x01
+	hidGetIdle     uint8 = 0x02
+	hidGetProtocol uint8 = 0x03
+	hidSetReport   uint8 = 0x09
+)
+
+const (
+	reportTypeInput   uint8 = 0x01
+	reportTypeOutput  uint8 = 0x02
+	reportTypeFeature uint8 = 0x03
+)
+
+const (
+	featureIDCalibration   byte = 0x02
+	featureIDCapabilities  byte = 0x03
+	featureIDCalibrationBT byte = 0x05
+	featureIDProbe         byte = 0x08
+	featureIDStatus        byte = 0x10
+	featureIDProbeResponse byte = 0x11
+	featureIDSerial        byte = 0x12
+	featureIDIdentity      byte = 0x81
+	featureIDSubcommand    byte = 0xA0
+	featureIDBoardInfo     byte = 0xA3
+	featureIDTelemetry     byte = 0xA4 // serial or voltage/temperature; content selected by featureIDSubcommand
 )
