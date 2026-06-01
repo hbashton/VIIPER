@@ -109,7 +109,7 @@ func main() {
 	}()
 
 	feedbackCh, errCh := stream.StartReading(ctx, 10, func(r *bufio.Reader) (encoding.BinaryUnmarshaler, error) {
-		var b [7]byte
+		var b [dualsense.OutputStateSize]byte
 		if _, err := io.ReadFull(r, b[:]); err != nil {
 			return nil, err
 		}
