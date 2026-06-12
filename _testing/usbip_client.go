@@ -330,7 +330,26 @@ func (c *TestUsbIpClient) PollInputReport(conn net.Conn, want []byte, timeout ti
 		}
 	}
 	if wantAllZero {
-		return c.ReadInputReportWithTimeout(conn, timeout)
+		deadline := time.Now().Add(timeout)
+		var last []byte
+		for {
+			remaining := time.Until(deadline)
+			if remaining <= 0 {
+				return last, nil
+			}
+			got, err := c.ReadInputReportWithTimeout(conn, remaining)
+			if err != nil {
+				return nil, err
+			}
+			last = got
+			if len(got) == len(want) && bytes.Equal(got, want) {
+				return got, nil
+			}
+			if time.Now().After(deadline) {
+				return last, nil
+			}
+			time.Sleep(1 * time.Millisecond)
+		}
 	}
 
 	deadline := time.Now().Add(timeout)
@@ -345,6 +364,9 @@ func (c *TestUsbIpClient) PollInputReport(conn net.Conn, want []byte, timeout ti
 			return nil, err
 		}
 		last = got
+		if len(got) == len(want) && bytes.Equal(got, want) {
+			return got, nil
+		}
 		allZero := true
 		for _, b := range got {
 			if b != 0 {
@@ -353,7 +375,11 @@ func (c *TestUsbIpClient) PollInputReport(conn net.Conn, want []byte, timeout ti
 			}
 		}
 		if !allZero {
-			return got, nil
+			if time.Now().After(deadline) {
+				return last, nil
+			}
+			time.Sleep(1 * time.Millisecond)
+			continue
 		}
 		if time.Now().After(deadline) {
 			return last, nil
