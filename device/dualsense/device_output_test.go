@@ -118,4 +118,10 @@ func TestDualSenseTouchTrackingBytes(t *testing.T) {
 	if report[37] != 0x86 {
 		t.Fatalf("unexpected touch 2 report tracking byte: %#x", report[37])
 	}
+	if report[41] == 0 {
+		t.Fatal("expected touch packet counter to be populated")
+	}
+	if report[49] == 0x10 && report[50] == 0 && report[51] == 0 && report[52] == 0 {
+		t.Fatal("unexpected legacy hard-coded status byte in report timestamp area")
+	}
 }
