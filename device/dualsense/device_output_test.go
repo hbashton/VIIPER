@@ -125,3 +125,70 @@ func TestDualSenseTouchTrackingBytes(t *testing.T) {
 		t.Fatal("unexpected legacy hard-coded status byte in report timestamp area")
 	}
 }
+
+func TestDualSenseTouchTrackingZeroIsActive(t *testing.T) {
+	state := &InputState{
+		Touch1Active:   true,
+		Touch1Tracking: 0,
+	}
+	data, err := state.MarshalBinary()
+	if err != nil {
+		t.Fatalf("MarshalBinary returned error: %v", err)
+	}
+
+	var decoded InputState
+	if err := decoded.UnmarshalBinary(data); err != nil {
+		t.Fatalf("UnmarshalBinary returned error: %v", err)
+	}
+
+	if !decoded.Touch1Active || decoded.Touch1Tracking != 0 {
+		t.Fatalf("tracking zero should be active: active=%v tracking=%#x", decoded.Touch1Active, decoded.Touch1Tracking)
+	}
+
+	state.Touch1Active = false
+	data, err = state.MarshalBinary()
+	if err != nil {
+		t.Fatalf("MarshalBinary returned error: %v", err)
+	}
+	if data[15] != TouchInactiveMask {
+		t.Fatalf("inactive touch should use inactive mask, got %#x", data[15])
+	}
+}
+
+func TestDualSenseExtendedFeedbackUsesNativeTriggerBlockSize(t *testing.T) {
+	out := OutputState{
+		RumbleSmall:               0x11,
+		RumbleLarge:               0x22,
+		TriggerR2Mode:             0x21,
+		TriggerR2StartResistance:  0x33,
+		TriggerR2PressedStrength:  0x44,
+		TriggerR2Frequency:        0x55,
+		TriggerL2Mode:             0x25,
+		TriggerL2StartResistance:  0x66,
+		TriggerL2PressedStrength:  0x77,
+		TriggerL2Frequency:        0x88,
+	}
+
+	data, err := out.MarshalExtendedBinary()
+	if err != nil {
+		t.Fatalf("MarshalExtendedBinary returned error: %v", err)
+	}
+	if len(data) != OutputStateExtSize {
+		t.Fatalf("unexpected extended feedback length: %d", len(data))
+	}
+	if data[6] != 0x21 || data[7] != 0x33 || data[12] != 0x44 || data[15] != 0x55 {
+		t.Fatalf("unexpected R2 trigger block: % x", data[6:17])
+	}
+	if data[17] != 0x25 || data[18] != 0x66 || data[23] != 0x77 || data[26] != 0x88 {
+		t.Fatalf("unexpected L2 trigger block: % x", data[17:28])
+	}
+
+	var decoded OutputState
+	if err := decoded.UnmarshalBinary(data); err != nil {
+		t.Fatalf("UnmarshalBinary returned error: %v", err)
+	}
+	if decoded.TriggerR2Frequency != out.TriggerR2Frequency ||
+		decoded.TriggerL2Frequency != out.TriggerL2Frequency {
+		t.Fatalf("unexpected decoded frequencies: R2=%#x L2=%#x", decoded.TriggerR2Frequency, decoded.TriggerL2Frequency)
+	}
+}
