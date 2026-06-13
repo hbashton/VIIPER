@@ -52,12 +52,25 @@ IMU (gyro + accelerometer), and touchpad finger coordinates.
 
     ### Feedback (Rumble & LED)
 
-    - 6-byte packets:
+    - Base `dualsense` / `dualsenseedge` streams send 6-byte packets:
         - RumbleSmall: uint8, RumbleLarge: uint8 (2 bytes), 0-255 intensity
           values
         - LED Color: LedRed, LedGreen, LedBlue: uint8 each (3 bytes), 0-255 per
           channel
         - PlayerLeds: uint8 (1 byte), host-controlled player indicator LED mask
+    - Extended `dualsenseext` / `dualsenseedgeext` streams send 22-byte packets.
+      Bytes 0..5 preserve the original rumble/LED layout above. Bytes 6..13
+      contain the raw R2 adaptive-trigger effect block copied from USB output
+      report 0x02. Bytes 14..21 contain the raw L2 adaptive-trigger effect
+      block. Each trigger block is:
+        - Mode
+        - StartResistance
+        - EffectForce
+        - RangeForce
+        - NearReleaseStrength
+        - NearMiddleStrength
+        - PressedStrength
+        - Frequency
 
     See `/device/dualsense/state.go` for the `OutputState` wire definition.
 

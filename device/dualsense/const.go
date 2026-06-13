@@ -39,10 +39,11 @@ const (
 )
 
 const (
-	InputReportSize  = 64
-	OutputReportSize = 64
-	InputStateSize   = 33
-	OutputStateSize  = 6
+	InputReportSize    = 64
+	OutputReportSize   = 64
+	InputStateSize     = 33
+	OutputStateSize    = 6
+	OutputStateExtSize = 22
 )
 
 const (
