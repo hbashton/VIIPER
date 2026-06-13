@@ -43,7 +43,7 @@ const (
 	OutputReportSize   = 64
 	InputStateSize     = 33
 	OutputStateSize    = 6
-	OutputStateExtSize = 22
+	OutputStateExtSize = 28
 )
 
 const (

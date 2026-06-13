@@ -136,6 +136,35 @@ func (f *OutputState) MarshalBinary() ([]byte, error) {
 }
 
 func (f *OutputState) MarshalExtendedBinary() ([]byte, error) {
+	b := make([]byte, OutputStateExtSize)
+	b[0] = f.RumbleSmall
+	b[1] = f.RumbleLarge
+	b[2] = f.LedRed
+	b[3] = f.LedGreen
+	b[4] = f.LedBlue
+	b[5] = f.PlayerLeds
+
+	b[6] = f.TriggerR2Mode
+	b[7] = f.TriggerR2StartResistance
+	b[8] = f.TriggerR2EffectForce
+	b[9] = f.TriggerR2RangeForce
+	b[10] = f.TriggerR2NearReleaseStrength
+	b[11] = f.TriggerR2NearMiddleStrength
+	b[12] = f.TriggerR2PressedStrength
+	b[15] = f.TriggerR2Frequency
+
+	b[17] = f.TriggerL2Mode
+	b[18] = f.TriggerL2StartResistance
+	b[19] = f.TriggerL2EffectForce
+	b[20] = f.TriggerL2RangeForce
+	b[21] = f.TriggerL2NearReleaseStrength
+	b[22] = f.TriggerL2NearMiddleStrength
+	b[23] = f.TriggerL2PressedStrength
+	b[26] = f.TriggerL2Frequency
+	return b, nil
+}
+
+func (f *OutputState) marshalLegacyExtendedBinary() ([]byte, error) {
 	return []byte{
 		f.RumbleSmall,
 		f.RumbleLarge,
@@ -183,15 +212,15 @@ func (f *OutputState) UnmarshalBinary(data []byte) error {
 	f.TriggerR2NearReleaseStrength = data[10]
 	f.TriggerR2NearMiddleStrength = data[11]
 	f.TriggerR2PressedStrength = data[12]
-	f.TriggerR2Frequency = data[13]
-	f.TriggerL2Mode = data[14]
-	f.TriggerL2StartResistance = data[15]
-	f.TriggerL2EffectForce = data[16]
-	f.TriggerL2RangeForce = data[17]
-	f.TriggerL2NearReleaseStrength = data[18]
-	f.TriggerL2NearMiddleStrength = data[19]
-	f.TriggerL2PressedStrength = data[20]
-	f.TriggerL2Frequency = data[21]
+	f.TriggerR2Frequency = data[15]
+	f.TriggerL2Mode = data[17]
+	f.TriggerL2StartResistance = data[18]
+	f.TriggerL2EffectForce = data[19]
+	f.TriggerL2RangeForce = data[20]
+	f.TriggerL2NearReleaseStrength = data[21]
+	f.TriggerL2NearMiddleStrength = data[22]
+	f.TriggerL2PressedStrength = data[23]
+	f.TriggerL2Frequency = data[26]
 	return nil
 }
 
@@ -203,20 +232,13 @@ func encodeTouchStatus(active bool, tracking uint8) uint8 {
 		return tracking | 0x80
 	}
 	if active {
-		return 1
+		return 0
 	}
-	return 0
+	return TouchInactiveMask
 }
 
 func decodeTouchStatus(status uint8) (bool, uint8) {
-	switch status {
-	case 0:
-		return false, 0x80
-	case 1:
-		return true, 0
-	default:
-		return status&0x80 == 0, status
-	}
+	return status&0x80 == 0, status
 }
 
 type MetaState struct {
