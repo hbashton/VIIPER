@@ -82,3 +82,40 @@ func TestDualSenseOutputSetReportWithoutReportId(t *testing.T) {
 		t.Fatalf("unexpected rumble: small=%#x large=%#x", got.RumbleSmall, got.RumbleLarge)
 	}
 }
+
+func TestDualSenseTouchTrackingBytes(t *testing.T) {
+	state := &InputState{}
+	data, err := state.MarshalBinary()
+	if err != nil {
+		t.Fatalf("MarshalBinary returned error: %v", err)
+	}
+
+	data[15] = 0x05
+	data[20] = 0x86
+
+	var decoded InputState
+	if err := decoded.UnmarshalBinary(data); err != nil {
+		t.Fatalf("UnmarshalBinary returned error: %v", err)
+	}
+
+	if !decoded.Touch1Active || decoded.Touch1Tracking != 0x05 {
+		t.Fatalf("unexpected touch 1 status: active=%v tracking=%#x", decoded.Touch1Active, decoded.Touch1Tracking)
+	}
+	if decoded.Touch2Active || decoded.Touch2Tracking != 0x86 {
+		t.Fatalf("unexpected touch 2 status: active=%v tracking=%#x", decoded.Touch2Active, decoded.Touch2Tracking)
+	}
+
+	dev, err := New(nil)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	decoded.Touch2Active = false
+	report := dev.buildUSBInputReport(&decoded, &MetaState{})
+	if report[33] != 0x05 {
+		t.Fatalf("unexpected touch 1 report tracking byte: %#x", report[33])
+	}
+	if report[37] != 0x86 {
+		t.Fatalf("unexpected touch 2 report tracking byte: %#x", report[37])
+	}
+}
