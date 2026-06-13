@@ -157,16 +157,16 @@ func TestDualSenseTouchTrackingZeroIsActive(t *testing.T) {
 
 func TestDualSenseExtendedFeedbackUsesNativeTriggerBlockSize(t *testing.T) {
 	out := OutputState{
-		RumbleSmall:               0x11,
-		RumbleLarge:               0x22,
-		TriggerR2Mode:             0x21,
-		TriggerR2StartResistance:  0x33,
-		TriggerR2PressedStrength:  0x44,
-		TriggerR2Frequency:        0x55,
-		TriggerL2Mode:             0x25,
-		TriggerL2StartResistance:  0x66,
-		TriggerL2PressedStrength:  0x77,
-		TriggerL2Frequency:        0x88,
+		RumbleSmall:              0x11,
+		RumbleLarge:              0x22,
+		TriggerR2Mode:            0x21,
+		TriggerR2StartResistance: 0x33,
+		TriggerR2PressedStrength: 0x44,
+		TriggerR2Frequency:       0x55,
+		TriggerL2Mode:            0x25,
+		TriggerL2StartResistance: 0x66,
+		TriggerL2PressedStrength: 0x77,
+		TriggerL2Frequency:       0x88,
 	}
 
 	data, err := out.MarshalExtendedBinary()

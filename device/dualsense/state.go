@@ -164,33 +164,6 @@ func (f *OutputState) MarshalExtendedBinary() ([]byte, error) {
 	return b, nil
 }
 
-func (f *OutputState) marshalLegacyExtendedBinary() ([]byte, error) {
-	return []byte{
-		f.RumbleSmall,
-		f.RumbleLarge,
-		f.LedRed,
-		f.LedGreen,
-		f.LedBlue,
-		f.PlayerLeds,
-		f.TriggerR2Mode,
-		f.TriggerR2StartResistance,
-		f.TriggerR2EffectForce,
-		f.TriggerR2RangeForce,
-		f.TriggerR2NearReleaseStrength,
-		f.TriggerR2NearMiddleStrength,
-		f.TriggerR2PressedStrength,
-		f.TriggerR2Frequency,
-		f.TriggerL2Mode,
-		f.TriggerL2StartResistance,
-		f.TriggerL2EffectForce,
-		f.TriggerL2RangeForce,
-		f.TriggerL2NearReleaseStrength,
-		f.TriggerL2NearMiddleStrength,
-		f.TriggerL2PressedStrength,
-		f.TriggerL2Frequency,
-	}, nil
-}
-
 func (f *OutputState) UnmarshalBinary(data []byte) error {
 	if len(data) < OutputStateSize {
 		return io.ErrUnexpectedEOF
