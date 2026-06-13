@@ -1,11 +1,28 @@
 package dualsense
 
 import (
+	"bytes"
 	"context"
+	"encoding/hex"
 	"testing"
 
 	"github.com/Alia5/VIIPER/usbip"
 )
+
+func TestDualSenseUSBOutputReportDescriptorMatchesCapture(t *testing.T) {
+	report, err := defaultDescriptor.Interfaces[0].HID.ReportBytes()
+	if err != nil {
+		t.Fatalf("ReportBytes returned error: %v", err)
+	}
+
+	capturedOutputReport, err := hex.DecodeString("85020923952f9102")
+	if err != nil {
+		t.Fatalf("DecodeString returned error: %v", err)
+	}
+	if !bytes.Contains(report, capturedOutputReport) {
+		t.Fatalf("USB output report descriptor does not match captured DualSense report count: % x", report)
+	}
+}
 
 func TestDualSenseOutputReportFromEndpoint(t *testing.T) {
 	dev, err := New(nil)
