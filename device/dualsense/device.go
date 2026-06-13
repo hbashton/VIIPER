@@ -282,6 +282,25 @@ func parseOutputReport(out []byte) OutputState {
 			feedback.PlayerLeds = out[44]
 		}
 	}
+	if len(out) > 31 {
+		feedback.TriggerR2Mode = out[11]
+		feedback.TriggerR2StartResistance = out[12]
+		feedback.TriggerR2EffectForce = out[13]
+		feedback.TriggerR2RangeForce = out[14]
+		feedback.TriggerR2NearReleaseStrength = out[15]
+		feedback.TriggerR2NearMiddleStrength = out[16]
+		feedback.TriggerR2PressedStrength = out[17]
+		feedback.TriggerR2Frequency = out[20]
+
+		feedback.TriggerL2Mode = out[22]
+		feedback.TriggerL2StartResistance = out[23]
+		feedback.TriggerL2EffectForce = out[24]
+		feedback.TriggerL2RangeForce = out[25]
+		feedback.TriggerL2NearReleaseStrength = out[26]
+		feedback.TriggerL2NearMiddleStrength = out[27]
+		feedback.TriggerL2PressedStrength = out[28]
+		feedback.TriggerL2Frequency = out[31]
+	}
 	return feedback
 }
 

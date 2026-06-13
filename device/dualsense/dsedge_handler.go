@@ -15,9 +15,12 @@ import (
 
 func init() {
 	api.RegisterDevice("dualsenseedge", &dsedgehandler{})
+	api.RegisterDevice("dualsenseedgeext", &dsedgehandler{extendedFeedback: true})
 }
 
-type dsedgehandler struct{}
+type dsedgehandler struct {
+	extendedFeedback bool
+}
 
 func (h *dsedgehandler) CreateDevice(o *device.CreateOptions) (usb.Device, error) {
 	if o == nil {
@@ -110,7 +113,13 @@ func (h *dsedgehandler) StreamHandler() api.StreamHandlerFunc {
 		}
 
 		dse.SetOutputCallback(func(feedback OutputState) {
-			data, err := feedback.MarshalBinary()
+			var data []byte
+			var err error
+			if h.extendedFeedback {
+				data, err = feedback.MarshalExtendedBinary()
+			} else {
+				data, err = feedback.MarshalBinary()
+			}
 			if err != nil {
 				logger.Error("failed to marshal feedback", "error", err)
 				return

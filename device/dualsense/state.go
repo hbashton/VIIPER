@@ -93,7 +93,7 @@ func (s *InputState) UnmarshalBinary(data []byte) error {
 }
 
 // nolint
-// viiper:wire dualsense s2c rumbleSmall:u8 rumbleLarge:u8 ledRed:u8 ledGreen:u8 ledBlue:u8 playerLeds:u8
+// viiper:wire dualsense s2c rumbleSmall:u8 rumbleLarge:u8 ledRed:u8 ledGreen:u8 ledBlue:u8 playerLeds:u8 triggerR2Mode:u8 triggerR2StartResistance:u8 triggerR2EffectForce:u8 triggerR2RangeForce:u8 triggerR2NearReleaseStrength:u8 triggerR2NearMiddleStrength:u8 triggerR2PressedStrength:u8 triggerR2Frequency:u8 triggerL2Mode:u8 triggerL2StartResistance:u8 triggerL2EffectForce:u8 triggerL2RangeForce:u8 triggerL2NearReleaseStrength:u8 triggerL2NearMiddleStrength:u8 triggerL2PressedStrength:u8 triggerL2Frequency:u8
 type OutputState struct {
 	RumbleSmall uint8
 	RumbleLarge uint8
@@ -101,6 +101,23 @@ type OutputState struct {
 	LedGreen    uint8
 	LedBlue     uint8
 	PlayerLeds  uint8
+
+	TriggerR2Mode                uint8
+	TriggerR2StartResistance     uint8
+	TriggerR2EffectForce         uint8
+	TriggerR2RangeForce          uint8
+	TriggerR2NearReleaseStrength uint8
+	TriggerR2NearMiddleStrength  uint8
+	TriggerR2PressedStrength     uint8
+	TriggerR2Frequency           uint8
+	TriggerL2Mode                uint8
+	TriggerL2StartResistance     uint8
+	TriggerL2EffectForce         uint8
+	TriggerL2RangeForce          uint8
+	TriggerL2NearReleaseStrength uint8
+	TriggerL2NearMiddleStrength  uint8
+	TriggerL2PressedStrength     uint8
+	TriggerL2Frequency           uint8
 }
 
 func (f *OutputState) MarshalBinary() ([]byte, error) {
@@ -114,6 +131,33 @@ func (f *OutputState) MarshalBinary() ([]byte, error) {
 	}, nil
 }
 
+func (f *OutputState) MarshalExtendedBinary() ([]byte, error) {
+	return []byte{
+		f.RumbleSmall,
+		f.RumbleLarge,
+		f.LedRed,
+		f.LedGreen,
+		f.LedBlue,
+		f.PlayerLeds,
+		f.TriggerR2Mode,
+		f.TriggerR2StartResistance,
+		f.TriggerR2EffectForce,
+		f.TriggerR2RangeForce,
+		f.TriggerR2NearReleaseStrength,
+		f.TriggerR2NearMiddleStrength,
+		f.TriggerR2PressedStrength,
+		f.TriggerR2Frequency,
+		f.TriggerL2Mode,
+		f.TriggerL2StartResistance,
+		f.TriggerL2EffectForce,
+		f.TriggerL2RangeForce,
+		f.TriggerL2NearReleaseStrength,
+		f.TriggerL2NearMiddleStrength,
+		f.TriggerL2PressedStrength,
+		f.TriggerL2Frequency,
+	}, nil
+}
+
 func (f *OutputState) UnmarshalBinary(data []byte) error {
 	if len(data) < OutputStateSize {
 		return io.ErrUnexpectedEOF
@@ -124,6 +168,26 @@ func (f *OutputState) UnmarshalBinary(data []byte) error {
 	f.LedGreen = data[3]
 	f.LedBlue = data[4]
 	f.PlayerLeds = data[5]
+	if len(data) < OutputStateExtSize {
+		return nil
+	}
+
+	f.TriggerR2Mode = data[6]
+	f.TriggerR2StartResistance = data[7]
+	f.TriggerR2EffectForce = data[8]
+	f.TriggerR2RangeForce = data[9]
+	f.TriggerR2NearReleaseStrength = data[10]
+	f.TriggerR2NearMiddleStrength = data[11]
+	f.TriggerR2PressedStrength = data[12]
+	f.TriggerR2Frequency = data[13]
+	f.TriggerL2Mode = data[14]
+	f.TriggerL2StartResistance = data[15]
+	f.TriggerL2EffectForce = data[16]
+	f.TriggerL2RangeForce = data[17]
+	f.TriggerL2NearReleaseStrength = data[18]
+	f.TriggerL2NearMiddleStrength = data[19]
+	f.TriggerL2PressedStrength = data[20]
+	f.TriggerL2Frequency = data[21]
 	return nil
 }
 
