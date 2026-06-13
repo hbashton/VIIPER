@@ -17,10 +17,12 @@ type InputState struct {
 	DPad    uint8
 	L2, R2  uint8
 
-	Touch1X, Touch1Y uint16
-	Touch1Active     bool
-	Touch2X, Touch2Y uint16
-	Touch2Active     bool
+	Touch1X, Touch1Y       uint16
+	Touch1Active           bool
+	Touch1Tracking         uint8
+	Touch2X, Touch2Y       uint16
+	Touch2Active           bool
+	Touch2Tracking         uint8
 
 	GyroX, GyroY, GyroZ    int16
 	AccelX, AccelY, AccelZ int16
@@ -48,12 +50,14 @@ func (s *InputState) MarshalBinary() ([]byte, error) {
 	b[10] = s.R2
 	binary.LittleEndian.PutUint16(b[11:13], s.Touch1X)
 	binary.LittleEndian.PutUint16(b[13:15], s.Touch1Y)
-	if s.Touch1Active {
+	b[15] = encodeTouchStatus(s.Touch1Active, s.Touch1Tracking)
+	if s.Touch1Active && b[15] == 0 {
 		b[15] = 1
 	}
 	binary.LittleEndian.PutUint16(b[16:18], s.Touch2X)
 	binary.LittleEndian.PutUint16(b[18:20], s.Touch2Y)
-	if s.Touch2Active {
+	b[20] = encodeTouchStatus(s.Touch2Active, s.Touch2Tracking)
+	if s.Touch2Active && b[20] == 0 {
 		b[20] = 1
 	}
 	binary.LittleEndian.PutUint16(b[21:23], uint16(s.GyroX))
@@ -79,10 +83,10 @@ func (s *InputState) UnmarshalBinary(data []byte) error {
 	s.R2 = data[10]
 	s.Touch1X = binary.LittleEndian.Uint16(data[11:13])
 	s.Touch1Y = binary.LittleEndian.Uint16(data[13:15])
-	s.Touch1Active = data[15] != 0
+	s.Touch1Active, s.Touch1Tracking = decodeTouchStatus(data[15])
 	s.Touch2X = binary.LittleEndian.Uint16(data[16:18])
 	s.Touch2Y = binary.LittleEndian.Uint16(data[18:20])
-	s.Touch2Active = data[20] != 0
+	s.Touch2Active, s.Touch2Tracking = decodeTouchStatus(data[20])
 	s.GyroX = int16(binary.LittleEndian.Uint16(data[21:23]))
 	s.GyroY = int16(binary.LittleEndian.Uint16(data[23:25]))
 	s.GyroZ = int16(binary.LittleEndian.Uint16(data[25:27]))
@@ -189,6 +193,30 @@ func (f *OutputState) UnmarshalBinary(data []byte) error {
 	f.TriggerL2PressedStrength = data[20]
 	f.TriggerL2Frequency = data[21]
 	return nil
+}
+
+func encodeTouchStatus(active bool, tracking uint8) uint8 {
+	if tracking != 0 {
+		if active {
+			return tracking &^ 0x80
+		}
+		return tracking | 0x80
+	}
+	if active {
+		return 1
+	}
+	return 0
+}
+
+func decodeTouchStatus(status uint8) (bool, uint8) {
+	switch status {
+	case 0:
+		return false, 0x80
+	case 1:
+		return true, 0
+	default:
+		return status&0x80 == 0, status
+	}
 }
 
 type MetaState struct {

@@ -41,8 +41,8 @@ IMU (gyro + accelerometer), and touchpad finger coordinates.
         - DPad: uint8 (1 byte, bitfield)
         - Triggers: TriggerL2, TriggerR2: uint8, uint8 (2 bytes)
           0-255 (0=not pressed, 255=fully pressed)
-        - Touch1: Touch1X, Touch1Y: uint16 each, Touch1Active: bool (5 bytes)
-        - Touch2: Touch2X, Touch2Y: uint16 each, Touch2Active: bool (5 bytes)
+        - Touch1: Touch1X, Touch1Y: uint16 each, Touch1Active: status byte (5 bytes)
+        - Touch2: Touch2X, Touch2Y: uint16 each, Touch2Active: status byte (5 bytes)
         - Gyroscope: GyroX, GyroY, GyroZ: int16 each (6 bytes, raw report
           values)
         - Accelerometer: AccelX, AccelY, AccelZ: int16 each
@@ -113,7 +113,9 @@ IMU (gyro + accelerometer), and touchpad finger coordinates.
     ### Touchpad Coordinates
 
     Touch coordinates are sent as `Touch{1,2}X: uint16` and `Touch{1,2}Y: uint16`
-    plus an explicit boolean `Touch{1,2}Active`.
+    plus a touch status byte. Legacy clients may send `0` for inactive and `1`
+    for active. New clients should send the raw DualSense tracking byte instead:
+    bit 7 set means inactive, and the low 7 bits are the contact tracking ID.
 
     VIIPER clamps touch coordinates to the DualSense range:
 

@@ -524,22 +524,24 @@ func (d *DualSense) buildUSBInputReport(s *InputState, m *MetaState) []byte {
 	ts := uint32(time.Since(d.timestampBase).Microseconds() * 3)
 	binary.LittleEndian.PutUint32(b[28:32], ts)
 
-	touch1 := uint8(0)
-	if !s.Touch1Active {
-		touch1 |= TouchInactiveMask
-	}
-	b[33] = touch1
+	b[33] = normalizeTouchTracking(s.Touch1Active, s.Touch1Tracking)
 	encodeTouchCoords(b[34:37], s.Touch1X, s.Touch1Y)
 
-	touch2 := uint8(0)
-	if !s.Touch2Active {
-		touch2 |= TouchInactiveMask
-	}
-	b[37] = touch2
+	b[37] = normalizeTouchTracking(s.Touch2Active, s.Touch2Tracking)
 	encodeTouchCoords(b[38:41], s.Touch2X, s.Touch2Y)
 
 	b[49] = 0x10
 	b[53] = m.BatteryStatus
 
 	return b
+}
+
+func normalizeTouchTracking(active bool, tracking uint8) uint8 {
+	if active {
+		return tracking &^ TouchInactiveMask
+	}
+	if tracking == 0 {
+		return TouchInactiveMask
+	}
+	return tracking | TouchInactiveMask
 }
