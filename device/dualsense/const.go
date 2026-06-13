@@ -39,10 +39,11 @@ const (
 )
 
 const (
-	InputReportSize    = 64
-	OutputReportSize   = 48
-	InputStateSize     = 33
-	OutputStateSize    = 6
+	InputReportSize  = 64
+	OutputReportSize = 48
+	InputStateSize   = 33
+	OutputStateSize  = 6
+
 	// OutputStateExtSize is VIIPER's compact server-to-client feedback packet:
 	// 6 base bytes plus two 11-byte DualSense trigger effect blocks.
 	// It is not the full native USB output report size.
