@@ -3,12 +3,14 @@ package dualsense
 import (
 	"context"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"math"
 	"net"
+	"os"
 	"sync"
 	"time"
 
@@ -16,6 +18,8 @@ import (
 	"github.com/Alia5/VIIPER/usb"
 	"github.com/Alia5/VIIPER/usbip"
 )
+
+var rawOutputLogEnabled = os.Getenv("VIIPER_DUALSENSE_RAW_OUTPUT_LOG") == "1"
 
 type DualSense struct {
 	inputCh    chan *InputState
@@ -261,10 +265,39 @@ func (d *DualSense) handleOutputReport(out []byte) bool {
 	if !ok {
 		return false
 	}
+	logRawOutputReport(report)
 	if d.outputFunc != nil {
 		d.outputFunc(parseOutputReport(report))
 	}
 	return true
+}
+
+func logRawOutputReport(report []byte) {
+	if !rawOutputLogEnabled {
+		return
+	}
+
+	attrs := []any{
+		"len", len(report),
+		"hex", hex.EncodeToString(report),
+	}
+	if len(report) > 0 {
+		attrs = append(attrs, "reportID", fmt.Sprintf("0x%02X", report[0]))
+	}
+	if len(report) > 4 {
+		attrs = append(attrs,
+			"flags0", fmt.Sprintf("0x%02X", report[1]),
+			"flags1", fmt.Sprintf("0x%02X", report[2]),
+			"rumbleSmall", report[3],
+			"rumbleLarge", report[4])
+	}
+	if len(report) > 31 {
+		attrs = append(attrs,
+			"r2", hex.EncodeToString(report[11:21]),
+			"l2", hex.EncodeToString(report[22:32]))
+	}
+
+	slog.Info("DualSense raw host output report", attrs...)
 }
 
 func normalizeOutputReport(out []byte) ([]byte, bool) {
