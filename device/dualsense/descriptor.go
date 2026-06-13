@@ -121,7 +121,7 @@ var defaultDescriptor = usb.Descriptor{
 							hid.ReportID{ID: 0xE0}, hid.Usage{Usage: 0x2F}, hid.ReportCount{Count: 63}, hid.Feature{Flags: hid.MainData | hid.MainVar | hid.MainAbs},
 							hid.ReportID{ID: 0xF0}, hid.Usage{Usage: 0x30}, hid.ReportCount{Count: 63}, hid.Feature{Flags: hid.MainData | hid.MainVar | hid.MainAbs},
 							hid.ReportID{ID: 0xF1}, hid.Usage{Usage: 0x31}, hid.ReportCount{Count: 63}, hid.Feature{Flags: hid.MainData | hid.MainVar | hid.MainAbs},
-							hid.ReportID{ID: 0xF2}, hid.Usage{Usage: 0x32}, hid.ReportCount{Count: 52}, hid.Feature{Flags: hid.MainData | hid.MainVar | hid.MainAbs},
+							hid.ReportID{ID: 0xF2}, hid.Usage{Usage: 0x32}, hid.ReportCount{Count: 15}, hid.Feature{Flags: hid.MainData | hid.MainVar | hid.MainAbs},
 							hid.ReportID{ID: 0xF4}, hid.Usage{Usage: 0x35}, hid.ReportCount{Count: 63}, hid.Feature{Flags: hid.MainData | hid.MainVar | hid.MainAbs},
 							hid.ReportID{ID: 0xF5}, hid.Usage{Usage: 0x36}, hid.ReportCount{Count: 3}, hid.Feature{Flags: hid.MainData | hid.MainVar | hid.MainAbs},
 
@@ -166,6 +166,77 @@ var defaultDescriptor = usb.Descriptor{
 	Strings: map[uint8]string{
 		0: "\u0409", // LangID: en-US (0x0409)
 		1: "Sony Interactive Entertainment",
-		2: "DualSense Wireless Controller",
+		2: "Wireless Controller",
 	},
+}
+
+func makeDescriptor(edge bool) usb.Descriptor {
+	desc := defaultDescriptor
+	desc.Interfaces = append([]usb.InterfaceConfig(nil), defaultDescriptor.Interfaces...)
+	desc.Strings = make(map[uint8]string, len(defaultDescriptor.Strings))
+	for k, v := range defaultDescriptor.Strings {
+		desc.Strings[k] = v
+	}
+
+	if len(desc.Interfaces) > 0 && desc.Interfaces[0].HID != nil {
+		hidFunction := *desc.Interfaces[0].HID
+		reportDescriptor := hidFunction.ReportDescriptor
+		reportDescriptor.Items = append([]hid.Item(nil), reportDescriptor.Items...)
+		for i, item := range reportDescriptor.Items {
+			collection, ok := item.(hid.Collection)
+			if !ok {
+				continue
+			}
+
+			collection.Items = append([]hid.Item(nil), collection.Items...)
+			if !edge {
+				collection.Items = withoutEdgeFeatureReports(collection.Items)
+			}
+
+			reportDescriptor.Items[i] = collection
+		}
+
+		hidFunction.ReportDescriptor = reportDescriptor
+		desc.Interfaces[0].HID = &hidFunction
+	}
+
+	desc.Device.IDProduct = DefaultPIDDS
+	if edge {
+		desc.Device.IDProduct = DefaultPIDDSEdge
+		desc.Strings[2] = "DualSense Edge Wireless Controller"
+	}
+
+	return desc
+}
+
+func withoutEdgeFeatureReports(items []hid.Item) []hid.Item {
+	filtered := make([]hid.Item, 0, len(items))
+	for i := 0; i < len(items); i++ {
+		reportID, ok := items[i].(hid.ReportID)
+		if ok && isEdgeFeatureReport(reportID.ID) && i+3 < len(items) {
+			if _, ok := items[i+1].(hid.Usage); ok {
+				if _, ok := items[i+2].(hid.ReportCount); ok {
+					if _, ok := items[i+3].(hid.Feature); ok {
+						i += 3
+						continue
+					}
+				}
+			}
+		}
+
+		filtered = append(filtered, items[i])
+	}
+
+	return filtered
+}
+
+func isEdgeFeatureReport(reportID uint8) bool {
+	switch reportID {
+	case 0x60, 0x61, 0x62, 0x63, 0x64, 0x65,
+		0x68,
+		0x70, 0x71, 0x72, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78, 0x79, 0x7A, 0x7B:
+		return true
+	default:
+		return false
+	}
 }

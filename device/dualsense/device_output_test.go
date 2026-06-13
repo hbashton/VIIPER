@@ -10,17 +10,79 @@ import (
 )
 
 func TestDualSenseUSBOutputReportDescriptorMatchesCapture(t *testing.T) {
-	report, err := defaultDescriptor.Interfaces[0].HID.ReportBytes()
+	dev, err := New(nil)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	report, err := dev.GetDescriptor().Interfaces[0].HID.ReportBytes()
 	if err != nil {
 		t.Fatalf("ReportBytes returned error: %v", err)
 	}
 
-	capturedOutputReport, err := hex.DecodeString("85020923952f9102")
+	capturedReport, err := hex.DecodeString(
+		"05010905a1018501093009310932093509330934150026ff007508950681020600ff09209501810205010939150025073500463b016514750495018142650005091901290f150025017501950f81020600ff0921950d81020600ff0922150026ff0075089534810285020923952f9102850509339528b10285080934952fb102850909249513b102850a0925951ab10285200926953fb102852109279504b10285220940953fb10285800928953fb10285810929953fb1028582092a9509b1028583092b953fb1028584092c953fb1028585092d9502b10285a0092e9501b10285e0092f953fb10285f00930953fb10285f10931953fb10285f20932950fb10285f40935953fb10285f509369503b102c0")
 	if err != nil {
 		t.Fatalf("DecodeString returned error: %v", err)
 	}
-	if !bytes.Contains(report, capturedOutputReport) {
-		t.Fatalf("USB output report descriptor does not match captured DualSense report count: % x", report)
+	if !bytes.Equal(report, capturedReport) {
+		t.Fatalf("USB report descriptor does not match captured DualSense descriptor:\n got: % x\nwant: % x", report, capturedReport)
+	}
+}
+
+func TestDualSenseDescriptorDoesNotAdvertiseEdgeFeatureReports(t *testing.T) {
+	dev, err := New(nil)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	desc := dev.GetDescriptor()
+	if desc.Device.IDProduct != DefaultPIDDS {
+		t.Fatalf("unexpected DualSense PID: %#x", desc.Device.IDProduct)
+	}
+	if desc.Strings[2] != "Wireless Controller" {
+		t.Fatalf("unexpected DualSense product string: %q", desc.Strings[2])
+	}
+
+	report, err := desc.Interfaces[0].HID.ReportBytes()
+	if err != nil {
+		t.Fatalf("ReportBytes returned error: %v", err)
+	}
+
+	edgeFeatureReport, err := hex.DecodeString("85600941953fb102")
+	if err != nil {
+		t.Fatalf("DecodeString returned error: %v", err)
+	}
+	if bytes.Contains(report, edgeFeatureReport) {
+		t.Fatalf("normal DualSense descriptor advertises Edge feature report 0x60: % x", report)
+	}
+}
+
+func TestDualSenseEdgeDescriptorAdvertisesEdgeFeatureReports(t *testing.T) {
+	dev, err := NewEdge(nil)
+	if err != nil {
+		t.Fatalf("NewEdge returned error: %v", err)
+	}
+
+	desc := dev.GetDescriptor()
+	if desc.Device.IDProduct != DefaultPIDDSEdge {
+		t.Fatalf("unexpected Edge PID: %#x", desc.Device.IDProduct)
+	}
+	if desc.Strings[2] != "DualSense Edge Wireless Controller" {
+		t.Fatalf("unexpected Edge product string: %q", desc.Strings[2])
+	}
+
+	report, err := desc.Interfaces[0].HID.ReportBytes()
+	if err != nil {
+		t.Fatalf("ReportBytes returned error: %v", err)
+	}
+
+	edgeFeatureReport, err := hex.DecodeString("85600941953fb102")
+	if err != nil {
+		t.Fatalf("DecodeString returned error: %v", err)
+	}
+	if !bytes.Contains(report, edgeFeatureReport) {
+		t.Fatalf("Edge descriptor does not advertise feature report 0x60: % x", report)
 	}
 }
 

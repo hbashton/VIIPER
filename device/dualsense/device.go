@@ -93,13 +93,8 @@ func new(o *device.CreateOptions, edge bool) (*DualSense, error) {
 	}
 
 	d := &DualSense{
-		descriptor: defaultDescriptor,
+		descriptor: makeDescriptor(edge),
 		metaState:  metaState,
-	}
-	d.descriptor.Device.IDProduct = DefaultPIDDS
-	if edge {
-		d.descriptor.Device.IDProduct = DefaultPIDDSEdge
-		d.descriptor.Strings[2] = "DualSense Edge Wireless Controller"
 	}
 
 	if o != nil {
