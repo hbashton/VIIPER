@@ -530,7 +530,8 @@ func (d *DualSense) buildUSBInputReport(s *InputState, m *MetaState) []byte {
 	b[37] = normalizeTouchTracking(s.Touch2Active, s.Touch2Tracking)
 	encodeTouchCoords(b[38:41], s.Touch2X, s.Touch2Y)
 
-	b[49] = 0x10
+	b[41] = d.seqCounter
+	binary.LittleEndian.PutUint32(b[49:53], ts)
 	b[53] = m.BatteryStatus
 
 	return b
