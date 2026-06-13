@@ -2230,11 +2230,13 @@ packets.</p>
 <li>PlayerLeds: uint8 (1 byte), host-controlled player indicator LED mask</li>
 </ul>
 </li>
-<li>Extended <code>dualsenseext</code> / <code>dualsenseedgeext</code> streams send 22-byte packets.
-  Bytes 0..5 preserve the original rumble/LED layout above. Bytes 6..13
-  contain the raw R2 adaptive-trigger effect block copied from USB output
-  report 0x02. Bytes 14..21 contain the raw L2 adaptive-trigger effect
-  block. Each trigger block is:<ul>
+<li>Extended <code>dualsenseext</code> / <code>dualsenseedgeext</code> streams send 28-byte
+  VIIPER feedback packets. This is not the full native HID output report.
+  Bytes 0..5 preserve the original rumble/LED layout above. Bytes 6..16
+  contain the R2 adaptive-trigger effect block copied from USB output
+  report 0x02 with the same reserved gaps used by the native report.
+  Bytes 17..27 contain the L2 adaptive-trigger effect block with the same
+  layout. Each trigger block is 11 bytes:<ul>
 <li>Mode</li>
 <li>StartResistance</li>
 <li>EffectForce</li>
@@ -2242,10 +2244,18 @@ packets.</p>
 <li>NearReleaseStrength</li>
 <li>NearMiddleStrength</li>
 <li>PressedStrength</li>
+<li>Reserved</li>
+<li>Reserved</li>
 <li>Frequency</li>
+<li>Reserved</li>
 </ul>
 </li>
 </ul>
+<p>Native USB HID output report <code>0x02</code> is advertised as 47 payload bytes by
+the captured DualSense USB descriptor, so hosts see 48 bytes including the
+report ID. The VIIPER feedback stream stays compact because it only forwards
+the fields DS4Windows needs to apply rumble, LED state, and trigger effects
+back to a physical controller.</p>
 <p>See <code>/device/dualsense/state.go</code> for the <code>OutputState</code> wire definition.</p>
 <h2 id="reference">Reference</h2>
 <h3 id="button-constants">Button Constants</h3>
