@@ -39,6 +39,7 @@ func TestDualSenseOutputReportFromEndpoint(t *testing.T) {
 
 	report := make([]byte, OutputReportSize)
 	report[0] = ReportIDOutput
+	report[1] = 0x0F
 	report[3] = 0x22
 	report[4] = 0x88
 	report[11] = 0x21
@@ -82,6 +83,7 @@ func TestDualSenseOutputSetReportWithoutReportId(t *testing.T) {
 	})
 
 	payload := make([]byte, OutputReportSize-1)
+	payload[0] = 0x03
 	payload[2] = 0x33
 	payload[3] = 0x99
 
@@ -97,6 +99,42 @@ func TestDualSenseOutputSetReportWithoutReportId(t *testing.T) {
 	}
 	if got.RumbleSmall != 0x33 || got.RumbleLarge != 0x99 {
 		t.Fatalf("unexpected rumble: small=%#x large=%#x", got.RumbleSmall, got.RumbleLarge)
+	}
+}
+
+func TestDualSenseOutputFlagsPreserveUnchangedTriggers(t *testing.T) {
+	dev, err := New(nil)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	var got OutputState
+	dev.SetOutputCallback(func(out OutputState) {
+		got = out
+	})
+
+	triggerReport := make([]byte, OutputReportSize)
+	triggerReport[0] = ReportIDOutput
+	triggerReport[1] = 0x04
+	triggerReport[11] = 0x21
+	triggerReport[12] = 0xFC
+	triggerReport[13] = 0x03
+	triggerReport[20] = 0x44
+	dev.HandleTransfer(context.Background(), EndpointOut, usbip.DirOut, triggerReport)
+
+	rumbleReport := make([]byte, OutputReportSize)
+	rumbleReport[0] = ReportIDOutput
+	rumbleReport[1] = 0x03
+	rumbleReport[3] = 0x22
+	rumbleReport[4] = 0x88
+	dev.HandleTransfer(context.Background(), EndpointOut, usbip.DirOut, rumbleReport)
+
+	if got.RumbleSmall != 0x22 || got.RumbleLarge != 0x88 {
+		t.Fatalf("unexpected rumble: small=%#x large=%#x", got.RumbleSmall, got.RumbleLarge)
+	}
+	if got.TriggerR2Mode != 0x21 || got.TriggerR2StartResistance != 0xFC ||
+		got.TriggerR2EffectForce != 0x03 || got.TriggerR2Frequency != 0x44 {
+		t.Fatalf("rumble-only report cleared R2 trigger feedback: %#v", got)
 	}
 }
 
