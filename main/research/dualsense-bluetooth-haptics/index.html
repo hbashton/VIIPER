@@ -1913,6 +1913,12 @@ physical controller handle. This creates the first end-to-end testable contract:
 if Ghost opens the virtual audio endpoint, the traffic export should include
 <code>audio-haptics-out</code> events, matching <code>saxense-hid-0x32</code> packets, and the
 physical controller should receive report <code>0x32</code>.</p>
+<p>Windows reported the experimental audio interface as a failed <code>MEDIA</code> device on
+<code>USB\VID_054C&amp;PID_0CE6&amp;MI_01</code> while the AudioControl descriptor was malformed.
+The first fix corrected the UAC1 AudioControl header total length to <code>0x001E</code>,
+removed an extra byte from the Output Terminal descriptor, and added generic
+standard <code>GET_INTERFACE</code> / <code>SET_INTERFACE</code> handling so the audio streaming
+interface can switch from alternate setting 0 to alternate setting 1.</p>
 <p>Credit: SAxense research by egormanga/Sdore should be credited anywhere this
 Bluetooth haptics packet path is surfaced to users or shipped.</p>
 
