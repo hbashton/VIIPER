@@ -17,12 +17,12 @@ type InputState struct {
 	DPad    uint8
 	L2, R2  uint8
 
-	Touch1X, Touch1Y       uint16
-	Touch1Active           bool
-	Touch1Tracking         uint8
-	Touch2X, Touch2Y       uint16
-	Touch2Active           bool
-	Touch2Tracking         uint8
+	Touch1X, Touch1Y uint16
+	Touch1Active     bool
+	Touch1Tracking   uint8
+	Touch2X, Touch2Y uint16
+	Touch2Active     bool
+	Touch2Tracking   uint8
 
 	GyroX, GyroY, GyroZ    int16
 	AccelX, AccelY, AccelZ int16
