@@ -51,9 +51,15 @@ func (s *InputState) MarshalBinary() ([]byte, error) {
 	binary.LittleEndian.PutUint16(b[11:13], s.Touch1X)
 	binary.LittleEndian.PutUint16(b[13:15], s.Touch1Y)
 	b[15] = encodeTouchStatus(s.Touch1Active, s.Touch1Tracking)
+	if s.Touch1Active && b[15] == 0 {
+		b[15] = 1
+	}
 	binary.LittleEndian.PutUint16(b[16:18], s.Touch2X)
 	binary.LittleEndian.PutUint16(b[18:20], s.Touch2Y)
 	b[20] = encodeTouchStatus(s.Touch2Active, s.Touch2Tracking)
+	if s.Touch2Active && b[20] == 0 {
+		b[20] = 1
+	}
 	binary.LittleEndian.PutUint16(b[21:23], uint16(s.GyroX))
 	binary.LittleEndian.PutUint16(b[23:25], uint16(s.GyroY))
 	binary.LittleEndian.PutUint16(b[25:27], uint16(s.GyroZ))
