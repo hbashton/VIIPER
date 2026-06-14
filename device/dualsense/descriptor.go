@@ -14,7 +14,7 @@ var defaultDescriptor = usb.Descriptor{
 		BMaxPacketSize0:    0x40,
 		IDVendor:           DefaultVID,
 		IDProduct:          DefaultPIDDS,
-		BcdDevice:          0x0100,
+		BcdDevice:          0x0101,
 		IManufacturer:      0x01,
 		IProduct:           0x02,
 		ISerialNumber:      0x00,
