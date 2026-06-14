@@ -17,10 +17,18 @@ import (
 const deviceInputTemplate = `{{.Header}}
 use crate::wire::DeviceInput;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct {{.StructName}} {
 {{range .Fields}}    pub {{.RustName}}: {{.RustType}},
 {{end}}}
+
+impl Default for {{.StructName}} {
+    fn default() -> Self {
+        Self {
+{{range .Fields}}            {{.RustName}}: {{defaultExpr .}},
+{{end}}        }
+    }
+}
 
 impl DeviceInput for {{.StructName}} {
     fn to_bytes(&self) -> Vec<u8> {
@@ -38,10 +46,18 @@ impl DeviceInput for {{.StructName}} {
 const deviceOutputTemplate = `{{.Header}}
 use crate::wire::DeviceOutput;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct {{.StructName}} {
 {{range .Fields}}    pub {{.RustName}}: {{.RustType}},
 {{end}}}
+
+impl Default for {{.StructName}} {
+    fn default() -> Self {
+        Self {
+{{range .Fields}}            {{.RustName}}: {{defaultExpr .}},
+{{end}}        }
+    }
+}
 
 impl DeviceOutput for {{.StructName}} {
     fn from_bytes(buf: &[u8]) -> Result<Self, crate::error::ViiperError> {
@@ -182,7 +198,9 @@ func generateDeviceWireStruct(outputPath, deviceName, className string, tag *sca
 		Fields:     fields,
 	}
 
-	funcMap := template.FuncMap{}
+	funcMap := template.FuncMap{
+		"defaultExpr": rustDefaultExpr,
+	}
 	tmpl, err := template.New("devicewire").Funcs(funcMap).Parse(tmplStr)
 	if err != nil {
 		return fmt.Errorf("parse template: %w", err)
@@ -199,4 +217,16 @@ func generateDeviceWireStruct(outputPath, deviceName, className string, tag *sca
 	}
 
 	return nil
+}
+
+func rustDefaultExpr(field rustWireField) string {
+	if field.IsArray {
+		if field.FixedLen > 0 {
+			return fmt.Sprintf("[%s::default(); %d]", field.ElementType, field.FixedLen)
+		}
+
+		return "Vec::new()"
+	}
+
+	return fmt.Sprintf("%s::default()", field.RustType)
 }
