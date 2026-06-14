@@ -74,6 +74,32 @@ type DeviceCreateRequest struct {
 	DeviceSpecific map[string]any `json:"deviceSpecific,omitempty"`
 }
 
+type DualSenseTrafficSetRequest struct {
+	Enabled bool `json:"enabled"`
+	Clear   bool `json:"clear"`
+}
+
+type DualSenseTrafficEvent struct {
+	TimeUTC       string `json:"timeUtc"`
+	Direction     string `json:"direction"`
+	Source        string `json:"source"`
+	ReportType    string `json:"reportType,omitempty"`
+	ReportID      string `json:"reportId,omitempty"`
+	Request       string `json:"request,omitempty"`
+	Value         string `json:"value,omitempty"`
+	Index         string `json:"index,omitempty"`
+	Length        int    `json:"length"`
+	Hex           string `json:"hex,omitempty"`
+	Summary       string `json:"summary,omitempty"`
+	DecodedOutput string `json:"decodedOutput,omitempty"`
+}
+
+type DualSenseTrafficResponse struct {
+	Enabled bool                    `json:"enabled"`
+	Count   int                     `json:"count"`
+	Events  []DualSenseTrafficEvent `json:"events,omitempty"`
+}
+
 // UnmarshalJSON implements custom unmarshaling to accept both uint16 and hex string formats
 // for idVendor and idProduct (e.g., "0x12ac" or 4780).
 func (d *DeviceCreateRequest) UnmarshalJSON(data []byte) error {
