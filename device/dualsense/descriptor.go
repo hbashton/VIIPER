@@ -47,7 +47,6 @@ var defaultDescriptor = usb.Descriptor{
 						Kind: hid.CollectionApplication,
 						Items: []hid.Item{
 							hid.ReportID{ID: ReportIDInput},
-							hid.UsagePage{Page: hid.UsagePageGenericDesktop},
 							hid.Usage{Usage: hid.UsageX},
 							hid.Usage{Usage: hid.UsageY},
 							hid.Usage{Usage: hid.UsageZ},

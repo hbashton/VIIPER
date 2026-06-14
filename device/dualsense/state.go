@@ -91,7 +91,7 @@ func (s *InputState) UnmarshalBinary(data []byte) error {
 }
 
 // nolint
-// viiper:wire dualsense s2c rumbleSmall:u8 rumbleLarge:u8 ledRed:u8 ledGreen:u8 ledBlue:u8 playerLeds:u8 triggerR2Mode:u8 triggerR2StartResistance:u8 triggerR2EffectForce:u8 triggerR2RangeForce:u8 triggerR2NearReleaseStrength:u8 triggerR2NearMiddleStrength:u8 triggerR2PressedStrength:u8 _:u8*2 triggerR2Frequency:u8 _:u8 triggerL2Mode:u8 triggerL2StartResistance:u8 triggerL2EffectForce:u8 triggerL2RangeForce:u8 triggerL2NearReleaseStrength:u8 triggerL2NearMiddleStrength:u8 triggerL2PressedStrength:u8 _:u8*2 triggerL2Frequency:u8 _:u8
+// viiper:wire dualsense s2c rumbleSmall:u8 rumbleLarge:u8 ledRed:u8 ledGreen:u8 ledBlue:u8 playerLeds:u8 triggerR2Mode:u8 triggerR2StartResistance:u8 triggerR2EffectForce:u8 triggerR2RangeForce:u8 triggerR2NearReleaseStrength:u8 triggerR2NearMiddleStrength:u8 triggerR2PressedStrength:u8 triggerR2Reserved:u8*2 triggerR2Frequency:u8 triggerR2Padding:u8 triggerL2Mode:u8 triggerL2StartResistance:u8 triggerL2EffectForce:u8 triggerL2RangeForce:u8 triggerL2NearReleaseStrength:u8 triggerL2NearMiddleStrength:u8 triggerL2PressedStrength:u8 triggerL2Reserved:u8*2 triggerL2Frequency:u8 triggerL2Padding:u8
 type OutputState struct {
 	RumbleSmall uint8
 	RumbleLarge uint8
