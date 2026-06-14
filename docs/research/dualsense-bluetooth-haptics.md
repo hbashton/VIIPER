@@ -219,5 +219,12 @@ if Ghost opens the virtual audio endpoint, the traffic export should include
 `audio-haptics-out` events, matching `saxense-hid-0x32` packets, and the
 physical controller should receive report `0x32`.
 
+Windows reported the experimental audio interface as a failed `MEDIA` device on
+`USB\VID_054C&PID_0CE6&MI_01` while the AudioControl descriptor was malformed.
+The first fix corrected the UAC1 AudioControl header total length to `0x001E`,
+removed an extra byte from the Output Terminal descriptor, and added generic
+standard `GET_INTERFACE` / `SET_INTERFACE` handling so the audio streaming
+interface can switch from alternate setting 0 to alternate setting 1.
+
 Credit: SAxense research by egormanga/Sdore should be credited anywhere this
 Bluetooth haptics packet path is surfaced to users or shipped.
