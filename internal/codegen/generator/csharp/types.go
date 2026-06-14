@@ -9,6 +9,7 @@ import (
 	"strings"
 	"text/template"
 
+	"github.com/Alia5/VIIPER/internal/codegen/common"
 	"github.com/Alia5/VIIPER/internal/codegen/meta"
 )
 
@@ -92,7 +93,7 @@ func fieldTypeToCSharp(field interface{}) string {
 	}
 
 	if typeKind == "struct" {
-		return toPascalCase(typeStr)
+		return common.ToTypeName(typeStr)
 	}
 
 	return goTypeToCSharp(typeStr)

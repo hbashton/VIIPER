@@ -70,7 +70,7 @@ func fieldTypeToTS(field interface{}) string {
 		return goTypeToTS(elem) + "[]"
 	}
 	if typeKind == "struct" {
-		return common.ToPascalCase(typeStr)
+		return common.ToTypeName(typeStr)
 	}
 	return goTypeToTS(typeStr)
 }

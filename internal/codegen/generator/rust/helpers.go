@@ -41,7 +41,7 @@ func goTypeToRust(goType string) string {
 	case "float64":
 		rustType = "f64"
 	default:
-		rustType = common.ToPascalCase(base)
+		rustType = common.ToTypeName(base)
 	}
 
 	if isSlice {
