@@ -1666,6 +1666,28 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#ghost-of-tsushima-bow-capture-with-rumble-disabled-2026-06-14" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Ghost of Tsushima bow capture with rumble disabled, 2026-06-14
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#experimental-saxense-bridge-in-viiper" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Experimental SAxense bridge in VIIPER
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -1847,6 +1869,50 @@ cannot recover them.</p>
   for adaptive triggers, while keeping compatible rumble separate from future
   SAxense-style haptics PCM.</li>
 </ul>
+<h2 id="ghost-of-tsushima-bow-capture-with-rumble-disabled-2026-06-14">Ghost of Tsushima bow capture with rumble disabled, 2026-06-14</h2>
+<p>Capture file:</p>
+<ul>
+<li><code>%APPDATA%\DS4Windows\Logs\dualsense_traffic_20260614_104112.json</code></li>
+</ul>
+<p>Summary:</p>
+<ul>
+<li>2,936 total traffic events.</li>
+<li>1,468 parsed DualSense output reports.</li>
+<li>Three clear bow-draw clusters were captured.</li>
+<li>Each bow draw lasts roughly 1.3 seconds.</li>
+<li>Each bow draw contains 47 adaptive-trigger output reports.</li>
+<li>Compatible rumble is absent: <code>small=0</code>, <code>large=0</code> for the draw clusters.</li>
+</ul>
+<p>Interpretation:</p>
+<ul>
+<li>Disabling game rumble removes the normal <code>0x02/0x40</code> compatible rumble ramp.</li>
+<li>The remaining vibration felt during bow draw comes from the adaptive trigger
+  effect mode itself, not from advanced haptics being converted into ordinary
+  controller rumble.</li>
+<li>This validates keeping the trigger HID path separate from the SAxense
+  haptics/audio path.</li>
+</ul>
+<h2 id="experimental-saxense-bridge-in-viiper">Experimental SAxense bridge in VIIPER</h2>
+<p>VIIPER now has an experimental DualSense haptics/audio OUT endpoint:</p>
+<ul>
+<li>endpoint: <code>0x05</code></li>
+<li>type: isochronous OUT</li>
+<li>format advertised in the descriptor: stereo, 8-bit, 3000 Hz</li>
+</ul>
+<p>When host software writes 64-byte haptics/audio chunks to this endpoint,
+VIIPER records:</p>
+<ul>
+<li><code>audio-haptics-out</code>: the raw host-to-device audio/haptics bytes.</li>
+<li><code>saxense-hid-0x32</code>: the generated 141-byte SAxense-style Bluetooth HID
+  haptics report.</li>
+</ul>
+<p>The extended DualSense feedback stream now appends one optional 141-byte
+Bluetooth haptics report after the existing 76-byte feedback payload. DS4Windows
+can forward that report to a real Bluetooth DualSense through its existing
+physical controller handle. This creates the first end-to-end testable contract:
+if Ghost opens the virtual audio endpoint, the traffic export should include
+<code>audio-haptics-out</code> events, matching <code>saxense-hid-0x32</code> packets, and the
+physical controller should receive report <code>0x32</code>.</p>
 <p>Credit: SAxense research by egormanga/Sdore should be credited anywhere this
 Bluetooth haptics packet path is surfaced to users or shipped.</p>
 

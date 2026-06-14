@@ -2230,12 +2230,15 @@ packets.</p>
 <li>PlayerLeds: uint8 (1 byte), host-controlled player indicator LED mask</li>
 </ul>
 </li>
-<li>Extended <code>dualsenseext</code> / <code>dualsenseedgeext</code> streams send 76-byte
+<li>Extended <code>dualsenseext</code> / <code>dualsenseedgeext</code> streams send 217-byte
   VIIPER feedback packets. Bytes 0..27 preserve the legacy compact
   feedback layout: base rumble/LED bytes plus native-spaced trigger
   blocks. Bytes 28..75 contain the native USB HID output report <code>0x02</code>
   exactly as sent by the host, allowing clients to forward DualSense
-  haptics/control flags instead of reducing them to generic rumble.
+  haptics/control flags instead of reducing them to generic rumble. Bytes
+  76..216 contain one optional Bluetooth HID haptics report <code>0x32</code> built
+  from the experimental 3 kHz stereo haptics/audio OUT endpoint. A zero
+  report ID means no haptics frame is present for that feedback packet.
   Bytes 0..5 preserve the original rumble/LED layout above. Bytes 6..16
   contain the R2 adaptive-trigger effect block copied from USB output
   report 0x02 with the same reserved gaps used by the native report.
