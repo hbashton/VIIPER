@@ -60,6 +60,7 @@ func TestBuildConfigDescriptorSupportsIADAndAlternateSettings(t *testing.T) {
 					BMAttributes:     0x0D,
 					WMaxPacketSize:   0x00C0,
 					BInterval:        1,
+					Trailing:         usbdesc.Data{0x00, 0x00},
 					ClassDescriptors: []usbdesc.ClassSpecificDescriptor{
 						{DescriptorType: 0x25, Payload: usbdesc.Data{0x01, 0x00, 0x00, 0x00, 0x00}},
 					},
@@ -83,6 +84,7 @@ func TestBuildConfigDescriptorSupportsIADAndAlternateSettings(t *testing.T) {
 	assert.Equal(t, byte(0xFA), got[8])
 
 	assert.Equal(t, []byte{0x08, 0x0B, 0x00, 0x01, 0x03, 0x00, 0x00, 0x00}, got[9:17])
+	assert.True(t, bytes.Contains(got, []byte{0x09, 0x05, 0x03, 0x0D, 0xC0, 0x00, 0x01, 0x00, 0x00}))
 	assert.True(t, bytes.Contains(got, []byte{0x07, 0x25, 0x01, 0x00, 0x00, 0x00, 0x00}))
 }
 

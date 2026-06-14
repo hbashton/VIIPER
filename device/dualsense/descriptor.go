@@ -14,7 +14,7 @@ var defaultDescriptor = usb.Descriptor{
 		BMaxPacketSize0:    0x40,
 		IDVendor:           DefaultVID,
 		IDProduct:          DefaultPIDDS,
-		BcdDevice:          0x0102,
+		BcdDevice:          0x0103,
 		IManufacturer:      0x01,
 		IProduct:           0x02,
 		ISerialNumber:      0x00,
@@ -252,6 +252,7 @@ var defaultDescriptor = usb.Descriptor{
 					BMAttributes:     0x09, // Isochronous, adaptive, data endpoint.
 					WMaxPacketSize:   USBHapticsAudioPacketSize,
 					BInterval:        1,
+					Trailing:         usb.Data{0x00, 0x00}, // bRefresh, bSynchAddress for UAC1.
 					ClassDescriptors: []usb.ClassSpecificDescriptor{
 						{
 							DescriptorType: 0x25, // CS_ENDPOINT

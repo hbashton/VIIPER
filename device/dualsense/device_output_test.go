@@ -89,7 +89,8 @@ func TestDualSenseDescriptorAdvertisesExperimentalHapticsAudioEndpoint(t *testin
 			for _, ep := range iface.Endpoints {
 				if ep.BEndpointAddress == EndpointHapticsAudioOut &&
 					ep.BMAttributes&0x03 == 0x01 &&
-					ep.WMaxPacketSize == USBHapticsAudioPacketSize {
+					ep.WMaxPacketSize == USBHapticsAudioPacketSize &&
+					bytes.Equal(ep.Trailing, []byte{0x00, 0x00}) {
 					foundEndpoint = true
 				}
 			}

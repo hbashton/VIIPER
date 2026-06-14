@@ -330,12 +330,15 @@ func (i InterfaceDescriptor) Write(b *bytes.Buffer) {
 
 }
 
-// EndpointDescriptor (7 bytes) for each endpoint.
+// EndpointDescriptor describes a standard endpoint descriptor. Most endpoints
+// are 7 bytes; class-specific standards such as USB Audio Class 1.0 can append
+// additional standard endpoint fields after bInterval.
 type EndpointDescriptor struct {
 	BEndpointAddress uint8
 	BMAttributes     uint8
 	WMaxPacketSize   uint16 // LE
 	BInterval        uint8
+	Trailing         Data
 
 	// ClassDescriptors are optional endpoint-level class-specific descriptors
 	// emitted immediately after this endpoint descriptor.
@@ -343,12 +346,13 @@ type EndpointDescriptor struct {
 }
 
 func (e EndpointDescriptor) Write(b *bytes.Buffer) {
-	b.WriteByte(EndpointDescLen)
+	b.WriteByte(uint8(EndpointDescLen + len(e.Trailing)))
 	b.WriteByte(EndpointDescType)
 	b.WriteByte(e.BEndpointAddress)
 	b.WriteByte(e.BMAttributes)
 	_ = binary.Write(b, binary.LittleEndian, e.WMaxPacketSize)
 	b.WriteByte(e.BInterval)
+	b.Write(e.Trailing)
 
 }
 
