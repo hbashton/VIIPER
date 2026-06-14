@@ -123,7 +123,8 @@ type OutputState struct {
 	TriggerL2PressedStrength     uint8
 	TriggerL2Frequency           uint8
 
-	RawOutputReport [OutputReportSize]byte
+	RawOutputReport              [OutputReportSize]byte
+	BluetoothHapticsOutputReport [BluetoothHapticsReportSize]byte
 }
 
 func (f *OutputState) MarshalBinary() ([]byte, error) {
@@ -163,7 +164,8 @@ func (f *OutputState) MarshalExtendedBinary() ([]byte, error) {
 	b[22] = f.TriggerL2NearMiddleStrength
 	b[23] = f.TriggerL2PressedStrength
 	b[26] = f.TriggerL2Frequency
-	copy(b[OutputStateCompatExtSize:], f.RawOutputReport[:])
+	copy(b[OutputStateRawReportOffset:], f.RawOutputReport[:])
+	copy(b[OutputStateBluetoothHapticsOffset:], f.BluetoothHapticsOutputReport[:])
 	return b, nil
 }
 
@@ -198,7 +200,10 @@ func (f *OutputState) UnmarshalBinary(data []byte) error {
 	f.TriggerL2PressedStrength = data[23]
 	f.TriggerL2Frequency = data[26]
 	if len(data) >= OutputStateExtSize {
-		copy(f.RawOutputReport[:], data[OutputStateCompatExtSize:OutputStateExtSize])
+		copy(f.RawOutputReport[:], data[OutputStateRawReportOffset:OutputStateBluetoothHapticsOffset])
+		copy(f.BluetoothHapticsOutputReport[:], data[OutputStateBluetoothHapticsOffset:OutputStateExtSize])
+	} else if len(data) >= OutputStateBluetoothHapticsOffset {
+		copy(f.RawOutputReport[:], data[OutputStateRawReportOffset:OutputStateBluetoothHapticsOffset])
 	}
 	return nil
 }

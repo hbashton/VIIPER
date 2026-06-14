@@ -33,8 +33,10 @@ type DualSense struct {
 
 	subcommand [2]byte
 
-	seqCounter    uint8
-	timestampBase time.Time
+	seqCounter      uint8
+	hapticsSeq      uint8
+	hapticsInterval uint8
+	timestampBase   time.Time
 
 	mtx sync.Mutex
 }
@@ -194,8 +196,51 @@ func (d *DualSense) HandleTransfer(ctx context.Context, ep uint32, dir uint32, o
 			return nil
 		}
 	}
+	if dir == usbip.DirOut && ep == EndpointHapticsAudioOut {
+		d.handleHapticsAudioOut(out)
+		return nil
+	}
 
 	return nil
+}
+
+func (d *DualSense) handleHapticsAudioOut(out []byte) {
+	if len(out) == 0 {
+		return
+	}
+
+	recordTrafficBytes("host->device", "audio-haptics-out",
+		out,
+		"summary", fmt.Sprintf("ep=%d bytes=%d", EndpointHapticsAudioOut, len(out)))
+
+	for offset := 0; offset+BluetoothHapticsSampleSize <= len(out); offset += BluetoothHapticsSampleSize {
+		d.mtx.Lock()
+		seq := d.hapticsSeq
+		interval := d.hapticsInterval
+		d.hapticsSeq++
+		d.hapticsInterval++
+		d.mtx.Unlock()
+
+		report, err := BuildBluetoothHapticsReport(seq, interval, out[offset:offset+BluetoothHapticsSampleSize])
+		if err != nil {
+			slog.Warn("failed to build DualSense Bluetooth haptics report", "error", err)
+			continue
+		}
+
+		recordTrafficBytes("device->physical", "saxense-hid-0x32",
+			report,
+			"reportType", "output",
+			"reportID", fmt.Sprintf("0x%02X", report[0]),
+			"summary", fmt.Sprintf("from audio ep=%d offset=%d bytes=%d", EndpointHapticsAudioOut, offset, BluetoothHapticsSampleSize))
+
+		if d.outputFunc != nil {
+			d.mtx.Lock()
+			feedback := d.outputState
+			copy(feedback.BluetoothHapticsOutputReport[:], report)
+			d.mtx.Unlock()
+			d.outputFunc(feedback)
+		}
+	}
 }
 
 func (d *DualSense) HandleControl(bmRequestType, bRequest uint8, wValue, wIndex, wLength uint16, data []byte) ([]byte, bool) {
@@ -373,6 +418,7 @@ var featureGetHandlers = map[byte]func(*DualSense) []byte{
 
 func (d *DualSense) mergeOutputReport(out []byte) OutputState {
 	feedback := d.outputState
+	clear(feedback.BluetoothHapticsOutputReport[:])
 	if len(out) >= OutputReportSize {
 		copy(feedback.RawOutputReport[:], out[:OutputReportSize])
 	}

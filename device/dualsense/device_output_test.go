@@ -58,6 +58,50 @@ func TestDualSenseDescriptorDoesNotAdvertiseEdgeFeatureReports(t *testing.T) {
 	}
 }
 
+func TestDualSenseDescriptorAdvertisesExperimentalHapticsAudioEndpoint(t *testing.T) {
+	dev, err := New(nil)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	desc := dev.GetDescriptor()
+	if desc.NumInterfaces() != 3 {
+		t.Fatalf("unexpected interface count: got %d want 3", desc.NumInterfaces())
+	}
+	if len(desc.Associations) != 1 {
+		t.Fatalf("unexpected interface association count: got %d want 1", len(desc.Associations))
+	}
+	audioIAD := desc.Associations[0]
+	if audioIAD.BFirstInterface != 1 || audioIAD.BInterfaceCount != 2 ||
+		audioIAD.BFunctionClass != 0x01 || audioIAD.BFunctionSubClass != 0x01 {
+		t.Fatalf("unexpected audio IAD: %#v", audioIAD)
+	}
+
+	var foundAlt bool
+	var foundEndpoint bool
+	for _, iface := range desc.Interfaces {
+		if iface.Descriptor.BInterfaceNumber == 2 &&
+			iface.Descriptor.BAlternateSetting == 1 &&
+			iface.Descriptor.BInterfaceClass == 0x01 &&
+			iface.Descriptor.BInterfaceSubClass == 0x02 {
+			foundAlt = true
+			for _, ep := range iface.Endpoints {
+				if ep.BEndpointAddress == EndpointHapticsAudioOut &&
+					ep.BMAttributes&0x03 == 0x01 &&
+					ep.WMaxPacketSize == BluetoothHapticsSampleSize {
+					foundEndpoint = true
+				}
+			}
+		}
+	}
+	if !foundAlt {
+		t.Fatal("experimental haptics audio streaming altsetting was not found")
+	}
+	if !foundEndpoint {
+		t.Fatal("experimental haptics audio OUT endpoint was not found")
+	}
+}
+
 func TestDualSenseEdgeDescriptorAdvertisesEdgeFeatureReports(t *testing.T) {
 	dev, err := NewEdge(nil)
 	if err != nil {
@@ -131,6 +175,60 @@ func TestDualSenseOutputReportFromEndpoint(t *testing.T) {
 	}
 	if !bytes.Equal(got.RawOutputReport[:], report) {
 		t.Fatalf("raw output report was not preserved:\n got: % x\nwant: % x", got.RawOutputReport, report)
+	}
+}
+
+func TestDualSenseHapticsAudioOutBuildsSAxenseReports(t *testing.T) {
+	dev, err := New(nil)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	var got OutputState
+	dev.SetOutputCallback(func(out OutputState) {
+		got = out
+	})
+
+	SetTrafficDiagnosticsEnabled(true, true)
+	defer SetTrafficDiagnosticsEnabled(rawOutputLogEnabled, true)
+
+	sample := make([]byte, BluetoothHapticsSampleSize)
+	for i := range sample {
+		sample[i] = byte(i)
+	}
+
+	dev.HandleTransfer(context.Background(), EndpointHapticsAudioOut, usbip.DirOut, sample)
+	events := TrafficDiagnosticsSnapshot()
+
+	var sawAudioOut bool
+	var sawSAxense bool
+	for _, event := range events {
+		switch event.Source {
+		case "audio-haptics-out":
+			sawAudioOut = true
+			if event.Length != BluetoothHapticsSampleSize {
+				t.Fatalf("unexpected audio event length: got %d want %d", event.Length, BluetoothHapticsSampleSize)
+			}
+		case "saxense-hid-0x32":
+			sawSAxense = true
+			if event.ReportID != "0x32" {
+				t.Fatalf("unexpected generated report ID: %s", event.ReportID)
+			}
+			if event.Length != BluetoothHapticsReportSize {
+				t.Fatalf("unexpected generated report length: got %d want %d", event.Length, BluetoothHapticsReportSize)
+			}
+		}
+	}
+	if !sawAudioOut {
+		t.Fatal("expected audio-haptics-out diagnostic event")
+	}
+	if !sawSAxense {
+		t.Fatal("expected generated SAxense HID 0x32 diagnostic event")
+	}
+	if got.BluetoothHapticsOutputReport[0] != BluetoothHapticsReportID {
+		t.Fatalf("expected callback haptics report ID 0x%02x, got 0x%02x",
+			BluetoothHapticsReportID,
+			got.BluetoothHapticsOutputReport[0])
 	}
 }
 

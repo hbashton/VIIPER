@@ -58,12 +58,15 @@ IMU (gyro + accelerometer), and touchpad finger coordinates.
         - LED Color: LedRed, LedGreen, LedBlue: uint8 each (3 bytes), 0-255 per
           channel
         - PlayerLeds: uint8 (1 byte), host-controlled player indicator LED mask
-    - Extended `dualsenseext` / `dualsenseedgeext` streams send 76-byte
+    - Extended `dualsenseext` / `dualsenseedgeext` streams send 217-byte
       VIIPER feedback packets. Bytes 0..27 preserve the legacy compact
       feedback layout: base rumble/LED bytes plus native-spaced trigger
       blocks. Bytes 28..75 contain the native USB HID output report `0x02`
       exactly as sent by the host, allowing clients to forward DualSense
-      haptics/control flags instead of reducing them to generic rumble.
+      haptics/control flags instead of reducing them to generic rumble. Bytes
+      76..216 contain one optional Bluetooth HID haptics report `0x32` built
+      from the experimental 3 kHz stereo haptics/audio OUT endpoint. A zero
+      report ID means no haptics frame is present for that feedback packet.
       Bytes 0..5 preserve the original rumble/LED layout above. Bytes 6..16
       contain the R2 adaptive-trigger effect block copied from USB output
       report 0x02 with the same reserved gaps used by the native report.
