@@ -8,6 +8,7 @@ import (
 	"strings"
 	"text/template"
 
+	"github.com/Alia5/VIIPER/internal/codegen/common"
 	"github.com/Alia5/VIIPER/internal/codegen/meta"
 	"github.com/Alia5/VIIPER/internal/codegen/scanner"
 )
@@ -138,7 +139,7 @@ func fieldTypeToCSharpForDeviceSpecific(field scanner.FieldInfo) string {
 	}
 
 	if typeKind == "struct" {
-		return toPascalCase(typeStr)
+		return common.ToTypeName(typeStr)
 	}
 
 	return goTypeToCSharp(typeStr)

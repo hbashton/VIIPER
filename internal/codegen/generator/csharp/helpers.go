@@ -48,7 +48,7 @@ func goTypeToCSharp(goType string) string {
 	case "byte":
 		return "byte"
 	default:
-		return toPascalCase(base)
+		return common.ToTypeName(base)
 	}
 }
 

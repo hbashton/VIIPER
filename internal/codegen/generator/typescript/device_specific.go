@@ -139,7 +139,7 @@ func fieldTypeToTSForDeviceSpecific(field scanner.FieldInfo) string {
 	}
 
 	if typeKind == "struct" {
-		return common.ToPascalCase(typeStr)
+		return common.ToTypeName(typeStr)
 	}
 
 	return goTypeToTS(typeStr)

@@ -18,7 +18,7 @@ func goTypeToTS(goType string) string {
 	case "any", "interface{}":
 		return "unknown"
 	default:
-		return common.ToPascalCase(base)
+		return common.ToTypeName(base)
 	}
 }
 

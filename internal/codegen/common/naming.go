@@ -27,6 +27,25 @@ func ToPascalCase(s string) string {
 	return result.String()
 }
 
+func ToTypeName(s string) string {
+	if s == "" {
+		return ""
+	}
+
+	parts := strings.Split(s, ".")
+	base := parts[len(parts)-1]
+	if strings.ContainsAny(base, "_- ") {
+		return ToPascalCase(base)
+	}
+
+	runes := []rune(base)
+	if len(runes) > 0 && unicode.IsUpper(runes[0]) {
+		return base
+	}
+
+	return ToPascalCase(base)
+}
+
 func ToCamelCase(s string) string {
 	pascal := ToPascalCase(s)
 	if len(pascal) == 0 {

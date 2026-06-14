@@ -13,7 +13,7 @@ import (
 
 func tplFuncs(md *meta.Metadata) template.FuncMap {
 	return template.FuncMap{
-		"pascalcase":           common.ToPascalCase,
+		"pascalcase":           common.ToTypeName,
 		"camelcase":            common.ToCamelCase,
 		"snakecase":            common.ToSnakeCase,
 		"toScreamingSnakeCase": func(s string) string { return strings.ToUpper(common.ToSnakeCase(s)) },
@@ -71,7 +71,7 @@ func tplFuncs(md *meta.Metadata) template.FuncMap {
 		"pathParamType":        pathParamType,
 		"formatPathParamValue": formatPathParamValue,
 		"payloadCppType":       func(pi scanner.PayloadInfo) string { return payloadCppType(pi) },
-		"responseCppType":      func(name string) string { return common.ToPascalCase(name) },
+		"responseCppType":      func(name string) string { return common.ToTypeName(name) },
 		"isByteKeyMap":         isByteKeyMap,
 		"hasCharLiteralKeys":   hasCharLiteralKeys,
 		"isNumericMapVal":      func(vt string) bool { return vt != "string" && vt != "bool" },
@@ -143,7 +143,7 @@ func goBaseToCpp(base string) string {
 	case "string":
 		return "std::string"
 	default:
-		return common.ToPascalCase(base)
+		return common.ToTypeName(base)
 	}
 }
 
@@ -171,7 +171,7 @@ func payloadCppType(pi scanner.PayloadInfo) string {
 	switch pi.Kind {
 	case scanner.PayloadJSON:
 		if pi.RawType != "" {
-			return "const " + common.ToPascalCase(pi.RawType) + "&"
+			return "const " + common.ToTypeName(pi.RawType) + "&"
 		}
 		return "const std::string&"
 	case scanner.PayloadNumeric:
