@@ -196,6 +196,8 @@ type Server struct {
 	rawLogger log.RawLogger
 	busses    map[uint32]*virtualbus.VirtualBus
 	busesMu   sync.Mutex
+	alts      map[usb.Device]map[uint8]uint8
+	altsMu    sync.Mutex
 	ready     chan struct{}
 	readyOnce sync.Once
 	ln        net.Listener
@@ -207,6 +209,7 @@ func New(config ServerConfig, logger *slog.Logger, rawLogger log.RawLogger) *Ser
 		logger:    logger,
 		rawLogger: rawLogger,
 		busses:    make(map[uint32]*virtualbus.VirtualBus),
+		alts:      make(map[usb.Device]map[uint8]uint8),
 		ready:     make(chan struct{}),
 	}
 }
@@ -863,15 +866,20 @@ func (s *Server) processSubmit(ctx context.Context, dev usb.Device, ep uint32, d
 		return nil
 	}
 	if breq == usbReqSetConfiguration && bm == usbReqTypeStandardToDevice {
+		s.clearInterfaceAlt(dev)
 		return nil
 	}
 	if breq == usbReqGetConfiguration && bm == usbReqTypeStandardFromDevice {
 		return []byte{0x01}
 	}
 	if breq == usbReqGetInterface && bm == usbReqTypeStandardToInterface {
-		return []byte{0x00}
+		return []byte{s.getInterfaceAlt(dev, uint8(wIndex&usbIfaceIndexMask))}
 	}
 	if breq == usbReqSetInterface && bm == usbReqTypeStandardFromInterface {
+		desc := dev.GetDescriptor()
+		if descriptorHasInterfaceAlt(desc, uint8(wIndex&usbIfaceIndexMask), uint8(wValue&0xff)) {
+			s.setInterfaceAlt(dev, uint8(wIndex&usbIfaceIndexMask), uint8(wValue&0xff))
+		}
 		return nil
 	}
 
@@ -1066,4 +1074,46 @@ func descriptorListInterfaces(desc *usb.Descriptor) []usb.InterfaceConfig {
 		out = append(out, iface)
 	}
 	return out
+}
+
+func descriptorHasInterfaceAlt(desc *usb.Descriptor, ifaceNumber, altSetting uint8) bool {
+	for _, iface := range desc.Interfaces {
+		if iface.Descriptor.BInterfaceNumber == ifaceNumber &&
+			iface.Descriptor.BAlternateSetting == altSetting {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Server) getInterfaceAlt(dev usb.Device, iface uint8) uint8 {
+	s.altsMu.Lock()
+	defer s.altsMu.Unlock()
+	if s.alts == nil {
+		return 0
+	}
+	if devAlts, ok := s.alts[dev]; ok {
+		return devAlts[iface]
+	}
+	return 0
+}
+
+func (s *Server) setInterfaceAlt(dev usb.Device, iface, alt uint8) {
+	s.altsMu.Lock()
+	defer s.altsMu.Unlock()
+	if s.alts == nil {
+		s.alts = make(map[usb.Device]map[uint8]uint8)
+	}
+	devAlts := s.alts[dev]
+	if devAlts == nil {
+		devAlts = make(map[uint8]uint8)
+		s.alts[dev] = devAlts
+	}
+	devAlts[iface] = alt
+}
+
+func (s *Server) clearInterfaceAlt(dev usb.Device) {
+	s.altsMu.Lock()
+	defer s.altsMu.Unlock()
+	delete(s.alts, dev)
 }

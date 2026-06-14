@@ -36,6 +36,7 @@ type DualSense struct {
 	seqCounter      uint8
 	hapticsSeq      uint8
 	hapticsInterval uint8
+	hapticsPCM      []byte
 	timestampBase   time.Time
 
 	mtx sync.Mutex
@@ -213,17 +214,13 @@ func (d *DualSense) handleHapticsAudioOut(out []byte) {
 		out,
 		"summary", fmt.Sprintf("ep=%d bytes=%d", EndpointHapticsAudioOut, len(out)))
 
-	for offset := 0; offset+BluetoothHapticsSampleSize <= len(out); offset += BluetoothHapticsSampleSize {
-		d.mtx.Lock()
-		seq := d.hapticsSeq
-		interval := d.hapticsInterval
-		d.hapticsSeq++
-		d.hapticsInterval++
-		d.mtx.Unlock()
+	d.mtx.Lock()
+	d.hapticsPCM = append(d.hapticsPCM, out...)
+	reports := d.drainBluetoothHapticsReportsLocked()
+	d.mtx.Unlock()
 
-		report, err := BuildBluetoothHapticsReport(seq, interval, out[offset:offset+BluetoothHapticsSampleSize])
-		if err != nil {
-			slog.Warn("failed to build DualSense Bluetooth haptics report", "error", err)
+	for _, report := range reports {
+		if len(report) == 0 {
 			continue
 		}
 
@@ -231,7 +228,7 @@ func (d *DualSense) handleHapticsAudioOut(out []byte) {
 			report,
 			"reportType", "output",
 			"reportID", fmt.Sprintf("0x%02X", report[0]),
-			"summary", fmt.Sprintf("from audio ep=%d offset=%d bytes=%d", EndpointHapticsAudioOut, offset, BluetoothHapticsSampleSize))
+			"summary", fmt.Sprintf("from audio ep=%d bytes=%d", EndpointHapticsAudioOut, BluetoothHapticsSampleSize))
 
 		if d.outputFunc != nil {
 			d.mtx.Lock()
@@ -240,6 +237,60 @@ func (d *DualSense) handleHapticsAudioOut(out []byte) {
 			d.mtx.Unlock()
 			d.outputFunc(feedback)
 		}
+	}
+}
+
+func (d *DualSense) drainBluetoothHapticsReportsLocked() [][]byte {
+	const inputBytesPerReport = (BluetoothHapticsSampleSize / 2) *
+		USBHapticsAudioDownsample *
+		USBHapticsAudioFrameSize
+
+	if len(d.hapticsPCM) < inputBytesPerReport {
+		return nil
+	}
+
+	reports := make([][]byte, 0, len(d.hapticsPCM)/inputBytesPerReport)
+	for len(d.hapticsPCM) >= inputBytesPerReport {
+		sample := make([]byte, BluetoothHapticsSampleSize)
+		copyUSBHapticsChannelsToBluetoothSample(sample, d.hapticsPCM[:inputBytesPerReport])
+
+		seq := d.hapticsSeq
+		interval := d.hapticsInterval
+		d.hapticsSeq++
+		d.hapticsInterval++
+
+		report, err := BuildBluetoothHapticsReport(seq, interval, sample)
+		if err != nil {
+			slog.Warn("failed to build DualSense Bluetooth haptics report", "error", err)
+		} else {
+			reports = append(reports, report)
+		}
+
+		copy(d.hapticsPCM, d.hapticsPCM[inputBytesPerReport:])
+		d.hapticsPCM = d.hapticsPCM[:len(d.hapticsPCM)-inputBytesPerReport]
+	}
+
+	return reports
+}
+
+func copyUSBHapticsChannelsToBluetoothSample(dst []byte, src []byte) {
+	const framesPerOutputSample = BluetoothHapticsSampleSize / 2
+
+	for sampleFrame := 0; sampleFrame < framesPerOutputSample; sampleFrame++ {
+		blockStart := sampleFrame * USBHapticsAudioDownsample * USBHapticsAudioFrameSize
+		var leftSum int32
+		var rightSum int32
+
+		for frame := 0; frame < USBHapticsAudioDownsample; frame++ {
+			frameStart := blockStart + frame*USBHapticsAudioFrameSize
+			leftSum += int32(int16(binary.LittleEndian.Uint16(src[frameStart+4 : frameStart+6])))
+			rightSum += int32(int16(binary.LittleEndian.Uint16(src[frameStart+6 : frameStart+8])))
+		}
+
+		left := int16(leftSum / USBHapticsAudioDownsample)
+		right := int16(rightSum / USBHapticsAudioDownsample)
+		dst[sampleFrame*2] = byte(left >> 8)
+		dst[sampleFrame*2+1] = byte(right >> 8)
 	}
 }
 
