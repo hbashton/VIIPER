@@ -119,5 +119,58 @@ cannot recover them.
    present, that confirms the current virtual device is still HID-only and the
    audio descriptor work is the next blocker.
 
+## Ghost of Tsushima bow capture, 2026-06-14
+
+Capture file:
+
+- `%APPDATA%\DS4Windows\Logs\dualsense_traffic_20260614_103717.json`
+
+Summary:
+
+- 2,497 total traffic events.
+- 1,248 parsed DualSense output reports.
+- Three clear bow-draw clusters were captured.
+- Each bow draw lasts roughly 1.5-1.7 seconds.
+- Each bow draw contains:
+  - 47-48 adaptive trigger output reports.
+  - 94-100 compatible rumble output reports.
+  - large motor rumble ramping up to `0xFF`.
+
+Representative trigger sequence:
+
+```text
+21 ff 03 49 92 24 09 00 00 00 00
+26 ff 03 49 92 24 09 00 00 7f 00
+26 ff 03 49 92 24 09 00 00 7d 00
+26 ff 03 49 92 24 09 00 00 7b 00
+26 ff 03 49 92 24 09 00 00 79 00
+26 ff 03 49 92 24 09 00 00 77 00
+26 ff 03 49 92 24 09 00 00 75 00
+26 ff 03 92 24 49 12 00 00 74 00
+26 ff 03 92 24 49 12 00 00 72 00
+26 ff 03 92 24 49 12 00 00 70 00
+26 ff 03 92 24 49 12 00 00 6e 00
+26 ff 03 92 24 49 12 00 00 6c 00
+```
+
+Representative compatible rumble report:
+
+```text
+02 02 40 00 ff 00 00 00 ...
+```
+
+Interpretation:
+
+- Ghost is definitely driving the adaptive trigger over normal DualSense HID
+  output report `0x02`.
+- The harsh vibration felt during bow draw is visible as a compatible rumble
+  ramp, not just inferred haptics.
+- This capture does not include report `0x32` haptics PCM. That is expected:
+  report `0x32` is the Bluetooth HID report SAxense writes to the physical
+  controller after it already has PCM.
+- The next bridge should first forward HID report `0x02` as Bluetooth `0x31`
+  for adaptive triggers, while keeping compatible rumble separate from future
+  SAxense-style haptics PCM.
+
 Credit: SAxense research by egormanga/Sdore should be credited anywhere this
 Bluetooth haptics packet path is surfaced to users or shipped.
