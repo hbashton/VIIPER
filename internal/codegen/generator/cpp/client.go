@@ -97,7 +97,7 @@ public:
     /// Create a device and connect to its stream in one step
     [[nodiscard]] Result<std::pair<Device, std::unique_ptr<ViiperDevice>>> addDeviceAndConnect(
         std::uint32_t bus_id,
-        const Devicecreaterequest& request
+        const DeviceCreateRequest& request
     ) {
         auto device_result = busdeviceadd(bus_id, request);
         if (device_result.is_error()) return device_result.error();
