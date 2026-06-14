@@ -127,6 +127,8 @@ const (
 	usbReqSetDescriptor    = 0x07
 	usbReqGetConfiguration = 0x08
 	usbReqSetConfiguration = 0x09
+	usbReqGetInterface     = 0x0A
+	usbReqSetInterface     = 0x0B
 
 	// USB descriptor types
 	usbDescTypeDevice        = 0x01
@@ -136,11 +138,12 @@ const (
 	usbDescTypeHIDReport     = 0x22
 
 	// USB request types (bmRequestType)
-	usbReqTypeStandardToDevice    = 0x00
-	usbReqTypeStandardToInterface = 0x81
-	usbReqTypeStandardFromDevice  = 0x80
-	usbReqTypeMask                = 0x60
-	usbReqTypeClass               = 0x20
+	usbReqTypeStandardToDevice      = 0x00
+	usbReqTypeStandardFromInterface = 0x01
+	usbReqTypeStandardToInterface   = 0x81
+	usbReqTypeStandardFromDevice    = 0x80
+	usbReqTypeMask                  = 0x60
+	usbReqTypeClass                 = 0x20
 
 	// USB interface classes
 	usbInterfaceClassHID = 0x03
@@ -864,6 +867,12 @@ func (s *Server) processSubmit(ctx context.Context, dev usb.Device, ep uint32, d
 	}
 	if breq == usbReqGetConfiguration && bm == usbReqTypeStandardFromDevice {
 		return []byte{0x01}
+	}
+	if breq == usbReqGetInterface && bm == usbReqTypeStandardToInterface {
+		return []byte{0x00}
+	}
+	if breq == usbReqSetInterface && bm == usbReqTypeStandardFromInterface {
+		return nil
 	}
 
 	desc := dev.GetDescriptor()

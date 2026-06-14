@@ -186,7 +186,7 @@ var defaultDescriptor = usb.Descriptor{
 					DescriptorType: 0x24, // CS_INTERFACE
 					// UAC1 Header: subtype HEADER, ADC 1.00, total class
 					// descriptor length, one streaming interface (#2).
-					Payload: usb.Data{0x01, 0x00, 0x01, 0x1F, 0x00, 0x01, 0x02},
+					Payload: usb.Data{0x01, 0x00, 0x01, 0x1E, 0x00, 0x01, 0x02},
 				},
 				{
 					DescriptorType: 0x24, // CS_INTERFACE
@@ -196,7 +196,7 @@ var defaultDescriptor = usb.Descriptor{
 				{
 					DescriptorType: 0x24, // CS_INTERFACE
 					// Output Terminal: speaker/haptics sink, source terminal 1.
-					Payload: usb.Data{0x03, 0x02, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00},
+					Payload: usb.Data{0x03, 0x02, 0x01, 0x03, 0x00, 0x01, 0x00},
 				},
 			},
 		},

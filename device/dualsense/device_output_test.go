@@ -100,6 +100,20 @@ func TestDualSenseDescriptorAdvertisesExperimentalHapticsAudioEndpoint(t *testin
 	if !foundEndpoint {
 		t.Fatal("experimental haptics audio OUT endpoint was not found")
 	}
+
+	var audioControlClassLength int
+	for _, iface := range desc.Interfaces {
+		if iface.Descriptor.BInterfaceNumber != 1 || iface.Descriptor.BAlternateSetting != 0 {
+			continue
+		}
+
+		for _, classDescriptor := range iface.ClassDescriptors {
+			audioControlClassLength += len(classDescriptor.Bytes())
+		}
+	}
+	if audioControlClassLength != 0x1E {
+		t.Fatalf("unexpected AudioControl class descriptor length: got 0x%02x want 0x1e", audioControlClassLength)
+	}
 }
 
 func TestDualSenseEdgeDescriptorAdvertisesEdgeFeatureReports(t *testing.T) {
