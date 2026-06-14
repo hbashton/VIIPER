@@ -103,6 +103,10 @@ func TestDualSenseDescriptorAdvertisesExperimentalHapticsAudioEndpoint(t *testin
 	}
 
 	var audioControlClassLength int
+	var foundHeader bool
+	var foundInputTerminal bool
+	var foundFeatureUnit bool
+	var foundOutputTerminal bool
 	for _, iface := range desc.Interfaces {
 		if iface.Descriptor.BInterfaceNumber != 1 || iface.Descriptor.BAlternateSetting != 0 {
 			continue
@@ -110,10 +114,42 @@ func TestDualSenseDescriptorAdvertisesExperimentalHapticsAudioEndpoint(t *testin
 
 		for _, classDescriptor := range iface.ClassDescriptors {
 			audioControlClassLength += len(classDescriptor.Bytes())
+			raw := classDescriptor.Bytes()
+			if len(raw) < 3 || raw[1] != 0x24 {
+				continue
+			}
+
+			switch raw[2] {
+			case 0x01:
+				foundHeader = true
+				if len(raw) < 7 || !bytes.Equal(raw[5:7], []byte{0x2A, 0x00}) {
+					t.Fatalf("unexpected AudioControl header descriptor: % x", raw)
+				}
+			case 0x02:
+				foundInputTerminal = true
+				if len(raw) < 10 || raw[7] != USBHapticsAudioChannels ||
+					!bytes.Equal(raw[8:10], []byte{0x33, 0x00}) {
+					t.Fatalf("unexpected haptics audio input terminal descriptor: % x", raw)
+				}
+			case 0x06:
+				foundFeatureUnit = true
+				if len(raw) < 6 || raw[3] != 0x02 || raw[4] != 0x01 {
+					t.Fatalf("unexpected haptics audio feature unit descriptor: % x", raw)
+				}
+			case 0x03:
+				foundOutputTerminal = true
+				if len(raw) < 8 || raw[3] != 0x03 || raw[7] != 0x02 {
+					t.Fatalf("unexpected haptics audio output terminal descriptor: % x", raw)
+				}
+			}
 		}
 	}
-	if audioControlClassLength != 0x1E {
-		t.Fatalf("unexpected AudioControl class descriptor length: got 0x%02x want 0x1e", audioControlClassLength)
+	if audioControlClassLength != 0x2A {
+		t.Fatalf("unexpected AudioControl class descriptor length: got 0x%02x want 0x2a", audioControlClassLength)
+	}
+	if !foundHeader || !foundInputTerminal || !foundFeatureUnit || !foundOutputTerminal {
+		t.Fatalf("incomplete AudioControl topology: header=%t input=%t feature=%t output=%t",
+			foundHeader, foundInputTerminal, foundFeatureUnit, foundOutputTerminal)
 	}
 
 	var foundFormat bool

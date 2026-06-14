@@ -14,7 +14,7 @@ var defaultDescriptor = usb.Descriptor{
 		BMaxPacketSize0:    0x40,
 		IDVendor:           DefaultVID,
 		IDProduct:          DefaultPIDDS,
-		BcdDevice:          0x0101,
+		BcdDevice:          0x0102,
 		IManufacturer:      0x01,
 		IProduct:           0x02,
 		ISerialNumber:      0x00,
@@ -186,17 +186,26 @@ var defaultDescriptor = usb.Descriptor{
 					DescriptorType: 0x24, // CS_INTERFACE
 					// UAC1 Header: subtype HEADER, ADC 1.00, total class
 					// descriptor length, one streaming interface (#2).
-					Payload: usb.Data{0x01, 0x00, 0x01, 0x1E, 0x00, 0x01, 0x02},
+					Payload: usb.Data{0x01, 0x00, 0x01, 0x2A, 0x00, 0x01, 0x02},
 				},
 				{
 					DescriptorType: 0x24, // CS_INTERFACE
-					// Input Terminal: USB streaming source, 4 channels.
-					Payload: usb.Data{0x02, 0x01, 0x01, 0x01, 0x00, USBHapticsAudioChannels, 0x0F, 0x00, 0x00, 0x00},
+					// Input Terminal: USB streaming source, 4 channels
+					// advertised as quad (front L/R plus rear L/R).
+					Payload: usb.Data{0x02, 0x01, 0x01, 0x01, 0x00, USBHapticsAudioChannels, 0x33, 0x00, 0x00, 0x00},
 				},
 				{
 					DescriptorType: 0x24, // CS_INTERFACE
-					// Output Terminal: speaker/haptics sink, source terminal 1.
-					Payload: usb.Data{0x03, 0x02, 0x01, 0x03, 0x00, 0x01, 0x00},
+					// Feature Unit: topology bridge from terminal 1 to output
+					// terminal 3. No mute/volume controls are exposed; DS games
+					// only need the render stream, and omitting this unit makes
+					// Windows usbaudio reject some otherwise valid topologies.
+					Payload: usb.Data{0x06, 0x02, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+				},
+				{
+					DescriptorType: 0x24, // CS_INTERFACE
+					// Output Terminal: speaker/haptics sink, source unit 2.
+					Payload: usb.Data{0x03, 0x03, 0x01, 0x03, 0x00, 0x02, 0x00},
 				},
 			},
 		},
