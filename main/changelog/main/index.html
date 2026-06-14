@@ -1645,98 +1645,155 @@
 <p>All unreleased changes:</p>
 <h3 id="new-features">✨ New Features</h3>
 <ul>
-<li>Experimental DualSense (and Edge) Emulation</li>
+<li>Experimental DualSense (and Edge) Emulation<br />
+    thanks to @Alia5</li>
 <li>Nintendo Switch 2 Pro virtual device support<br />
-    thanks to @OddC</li>
-<li>Windows: Add Tray Icon</li>
-<li>libVIIPER</li>
-<li>Add auto update</li>
+    thanks to @Cookiekira</li>
+<li>Windows: Add Tray Icon<br />
+    thanks to @Alia5</li>
+<li>libVIIPER<br />
+    thanks to @Alia5</li>
+<li>Add auto update<br />
+    thanks to @Alia5</li>
 <li>Breaking: Support XInput subtypes
-      thanks to @sanjay900 https://github.com/Alia5/VIIPER/pull/10</li>
+      thanks to @sanjay900 https://github.com/Alia5/VIIPER/pull/10<br />
+    thanks to @sanjay900</li>
 <li>SECURITY: Authenticated/Encrypted API<ul>
 <li>Unauthenticated is still possible on localhost-only.</li>
 <li>(<strong>Breaking</strong>) Remote clients are required to use auth/encryption</li>
-<li>Generated Clients have NO API-Change except for the ability to create clients with "password"</li>
+<li>Generated Clients have NO API-Change except for the ability to create clients with "password"<br />
+thanks to @Alia5</li>
 </ul>
 </li>
-<li>DS4 Emulation</li>
-<li>SteamDeck (Jupiter) Controller emulation</li>
-<li>Windows: Detect gui launches and auto-run server in BG</li>
-<li>Add "ping" endpoint</li>
-<li>Add install command / scripts</li>
-<li>Breaking: Use int16 instead of int8 for mouse relative actions (dx, dy, wheel, pan)</li>
+<li>DS4 Emulation<br />
+    thanks to @Alia5</li>
+<li>SteamDeck (Jupiter) Controller emulation<br />
+    thanks to @Alia5</li>
+<li>Windows: Detect gui launches and auto-run server in BG<br />
+    thanks to @Alia5</li>
+<li>Add "ping" endpoint<br />
+    thanks to @Alia5</li>
+<li>Add install command / scripts<br />
+    thanks to @Alia5</li>
+<li>Breaking: Use int16 instead of int8 for mouse relative actions (dx, dy, wheel, pan)<br />
+    thanks to @Alia5</li>
 <li>Add bus auto-cleanup
-  Configured by "ConnectionTimeout"</li>
-<li>SDKs: Add disconnect callback</li>
-<li>Add prerequisites Check</li>
+  Configured by "ConnectionTimeout"<br />
+    thanks to @Alia5</li>
+<li>SDKs: Add disconnect callback<br />
+    thanks to @Alia5</li>
+<li>Add prerequisites Check<br />
+    thanks to @Alia5</li>
 <li><strong>Breaking:</strong> Refactor API / transport (more flexible)<ul>
 <li><strong>Breaking:</strong> Return Proper problem+json errors from API (http like)</li>
 <li><strong>Breaking:</strong> Better device_add response (json)</li>
 <li>User defined VID/PID (optional)</li>
-<li>(misc) Update examples</li>
+<li>(misc) Update examples<br />
+thanks to @Alia5</li>
 </ul>
 </li>
-<li>Auto attach devices on localhost</li>
-<li>Typescript SDK Gen</li>
-<li>C# SDK Gen</li>
+<li>Auto attach devices on localhost<br />
+    thanks to @Alia5</li>
+<li>Typescript SDK Gen<br />
+    thanks to @Alia5</li>
+<li>C# SDK Gen<br />
+    thanks to @Alia5</li>
 <li>Add SDK CodeGen
   Initially C
-  (Largely vibecoded, lol)</li>
-<li>Add virtual keyboard</li>
-<li>Add virtual mouse</li>
+  (Largely vibecoded, lol)<br />
+    thanks to @Alia5</li>
+<li>Add virtual keyboard<br />
+    thanks to @Alia5</li>
+<li>Add virtual mouse<br />
+    thanks to @Alia5</li>
 </ul>
 <h3 id="fixes">🐛 Fixes</h3>
 <ul>
-<li>Move to wall-clock based report timestamps</li>
+<li>Move to wall-clock based report timestamps<br />
+    thanks to @Alia5</li>
 <li>Fix DS4 Emulation, add metadata handling<ul>
 <li>Fix Gyro-Stutter</li>
-<li>Fix Triggers</li>
+<li>Fix Triggers<br />
+thanks to @Alia5</li>
 </ul>
 </li>
-<li>WinInstall: Fix USBIP-Win2 driver detection</li>
-<li>Fix xbox360 capability request</li>
-<li>Handle usbGetStatus</li>
-<li>Fix LangIDs</li>
-<li>Windows: Install-Script: Fix updating</li>
-<li>Fix busCreate with id 0 not choosing next free bus</li>
-<li>Windows-Install: Fix VIIPER server closing upon terminal close</li>
-<li>Fix install scripts and docs</li>
-<li>Fix excessive CPU usage</li>
-<li>Disable nagles algorithm</li>
-<li>Fix: free bus IDs not getting re-used</li>
-<li>Exclude C sdk build folder from artifact</li>
-<li>Fix Xbox360 Controller reports</li>
-<li>Fix go package</li>
-<li><strong>Breaking</strong> Fix missing underscores in C SDK constants</li>
-<li>Fix client using incorrect path</li>
+<li>WinInstall: Fix USBIP-Win2 driver detection<br />
+    thanks to @Alia5</li>
+<li>Fix xbox360 capability request<br />
+    thanks to @Alia5</li>
+<li>Handle usbGetStatus<br />
+    thanks to @Alia5</li>
+<li>Fix LangIDs<br />
+    thanks to @Alia5</li>
+<li>Windows: Install-Script: Fix updating<br />
+    thanks to @Alia5</li>
+<li>Fix busCreate with id 0 not choosing next free bus<br />
+    thanks to @Alia5</li>
+<li>Windows-Install: Fix VIIPER server closing upon terminal close<br />
+    thanks to @Alia5</li>
+<li>Fix install scripts and docs<br />
+    thanks to @Alia5</li>
+<li>Fix excessive CPU usage<br />
+    thanks to @Alia5</li>
+<li>Disable nagles algorithm<br />
+    thanks to @Alia5</li>
+<li>Fix: free bus IDs not getting re-used<br />
+    thanks to @Alia5</li>
+<li>Exclude C sdk build folder from artifact<br />
+    thanks to @Alia5</li>
+<li>Fix Xbox360 Controller reports<br />
+    thanks to @Alia5</li>
+<li>Fix go package<br />
+    thanks to @Alia5</li>
+<li><strong>Breaking</strong> Fix missing underscores in C SDK constants<br />
+    thanks to @Alia5</li>
+<li>Fix client using incorrect path<br />
+    thanks to @Alia5</li>
 </ul>
 <h3 id="miscellaneous">🔧 Miscellaneous</h3>
 <ul>
 <li>Improve device emulation efficiency<ul>
 <li>Default to data-driven, immediate, updates</li>
-<li>Turn off write-batching by default</li>
+<li>Turn off write-batching by default<br />
+thanks to @Alia5</li>
 </ul>
 </li>
-<li>Default server command</li>
-<li>Add log level alias</li>
+<li>Default server command<br />
+    thanks to @Alia5</li>
+<li>Add log level alias<br />
+    thanks to @Alia5</li>
 <li>Introduce golangci-lint and make linter happy<ul>
-<li>Breaking: Go users will experience breaking changes due to renamings</li>
+<li>Breaking: Go users will experience breaking changes due to renamings<br />
+thanks to @Alia5</li>
 </ul>
 </li>
-<li>Windows: Update install script / USBIP-Driver</li>
-<li>Update dotnet 8.0 -&gt; 10</li>
-<li>Remove C API client</li>
-<li>Configurable write batching time</li>
-<li>Windows: log to file in autorun config</li>
-<li>Linux install script: handle updates more gracefully</li>
-<li>SDKs: add rust client</li>
+<li>Windows: Update install script / USBIP-Driver<br />
+    thanks to @Alia5</li>
+<li>Update dotnet 8.0 -&gt; 10<br />
+    thanks to @Alia5</li>
+<li>Remove C API client<br />
+    thanks to @Alia5</li>
+<li>Configurable write batching time<br />
+    thanks to @Alia5</li>
+<li>Windows: log to file in autorun config<br />
+    thanks to @Alia5</li>
+<li>Linux install script: handle updates more gracefully<br />
+    thanks to @Alia5</li>
+<li>SDKs: add rust client<br />
+    thanks to @Alia5</li>
 <li>Breaking: SDKs: Eliminate (most) fixed size buffers</li>
-<li>Let user allocate device specific sized buffers</li>
-<li>Add windows meta-info and Icon</li>
-<li><strong>Breaking</strong> Switch to \0 terminated transport</li>
-<li>Improve go api-client.</li>
-<li>Support file based configs</li>
-<li>Add Docs (on GH-Pages)</li>
+<li>Let user allocate device specific sized buffers<br />
+    thanks to @Alia5</li>
+<li>Add windows meta-info and Icon<br />
+    thanks to @Alia5</li>
+<li><strong>Breaking</strong> Switch to \0 terminated transport<br />
+    thanks to @Alia5</li>
+<li>Improve go api-client.<br />
+    thanks to @Alia5</li>
+<li>Support file based configs<br />
+    thanks to @Alia5</li>
+<li>Add Docs (on GH-Pages)<br />
+    thanks to @Alia5</li>
 </ul>
 
 

@@ -2380,7 +2380,9 @@ back to a physical controller.</p>
 <p>Touch coordinates are sent as <code>Touch{1,2}X: uint16</code> and <code>Touch{1,2}Y: uint16</code>
 plus a touch status byte. Legacy clients may send <code>0</code> for inactive and <code>1</code>
 for active. New clients should send the raw DualSense tracking byte instead:
-bit 7 set means inactive, and the low 7 bits are the contact tracking ID.</p>
+bit 7 set means inactive, and the low 7 bits are the contact tracking ID.
+If a client marks a touch active without a tracking ID, VIIPER emits <code>1</code> as
+a safe active fallback rather than <code>0</code>.</p>
 <p>VIIPER clamps touch coordinates to the DualSense range:</p>
 <ul>
 <li>X: <strong>0..1920</strong></li>
