@@ -187,6 +187,9 @@ func (d *DualSense) HandleTransfer(ctx context.Context, ep uint32, dir uint32, o
 	}
 
 	if dir == usbip.DirOut && ep == EndpointOut {
+		recordTrafficBytes("host->device", "interrupt-out",
+			out,
+			"summary", fmt.Sprintf("ep=%d", ep))
 		if d.handleOutputReport(out) {
 			return nil
 		}
@@ -212,6 +215,14 @@ func (d *DualSense) HandleControl(bmRequestType, bRequest uint8, wValue, wIndex,
 				if wLength > 0 && int(wLength) < len(b) {
 					b = b[:wLength]
 				}
+				recordTrafficBytes("device->host", "control-get-report",
+					b,
+					"request", "GET_REPORT",
+					"reportType", describeReportType(reportType),
+					"reportID", fmt.Sprintf("0x%02X", reportID),
+					"value", fmt.Sprintf("0x%04X", wValue),
+					"index", fmt.Sprintf("0x%04X", wIndex),
+					"summary", "input report")
 				return b, true
 			}
 			if reportType == reportTypeFeature {
@@ -220,6 +231,14 @@ func (d *DualSense) HandleControl(bmRequestType, bRequest uint8, wValue, wIndex,
 					if wLength > 0 && int(wLength) < len(b) {
 						b = b[:wLength]
 					}
+					recordTrafficBytes("device->host", "control-get-report",
+						b,
+						"request", "GET_REPORT",
+						"reportType", describeReportType(reportType),
+						"reportID", fmt.Sprintf("0x%02X", reportID),
+						"value", fmt.Sprintf("0x%04X", wValue),
+						"index", fmt.Sprintf("0x%04X", wIndex),
+						"summary", "feature report")
 					return b, true
 				}
 			}
@@ -230,6 +249,13 @@ func (d *DualSense) HandleControl(bmRequestType, bRequest uint8, wValue, wIndex,
 		}
 	case hidClassOUT:
 		if bRequest == hidSetReport {
+			recordTrafficBytes("host->device", "control-set-report",
+				data,
+				"request", "SET_REPORT",
+				"reportType", describeReportType(reportType),
+				"reportID", fmt.Sprintf("0x%02X", reportID),
+				"value", fmt.Sprintf("0x%04X", wValue),
+				"index", fmt.Sprintf("0x%04X", wIndex))
 			switch {
 			case reportType == reportTypeFeature && reportID == featureIDCommand && len(data) >= 3:
 				d.subcommand[0] = data[1]
@@ -266,6 +292,11 @@ func (d *DualSense) handleOutputReport(out []byte) bool {
 		d.mtx.Lock()
 		feedback := d.mergeOutputReport(report)
 		d.mtx.Unlock()
+		recordTrafficBytes("host->device", "parsed-output-report",
+			report,
+			"reportType", describeReportType(reportTypeOutput),
+			"reportID", fmt.Sprintf("0x%02X", report[0]),
+			"decodedOutput", describeOutputState(feedback))
 		d.outputFunc(feedback)
 	}
 	return true
@@ -297,6 +328,19 @@ func logRawOutputReport(report []byte) {
 	}
 
 	slog.Info("DualSense raw host output report", attrs...)
+}
+
+func describeReportType(reportType uint8) string {
+	switch reportType {
+	case reportTypeInput:
+		return "input"
+	case reportTypeOutput:
+		return "output"
+	case reportTypeFeature:
+		return "feature"
+	default:
+		return fmt.Sprintf("0x%02X", reportType)
+	}
 }
 
 func normalizeOutputReport(out []byte) ([]byte, bool) {
