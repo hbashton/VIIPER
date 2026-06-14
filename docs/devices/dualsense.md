@@ -127,6 +127,8 @@ IMU (gyro + accelerometer), and touchpad finger coordinates.
     plus a touch status byte. Legacy clients may send `0` for inactive and `1`
     for active. New clients should send the raw DualSense tracking byte instead:
     bit 7 set means inactive, and the low 7 bits are the contact tracking ID.
+    If a client marks a touch active without a tracking ID, VIIPER emits `1` as
+    a safe active fallback rather than `0`.
 
     VIIPER clamps touch coordinates to the DualSense range:
 

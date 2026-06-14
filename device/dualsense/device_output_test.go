@@ -243,7 +243,7 @@ func TestDualSenseTouchTrackingBytes(t *testing.T) {
 	}
 }
 
-func TestDualSenseTouchTrackingZeroIsActive(t *testing.T) {
+func TestDualSenseTouchTrackingZeroUsesActiveFallback(t *testing.T) {
 	state := &InputState{
 		Touch1Active:   true,
 		Touch1Tracking: 0,
@@ -258,8 +258,8 @@ func TestDualSenseTouchTrackingZeroIsActive(t *testing.T) {
 		t.Fatalf("UnmarshalBinary returned error: %v", err)
 	}
 
-	if !decoded.Touch1Active || decoded.Touch1Tracking != 0 {
-		t.Fatalf("tracking zero should be active: active=%v tracking=%#x", decoded.Touch1Active, decoded.Touch1Tracking)
+	if !decoded.Touch1Active || decoded.Touch1Tracking != 1 {
+		t.Fatalf("active touch without tracking id should use fallback: active=%v tracking=%#x", decoded.Touch1Active, decoded.Touch1Tracking)
 	}
 
 	state.Touch1Active = false
