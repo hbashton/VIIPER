@@ -23,7 +23,7 @@
     
     
       
-        <title>Main - VIIPER Documentation</title>
+        <title>DualSense Bluetooth Haptics Notes - VIIPER Documentation</title>
       
     
     
@@ -76,7 +76,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#new-features" class="md-skip">
+        <a href="#dualsense-bluetooth-haptics-notes" class="md-skip">
           Skip to content
         </a>
       
@@ -113,7 +113,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Main
+              DualSense Bluetooth Haptics Notes
             
           </span>
         </div>
@@ -364,7 +364,7 @@
   
   
     <li class="md-tabs__item">
-      <a href="../" class="md-tabs__link">
+      <a href="../../changelog/" class="md-tabs__link">
         
   
   
@@ -1543,7 +1543,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../" class="md-nav__link">
+      <a href="../../changelog/" class="md-nav__link">
         
   
   
@@ -1580,6 +1580,8 @@
   
   
   
+    
+  
   
     <label class="md-nav__title" for="__toc">
       <span class="md-nav__icon md-icon"></span>
@@ -1588,10 +1590,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#new-features" class="md-nav__link">
+  <a href="#ground-truth" class="md-nav__link">
     <span class="md-ellipsis">
       
-        ✨ New Features
+        Ground truth
       
     </span>
   </a>
@@ -1599,10 +1601,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#fixes" class="md-nav__link">
+  <a href="#padforge-hidmaestro-read" class="md-nav__link">
     <span class="md-ellipsis">
       
-        🐛 Fixes
+        PadForge / HIDMaestro read
       
     </span>
   </a>
@@ -1610,10 +1612,43 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#miscellaneous" class="md-nav__link">
+  <a href="#what-ghost-of-tsushima-is-likely-sending" class="md-nav__link">
     <span class="md-ellipsis">
       
-        🔧 Miscellaneous
+        What Ghost of Tsushima is likely sending
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#required-next-implementation-path" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Required next implementation path
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#near-term-viiper-work-from-the-references" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Near-term VIIPER work from the references
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#debug-workflow" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Debug workflow
       
     </span>
   </a>
@@ -1640,161 +1675,123 @@
   
 
 
-  <h1>Main</h1>
-
-<p>All unreleased changes:</p>
-<h3 id="new-features">✨ New Features</h3>
+<h1 id="dualsense-bluetooth-haptics-notes">DualSense Bluetooth Haptics Notes</h1>
+<p>These notes track the implementation path for forwarding a game's virtual
+DualSense haptics to a physical Bluetooth DualSense.</p>
+<h2 id="ground-truth">Ground truth</h2>
 <ul>
-<li>Experimental DualSense (and Edge) Emulation<br />
-    thanks to @Alia5</li>
-<li>Nintendo Switch 2 Pro virtual device support<br />
-    thanks to @Cookiekira</li>
-<li>Windows: Add Tray Icon<br />
-    thanks to @Alia5</li>
-<li>libVIIPER<br />
-    thanks to @Alia5</li>
-<li>Add auto update<br />
-    thanks to @Alia5</li>
-<li>Breaking: Support XInput subtypes
-      thanks to @sanjay900 https://github.com/Alia5/VIIPER/pull/10<br />
-    thanks to @sanjay900</li>
-<li>SECURITY: Authenticated/Encrypted API<ul>
-<li>Unauthenticated is still possible on localhost-only.</li>
-<li>(<strong>Breaking</strong>) Remote clients are required to use auth/encryption</li>
-<li>Generated Clients have NO API-Change except for the ability to create clients with "password"<br />
-thanks to @Alia5</li>
+<li>SAxense (<code>egormanga/SAxense</code>) streams haptics to a Bluetooth DualSense by
+  writing HID output report <code>0x32</code> to the controller's <code>hidraw</code> node.</li>
+<li>SAxense accepts signed 8-bit stereo PCM at 3000 Hz.</li>
+<li>Each Bluetooth report is 141 bytes:</li>
+<li>byte 0: report ID <code>0x32</code></li>
+<li>byte 1: tag/sequence nibble</li>
+<li>packet <code>0x11</code>: stream/control packet, length 7, body
+    <code>FE 00 00 00 00 FF &lt;interval-counter&gt;</code></li>
+<li>packet <code>0x12</code>: haptics PCM packet, length 64, body is 64 bytes of stereo
+    PCM</li>
+<li>final 4 bytes: DualSense Bluetooth CRC32 with seed <code>0xEADA2D49</code></li>
+<li>VIIPER now has <code>BuildBluetoothHapticsReport</code> mirroring that packet layout so
+  the runtime can package haptics PCM without re-discovering the format.</li>
 </ul>
-</li>
-<li>DS4 Emulation<br />
-    thanks to @Alia5</li>
-<li>SteamDeck (Jupiter) Controller emulation<br />
-    thanks to @Alia5</li>
-<li>Windows: Detect gui launches and auto-run server in BG<br />
-    thanks to @Alia5</li>
-<li>Add "ping" endpoint<br />
-    thanks to @Alia5</li>
-<li>Add install command / scripts<br />
-    thanks to @Alia5</li>
-<li>Breaking: Use int16 instead of int8 for mouse relative actions (dx, dy, wheel, pan)<br />
-    thanks to @Alia5</li>
-<li>Add bus auto-cleanup
-  Configured by "ConnectionTimeout"<br />
-    thanks to @Alia5</li>
-<li>SDKs: Add disconnect callback<br />
-    thanks to @Alia5</li>
-<li>Add prerequisites Check<br />
-    thanks to @Alia5</li>
-<li><strong>Breaking:</strong> Refactor API / transport (more flexible)<ul>
-<li><strong>Breaking:</strong> Return Proper problem+json errors from API (http like)</li>
-<li><strong>Breaking:</strong> Better device_add response (json)</li>
-<li>User defined VID/PID (optional)</li>
-<li>(misc) Update examples<br />
-thanks to @Alia5</li>
-</ul>
-</li>
-<li>Auto attach devices on localhost<br />
-    thanks to @Alia5</li>
-<li>Typescript SDK Gen<br />
-    thanks to @Alia5</li>
-<li>C# SDK Gen<br />
-    thanks to @Alia5</li>
-<li>Add SDK CodeGen
-  Initially C
-  (Largely vibecoded, lol)<br />
-    thanks to @Alia5</li>
-<li>Add virtual keyboard<br />
-    thanks to @Alia5</li>
-<li>Add virtual mouse<br />
-    thanks to @Alia5</li>
-</ul>
-<h3 id="fixes">🐛 Fixes</h3>
+<h2 id="padforge-hidmaestro-read">PadForge / HIDMaestro read</h2>
+<p>PadForge and HIDMaestro are useful references, but mostly for the HID side of
+the problem.</p>
+<p>What the public code proves:</p>
 <ul>
-<li>Move to wall-clock based report timestamps<br />
-    thanks to @Alia5</li>
-<li>Fix DS4 Emulation, add metadata handling<ul>
-<li>Fix Gyro-Stutter</li>
-<li>Fix Triggers<br />
-thanks to @Alia5</li>
+<li>PadForge uses HIDMaestro to create virtual DualSense / DualSense Edge HID
+  devices.</li>
+<li>HIDMaestro profiles declare USB DualSense output report <code>0x02</code> as 48 bytes.
+  The important HID fields are:</li>
+<li>byte 1: <code>validFlag0</code></li>
+<li>byte 2: <code>validFlag1</code></li>
+<li>bytes 3-4: compatible rumble motors</li>
+<li>byte 9: mute LED</li>
+<li>bytes 11-21: right trigger effect</li>
+<li>bytes 22-32: left trigger effect</li>
+<li>bytes 45-47: lightbar RGB</li>
+<li>bytes 1-47: <code>effectPayload</code></li>
+<li>HIDMaestro profiles declare Bluetooth DualSense output report <code>0x31</code> as 78
+  bytes, with a rolling tag, BT flag byte, shifted HID field offsets, and a
+  CRC32 footer using prefix <code>[0xA2, 0x31]</code>.</li>
+<li>PadForge listens for HIDMaestro <code>OutputDecoded</code>, takes the decoded
+  <code>effectPayload</code>, and forwards it to an assigned physical DualSense via
+  <code>SDL_SendGamepadEffect</code>.</li>
+<li>PadForge also has a raw HID writer that encodes profile fields through
+  HIDMaestro and writes to the physical HID path directly, bypassing SDL's
+  effect state machine when needed.</li>
 </ul>
-</li>
-<li>WinInstall: Fix USBIP-Win2 driver detection<br />
-    thanks to @Alia5</li>
-<li>Fix xbox360 capability request<br />
-    thanks to @Alia5</li>
-<li>Handle usbGetStatus<br />
-    thanks to @Alia5</li>
-<li>Fix LangIDs<br />
-    thanks to @Alia5</li>
-<li>Windows: Install-Script: Fix updating<br />
-    thanks to @Alia5</li>
-<li>Fix busCreate with id 0 not choosing next free bus<br />
-    thanks to @Alia5</li>
-<li>Windows-Install: Fix VIIPER server closing upon terminal close<br />
-    thanks to @Alia5</li>
-<li>Fix install scripts and docs<br />
-    thanks to @Alia5</li>
-<li>Fix excessive CPU usage<br />
-    thanks to @Alia5</li>
-<li>Disable nagles algorithm<br />
-    thanks to @Alia5</li>
-<li>Fix: free bus IDs not getting re-used<br />
-    thanks to @Alia5</li>
-<li>Exclude C sdk build folder from artifact<br />
-    thanks to @Alia5</li>
-<li>Fix Xbox360 Controller reports<br />
-    thanks to @Alia5</li>
-<li>Fix go package<br />
-    thanks to @Alia5</li>
-<li><strong>Breaking</strong> Fix missing underscores in C SDK constants<br />
-    thanks to @Alia5</li>
-<li>Fix client using incorrect path<br />
-    thanks to @Alia5</li>
-</ul>
-<h3 id="miscellaneous">🔧 Miscellaneous</h3>
+<p>What the public code does not prove:</p>
 <ul>
-<li>Improve device emulation efficiency<ul>
-<li>Default to data-driven, immediate, updates</li>
-<li>Turn off write-batching by default<br />
-thanks to @Alia5</li>
+<li>It does not obviously expose a virtual DualSense USB Audio Class function to
+  games.</li>
+<li>It does not obviously capture host-to-device isochronous audio endpoint
+  transfers from a game.</li>
+<li>Its README "audio" features appear, from source review, to include
+  audio-reactive user effects and HID effect passthrough, not necessarily the
+  native DualSense advanced-haptics audio interface that Ghost of Tsushima uses
+  on a wired controller.</li>
 </ul>
-</li>
-<li>Default server command<br />
-    thanks to @Alia5</li>
-<li>Add log level alias<br />
-    thanks to @Alia5</li>
-<li>Introduce golangci-lint and make linter happy<ul>
-<li>Breaking: Go users will experience breaking changes due to renamings<br />
-thanks to @Alia5</li>
+<p>Practical takeaway:</p>
+<ul>
+<li>Use HIDMaestro's profiles as a spec oracle for USB <code>0x02</code> and Bluetooth
+  <code>0x31</code> HID report mapping.</li>
+<li>Keep PadForge's queueing model in mind: HID output callbacks should enqueue
+  and return quickly, while a worker forwards effects to physical hardware.</li>
+<li>Do not assume PadForge solves advanced haptics audio for VIIPER. The missing
+  piece is still a virtual USB audio/haptics function or another endpoint path
+  that lets the game send PCM-like haptics data to the virtual controller.</li>
 </ul>
-</li>
-<li>Windows: Update install script / USBIP-Driver<br />
-    thanks to @Alia5</li>
-<li>Update dotnet 8.0 -&gt; 10<br />
-    thanks to @Alia5</li>
-<li>Remove C API client<br />
-    thanks to @Alia5</li>
-<li>Configurable write batching time<br />
-    thanks to @Alia5</li>
-<li>Windows: log to file in autorun config<br />
-    thanks to @Alia5</li>
-<li>Linux install script: handle updates more gracefully<br />
-    thanks to @Alia5</li>
-<li>SDKs: add rust client<br />
-    thanks to @Alia5</li>
-<li>Breaking: SDKs: Eliminate (most) fixed size buffers</li>
-<li>Let user allocate device specific sized buffers<br />
-    thanks to @Alia5</li>
-<li>Add windows meta-info and Icon<br />
-    thanks to @Alia5</li>
-<li><strong>Breaking</strong> Switch to \0 terminated transport<br />
-    thanks to @Alia5</li>
-<li>Improve go api-client.<br />
-    thanks to @Alia5</li>
-<li>Support file based configs<br />
-    thanks to @Alia5</li>
-<li>Add Docs (on GH-Pages)<br />
-    thanks to @Alia5</li>
+<h2 id="what-ghost-of-tsushima-is-likely-sending">What Ghost of Tsushima is likely sending</h2>
+<p>For native DualSense behavior, Ghosts can send separate channels of data:</p>
+<ul>
+<li>HID output report <code>0x02</code>: adaptive trigger state, lightbar/player LEDs, mute
+  LED, and ordinary compatible rumble flags.</li>
+<li>USB audio stream: advanced haptics, exposed by a real wired DualSense as an
+  audio function. SAxense's input format strongly suggests that the useful
+  Bluetooth haptics payload is 3000 Hz stereo 8-bit PCM.</li>
 </ul>
+<p>VIIPER's current DualSense device is HID-only. It captures report <code>0x02</code>, but it
+does not expose a virtual DualSense USB audio function yet. That means a game
+that sends advanced haptics through the DualSense audio interface has nowhere to
+send those frames in the current virtual device, and the HID traffic dump alone
+cannot recover them.</p>
+<h2 id="required-next-implementation-path">Required next implementation path</h2>
+<ol>
+<li>Capture a real wired DualSense USB descriptor, including all audio
+   interfaces, alternate settings, isochronous endpoints, and class-specific
+   audio descriptors.</li>
+<li>Extend VIIPER's DualSense descriptor to expose the same USB audio/haptics
+   interface in addition to the HID interface.</li>
+<li>Route host-to-device audio endpoint transfers into a DualSense haptics
+   diagnostics ring buffer.</li>
+<li>Add an experimental bridge that converts captured haptics PCM into
+   <code>BuildBluetoothHapticsReport</code> frames and writes them to the physical
+   Bluetooth DualSense transport.</li>
+<li>Keep HID report <code>0x02</code> handling separate for adaptive triggers and LEDs.</li>
+</ol>
+<h2 id="near-term-viiper-work-from-the-references">Near-term VIIPER work from the references</h2>
+<ol>
+<li>Add a USB <code>0x02</code> to BT <code>0x31</code> mapping helper using HIDMaestro's declared
+   offsets and CRC32 scope. This is for ordinary HID effects: rumble, lightbar,
+   mute LED, player LEDs, and adaptive trigger command blobs.</li>
+<li>Keep the raw USB <code>0x02</code> report in diagnostics, because Ghost's HID output
+   tells us when it is selecting the haptics path versus ordinary rumble.</li>
+<li>Add audio endpoint capture only after the descriptor exposes the real
+   DualSense audio interfaces. Until then, captures will show HID output only.</li>
+</ol>
+<h2 id="debug-workflow">Debug workflow</h2>
+<ol>
+<li>Start DualSense traffic capture in DS4Windows' VIIPER debugger.</li>
+<li>Keep capture running while the game has focus.</li>
+<li>Exercise the feature in game.</li>
+<li>Return to DS4Windows and use Export DS Traffic.</li>
+<li>Inspect the exported JSON for HID reports. If no audio endpoint capture is
+   present, that confirms the current virtual device is still HID-only and the
+   audio descriptor work is the next blocker.</li>
+</ol>
+<p>Credit: SAxense research by egormanga/Sdore should be credited anywhere this
+Bluetooth haptics packet path is surfaced to users or shipped.</p>
 
 
 
