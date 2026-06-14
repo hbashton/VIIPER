@@ -190,8 +190,8 @@ var defaultDescriptor = usb.Descriptor{
 				},
 				{
 					DescriptorType: 0x24, // CS_INTERFACE
-					// Input Terminal: USB streaming source, 2 channels.
-					Payload: usb.Data{0x02, 0x01, 0x01, 0x01, 0x00, 0x02, 0x03, 0x00, 0x00, 0x00},
+					// Input Terminal: USB streaming source, 4 channels.
+					Payload: usb.Data{0x02, 0x01, 0x01, 0x01, 0x00, USBHapticsAudioChannels, 0x0F, 0x00, 0x00, 0x00},
 				},
 				{
 					DescriptorType: 0x24, // CS_INTERFACE
@@ -229,17 +229,19 @@ var defaultDescriptor = usb.Descriptor{
 				},
 				{
 					DescriptorType: 0x24, // CS_INTERFACE
-					// Format Type I: stereo, 1-byte subframe, 8-bit samples,
-					// one discrete sample rate = 3000 Hz. This mirrors the
-					// SAxense haptics PCM contract.
-					Payload: usb.Data{0x02, 0x01, 0x02, 0x01, 0x08, 0x01, 0xB8, 0x0B, 0x00},
+					// Format Type I: 4-channel, 16-bit PCM, one discrete
+					// sample rate = 48000 Hz. Games expect the wired
+					// DualSense haptics path to look like a standard
+					// 4-channel USB audio render endpoint; VIIPER downsamples
+					// channels 3/4 to the SAxense 3 kHz Bluetooth HID stream.
+					Payload: usb.Data{0x02, 0x01, USBHapticsAudioChannels, USBHapticsAudioBytesPerSample, 0x10, 0x01, 0x80, 0xBB, 0x00},
 				},
 			},
 			Endpoints: []usb.EndpointDescriptor{
 				{
 					BEndpointAddress: EndpointHapticsAudioOut,
 					BMAttributes:     0x09, // Isochronous, adaptive, data endpoint.
-					WMaxPacketSize:   BluetoothHapticsSampleSize,
+					WMaxPacketSize:   USBHapticsAudioPacketSize,
 					BInterval:        1,
 					ClassDescriptors: []usb.ClassSpecificDescriptor{
 						{

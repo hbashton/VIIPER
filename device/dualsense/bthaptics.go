@@ -11,6 +11,14 @@ const (
 	BluetoothHapticsSampleSize = 64
 	BluetoothHapticsSampleRate = 3000
 
+	USBHapticsAudioSampleRate     = 48000
+	USBHapticsAudioChannels       = 4
+	USBHapticsAudioBytesPerSample = 2
+	USBHapticsAudioFrameSize      = USBHapticsAudioChannels * USBHapticsAudioBytesPerSample
+	USBHapticsAudioPacketFrames   = USBHapticsAudioSampleRate / 1000
+	USBHapticsAudioPacketSize     = USBHapticsAudioPacketFrames * USBHapticsAudioFrameSize
+	USBHapticsAudioDownsample     = USBHapticsAudioSampleRate / BluetoothHapticsSampleRate
+
 	BluetoothOutputReportID   = 0x31
 	BluetoothOutputReportSize = 78
 

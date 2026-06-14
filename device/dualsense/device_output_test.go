@@ -3,6 +3,7 @@ package dualsense
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/hex"
 	"testing"
 
@@ -88,7 +89,7 @@ func TestDualSenseDescriptorAdvertisesExperimentalHapticsAudioEndpoint(t *testin
 			for _, ep := range iface.Endpoints {
 				if ep.BEndpointAddress == EndpointHapticsAudioOut &&
 					ep.BMAttributes&0x03 == 0x01 &&
-					ep.WMaxPacketSize == BluetoothHapticsSampleSize {
+					ep.WMaxPacketSize == USBHapticsAudioPacketSize {
 					foundEndpoint = true
 				}
 			}
@@ -113,6 +114,29 @@ func TestDualSenseDescriptorAdvertisesExperimentalHapticsAudioEndpoint(t *testin
 	}
 	if audioControlClassLength != 0x1E {
 		t.Fatalf("unexpected AudioControl class descriptor length: got 0x%02x want 0x1e", audioControlClassLength)
+	}
+
+	var foundFormat bool
+	for _, iface := range desc.Interfaces {
+		if iface.Descriptor.BInterfaceNumber != 2 || iface.Descriptor.BAlternateSetting != 1 {
+			continue
+		}
+
+		for _, classDescriptor := range iface.ClassDescriptors {
+			raw := classDescriptor.Bytes()
+			if len(raw) == 11 && raw[2] == 0x02 {
+				foundFormat = true
+				if raw[4] != USBHapticsAudioChannels ||
+					raw[5] != USBHapticsAudioBytesPerSample ||
+					raw[6] != 0x10 ||
+					!bytes.Equal(raw[8:11], []byte{0x80, 0xBB, 0x00}) {
+					t.Fatalf("unexpected haptics audio format descriptor: % x", raw)
+				}
+			}
+		}
+	}
+	if !foundFormat {
+		t.Fatal("experimental haptics audio format descriptor was not found")
 	}
 }
 
@@ -206,12 +230,16 @@ func TestDualSenseHapticsAudioOutBuildsSAxenseReports(t *testing.T) {
 	SetTrafficDiagnosticsEnabled(true, true)
 	defer SetTrafficDiagnosticsEnabled(rawOutputLogEnabled, true)
 
-	sample := make([]byte, BluetoothHapticsSampleSize)
-	for i := range sample {
-		sample[i] = byte(i)
+	pcm := make([]byte, (BluetoothHapticsSampleSize/2)*USBHapticsAudioDownsample*USBHapticsAudioFrameSize)
+	for outputFrame := 0; outputFrame < BluetoothHapticsSampleSize/2; outputFrame++ {
+		for frame := 0; frame < USBHapticsAudioDownsample; frame++ {
+			frameStart := (outputFrame*USBHapticsAudioDownsample + frame) * USBHapticsAudioFrameSize
+			binary.LittleEndian.PutUint16(pcm[frameStart+4:frameStart+6], uint16(int16(outputFrame*256)))
+			binary.LittleEndian.PutUint16(pcm[frameStart+6:frameStart+8], uint16(int16((outputFrame+1)*-256)))
+		}
 	}
 
-	dev.HandleTransfer(context.Background(), EndpointHapticsAudioOut, usbip.DirOut, sample)
+	dev.HandleTransfer(context.Background(), EndpointHapticsAudioOut, usbip.DirOut, pcm)
 	events := TrafficDiagnosticsSnapshot()
 
 	var sawAudioOut bool
@@ -220,8 +248,8 @@ func TestDualSenseHapticsAudioOutBuildsSAxenseReports(t *testing.T) {
 		switch event.Source {
 		case "audio-haptics-out":
 			sawAudioOut = true
-			if event.Length != BluetoothHapticsSampleSize {
-				t.Fatalf("unexpected audio event length: got %d want %d", event.Length, BluetoothHapticsSampleSize)
+			if event.Length != len(pcm) {
+				t.Fatalf("unexpected audio event length: got %d want %d", event.Length, len(pcm))
 			}
 		case "saxense-hid-0x32":
 			sawSAxense = true
