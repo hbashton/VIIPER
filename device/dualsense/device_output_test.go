@@ -129,6 +129,42 @@ func TestDualSenseOutputReportFromEndpoint(t *testing.T) {
 		got.TriggerL2EffectForce != 0x05 || got.TriggerL2Frequency != 0x55 {
 		t.Fatalf("unexpected L2 trigger feedback: %#v", got)
 	}
+	if !bytes.Equal(got.RawOutputReport[:], report) {
+		t.Fatalf("raw output report was not preserved:\n got: % x\nwant: % x", got.RawOutputReport, report)
+	}
+}
+
+func TestDualSenseHapticsSelectDoesNotUpdateCompatibleRumble(t *testing.T) {
+	dev, err := New(nil)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	var got OutputState
+	dev.SetOutputCallback(func(out OutputState) {
+		got = out
+	})
+
+	rumbleReport := make([]byte, OutputReportSize)
+	rumbleReport[0] = ReportIDOutput
+	rumbleReport[1] = 0x01
+	rumbleReport[3] = 0x22
+	rumbleReport[4] = 0x88
+	dev.HandleTransfer(context.Background(), EndpointOut, usbip.DirOut, rumbleReport)
+
+	hapticsSelectReport := make([]byte, OutputReportSize)
+	hapticsSelectReport[0] = ReportIDOutput
+	hapticsSelectReport[1] = 0x02
+	hapticsSelectReport[3] = 0xFF
+	hapticsSelectReport[4] = 0xFF
+	dev.HandleTransfer(context.Background(), EndpointOut, usbip.DirOut, hapticsSelectReport)
+
+	if got.RumbleSmall != 0x22 || got.RumbleLarge != 0x88 {
+		t.Fatalf("haptics-select-only report changed compatible rumble: small=%#x large=%#x", got.RumbleSmall, got.RumbleLarge)
+	}
+	if !bytes.Equal(got.RawOutputReport[:], hapticsSelectReport) {
+		t.Fatalf("haptics-select raw report was not preserved:\n got: % x\nwant: % x", got.RawOutputReport, hapticsSelectReport)
+	}
 }
 
 func TestDualSenseOutputSetReportWithoutReportId(t *testing.T) {
@@ -285,6 +321,9 @@ func TestDualSenseExtendedFeedbackUsesNativeTriggerBlockSize(t *testing.T) {
 		TriggerL2PressedStrength: 0x77,
 		TriggerL2Frequency:       0x88,
 	}
+	out.RawOutputReport[0] = ReportIDOutput
+	out.RawOutputReport[1] = 0x02
+	out.RawOutputReport[3] = 0x99
 
 	data, err := out.MarshalExtendedBinary()
 	if err != nil {
@@ -307,5 +346,8 @@ func TestDualSenseExtendedFeedbackUsesNativeTriggerBlockSize(t *testing.T) {
 	if decoded.TriggerR2Frequency != out.TriggerR2Frequency ||
 		decoded.TriggerL2Frequency != out.TriggerL2Frequency {
 		t.Fatalf("unexpected decoded frequencies: R2=%#x L2=%#x", decoded.TriggerR2Frequency, decoded.TriggerL2Frequency)
+	}
+	if !bytes.Equal(decoded.RawOutputReport[:], out.RawOutputReport[:]) {
+		t.Fatalf("raw output report did not round-trip:\n got: % x\nwant: % x", decoded.RawOutputReport, out.RawOutputReport)
 	}
 }

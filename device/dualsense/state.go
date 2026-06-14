@@ -97,7 +97,7 @@ func (s *InputState) UnmarshalBinary(data []byte) error {
 }
 
 // nolint
-// viiper:wire dualsense s2c rumbleSmall:u8 rumbleLarge:u8 ledRed:u8 ledGreen:u8 ledBlue:u8 playerLeds:u8 triggerR2Mode:u8 triggerR2StartResistance:u8 triggerR2EffectForce:u8 triggerR2RangeForce:u8 triggerR2NearReleaseStrength:u8 triggerR2NearMiddleStrength:u8 triggerR2PressedStrength:u8 triggerR2Reserved:u8*2 triggerR2Frequency:u8 triggerR2Padding:u8 triggerL2Mode:u8 triggerL2StartResistance:u8 triggerL2EffectForce:u8 triggerL2RangeForce:u8 triggerL2NearReleaseStrength:u8 triggerL2NearMiddleStrength:u8 triggerL2PressedStrength:u8 triggerL2Reserved:u8*2 triggerL2Frequency:u8 triggerL2Padding:u8
+// viiper:wire dualsense s2c rumbleSmall:u8 rumbleLarge:u8 ledRed:u8 ledGreen:u8 ledBlue:u8 playerLeds:u8 triggerR2Mode:u8 triggerR2StartResistance:u8 triggerR2EffectForce:u8 triggerR2RangeForce:u8 triggerR2NearReleaseStrength:u8 triggerR2NearMiddleStrength:u8 triggerR2PressedStrength:u8 triggerR2Reserved:u8*2 triggerR2Frequency:u8 triggerR2Padding:u8 triggerL2Mode:u8 triggerL2StartResistance:u8 triggerL2EffectForce:u8 triggerL2RangeForce:u8 triggerL2NearReleaseStrength:u8 triggerL2NearMiddleStrength:u8 triggerL2PressedStrength:u8 triggerL2Reserved:u8*2 triggerL2Frequency:u8 triggerL2Padding:u8 rawOutputReport:u8*48
 type OutputState struct {
 	RumbleSmall uint8
 	RumbleLarge uint8
@@ -122,6 +122,8 @@ type OutputState struct {
 	TriggerL2NearMiddleStrength  uint8
 	TriggerL2PressedStrength     uint8
 	TriggerL2Frequency           uint8
+
+	RawOutputReport [OutputReportSize]byte
 }
 
 func (f *OutputState) MarshalBinary() ([]byte, error) {
@@ -161,6 +163,7 @@ func (f *OutputState) MarshalExtendedBinary() ([]byte, error) {
 	b[22] = f.TriggerL2NearMiddleStrength
 	b[23] = f.TriggerL2PressedStrength
 	b[26] = f.TriggerL2Frequency
+	copy(b[OutputStateCompatExtSize:], f.RawOutputReport[:])
 	return b, nil
 }
 
@@ -174,7 +177,7 @@ func (f *OutputState) UnmarshalBinary(data []byte) error {
 	f.LedGreen = data[3]
 	f.LedBlue = data[4]
 	f.PlayerLeds = data[5]
-	if len(data) < OutputStateExtSize {
+	if len(data) < OutputStateCompatExtSize {
 		return nil
 	}
 
@@ -194,6 +197,9 @@ func (f *OutputState) UnmarshalBinary(data []byte) error {
 	f.TriggerL2NearMiddleStrength = data[22]
 	f.TriggerL2PressedStrength = data[23]
 	f.TriggerL2Frequency = data[26]
+	if len(data) >= OutputStateExtSize {
+		copy(f.RawOutputReport[:], data[OutputStateCompatExtSize:OutputStateExtSize])
+	}
 	return nil
 }
 

@@ -373,9 +373,17 @@ var featureGetHandlers = map[byte]func(*DualSense) []byte{
 
 func (d *DualSense) mergeOutputReport(out []byte) OutputState {
 	feedback := d.outputState
+	if len(out) >= OutputReportSize {
+		copy(feedback.RawOutputReport[:], out[:OutputReportSize])
+	}
+
 	if len(out) > 4 {
 		flag0 := out[1]
-		if flag0&0x03 != 0 {
+		compatibleVibration := flag0&0x01 != 0
+		if len(out) > 39 {
+			compatibleVibration = compatibleVibration || out[39]&0x04 != 0
+		}
+		if compatibleVibration {
 			feedback.RumbleSmall = out[3]
 			feedback.RumbleLarge = out[4]
 		}
