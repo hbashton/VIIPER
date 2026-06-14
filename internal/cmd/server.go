@@ -102,6 +102,9 @@ func (s *Server) StartServer(ctx context.Context, logger *slog.Logger, rawLogger
 	r.Register("bus/{id}/list", handler.BusDevicesList(usbSrv))
 	r.Register("bus/{id}/add", handler.BusDeviceAdd(usbSrv, apiSrv))
 	r.Register("bus/{id}/remove", handler.BusDeviceRemove(usbSrv))
+	r.Register("debug/dualsense-traffic/set", handler.DualSenseTrafficSet())
+	r.Register("debug/dualsense-traffic/get", handler.DualSenseTrafficGet())
+	r.Register("debug/dualsense-traffic/clear", handler.DualSenseTrafficClear())
 	r.RegisterStream("bus/{busId}/{deviceid}", api.DeviceStreamHandler(usbSrv))
 
 	if s.APIServerConfig.AutoAttachLocalClient {
