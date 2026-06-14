@@ -8,22 +8,12 @@ import (
 	"github.com/Alia5/VIIPER/device/dualsense"
 	"github.com/Alia5/VIIPER/internal/server/api"
 	apierror "github.com/Alia5/VIIPER/internal/server/api/error"
+	"github.com/Alia5/VIIPER/viipertypes"
 )
-
-type dualSenseTrafficSetRequest struct {
-	Enabled bool `json:"enabled"`
-	Clear   bool `json:"clear"`
-}
-
-type dualSenseTrafficResponse struct {
-	Enabled bool                     `json:"enabled"`
-	Count   int                      `json:"count"`
-	Events  []dualsense.TrafficEvent `json:"events,omitempty"`
-}
 
 func DualSenseTrafficSet() api.HandlerFunc {
 	return func(req *api.Request, res *api.Response, logger *slog.Logger) error {
-		var payload dualSenseTrafficSetRequest
+		var payload viipertypes.DualSenseTrafficSetRequest
 		if req.Payload != "" {
 			if err := json.Unmarshal([]byte(req.Payload), &payload); err != nil {
 				return apierror.ErrBadRequest(fmt.Sprintf("invalid JSON payload: %v", err))
@@ -32,13 +22,32 @@ func DualSenseTrafficSet() api.HandlerFunc {
 
 		dualsense.SetTrafficDiagnosticsEnabled(payload.Enabled, payload.Clear)
 		logger.Info("DualSense traffic diagnostics set", "enabled", payload.Enabled, "clear", payload.Clear)
-		return writeDualSenseTrafficResponse(res, false)
+		events := dualsense.TrafficDiagnosticsSnapshot()
+		out, err := json.Marshal(viipertypes.DualSenseTrafficResponse{
+			Enabled: dualsense.TrafficDiagnosticsEnabled(),
+			Count:   len(events),
+		})
+		if err != nil {
+			return apierror.ErrInternal(fmt.Sprintf("failed to marshal response: %v", err))
+		}
+		res.JSON = string(out)
+		return nil
 	}
 }
 
 func DualSenseTrafficGet() api.HandlerFunc {
 	return func(_ *api.Request, res *api.Response, _ *slog.Logger) error {
-		return writeDualSenseTrafficResponse(res, true)
+		events := dualsense.TrafficDiagnosticsSnapshot()
+		out, err := json.Marshal(viipertypes.DualSenseTrafficResponse{
+			Enabled: dualsense.TrafficDiagnosticsEnabled(),
+			Count:   len(events),
+			Events:  makeDualSenseTrafficEvents(events),
+		})
+		if err != nil {
+			return apierror.ErrInternal(fmt.Sprintf("failed to marshal response: %v", err))
+		}
+		res.JSON = string(out)
+		return nil
 	}
 }
 
@@ -46,24 +55,37 @@ func DualSenseTrafficClear() api.HandlerFunc {
 	return func(_ *api.Request, res *api.Response, logger *slog.Logger) error {
 		dualsense.ClearTrafficDiagnostics()
 		logger.Info("DualSense traffic diagnostics cleared")
-		return writeDualSenseTrafficResponse(res, false)
+		events := dualsense.TrafficDiagnosticsSnapshot()
+		out, err := json.Marshal(viipertypes.DualSenseTrafficResponse{
+			Enabled: dualsense.TrafficDiagnosticsEnabled(),
+			Count:   len(events),
+		})
+		if err != nil {
+			return apierror.ErrInternal(fmt.Sprintf("failed to marshal response: %v", err))
+		}
+		res.JSON = string(out)
+		return nil
 	}
 }
 
-func writeDualSenseTrafficResponse(res *api.Response, includeEvents bool) error {
-	events := dualsense.TrafficDiagnosticsSnapshot()
-	response := dualSenseTrafficResponse{
-		Enabled: dualsense.TrafficDiagnosticsEnabled(),
-		Count:   len(events),
-	}
-	if includeEvents {
-		response.Events = events
+func makeDualSenseTrafficEvents(events []dualsense.TrafficEvent) []viipertypes.DualSenseTrafficEvent {
+	out := make([]viipertypes.DualSenseTrafficEvent, len(events))
+	for idx, event := range events {
+		out[idx] = viipertypes.DualSenseTrafficEvent{
+			TimeUTC:       event.TimeUTC,
+			Direction:     event.Direction,
+			Source:        event.Source,
+			ReportType:    event.ReportType,
+			ReportID:      event.ReportID,
+			Request:       event.Request,
+			Value:         event.Value,
+			Index:         event.Index,
+			Length:        event.Length,
+			Hex:           event.Hex,
+			Summary:       event.Summary,
+			DecodedOutput: event.DecodedOutput,
+		}
 	}
 
-	out, err := json.Marshal(response)
-	if err != nil {
-		return apierror.ErrInternal(fmt.Sprintf("failed to marshal response: %v", err))
-	}
-	res.JSON = string(out)
-	return nil
+	return out
 }
