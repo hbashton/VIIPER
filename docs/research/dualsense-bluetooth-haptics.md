@@ -172,5 +172,52 @@ Interpretation:
   for adaptive triggers, while keeping compatible rumble separate from future
   SAxense-style haptics PCM.
 
+## Ghost of Tsushima bow capture with rumble disabled, 2026-06-14
+
+Capture file:
+
+- `%APPDATA%\DS4Windows\Logs\dualsense_traffic_20260614_104112.json`
+
+Summary:
+
+- 2,936 total traffic events.
+- 1,468 parsed DualSense output reports.
+- Three clear bow-draw clusters were captured.
+- Each bow draw lasts roughly 1.3 seconds.
+- Each bow draw contains 47 adaptive-trigger output reports.
+- Compatible rumble is absent: `small=0`, `large=0` for the draw clusters.
+
+Interpretation:
+
+- Disabling game rumble removes the normal `0x02/0x40` compatible rumble ramp.
+- The remaining vibration felt during bow draw comes from the adaptive trigger
+  effect mode itself, not from advanced haptics being converted into ordinary
+  controller rumble.
+- This validates keeping the trigger HID path separate from the SAxense
+  haptics/audio path.
+
+## Experimental SAxense bridge in VIIPER
+
+VIIPER now has an experimental DualSense haptics/audio OUT endpoint:
+
+- endpoint: `0x05`
+- type: isochronous OUT
+- format advertised in the descriptor: stereo, 8-bit, 3000 Hz
+
+When host software writes 64-byte haptics/audio chunks to this endpoint,
+VIIPER records:
+
+- `audio-haptics-out`: the raw host-to-device audio/haptics bytes.
+- `saxense-hid-0x32`: the generated 141-byte SAxense-style Bluetooth HID
+  haptics report.
+
+The extended DualSense feedback stream now appends one optional 141-byte
+Bluetooth haptics report after the existing 76-byte feedback payload. DS4Windows
+can forward that report to a real Bluetooth DualSense through its existing
+physical controller handle. This creates the first end-to-end testable contract:
+if Ghost opens the virtual audio endpoint, the traffic export should include
+`audio-haptics-out` events, matching `saxense-hid-0x32` packets, and the
+physical controller should receive report `0x32`.
+
 Credit: SAxense research by egormanga/Sdore should be credited anywhere this
 Bluetooth haptics packet path is surfaced to users or shipped.

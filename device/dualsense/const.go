@@ -29,8 +29,9 @@ const (
 var DefaultBuildTime = time.Date(2025, time.July, 4, 10, 10, 32, 0, time.UTC)
 
 const (
-	EndpointIn  = 0x84
-	EndpointOut = 0x03
+	EndpointIn              = 0x84
+	EndpointOut             = 0x03
+	EndpointHapticsAudioOut = 0x05
 )
 
 const (
@@ -46,11 +47,13 @@ const (
 
 	// OutputStateCompatExtSize is VIIPER's legacy compact server-to-client
 	// feedback packet: 6 base bytes plus two 11-byte DualSense trigger effect
-	// blocks. OutputStateExtSize appends the native USB output report so
-	// clients can forward DualSense haptics/control flags without reducing
-	// them to generic rumble.
-	OutputStateCompatExtSize = 28
-	OutputStateExtSize       = OutputStateCompatExtSize + OutputReportSize
+	// blocks. OutputStateExtSize appends the native USB output report and one
+	// optional Bluetooth haptics report so clients can forward DualSense
+	// haptics/control flags without reducing them to generic rumble.
+	OutputStateCompatExtSize          = 28
+	OutputStateRawReportOffset        = OutputStateCompatExtSize
+	OutputStateBluetoothHapticsOffset = OutputStateRawReportOffset + OutputReportSize
+	OutputStateExtSize                = OutputStateBluetoothHapticsOffset + BluetoothHapticsReportSize
 )
 
 const (

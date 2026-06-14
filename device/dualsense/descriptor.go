@@ -21,6 +21,16 @@ var defaultDescriptor = usb.Descriptor{
 		BNumConfigurations: 0x01,
 		Speed:              2, // Full speed
 	},
+	Associations: []usb.InterfaceAssociationDescriptor{
+		{
+			BFirstInterface:   0x01,
+			BInterfaceCount:   0x02,
+			BFunctionClass:    0x01, // Audio
+			BFunctionSubClass: 0x01, // AudioControl
+			BFunctionProtocol: 0x00,
+			IFunction:         0x00,
+		},
+	},
 	Interfaces: []usb.InterfaceConfig{
 		{
 			Descriptor: usb.InterfaceDescriptor{
@@ -158,6 +168,86 @@ var defaultDescriptor = usb.Descriptor{
 					BMAttributes:     0x03, // Interrupt
 					WMaxPacketSize:   64,
 					BInterval:        2,
+				},
+			},
+		},
+		{
+			Descriptor: usb.InterfaceDescriptor{
+				BInterfaceNumber:   0x01,
+				BAlternateSetting:  0x00,
+				BNumEndpoints:      0x00,
+				BInterfaceClass:    0x01, // Audio
+				BInterfaceSubClass: 0x01, // AudioControl
+				BInterfaceProtocol: 0x00,
+				IInterface:         0x00,
+			},
+			ClassDescriptors: []usb.ClassSpecificDescriptor{
+				{
+					DescriptorType: 0x24, // CS_INTERFACE
+					// UAC1 Header: subtype HEADER, ADC 1.00, total class
+					// descriptor length, one streaming interface (#2).
+					Payload: usb.Data{0x01, 0x00, 0x01, 0x1F, 0x00, 0x01, 0x02},
+				},
+				{
+					DescriptorType: 0x24, // CS_INTERFACE
+					// Input Terminal: USB streaming source, 2 channels.
+					Payload: usb.Data{0x02, 0x01, 0x01, 0x01, 0x00, 0x02, 0x03, 0x00, 0x00, 0x00},
+				},
+				{
+					DescriptorType: 0x24, // CS_INTERFACE
+					// Output Terminal: speaker/haptics sink, source terminal 1.
+					Payload: usb.Data{0x03, 0x02, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00},
+				},
+			},
+		},
+		{
+			Descriptor: usb.InterfaceDescriptor{
+				BInterfaceNumber:   0x02,
+				BAlternateSetting:  0x00,
+				BNumEndpoints:      0x00,
+				BInterfaceClass:    0x01, // Audio
+				BInterfaceSubClass: 0x02, // AudioStreaming
+				BInterfaceProtocol: 0x00,
+				IInterface:         0x00,
+			},
+		},
+		{
+			Descriptor: usb.InterfaceDescriptor{
+				BInterfaceNumber:   0x02,
+				BAlternateSetting:  0x01,
+				BNumEndpoints:      0x01,
+				BInterfaceClass:    0x01, // Audio
+				BInterfaceSubClass: 0x02, // AudioStreaming
+				BInterfaceProtocol: 0x00,
+				IInterface:         0x00,
+			},
+			ClassDescriptors: []usb.ClassSpecificDescriptor{
+				{
+					DescriptorType: 0x24, // CS_INTERFACE
+					// AS General: terminal link 1, PCM.
+					Payload: usb.Data{0x01, 0x01, 0x01, 0x00, 0x01},
+				},
+				{
+					DescriptorType: 0x24, // CS_INTERFACE
+					// Format Type I: stereo, 1-byte subframe, 8-bit samples,
+					// one discrete sample rate = 3000 Hz. This mirrors the
+					// SAxense haptics PCM contract.
+					Payload: usb.Data{0x02, 0x01, 0x02, 0x01, 0x08, 0x01, 0xB8, 0x0B, 0x00},
+				},
+			},
+			Endpoints: []usb.EndpointDescriptor{
+				{
+					BEndpointAddress: EndpointHapticsAudioOut,
+					BMAttributes:     0x09, // Isochronous, adaptive, data endpoint.
+					WMaxPacketSize:   BluetoothHapticsSampleSize,
+					BInterval:        1,
+					ClassDescriptors: []usb.ClassSpecificDescriptor{
+						{
+							DescriptorType: 0x25, // CS_ENDPOINT
+							// EP General: no sampling-frequency or pitch controls.
+							Payload: usb.Data{0x01, 0x00, 0x00, 0x00, 0x00},
+						},
+					},
 				},
 			},
 		},
