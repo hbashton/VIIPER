@@ -58,8 +58,12 @@ IMU (gyro + accelerometer), and touchpad finger coordinates.
         - LED Color: LedRed, LedGreen, LedBlue: uint8 each (3 bytes), 0-255 per
           channel
         - PlayerLeds: uint8 (1 byte), host-controlled player indicator LED mask
-    - Extended `dualsenseext` / `dualsenseedgeext` streams send 28-byte
-      VIIPER feedback packets. This is not the full native HID output report.
+    - Extended `dualsenseext` / `dualsenseedgeext` streams send 76-byte
+      VIIPER feedback packets. Bytes 0..27 preserve the legacy compact
+      feedback layout: base rumble/LED bytes plus native-spaced trigger
+      blocks. Bytes 28..75 contain the native USB HID output report `0x02`
+      exactly as sent by the host, allowing clients to forward DualSense
+      haptics/control flags instead of reducing them to generic rumble.
       Bytes 0..5 preserve the original rumble/LED layout above. Bytes 6..16
       contain the R2 adaptive-trigger effect block copied from USB output
       report 0x02 with the same reserved gaps used by the native report.
@@ -79,9 +83,9 @@ IMU (gyro + accelerometer), and touchpad finger coordinates.
 
     Native USB HID output report `0x02` is advertised as 47 payload bytes by
     the captured DualSense USB descriptor, so hosts see 48 bytes including the
-    report ID. The VIIPER feedback stream stays compact because it only forwards
-    the fields DS4Windows needs to apply rumble, LED state, and trigger effects
-    back to a physical controller.
+    report ID. The extended VIIPER feedback stream includes that native report
+    so DS4Windows can pass through host haptics/control semantics to physical
+    DualSense hardware when available.
 
     See `/device/dualsense/state.go` for the `OutputState` wire definition.
 
