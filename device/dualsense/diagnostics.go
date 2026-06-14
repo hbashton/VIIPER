@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-const trafficEventLimit = 768
+const trafficEventLimit = 65536
 
 type TrafficEvent struct {
 	TimeUTC       string `json:"timeUtc"`
