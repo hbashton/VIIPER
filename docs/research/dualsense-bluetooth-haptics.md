@@ -202,7 +202,9 @@ VIIPER now has an experimental DualSense haptics/audio OUT endpoint:
 
 - endpoint: `0x05`
 - type: isochronous OUT
-- format advertised in the descriptor: stereo, 8-bit, 3000 Hz
+- format advertised in the descriptor: 4-channel, 16-bit, 48000 Hz PCM
+  (channels 3/4 are downsampled to the Bluetooth haptics stream; channels
+  1/2 remain available as the virtual controller speaker pair)
 
 When host software writes 64-byte haptics/audio chunks to this endpoint,
 VIIPER records:
