@@ -223,10 +223,17 @@ physical controller should receive report `0x32`.
 
 Windows reported the experimental audio interface as a failed `MEDIA` device on
 `USB\VID_054C&PID_0CE6&MI_01` while the AudioControl descriptor was malformed.
-The first fix corrected the UAC1 AudioControl header total length to `0x001E`,
-removed an extra byte from the Output Terminal descriptor, and added generic
-standard `GET_INTERFACE` / `SET_INTERFACE` handling so the audio streaming
-interface can switch from alternate setting 0 to alternate setting 1.
+The current UAC1 AudioControl topology is 0x002A bytes: header, Input Terminal,
+Feature Unit, and Output Terminal. The server also implements standard
+`GET_INTERFACE` / `SET_INTERFACE` handling so the audio streaming interface
+can switch from alternate setting 0 to alternate setting 1.
+
+The endpoint must remain a seven-byte UAC1 endpoint descriptor. `bRefresh` and
+`bSynchAddress` are UAC2 fields and cannot be appended to a UAC1 descriptor.
+The virtual endpoint also answers UAC1 `GET_CUR`, `GET_MIN`, `GET_MAX`,
+`GET_RES`, and `SET_CUR` sampling-frequency requests with the fixed 48 kHz
+format it advertises. This is necessary for Windows to activate the render
+stream after enumeration.
 
 Credit: SAxense research by egormanga/Sdore should be credited anywhere this
 Bluetooth haptics packet path is surfaced to users or shipped.
