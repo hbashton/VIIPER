@@ -295,7 +295,7 @@ func TestInputReports(t *testing.T) {
 			TransferFlags:     0,
 			TransferBufferLen: 255,
 			StartFrame:        0,
-			NumberOfPackets:   0,
+			NumberOfPackets:   -1,
 			Interval:          0,
 			Setup:             [8]byte{},
 		}

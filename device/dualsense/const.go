@@ -31,7 +31,7 @@ var DefaultBuildTime = time.Date(2025, time.July, 4, 10, 10, 32, 0, time.UTC)
 const (
 	EndpointIn              = 0x84
 	EndpointOut             = 0x03
-	EndpointHapticsAudioOut = 0x05
+	EndpointHapticsAudioOut = 0x01
 )
 
 const (

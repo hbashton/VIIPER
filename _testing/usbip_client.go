@@ -233,7 +233,7 @@ func (c *TestUsbIpClient) SubmitWithTimeout(conn net.Conn, dir uint32, ep uint32
 		TransferFlags:     0,
 		TransferBufferLen: uint32(len(outPayload)),
 		StartFrame:        0,
-		NumberOfPackets:   0,
+		NumberOfPackets:   -1,
 		Interval:          0,
 		Setup:             setupBytes,
 	}
@@ -290,7 +290,7 @@ func (c *TestUsbIpClient) ReadInputReportWithTimeout(conn net.Conn, timeout time
 		TransferFlags:     0,
 		TransferBufferLen: inMax,
 		StartFrame:        0,
-		NumberOfPackets:   0,
+		NumberOfPackets:   -1,
 		Interval:          0,
 		Setup:             [8]byte{},
 	}
