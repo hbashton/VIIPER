@@ -90,7 +90,7 @@ func TestDualSenseDescriptorAdvertisesExperimentalHapticsAudioEndpoint(t *testin
 				if ep.BEndpointAddress == EndpointHapticsAudioOut &&
 					ep.BMAttributes&0x03 == 0x01 &&
 					ep.WMaxPacketSize == USBHapticsAudioPacketSize &&
-					bytes.Equal(ep.Trailing, []byte{0x00, 0x00}) {
+					len(ep.Trailing) == 0 {
 					foundEndpoint = true
 				}
 			}
@@ -308,6 +308,33 @@ func TestDualSenseHapticsAudioOutBuildsSAxenseReports(t *testing.T) {
 		t.Fatalf("expected callback haptics report ID 0x%02x, got 0x%02x",
 			BluetoothHapticsReportID,
 			got.BluetoothHapticsOutputReport[0])
+	}
+}
+
+func TestDualSenseAudioEndpointSamplingFrequencyControls(t *testing.T) {
+	dev, err := New(nil)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	for _, request := range []uint8{
+		audioClassRequestGetCurrent,
+		audioClassRequestGetMinimum,
+		audioClassRequestGetMaximum,
+	} {
+		got, handled := dev.HandleControl(audioClassEndpointIn, request, 0x0100, EndpointHapticsAudioOut, 3, nil)
+		if !handled || !bytes.Equal(got, []byte{0x80, 0xBB, 0x00}) {
+			t.Fatalf("unexpected sampling frequency response for request %#x: handled=%t response=% x", request, handled, got)
+		}
+	}
+
+	got, handled := dev.HandleControl(audioClassEndpointIn, audioClassRequestGetResolution, 0x0100, EndpointHapticsAudioOut, 3, nil)
+	if !handled || !bytes.Equal(got, []byte{0x00, 0x00, 0x00}) {
+		t.Fatalf("unexpected sampling frequency resolution response: handled=%t response=% x", handled, got)
+	}
+
+	if _, handled = dev.HandleControl(audioClassEndpointOut, audioClassRequestSetCurrent, 0x0100, EndpointHapticsAudioOut, 3, []byte{0x80, 0xBB, 0x00}); !handled {
+		t.Fatal("expected SET_CUR sampling frequency request to be accepted")
 	}
 }
 

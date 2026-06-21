@@ -295,6 +295,10 @@ func copyUSBHapticsChannelsToBluetoothSample(dst []byte, src []byte) {
 }
 
 func (d *DualSense) HandleControl(bmRequestType, bRequest uint8, wValue, wIndex, wLength uint16, data []byte) ([]byte, bool) {
+	if response, handled := handleAudioControlRequest(bmRequestType, bRequest, wValue, wIndex, wLength); handled {
+		return response, true
+	}
+
 	reportType := uint8(wValue >> 8)
 	reportID := uint8(wValue & 0xFF)
 
@@ -374,6 +378,52 @@ func (d *DualSense) HandleControl(bmRequestType, bRequest uint8, wValue, wIndex,
 		"wIndex", wIndex,
 		"wLength", wLength,
 		"dataLen", len(data))
+
+	return nil, false
+}
+
+const (
+	audioClassRequestSetCurrent    = 0x01
+	audioClassRequestGetCurrent    = 0x81
+	audioClassRequestGetMinimum    = 0x82
+	audioClassRequestGetMaximum    = 0x83
+	audioClassRequestGetResolution = 0x84
+
+	audioClassEndpointOut = 0x22
+	audioClassEndpointIn  = 0xA2
+
+	audioControlSamplingFrequency = 0x01
+)
+
+// handleAudioControlRequest implements the UAC1 endpoint sampling-frequency
+// controls advertised by the AudioStreaming format descriptor. Windows
+// usbaudio validates these requests before it starts the render endpoint.
+func handleAudioControlRequest(bmRequestType, bRequest uint8, wValue, wIndex, wLength uint16) ([]byte, bool) {
+	if uint8(wIndex) != EndpointHapticsAudioOut || uint8(wValue>>8) != audioControlSamplingFrequency {
+		return nil, false
+	}
+
+	switch bmRequestType {
+	case audioClassEndpointIn:
+		switch bRequest {
+		case audioClassRequestGetCurrent, audioClassRequestGetMinimum, audioClassRequestGetMaximum:
+			response := []byte{0x80, 0xBB, 0x00} // 48,000 Hz as a 24-bit little-endian value.
+			if wLength < uint16(len(response)) {
+				response = response[:wLength]
+			}
+			return response, true
+		case audioClassRequestGetResolution:
+			response := []byte{0x00, 0x00, 0x00} // One discrete advertised frequency.
+			if wLength < uint16(len(response)) {
+				response = response[:wLength]
+			}
+			return response, true
+		}
+	case audioClassEndpointOut:
+		if bRequest == audioClassRequestSetCurrent {
+			return nil, true
+		}
+	}
 
 	return nil, false
 }
