@@ -178,7 +178,9 @@ const (
 	urbHdrOffsetUnlink  = 0x14
 	urbHdrOffsetFlags   = 0x14
 	urbHdrOffsetLength  = 0x18
+	urbHdrOffsetPackets = 0x20
 	urbHdrOffsetSetup   = 0x28
+	maxIsoPackets        = 1024
 
 	// Standard header peek size
 	headerPeekSize = 8
@@ -603,15 +605,19 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 	var writeMu sync.Mutex
 	var retOut bytes.Buffer
 	retOut.Grow(retSubmitHeaderSize)
-	writeRet := func(seq, actualLen uint32, respData []byte, flush bool) error {
+	writeRet := func(seq, actualLen uint32, respData []byte, isoPackets []usbip.IsoPacketDescriptor, isIso bool, flush bool) error {
 		writeMu.Lock()
 		defer writeMu.Unlock()
+		packetCount := int32(-1)
+		if isIso {
+			packetCount = int32(len(isoPackets))
+		}
 		ret := usbip.RetSubmit{
 			Basic:           usbip.HeaderBasic{Command: usbip.RetSubmitCode, Seqnum: seq, Devid: 0, Dir: 0, Ep: 0},
 			Status:          0,
 			ActualLength:    actualLen,
 			StartFrame:      0,
-			NumberOfPackets: 0,
+			NumberOfPackets: packetCount,
 			ErrorCount:      0,
 		}
 		retOut.Reset()
@@ -624,6 +630,11 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 		if len(respData) > 0 {
 			if _, err := writer.Write(respData); err != nil {
 				return fmt.Errorf("write RET_SUBMIT payload: %w", err)
+			}
+		}
+		for _, packet := range isoPackets {
+			if err := packet.Write(writer); err != nil {
+				return fmt.Errorf("write RET_SUBMIT ISO packet descriptor: %w", err)
 			}
 		}
 		if flush && bw != nil {
@@ -723,6 +734,11 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 			return fmt.Errorf("unsupported cmd %d (seq=%d, devid=%d)", cmd, seq, devid)
 		}
 		xferLen := binary.BigEndian.Uint32(hdr[urbHdrOffsetLength : urbHdrOffsetLength+4])
+		packetCountWire := int32(binary.BigEndian.Uint32(hdr[urbHdrOffsetPackets : urbHdrOffsetPackets+4]))
+		isIso := packetCountWire >= 0
+		if packetCountWire < -1 || packetCountWire > maxIsoPackets {
+			return fmt.Errorf("invalid ISO packet count %d", packetCountWire)
+		}
 		setup := hdr[urbHdrOffsetSetup:urbHdrSize]
 
 		var outPayload []byte
@@ -736,6 +752,16 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 			}
 		}
 
+		var isoPackets []usbip.IsoPacketDescriptor
+		if isIso && packetCountWire > 0 {
+			isoPackets = make([]usbip.IsoPacketDescriptor, packetCountWire)
+			for i := range isoPackets {
+				if err := isoPackets[i].Read(conn); err != nil {
+					return fmt.Errorf("read ISO packet descriptor %d: %w", i, err)
+				}
+			}
+		}
+
 		if dir == usbip.DirIn && ep != 0 {
 			urbCtx, urbCancel := context.WithCancel(ctx)
 			pendingMu.Lock()
@@ -743,7 +769,7 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 			pendingMu.Unlock()
 			interval := endpointInterval(dev.GetDescriptor(), ep)
 
-			go func(seq, ep, dir uint32) {
+			go func(seq, ep, dir uint32, submitted []usbip.IsoPacketDescriptor, iso bool) {
 				defer urbCancel()
 				var respData []byte
 				for {
@@ -782,24 +808,31 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 				delete(pending, seq)
 				pendingMu.Unlock()
 
-				if err := writeRet(seq, uint32(len(respData)), respData, true); err != nil {
+				completedPackets := completeIsoPackets(submitted, uint32(len(respData)))
+				if err := writeRet(seq, uint32(len(respData)), respData, completedPackets, iso, true); err != nil {
 					if isClientDisconnect(err) {
 						s.logger.Debug("URB completion after disconnect", "seq", seq, "error", err)
 					} else {
 						s.logger.Error("write async RET_SUBMIT", "seq", seq, "error", err)
 					}
 				}
-			}(seq, ep, dir)
+			}(seq, ep, dir, isoPackets, isIso)
 			continue
 		}
 
-		// EP0 and OUT transfers never block and are handled in order.
+		// EP0 and OUT transfers never block and are handled in order. ISO OUT
+		// completions are paced so an audio client cannot burst seconds of PCM
+		// into the Bluetooth haptics path in one scheduler slice.
 		respData := s.processSubmit(ctx, dev, ep, dir, setup, outPayload)
 		actualLen := uint32(len(respData))
 		if dir == usbip.DirOut {
 			actualLen = uint32(len(outPayload))
 		}
-		if err := writeRet(seq, actualLen, respData, ep == 0); err != nil {
+		completedPackets := completeIsoPackets(isoPackets, actualLen)
+		if dir == usbip.DirOut && isIso {
+			time.Sleep(isoCompletionDelay(dev.GetDescriptor(), ep, len(isoPackets)))
+		}
+		if err := writeRet(seq, actualLen, respData, completedPackets, isIso, ep == 0 || isIso); err != nil {
 			return err
 		}
 	}
@@ -812,10 +845,69 @@ func endpointInterval(desc *usb.Descriptor, ep uint32) time.Duration {
 			if epDesc.BEndpointAddress != epAddr || epDesc.BMAttributes&0x03 != 0x03 {
 				continue
 			}
-			return time.Duration(epDesc.BInterval) * time.Millisecond
+			return usbServiceInterval(desc.Device.Speed, epDesc.BInterval)
 		}
 	}
 	return 0
+}
+
+func usbServiceInterval(speed uint32, bInterval uint8) time.Duration {
+	if bInterval == 0 {
+		return 0
+	}
+	if speed >= 3 {
+		return time.Duration(1<<(bInterval-1)) * 125 * time.Microsecond
+	}
+	return time.Duration(bInterval) * time.Millisecond
+}
+
+func completeIsoPackets(submitted []usbip.IsoPacketDescriptor, actualLen uint32) []usbip.IsoPacketDescriptor {
+	if len(submitted) == 0 {
+		return nil
+	}
+
+	completed := make([]usbip.IsoPacketDescriptor, len(submitted))
+	for i, packet := range submitted {
+		completed[i] = packet
+		completed[i].Status = 0
+		completed[i].ActualLength = 0
+		if packet.Offset >= actualLen {
+			continue
+		}
+
+		available := actualLen - packet.Offset
+		completed[i].ActualLength = min(packet.Length, available)
+	}
+
+	return completed
+}
+
+// isoCompletionDelay returns the USB service interval represented by an ISO
+// URB. ISO completions must follow this cadence; completing immediately causes
+// Windows to feed the virtual audio device in bursts instead of realtime.
+func isoCompletionDelay(desc *usb.Descriptor, ep uint32, packetCount int) time.Duration {
+	if packetCount == 0 {
+		return 0
+	}
+
+	var bInterval uint8
+	for _, iface := range desc.Interfaces {
+		for _, endpoint := range iface.Endpoints {
+			if endpoint.BEndpointAddress&0x0F == uint8(ep)&0x0F && endpoint.BMAttributes&0x03 == 0x01 {
+				bInterval = endpoint.BInterval
+				break
+			}
+		}
+		if bInterval != 0 {
+			break
+		}
+	}
+
+	if bInterval == 0 {
+		return 0
+	}
+
+	return min(time.Duration(packetCount)*usbServiceInterval(desc.Device.Speed, bInterval), 100*time.Millisecond)
 }
 
 // isClientDisconnect tests whether an error represents a normal client

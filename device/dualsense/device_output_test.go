@@ -66,6 +66,9 @@ func TestDualSenseDescriptorAdvertisesExperimentalHapticsAudioEndpoint(t *testin
 	}
 
 	desc := dev.GetDescriptor()
+	if desc.Device.Speed != 3 || desc.Device.BcdDevice != 0x0100 {
+		t.Fatalf("unexpected virtual USB speed/version: speed=%d bcd=%#x", desc.Device.Speed, desc.Device.BcdDevice)
+	}
 	if desc.NumInterfaces() != 3 {
 		t.Fatalf("unexpected interface count: got %d want 3", desc.NumInterfaces())
 	}
@@ -89,7 +92,8 @@ func TestDualSenseDescriptorAdvertisesExperimentalHapticsAudioEndpoint(t *testin
 			for _, ep := range iface.Endpoints {
 				if ep.BEndpointAddress == EndpointHapticsAudioOut &&
 					ep.BMAttributes&0x03 == 0x01 &&
-					ep.WMaxPacketSize == USBHapticsAudioPacketSize &&
+					ep.WMaxPacketSize == USBHapticsAudioMaxPacketSize &&
+					ep.BInterval == 4 &&
 					bytes.Equal(ep.Trailing, []byte{0x00, 0x00}) {
 					foundEndpoint = true
 				}

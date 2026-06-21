@@ -14,12 +14,12 @@ var defaultDescriptor = usb.Descriptor{
 		BMaxPacketSize0:    0x40,
 		IDVendor:           DefaultVID,
 		IDProduct:          DefaultPIDDS,
-		BcdDevice:          0x0103,
+		BcdDevice:          0x0100,
 		IManufacturer:      0x01,
 		IProduct:           0x02,
 		ISerialNumber:      0x00,
 		BNumConfigurations: 0x01,
-		Speed:              2, // Full speed
+		Speed:              3, // High speed; required for the 48 kHz UAC stream.
 	},
 	Associations: []usb.InterfaceAssociationDescriptor{
 		{
@@ -161,13 +161,13 @@ var defaultDescriptor = usb.Descriptor{
 					BEndpointAddress: EndpointIn,
 					BMAttributes:     0x03, // Interrupt
 					WMaxPacketSize:   64,
-					BInterval:        2,
+					BInterval:        6,
 				},
 				{
 					BEndpointAddress: EndpointOut,
 					BMAttributes:     0x03, // Interrupt
 					WMaxPacketSize:   64,
-					BInterval:        2,
+					BInterval:        6,
 				},
 			},
 		},
@@ -250,8 +250,8 @@ var defaultDescriptor = usb.Descriptor{
 				{
 					BEndpointAddress: EndpointHapticsAudioOut,
 					BMAttributes:     0x09, // Isochronous, adaptive, data endpoint.
-					WMaxPacketSize:   USBHapticsAudioPacketSize,
-					BInterval:        1,
+					WMaxPacketSize:   USBHapticsAudioMaxPacketSize,
+					BInterval:        4,
 					// Captured wired DualSense descriptors include these two zero
 					// trailing bytes. Preserve their nine-byte endpoint layout.
 					Trailing: usb.Data{0x00, 0x00},

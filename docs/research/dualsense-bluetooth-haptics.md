@@ -240,5 +240,21 @@ The current USBIP transport must implement those frames and pacing before the
 experimental audio function can be considered supported. vDS validates this
 requirement with a UdeCx driver that completes ISO URBs at audio cadence.
 
+## vDS reference findings
+
+`hurryman2212/vds` includes captured DualSense USB descriptor data and a
+Windows UdeCx implementation. Its captured standard DualSense audio OUT path
+uses high-speed USB, endpoint `0x01`, a 392-byte maximum packet, interval 4
+(one millisecond at high speed), and 48 kHz four-channel S16_LE PCM. The
+driver reads each ISO packet descriptor, completes every packet, and delays the
+completion by the stream duration. Those are protocol requirements, not
+optimizations: immediate completions cause the host audio engine to burst PCM,
+which overflows a Bluetooth haptics queue and produces stutter.
+
+VIIPER now models the captured endpoint values and preserves USB/IP ISO packet
+descriptor arrays. A complete virtual DualSense audio implementation still
+needs the remaining captured composite topology (audio input and feature-unit
+controls) and hardware testing with the usbip-win2 client.
+
 Credit: SAxense research by egormanga/Sdore should be credited anywhere this
 Bluetooth haptics packet path is surfaced to users or shipped.
