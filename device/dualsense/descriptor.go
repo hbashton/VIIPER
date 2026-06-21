@@ -252,6 +252,9 @@ var defaultDescriptor = usb.Descriptor{
 					BMAttributes:     0x09, // Isochronous, adaptive, data endpoint.
 					WMaxPacketSize:   USBHapticsAudioPacketSize,
 					BInterval:        1,
+					// Captured wired DualSense descriptors include these two zero
+					// trailing bytes. Preserve their nine-byte endpoint layout.
+					Trailing: usb.Data{0x00, 0x00},
 					ClassDescriptors: []usb.ClassSpecificDescriptor{
 						{
 							DescriptorType: 0x25, // CS_ENDPOINT

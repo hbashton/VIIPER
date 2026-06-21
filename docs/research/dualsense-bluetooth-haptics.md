@@ -228,12 +228,17 @@ Feature Unit, and Output Terminal. The server also implements standard
 `GET_INTERFACE` / `SET_INTERFACE` handling so the audio streaming interface
 can switch from alternate setting 0 to alternate setting 1.
 
-The endpoint must remain a seven-byte UAC1 endpoint descriptor. `bRefresh` and
-`bSynchAddress` are UAC2 fields and cannot be appended to a UAC1 descriptor.
-The virtual endpoint also answers UAC1 `GET_CUR`, `GET_MIN`, `GET_MAX`,
-`GET_RES`, and `SET_CUR` sampling-frequency requests with the fixed 48 kHz
-format it advertises. This is necessary for Windows to activate the render
-stream after enumeration.
+Captured wired DualSense descriptors use a nine-byte audio OUT endpoint with
+two trailing zero bytes before the class-specific endpoint descriptor. VIIPER
+preserves that hardware layout. The virtual endpoint also answers UAC1
+`GET_CUR`, `GET_MIN`, `GET_MAX`, `GET_RES`, and `SET_CUR`
+sampling-frequency requests with the fixed 48 kHz format it advertises.
+
+Descriptor fidelity alone is not enough for usable audio. USB audio uses
+isochronous URBs, including packet-descriptor arrays and realtime completion.
+The current USBIP transport must implement those frames and pacing before the
+experimental audio function can be considered supported. vDS validates this
+requirement with a UdeCx driver that completes ISO URBs at audio cadence.
 
 Credit: SAxense research by egormanga/Sdore should be credited anywhere this
 Bluetooth haptics packet path is surfaced to users or shipped.
