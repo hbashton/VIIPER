@@ -90,7 +90,7 @@ func TestDualSenseDescriptorAdvertisesExperimentalHapticsAudioEndpoint(t *testin
 				if ep.BEndpointAddress == EndpointHapticsAudioOut &&
 					ep.BMAttributes&0x03 == 0x01 &&
 					ep.WMaxPacketSize == USBHapticsAudioPacketSize &&
-					len(ep.Trailing) == 0 {
+					bytes.Equal(ep.Trailing, []byte{0x00, 0x00}) {
 					foundEndpoint = true
 				}
 			}
