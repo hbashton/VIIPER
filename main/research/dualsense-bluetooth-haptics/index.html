@@ -1688,6 +1688,17 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#vds-reference-findings" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        vDS reference findings
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -1917,10 +1928,33 @@ if Ghost opens the virtual audio endpoint, the traffic export should include
 physical controller should receive report <code>0x32</code>.</p>
 <p>Windows reported the experimental audio interface as a failed <code>MEDIA</code> device on
 <code>USB\VID_054C&amp;PID_0CE6&amp;MI_01</code> while the AudioControl descriptor was malformed.
-The first fix corrected the UAC1 AudioControl header total length to <code>0x001E</code>,
-removed an extra byte from the Output Terminal descriptor, and added generic
-standard <code>GET_INTERFACE</code> / <code>SET_INTERFACE</code> handling so the audio streaming
-interface can switch from alternate setting 0 to alternate setting 1.</p>
+The current UAC1 AudioControl topology is 0x002A bytes: header, Input Terminal,
+Feature Unit, and Output Terminal. The server also implements standard
+<code>GET_INTERFACE</code> / <code>SET_INTERFACE</code> handling so the audio streaming interface
+can switch from alternate setting 0 to alternate setting 1.</p>
+<p>Captured wired DualSense descriptors use a nine-byte audio OUT endpoint with
+two trailing zero bytes before the class-specific endpoint descriptor. VIIPER
+preserves that hardware layout. The virtual endpoint also answers UAC1
+<code>GET_CUR</code>, <code>GET_MIN</code>, <code>GET_MAX</code>, <code>GET_RES</code>, and <code>SET_CUR</code>
+sampling-frequency requests with the fixed 48 kHz format it advertises.</p>
+<p>Descriptor fidelity alone is not enough for usable audio. USB audio uses
+isochronous URBs, including packet-descriptor arrays and realtime completion.
+The current USBIP transport must implement those frames and pacing before the
+experimental audio function can be considered supported. vDS validates this
+requirement with a UdeCx driver that completes ISO URBs at audio cadence.</p>
+<h2 id="vds-reference-findings">vDS reference findings</h2>
+<p><code>hurryman2212/vds</code> includes captured DualSense USB descriptor data and a
+Windows UdeCx implementation. Its captured standard DualSense audio OUT path
+uses high-speed USB, endpoint <code>0x01</code>, a 392-byte maximum packet, interval 4
+(one millisecond at high speed), and 48 kHz four-channel S16_LE PCM. The
+driver reads each ISO packet descriptor, completes every packet, and delays the
+completion by the stream duration. Those are protocol requirements, not
+optimizations: immediate completions cause the host audio engine to burst PCM,
+which overflows a Bluetooth haptics queue and produces stutter.</p>
+<p>VIIPER now models the captured endpoint values and preserves USB/IP ISO packet
+descriptor arrays. A complete virtual DualSense audio implementation still
+needs the remaining captured composite topology (audio input and feature-unit
+controls) and hardware testing with the usbip-win2 client.</p>
 <p>Credit: SAxense research by egormanga/Sdore should be credited anywhere this
 Bluetooth haptics packet path is surfaced to users or shipped.</p>
 
