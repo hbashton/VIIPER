@@ -16,7 +16,7 @@ func TestDualSenseUSBOutputReportDescriptorMatchesCapture(t *testing.T) {
 		t.Fatalf("New returned error: %v", err)
 	}
 
-	report, err := dev.GetDescriptor().Interfaces[0].HID.ReportBytes()
+	report, err := dev.GetDescriptor().Interfaces[5].HID.ReportBytes()
 	if err != nil {
 		t.Fatalf("ReportBytes returned error: %v", err)
 	}
@@ -45,7 +45,7 @@ func TestDualSenseDescriptorDoesNotAdvertiseEdgeFeatureReports(t *testing.T) {
 		t.Fatalf("unexpected DualSense product string: %q", desc.Strings[2])
 	}
 
-	report, err := desc.Interfaces[0].HID.ReportBytes()
+	report, err := desc.Interfaces[5].HID.ReportBytes()
 	if err != nil {
 		t.Fatalf("ReportBytes returned error: %v", err)
 	}
@@ -69,22 +69,14 @@ func TestDualSenseDescriptorAdvertisesExperimentalHapticsAudioEndpoint(t *testin
 	if desc.Device.Speed != 3 || desc.Device.BcdDevice != 0x0100 {
 		t.Fatalf("unexpected virtual USB speed/version: speed=%d bcd=%#x", desc.Device.Speed, desc.Device.BcdDevice)
 	}
-	if desc.NumInterfaces() != 3 {
-		t.Fatalf("unexpected interface count: got %d want 3", desc.NumInterfaces())
-	}
-	if len(desc.Associations) != 1 {
-		t.Fatalf("unexpected interface association count: got %d want 1", len(desc.Associations))
-	}
-	audioIAD := desc.Associations[0]
-	if audioIAD.BFirstInterface != 1 || audioIAD.BInterfaceCount != 2 ||
-		audioIAD.BFunctionClass != 0x01 || audioIAD.BFunctionSubClass != 0x01 {
-		t.Fatalf("unexpected audio IAD: %#v", audioIAD)
+	if desc.NumInterfaces() != 4 {
+		t.Fatalf("unexpected interface count: got %d want 4", desc.NumInterfaces())
 	}
 
 	var foundAlt bool
 	var foundEndpoint bool
 	for _, iface := range desc.Interfaces {
-		if iface.Descriptor.BInterfaceNumber == 2 &&
+		if iface.Descriptor.BInterfaceNumber == 1 &&
 			iface.Descriptor.BAlternateSetting == 1 &&
 			iface.Descriptor.BInterfaceClass == 0x01 &&
 			iface.Descriptor.BInterfaceSubClass == 0x02 {
@@ -113,7 +105,7 @@ func TestDualSenseDescriptorAdvertisesExperimentalHapticsAudioEndpoint(t *testin
 	var foundFeatureUnit bool
 	var foundOutputTerminal bool
 	for _, iface := range desc.Interfaces {
-		if iface.Descriptor.BInterfaceNumber != 1 || iface.Descriptor.BAlternateSetting != 0 {
+		if iface.Descriptor.BInterfaceNumber != 0 || iface.Descriptor.BAlternateSetting != 0 {
 			continue
 		}
 
@@ -127,21 +119,30 @@ func TestDualSenseDescriptorAdvertisesExperimentalHapticsAudioEndpoint(t *testin
 			switch raw[2] {
 			case 0x01:
 				foundHeader = true
-				if len(raw) < 7 || !bytes.Equal(raw[5:7], []byte{0x2A, 0x00}) {
+				if len(raw) < 7 || !bytes.Equal(raw[5:7], []byte{0x49, 0x00}) {
 					t.Fatalf("unexpected AudioControl header descriptor: % x", raw)
 				}
 			case 0x02:
+				if len(raw) < 4 || raw[3] != 0x01 {
+					continue
+				}
 				foundInputTerminal = true
 				if len(raw) < 10 || raw[7] != USBHapticsAudioChannels ||
 					!bytes.Equal(raw[8:10], []byte{0x33, 0x00}) {
 					t.Fatalf("unexpected haptics audio input terminal descriptor: % x", raw)
 				}
 			case 0x06:
+				if len(raw) < 4 || raw[3] != 0x02 {
+					continue
+				}
 				foundFeatureUnit = true
 				if len(raw) < 6 || raw[3] != 0x02 || raw[4] != 0x01 {
 					t.Fatalf("unexpected haptics audio feature unit descriptor: % x", raw)
 				}
 			case 0x03:
+				if len(raw) < 4 || raw[3] != 0x03 {
+					continue
+				}
 				foundOutputTerminal = true
 				if len(raw) < 8 || raw[3] != 0x03 || raw[7] != 0x02 {
 					t.Fatalf("unexpected haptics audio output terminal descriptor: % x", raw)
@@ -149,8 +150,8 @@ func TestDualSenseDescriptorAdvertisesExperimentalHapticsAudioEndpoint(t *testin
 			}
 		}
 	}
-	if audioControlClassLength != 0x2A {
-		t.Fatalf("unexpected AudioControl class descriptor length: got 0x%02x want 0x2a", audioControlClassLength)
+	if audioControlClassLength != 0x49 {
+		t.Fatalf("unexpected AudioControl class descriptor length: got 0x%02x want 0x49", audioControlClassLength)
 	}
 	if !foundHeader || !foundInputTerminal || !foundFeatureUnit || !foundOutputTerminal {
 		t.Fatalf("incomplete AudioControl topology: header=%t input=%t feature=%t output=%t",
@@ -159,7 +160,7 @@ func TestDualSenseDescriptorAdvertisesExperimentalHapticsAudioEndpoint(t *testin
 
 	var foundFormat bool
 	for _, iface := range desc.Interfaces {
-		if iface.Descriptor.BInterfaceNumber != 2 || iface.Descriptor.BAlternateSetting != 1 {
+		if iface.Descriptor.BInterfaceNumber != 1 || iface.Descriptor.BAlternateSetting != 1 {
 			continue
 		}
 
@@ -195,7 +196,7 @@ func TestDualSenseEdgeDescriptorAdvertisesEdgeFeatureReports(t *testing.T) {
 		t.Fatalf("unexpected Edge product string: %q", desc.Strings[2])
 	}
 
-	report, err := desc.Interfaces[0].HID.ReportBytes()
+	report, err := desc.Interfaces[5].HID.ReportBytes()
 	if err != nil {
 		t.Fatalf("ReportBytes returned error: %v", err)
 	}
