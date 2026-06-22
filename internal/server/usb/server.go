@@ -180,7 +180,7 @@ const (
 	urbHdrOffsetLength  = 0x18
 	urbHdrOffsetPackets = 0x20
 	urbHdrOffsetSetup   = 0x28
-	maxIsoPackets        = 1024
+	maxIsoPackets       = 1024
 
 	// Standard header peek size
 	headerPeekSize = 8

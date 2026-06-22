@@ -19,8 +19,8 @@ const (
 	USBHapticsAudioPacketSize     = USBHapticsAudioPacketFrames * USBHapticsAudioFrameSize
 	// The captured hardware descriptor advertises 392 bytes even though a
 	// nominal 1 ms 48 kHz, four-channel S16 packet carries 384 bytes.
-	USBHapticsAudioMaxPacketSize  = 392
-	USBHapticsAudioDownsample     = USBHapticsAudioSampleRate / BluetoothHapticsSampleRate
+	USBHapticsAudioMaxPacketSize = 392
+	USBHapticsAudioDownsample    = USBHapticsAudioSampleRate / BluetoothHapticsSampleRate
 
 	BluetoothOutputReportID   = 0x31
 	BluetoothOutputReportSize = 78
