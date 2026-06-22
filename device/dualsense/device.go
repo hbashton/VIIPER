@@ -26,10 +26,11 @@ type DualSense struct {
 	inputState *InputState
 	metaState  *MetaState
 
-	outputFunc       func(OutputState)
-	outputState      OutputState
-	descriptor       usb.Descriptor
-	extendedFeedback bool
+	outputFunc                func(OutputState)
+	outputState               OutputState
+	descriptor                usb.Descriptor
+	extendedFeedback          bool
+	combinedBluetoothFeedback bool
 
 	subcommand [2]byte
 
@@ -224,7 +225,12 @@ func (d *DualSense) handleHapticsAudioOut(out []byte) {
 			continue
 		}
 
-		recordTrafficBytes("device->physical", "saxense-hid-0x32",
+		trafficSource := "saxense-hid-0x32"
+		if d.combinedBluetoothFeedback {
+			trafficSource = "vds-hid-0x36"
+		}
+
+		recordTrafficBytes("device->physical", trafficSource,
 			report,
 			"reportType", "output",
 			"reportID", fmt.Sprintf("0x%02X", report[0]),
@@ -233,7 +239,11 @@ func (d *DualSense) handleHapticsAudioOut(out []byte) {
 		if d.outputFunc != nil {
 			d.mtx.Lock()
 			feedback := d.outputState
-			copy(feedback.BluetoothHapticsOutputReport[:], report)
+			if d.combinedBluetoothFeedback {
+				copy(feedback.BluetoothCombinedOutputReport[:], report)
+			} else {
+				copy(feedback.BluetoothHapticsOutputReport[:], report)
+			}
 			d.mtx.Unlock()
 			d.outputFunc(feedback)
 		}
@@ -259,7 +269,13 @@ func (d *DualSense) drainBluetoothHapticsReportsLocked() [][]byte {
 		d.hapticsSeq++
 		d.hapticsInterval++
 
-		report, err := BuildBluetoothHapticsReport(seq, interval, sample)
+		var report []byte
+		var err error
+		if d.combinedBluetoothFeedback {
+			report, err = BuildBluetoothCombinedHapticsReport(seq, interval, sample, d.outputState.RawOutputReport[:])
+		} else {
+			report, err = BuildBluetoothHapticsReport(seq, interval, sample)
+		}
 		if err != nil {
 			slog.Warn("failed to build DualSense Bluetooth haptics report", "error", err)
 		} else {
@@ -522,6 +538,7 @@ var featureGetHandlers = map[byte]func(*DualSense) []byte{
 func (d *DualSense) mergeOutputReport(out []byte) OutputState {
 	feedback := d.outputState
 	clear(feedback.BluetoothHapticsOutputReport[:])
+	clear(feedback.BluetoothCombinedOutputReport[:])
 	if len(out) >= OutputReportSize {
 		copy(feedback.RawOutputReport[:], out[:OutputReportSize])
 	}

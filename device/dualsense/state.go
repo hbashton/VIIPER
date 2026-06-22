@@ -123,8 +123,9 @@ type OutputState struct {
 	TriggerL2PressedStrength     uint8
 	TriggerL2Frequency           uint8
 
-	RawOutputReport              [OutputReportSize]byte
-	BluetoothHapticsOutputReport [BluetoothHapticsReportSize]byte
+	RawOutputReport               [OutputReportSize]byte
+	BluetoothHapticsOutputReport  [BluetoothHapticsReportSize]byte
+	BluetoothCombinedOutputReport [BluetoothCombinedHapticsReportSize]byte
 }
 
 func (f *OutputState) MarshalBinary() ([]byte, error) {
@@ -169,6 +170,40 @@ func (f *OutputState) MarshalExtendedBinary() ([]byte, error) {
 	return b, nil
 }
 
+// MarshalCombinedExtendedBinary emits the versioned vDS-style 0x36 feedback
+// extension. It intentionally does not append the legacy 0x32 report: stream
+// consumers must select exactly one framing contract.
+func (f *OutputState) MarshalCombinedExtendedBinary() ([]byte, error) {
+	b := make([]byte, OutputStateCombinedExtSize)
+	b[0] = f.RumbleSmall
+	b[1] = f.RumbleLarge
+	b[2] = f.LedRed
+	b[3] = f.LedGreen
+	b[4] = f.LedBlue
+	b[5] = f.PlayerLeds
+
+	b[6] = f.TriggerR2Mode
+	b[7] = f.TriggerR2StartResistance
+	b[8] = f.TriggerR2EffectForce
+	b[9] = f.TriggerR2RangeForce
+	b[10] = f.TriggerR2NearReleaseStrength
+	b[11] = f.TriggerR2NearMiddleStrength
+	b[12] = f.TriggerR2PressedStrength
+	b[15] = f.TriggerR2Frequency
+
+	b[17] = f.TriggerL2Mode
+	b[18] = f.TriggerL2StartResistance
+	b[19] = f.TriggerL2EffectForce
+	b[20] = f.TriggerL2RangeForce
+	b[21] = f.TriggerL2NearReleaseStrength
+	b[22] = f.TriggerL2NearMiddleStrength
+	b[23] = f.TriggerL2PressedStrength
+	b[26] = f.TriggerL2Frequency
+	copy(b[OutputStateRawReportOffset:], f.RawOutputReport[:])
+	copy(b[OutputStateCombinedBluetoothOffset:], f.BluetoothCombinedOutputReport[:])
+	return b, nil
+}
+
 func (f *OutputState) UnmarshalBinary(data []byte) error {
 	if len(data) < OutputStateSize {
 		return io.ErrUnexpectedEOF
@@ -199,7 +234,10 @@ func (f *OutputState) UnmarshalBinary(data []byte) error {
 	f.TriggerL2NearMiddleStrength = data[22]
 	f.TriggerL2PressedStrength = data[23]
 	f.TriggerL2Frequency = data[26]
-	if len(data) >= OutputStateExtSize {
+	if len(data) >= OutputStateCombinedExtSize {
+		copy(f.RawOutputReport[:], data[OutputStateRawReportOffset:OutputStateCombinedBluetoothOffset])
+		copy(f.BluetoothCombinedOutputReport[:], data[OutputStateCombinedBluetoothOffset:OutputStateCombinedExtSize])
+	} else if len(data) >= OutputStateExtSize {
 		copy(f.RawOutputReport[:], data[OutputStateRawReportOffset:OutputStateBluetoothHapticsOffset])
 		copy(f.BluetoothHapticsOutputReport[:], data[OutputStateBluetoothHapticsOffset:OutputStateExtSize])
 	} else if len(data) >= OutputStateBluetoothHapticsOffset {

@@ -55,6 +55,12 @@ const (
 	OutputStateRawReportOffset        = OutputStateCompatExtSize
 	OutputStateBluetoothHapticsOffset = OutputStateRawReportOffset + OutputReportSize
 	OutputStateExtSize                = OutputStateBluetoothHapticsOffset + BluetoothHapticsReportSize
+	// OutputStateCombinedExtSize is versioned independently from the legacy
+	// 0x32 haptics extension. New clients opt into it through the
+	// dualsensecombinedext device type, so older clients cannot lose stream
+	// framing when they connect to a newer VIIPER server.
+	OutputStateCombinedBluetoothOffset = OutputStateRawReportOffset + OutputReportSize
+	OutputStateCombinedExtSize         = OutputStateCombinedBluetoothOffset + BluetoothCombinedHapticsReportSize
 )
 
 const (

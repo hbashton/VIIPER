@@ -16,10 +16,12 @@ import (
 func init() {
 	api.RegisterDevice("dualsense", &dshandler{})
 	api.RegisterDevice("dualsenseext", &dshandler{extendedFeedback: true})
+	api.RegisterDevice("dualsensecombinedext", &dshandler{combinedBluetoothFeedback: true})
 }
 
 type dshandler struct {
-	extendedFeedback bool
+	extendedFeedback          bool
+	combinedBluetoothFeedback bool
 }
 
 func (h *dshandler) CreateDevice(o *device.CreateOptions) (usb.Device, error) {
@@ -86,6 +88,7 @@ func (h *dshandler) CreateDevice(o *device.CreateOptions) (usb.Device, error) {
 		return nil, err
 	}
 	dse.extendedFeedback = h.extendedFeedback
+	dse.combinedBluetoothFeedback = h.combinedBluetoothFeedback
 	return dse, nil
 }
 
@@ -120,7 +123,9 @@ func (h *dshandler) StreamHandler() api.StreamHandlerFunc {
 		dse.SetOutputCallback(func(feedback OutputState) {
 			var data []byte
 			var err error
-			if h.extendedFeedback || dse.extendedFeedback {
+			if h.combinedBluetoothFeedback || dse.combinedBluetoothFeedback {
+				data, err = feedback.MarshalCombinedExtendedBinary()
+			} else if h.extendedFeedback || dse.extendedFeedback {
 				data, err = feedback.MarshalExtendedBinary()
 			} else {
 				data, err = feedback.MarshalBinary()
