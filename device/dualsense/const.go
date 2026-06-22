@@ -32,6 +32,7 @@ const (
 	EndpointIn              = 0x84
 	EndpointOut             = 0x03
 	EndpointHapticsAudioOut = 0x01
+	EndpointMicrophoneIn    = 0x82
 )
 
 const (

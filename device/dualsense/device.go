@@ -399,7 +399,9 @@ const (
 // controls advertised by the AudioStreaming format descriptor. Windows
 // usbaudio validates these requests before it starts the render endpoint.
 func handleAudioControlRequest(bmRequestType, bRequest uint8, wValue, wIndex, wLength uint16) ([]byte, bool) {
-	if uint8(wIndex) != EndpointHapticsAudioOut || uint8(wValue>>8) != audioControlSamplingFrequency {
+	endpoint := uint8(wIndex)
+	if (endpoint != EndpointHapticsAudioOut && endpoint != EndpointMicrophoneIn) ||
+		uint8(wValue>>8) != audioControlSamplingFrequency {
 		return nil, false
 	}
 

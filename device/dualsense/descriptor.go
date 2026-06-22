@@ -21,27 +21,51 @@ var defaultDescriptor = usb.Descriptor{
 		BNumConfigurations: 0x01,
 		Speed:              3, // High speed; required for the 48 kHz UAC stream.
 	},
-	Associations: []usb.InterfaceAssociationDescriptor{
-		{
-			BFirstInterface:   0x01,
-			BInterfaceCount:   0x02,
-			BFunctionClass:    0x01, // Audio
-			BFunctionSubClass: 0x01, // AudioControl
-			BFunctionProtocol: 0x00,
-			IFunction:         0x00,
-		},
-	},
 	Interfaces: []usb.InterfaceConfig{
 		{
 			Descriptor: usb.InterfaceDescriptor{
 				BInterfaceNumber:   0x00,
 				BAlternateSetting:  0x00,
-				BNumEndpoints:      0x02,
-				BInterfaceClass:    0x03, // HID
-				BInterfaceSubClass: 0x00,
+				BNumEndpoints:      0x00,
+				BInterfaceClass:    0x01, // Audio
+				BInterfaceSubClass: 0x01, // AudioControl
 				BInterfaceProtocol: 0x00,
 				IInterface:         0x00,
 			},
+			ClassDescriptors: []usb.ClassSpecificDescriptor{
+				{DescriptorType: 0x24, Payload: usb.Data{0x01, 0x00, 0x01, 0x49, 0x00, 0x02, 0x01, 0x02}},
+				{DescriptorType: 0x24, Payload: usb.Data{0x02, 0x01, 0x01, 0x01, 0x06, 0x04, 0x33, 0x00, 0x00, 0x00}},
+				{DescriptorType: 0x24, Payload: usb.Data{0x06, 0x02, 0x01, 0x01, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00}},
+				{DescriptorType: 0x24, Payload: usb.Data{0x03, 0x03, 0x01, 0x03, 0x04, 0x02, 0x00}},
+				{DescriptorType: 0x24, Payload: usb.Data{0x02, 0x04, 0x02, 0x04, 0x03, 0x02, 0x03, 0x00, 0x00, 0x00}},
+				{DescriptorType: 0x24, Payload: usb.Data{0x06, 0x05, 0x04, 0x01, 0x03, 0x00, 0x00}},
+				{DescriptorType: 0x24, Payload: usb.Data{0x03, 0x06, 0x01, 0x01, 0x01, 0x05, 0x00}},
+			},
+		},
+		{
+			Descriptor: usb.InterfaceDescriptor{BInterfaceNumber: 0x01, BAlternateSetting: 0x00, BNumEndpoints: 0x00, BInterfaceClass: 0x01, BInterfaceSubClass: 0x02},
+		},
+		{
+			Descriptor: usb.InterfaceDescriptor{BInterfaceNumber: 0x01, BAlternateSetting: 0x01, BNumEndpoints: 0x01, BInterfaceClass: 0x01, BInterfaceSubClass: 0x02},
+			ClassDescriptors: []usb.ClassSpecificDescriptor{
+				{DescriptorType: 0x24, Payload: usb.Data{0x01, 0x01, 0x01, 0x01, 0x00}},
+				{DescriptorType: 0x24, Payload: usb.Data{0x02, 0x01, USBHapticsAudioChannels, USBHapticsAudioBytesPerSample, 0x10, 0x01, 0x80, 0xBB, 0x00}},
+			},
+			Endpoints: []usb.EndpointDescriptor{{BEndpointAddress: EndpointHapticsAudioOut, BMAttributes: 0x09, WMaxPacketSize: USBHapticsAudioMaxPacketSize, BInterval: 4, Trailing: usb.Data{0x00, 0x00}, ClassDescriptors: []usb.ClassSpecificDescriptor{{DescriptorType: 0x25, Payload: usb.Data{0x01, 0x00, 0x00, 0x00, 0x00}}}}},
+		},
+		{
+			Descriptor: usb.InterfaceDescriptor{BInterfaceNumber: 0x02, BAlternateSetting: 0x00, BNumEndpoints: 0x00, BInterfaceClass: 0x01, BInterfaceSubClass: 0x02},
+		},
+		{
+			Descriptor: usb.InterfaceDescriptor{BInterfaceNumber: 0x02, BAlternateSetting: 0x01, BNumEndpoints: 0x01, BInterfaceClass: 0x01, BInterfaceSubClass: 0x02},
+			ClassDescriptors: []usb.ClassSpecificDescriptor{
+				{DescriptorType: 0x24, Payload: usb.Data{0x01, 0x06, 0x01, 0x01, 0x00}},
+				{DescriptorType: 0x24, Payload: usb.Data{0x02, 0x01, 0x02, 0x02, 0x10, 0x01, 0x80, 0xBB, 0x00}},
+			},
+			Endpoints: []usb.EndpointDescriptor{{BEndpointAddress: EndpointMicrophoneIn, BMAttributes: 0x05, WMaxPacketSize: 0x00C4, BInterval: 4, Trailing: usb.Data{0x00, 0x00}, ClassDescriptors: []usb.ClassSpecificDescriptor{{DescriptorType: 0x25, Payload: usb.Data{0x01, 0x00, 0x00, 0x00, 0x00}}}}},
+		},
+		{
+			Descriptor: usb.InterfaceDescriptor{BInterfaceNumber: 0x03, BAlternateSetting: 0x00, BNumEndpoints: 0x02, BInterfaceClass: 0x03, BInterfaceSubClass: 0x00, BInterfaceProtocol: 0x00},
 			HID: &usb.HIDFunction{
 				Descriptor: usb.HIDDescriptor{
 					BcdHID:       0x0111,
@@ -171,100 +195,103 @@ var defaultDescriptor = usb.Descriptor{
 				},
 			},
 		},
-		{
-			Descriptor: usb.InterfaceDescriptor{
-				BInterfaceNumber:   0x01,
-				BAlternateSetting:  0x00,
-				BNumEndpoints:      0x00,
-				BInterfaceClass:    0x01, // Audio
-				BInterfaceSubClass: 0x01, // AudioControl
-				BInterfaceProtocol: 0x00,
-				IInterface:         0x00,
-			},
-			ClassDescriptors: []usb.ClassSpecificDescriptor{
-				{
-					DescriptorType: 0x24, // CS_INTERFACE
-					// UAC1 Header: subtype HEADER, ADC 1.00, total class
-					// descriptor length, one streaming interface (#2).
-					Payload: usb.Data{0x01, 0x00, 0x01, 0x2A, 0x00, 0x01, 0x02},
-				},
-				{
-					DescriptorType: 0x24, // CS_INTERFACE
-					// Input Terminal: USB streaming source, 4 channels
-					// advertised as quad (front L/R plus rear L/R).
-					Payload: usb.Data{0x02, 0x01, 0x01, 0x01, 0x00, USBHapticsAudioChannels, 0x33, 0x00, 0x00, 0x00},
-				},
-				{
-					DescriptorType: 0x24, // CS_INTERFACE
-					// Feature Unit: topology bridge from terminal 1 to output
-					// terminal 3. No mute/volume controls are exposed; DS games
-					// only need the render stream, and omitting this unit makes
-					// Windows usbaudio reject some otherwise valid topologies.
-					Payload: usb.Data{0x06, 0x02, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
-				},
-				{
-					DescriptorType: 0x24, // CS_INTERFACE
-					// Output Terminal: speaker/haptics sink, source unit 2.
-					Payload: usb.Data{0x03, 0x03, 0x01, 0x03, 0x00, 0x02, 0x00},
-				},
-			},
-		},
-		{
-			Descriptor: usb.InterfaceDescriptor{
-				BInterfaceNumber:   0x02,
-				BAlternateSetting:  0x00,
-				BNumEndpoints:      0x00,
-				BInterfaceClass:    0x01, // Audio
-				BInterfaceSubClass: 0x02, // AudioStreaming
-				BInterfaceProtocol: 0x00,
-				IInterface:         0x00,
-			},
-		},
-		{
-			Descriptor: usb.InterfaceDescriptor{
-				BInterfaceNumber:   0x02,
-				BAlternateSetting:  0x01,
-				BNumEndpoints:      0x01,
-				BInterfaceClass:    0x01, // Audio
-				BInterfaceSubClass: 0x02, // AudioStreaming
-				BInterfaceProtocol: 0x00,
-				IInterface:         0x00,
-			},
-			ClassDescriptors: []usb.ClassSpecificDescriptor{
-				{
-					DescriptorType: 0x24, // CS_INTERFACE
-					// AS General: terminal link 1, PCM.
-					Payload: usb.Data{0x01, 0x01, 0x01, 0x00, 0x01},
-				},
-				{
-					DescriptorType: 0x24, // CS_INTERFACE
-					// Format Type I: 4-channel, 16-bit PCM, one discrete
-					// sample rate = 48000 Hz. Games expect the wired
-					// DualSense haptics path to look like a standard
-					// 4-channel USB audio render endpoint; VIIPER downsamples
-					// channels 3/4 to the SAxense 3 kHz Bluetooth HID stream.
-					Payload: usb.Data{0x02, 0x01, USBHapticsAudioChannels, USBHapticsAudioBytesPerSample, 0x10, 0x01, 0x80, 0xBB, 0x00},
-				},
-			},
-			Endpoints: []usb.EndpointDescriptor{
-				{
-					BEndpointAddress: EndpointHapticsAudioOut,
-					BMAttributes:     0x09, // Isochronous, adaptive, data endpoint.
-					WMaxPacketSize:   USBHapticsAudioMaxPacketSize,
-					BInterval:        4,
-					// Captured wired DualSense descriptors include these two zero
-					// trailing bytes. Preserve their nine-byte endpoint layout.
-					Trailing: usb.Data{0x00, 0x00},
+		/* Legacy partial UAC topology retained for comparison only. */
+		/*
+			{
+				Descriptor: usb.InterfaceDescriptor{
+						BInterfaceNumber:   0x01,
+						BAlternateSetting:  0x00,
+						BNumEndpoints:      0x00,
+						BInterfaceClass:    0x01, // Audio
+						BInterfaceSubClass: 0x01, // AudioControl
+						BInterfaceProtocol: 0x00,
+						IInterface:         0x00,
+					},
 					ClassDescriptors: []usb.ClassSpecificDescriptor{
 						{
-							DescriptorType: 0x25, // CS_ENDPOINT
-							// EP General: no sampling-frequency or pitch controls.
-							Payload: usb.Data{0x01, 0x00, 0x00, 0x00, 0x00},
+							DescriptorType: 0x24, // CS_INTERFACE
+							// UAC1 Header: subtype HEADER, ADC 1.00, total class
+							// descriptor length, one streaming interface (#2).
+							Payload: usb.Data{0x01, 0x00, 0x01, 0x2A, 0x00, 0x01, 0x02},
+						},
+						{
+							DescriptorType: 0x24, // CS_INTERFACE
+							// Input Terminal: USB streaming source, 4 channels
+							// advertised as quad (front L/R plus rear L/R).
+							Payload: usb.Data{0x02, 0x01, 0x01, 0x01, 0x00, USBHapticsAudioChannels, 0x33, 0x00, 0x00, 0x00},
+						},
+						{
+							DescriptorType: 0x24, // CS_INTERFACE
+							// Feature Unit: topology bridge from terminal 1 to output
+							// terminal 3. No mute/volume controls are exposed; DS games
+							// only need the render stream, and omitting this unit makes
+							// Windows usbaudio reject some otherwise valid topologies.
+							Payload: usb.Data{0x06, 0x02, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+						},
+						{
+							DescriptorType: 0x24, // CS_INTERFACE
+							// Output Terminal: speaker/haptics sink, source unit 2.
+							Payload: usb.Data{0x03, 0x03, 0x01, 0x03, 0x00, 0x02, 0x00},
 						},
 					},
 				},
-			},
-		},
+				{
+					Descriptor: usb.InterfaceDescriptor{
+						BInterfaceNumber:   0x02,
+						BAlternateSetting:  0x00,
+						BNumEndpoints:      0x00,
+						BInterfaceClass:    0x01, // Audio
+						BInterfaceSubClass: 0x02, // AudioStreaming
+						BInterfaceProtocol: 0x00,
+						IInterface:         0x00,
+					},
+				},
+				{
+					Descriptor: usb.InterfaceDescriptor{
+						BInterfaceNumber:   0x02,
+						BAlternateSetting:  0x01,
+						BNumEndpoints:      0x01,
+						BInterfaceClass:    0x01, // Audio
+						BInterfaceSubClass: 0x02, // AudioStreaming
+						BInterfaceProtocol: 0x00,
+						IInterface:         0x00,
+					},
+					ClassDescriptors: []usb.ClassSpecificDescriptor{
+						{
+							DescriptorType: 0x24, // CS_INTERFACE
+							// AS General: terminal link 1, PCM.
+							Payload: usb.Data{0x01, 0x01, 0x01, 0x00, 0x01},
+						},
+						{
+							DescriptorType: 0x24, // CS_INTERFACE
+							// Format Type I: 4-channel, 16-bit PCM, one discrete
+							// sample rate = 48000 Hz. Games expect the wired
+							// DualSense haptics path to look like a standard
+							// 4-channel USB audio render endpoint; VIIPER downsamples
+							// channels 3/4 to the SAxense 3 kHz Bluetooth HID stream.
+							Payload: usb.Data{0x02, 0x01, USBHapticsAudioChannels, USBHapticsAudioBytesPerSample, 0x10, 0x01, 0x80, 0xBB, 0x00},
+						},
+					},
+					Endpoints: []usb.EndpointDescriptor{
+						{
+							BEndpointAddress: EndpointHapticsAudioOut,
+							BMAttributes:     0x09, // Isochronous, adaptive, data endpoint.
+							WMaxPacketSize:   USBHapticsAudioMaxPacketSize,
+							BInterval:        4,
+							// Captured wired DualSense descriptors include these two zero
+							// trailing bytes. Preserve their nine-byte endpoint layout.
+							Trailing: usb.Data{0x00, 0x00},
+							ClassDescriptors: []usb.ClassSpecificDescriptor{
+								{
+									DescriptorType: 0x25, // CS_ENDPOINT
+									// EP General: no sampling-frequency or pitch controls.
+									Payload: usb.Data{0x01, 0x00, 0x00, 0x00, 0x00},
+								},
+							},
+						},
+					},
+				},
+		*/
 	},
 	Strings: map[uint8]string{
 		0: "\u0409", // LangID: en-US (0x0409)
@@ -281,8 +308,12 @@ func makeDescriptor(edge bool) usb.Descriptor {
 		desc.Strings[k] = v
 	}
 
-	if len(desc.Interfaces) > 0 && desc.Interfaces[0].HID != nil {
-		hidFunction := *desc.Interfaces[0].HID
+	for i := range desc.Interfaces {
+		if desc.Interfaces[i].HID == nil {
+			continue
+		}
+
+		hidFunction := *desc.Interfaces[i].HID
 		reportDescriptor := hidFunction.ReportDescriptor
 		reportDescriptor.Items = append([]hid.Item(nil), reportDescriptor.Items...)
 		for i, item := range reportDescriptor.Items {
@@ -300,7 +331,8 @@ func makeDescriptor(edge bool) usb.Descriptor {
 		}
 
 		hidFunction.ReportDescriptor = reportDescriptor
-		desc.Interfaces[0].HID = &hidFunction
+		desc.Interfaces[i].HID = &hidFunction
+		break
 	}
 
 	desc.Device.IDProduct = DefaultPIDDS
