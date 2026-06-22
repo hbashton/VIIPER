@@ -658,6 +658,63 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 	var respMu sync.Mutex
 	lastInResp := map[uint32][]byte{}
 
+	type isoOutJob struct {
+		seq     uint32
+		ep      uint32
+		payload []byte
+		packets []usbip.IsoPacketDescriptor
+	}
+
+	streamCtx, cancelStream := context.WithCancel(ctx)
+	isoOutJobs := make(chan isoOutJob, 64)
+	var isoOutWG sync.WaitGroup
+	isoOutWG.Add(1)
+	go func() {
+		defer isoOutWG.Done()
+
+		var nextReady time.Time
+		for {
+			select {
+			case <-streamCtx.Done():
+				return
+			case job, ok := <-isoOutJobs:
+				if !ok {
+					return
+				}
+
+				delay := isoCompletionDelay(dev.GetDescriptor(), job.ep, len(job.packets), uint32(len(job.payload)))
+				now := time.Now()
+				if nextReady.Before(now) {
+					nextReady = now
+				}
+				nextReady = nextReady.Add(delay)
+				if wait := time.Until(nextReady); wait > 0 {
+					timer := time.NewTimer(wait)
+					select {
+					case <-streamCtx.Done():
+						timer.Stop()
+						return
+					case <-timer.C:
+					}
+				}
+
+				_ = s.processSubmit(streamCtx, dev, job.ep, usbip.DirOut, nil, job.payload)
+				completed := completeIsoPackets(job.packets, uint32(len(job.payload)))
+				if err := writeRet(job.seq, uint32(len(job.payload)), nil, completed, true, true); err != nil {
+					if !isClientDisconnect(err) {
+						s.logger.Error("write paced ISO RET_SUBMIT", "seq", job.seq, "error", err)
+					}
+					return
+				}
+			}
+		}
+	}()
+	defer func() {
+		cancelStream()
+		close(isoOutJobs)
+		isoOutWG.Wait()
+	}()
+
 	var outPayloadScratch []byte
 
 	for {
@@ -762,6 +819,20 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 			}
 		}
 
+		// ISO OUT completion is paced by the stream worker so the reader can
+		// continue servicing HID feedback while audio packets wait for their
+		// realtime completion slot.
+		if dir == usbip.DirOut && isIso && ep != 0 {
+			payload := append([]byte(nil), outPayload...)
+			job := isoOutJob{seq: seq, ep: ep, payload: payload, packets: isoPackets}
+			select {
+			case isoOutJobs <- job:
+			case <-streamCtx.Done():
+				return nil
+			}
+			continue
+		}
+
 		if dir == usbip.DirIn && ep != 0 {
 			urbCtx, urbCancel := context.WithCancel(ctx)
 			pendingMu.Lock()
@@ -820,18 +891,13 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 			continue
 		}
 
-		// EP0 and OUT transfers never block and are handled in order. ISO OUT
-		// completions are paced so an audio client cannot burst seconds of PCM
-		// into the Bluetooth haptics path in one scheduler slice.
+		// EP0 and non-ISO OUT transfers never block and are handled in order.
 		respData := s.processSubmit(ctx, dev, ep, dir, setup, outPayload)
 		actualLen := uint32(len(respData))
 		if dir == usbip.DirOut {
 			actualLen = uint32(len(outPayload))
 		}
 		completedPackets := completeIsoPackets(isoPackets, actualLen)
-		if dir == usbip.DirOut && isIso {
-			time.Sleep(isoCompletionDelay(dev.GetDescriptor(), ep, len(isoPackets), actualLen))
-		}
 		if err := writeRet(seq, actualLen, respData, completedPackets, isIso, ep == 0 || isIso); err != nil {
 			return err
 		}
