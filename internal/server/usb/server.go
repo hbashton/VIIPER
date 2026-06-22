@@ -830,7 +830,7 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 		}
 		completedPackets := completeIsoPackets(isoPackets, actualLen)
 		if dir == usbip.DirOut && isIso {
-			time.Sleep(isoCompletionDelay(dev.GetDescriptor(), ep, len(isoPackets)))
+			time.Sleep(isoCompletionDelay(dev.GetDescriptor(), ep, len(isoPackets), actualLen))
 		}
 		if err := writeRet(seq, actualLen, respData, completedPackets, isIso, ep == 0 || isIso); err != nil {
 			return err
@@ -885,7 +885,7 @@ func completeIsoPackets(submitted []usbip.IsoPacketDescriptor, actualLen uint32)
 // isoCompletionDelay returns the USB service interval represented by an ISO
 // URB. ISO completions must follow this cadence; completing immediately causes
 // Windows to feed the virtual audio device in bursts instead of realtime.
-func isoCompletionDelay(desc *usb.Descriptor, ep uint32, packetCount int) time.Duration {
+func isoCompletionDelay(desc *usb.Descriptor, ep uint32, packetCount int, actualLen uint32) time.Duration {
 	if packetCount == 0 {
 		return 0
 	}
@@ -907,7 +907,33 @@ func isoCompletionDelay(desc *usb.Descriptor, ep uint32, packetCount int) time.D
 		return 0
 	}
 
-	return min(time.Duration(packetCount)*usbServiceInterval(desc.Device.Speed, bInterval), 100*time.Millisecond)
+	packetDuration := time.Duration(packetCount) * usbServiceInterval(desc.Device.Speed, bInterval)
+
+	// The captured DualSense UAC render stream is 48 kHz, four-channel S16_LE:
+	// 384 PCM bytes per millisecond. Its endpoint permits 392-byte packets, so
+	// descriptor count alone can understate the real audio duration whenever
+	// Windows submits padded or coalesced packets. Completing those URBs too
+	// quickly makes the host audio engine burst, then underrun.
+	pcmDuration := time.Duration(0)
+	if actualLen > 0 && dualSenseAudioOutEndpoint(desc, ep) {
+		pcmDuration = time.Duration((actualLen+383)/384) * time.Millisecond
+	}
+
+	return min(max(packetDuration, pcmDuration), 100*time.Millisecond)
+}
+
+func dualSenseAudioOutEndpoint(desc *usb.Descriptor, ep uint32) bool {
+	for _, iface := range desc.Interfaces {
+		for _, endpoint := range iface.Endpoints {
+			if endpoint.BEndpointAddress == uint8(ep) &&
+				endpoint.BMAttributes&0x03 == 0x01 &&
+				endpoint.WMaxPacketSize == 392 {
+				return true
+			}
+		}
+	}
+
+	return false
 }
 
 // isClientDisconnect tests whether an error represents a normal client
