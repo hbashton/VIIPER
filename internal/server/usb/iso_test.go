@@ -40,26 +40,8 @@ func TestIsoCompletionDelayUsesHighSpeedMicroframes(t *testing.T) {
 		}},
 	}
 
-	if got := isoCompletionDelay(desc, 1, 8, 0); got != 8*time.Millisecond {
+	if got := isoCompletionDelay(desc, 1, 8); got != 8*time.Millisecond {
 		t.Fatalf("unexpected high-speed ISO delay: got %s want 8ms", got)
-	}
-}
-
-func TestIsoCompletionDelayUsesDualSensePCMDuration(t *testing.T) {
-	desc := &usbdesc.Descriptor{
-		Device: usbdesc.DeviceDescriptor{Speed: 3},
-		Interfaces: []usbdesc.InterfaceConfig{{
-			Endpoints: []usbdesc.EndpointDescriptor{{
-				BEndpointAddress: 0x01,
-				BMAttributes:     0x09,
-				WMaxPacketSize:   392,
-				BInterval:        4,
-			}},
-		}},
-	}
-
-	if got := isoCompletionDelay(desc, 1, 3, 1176); got != 4*time.Millisecond {
-		t.Fatalf("unexpected PCM-based ISO delay: got %s want 4ms", got)
 	}
 }
 
