@@ -316,6 +316,56 @@ func TestDualSenseHapticsAudioOutBuildsSAxenseReports(t *testing.T) {
 	}
 }
 
+func TestDualSenseCombinedHapticsAudioOutBuildsVDSReports(t *testing.T) {
+	dev, err := New(nil)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	dev.combinedBluetoothFeedback = true
+
+	var got OutputState
+	dev.SetOutputCallback(func(out OutputState) {
+		got = out
+	})
+
+	pcm := make([]byte, (BluetoothHapticsSampleSize/2)*USBHapticsAudioDownsample*USBHapticsAudioFrameSize)
+	for outputFrame := 0; outputFrame < BluetoothHapticsSampleSize/2; outputFrame++ {
+		for frame := 0; frame < USBHapticsAudioDownsample; frame++ {
+			frameStart := (outputFrame*USBHapticsAudioDownsample + frame) * USBHapticsAudioFrameSize
+			binary.LittleEndian.PutUint16(pcm[frameStart+4:frameStart+6], uint16(int16(outputFrame*256)))
+			binary.LittleEndian.PutUint16(pcm[frameStart+6:frameStart+8], uint16(int16((outputFrame+1)*-256)))
+		}
+	}
+
+	SetTrafficDiagnosticsEnabled(true, true)
+	defer SetTrafficDiagnosticsEnabled(rawOutputLogEnabled, true)
+	dev.HandleTransfer(context.Background(), EndpointHapticsAudioOut, usbip.DirOut, pcm)
+
+	if got.BluetoothCombinedOutputReport[0] != BluetoothCombinedHapticsReportID {
+		t.Fatalf("expected combined callback report ID 0x%02x, got 0x%02x",
+			BluetoothCombinedHapticsReportID, got.BluetoothCombinedOutputReport[0])
+	}
+	if got.BluetoothCombinedOutputReport[11] != 0x90 ||
+		got.BluetoothCombinedOutputReport[76] != 0x92 ||
+		got.BluetoothCombinedOutputReport[142] != 0x93 {
+		t.Fatalf("combined report did not contain vDS state, haptics, and speaker blocks: % x",
+			got.BluetoothCombinedOutputReport[11:144])
+	}
+
+	var sawCombined bool
+	for _, event := range TrafficDiagnosticsSnapshot() {
+		if event.Source == "vds-hid-0x36" {
+			sawCombined = true
+			if event.ReportID != "0x36" || event.Length != BluetoothCombinedHapticsReportSize {
+				t.Fatalf("unexpected combined traffic event: %#v", event)
+			}
+		}
+	}
+	if !sawCombined {
+		t.Fatal("expected vds-hid-0x36 diagnostic event")
+	}
+}
+
 func TestDualSenseAudioEndpointSamplingFrequencyControls(t *testing.T) {
 	dev, err := New(nil)
 	if err != nil {
@@ -558,5 +608,33 @@ func TestDualSenseExtendedFeedbackUsesNativeTriggerBlockSize(t *testing.T) {
 	}
 	if !bytes.Equal(decoded.RawOutputReport[:], out.RawOutputReport[:]) {
 		t.Fatalf("raw output report did not round-trip:\n got: % x\nwant: % x", decoded.RawOutputReport, out.RawOutputReport)
+	}
+}
+
+func TestDualSenseCombinedExtendedFeedbackRoundTrips(t *testing.T) {
+	out := OutputState{}
+	out.RawOutputReport[0] = ReportIDOutput
+	out.RawOutputReport[1] = 0x24
+	out.BluetoothCombinedOutputReport[0] = BluetoothCombinedHapticsReportID
+	out.BluetoothCombinedOutputReport[76] = 0x92
+	out.BluetoothCombinedOutputReport[142] = 0x93
+
+	data, err := out.MarshalCombinedExtendedBinary()
+	if err != nil {
+		t.Fatalf("MarshalCombinedExtendedBinary returned error: %v", err)
+	}
+	if len(data) != OutputStateCombinedExtSize {
+		t.Fatalf("unexpected combined feedback length: got %d want %d", len(data), OutputStateCombinedExtSize)
+	}
+
+	var decoded OutputState
+	if err := decoded.UnmarshalBinary(data); err != nil {
+		t.Fatalf("UnmarshalBinary returned error: %v", err)
+	}
+	if !bytes.Equal(decoded.RawOutputReport[:], out.RawOutputReport[:]) {
+		t.Fatalf("raw output report did not round-trip:\n got: % x\nwant: % x", decoded.RawOutputReport, out.RawOutputReport)
+	}
+	if !bytes.Equal(decoded.BluetoothCombinedOutputReport[:], out.BluetoothCombinedOutputReport[:]) {
+		t.Fatalf("combined Bluetooth output report did not round-trip:\n got: % x\nwant: % x", decoded.BluetoothCombinedOutputReport, out.BluetoothCombinedOutputReport)
 	}
 }

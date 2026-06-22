@@ -53,6 +53,49 @@ func TestBuildBluetoothHapticsReportRejectsWrongSampleSize(t *testing.T) {
 	}
 }
 
+func TestBuildBluetoothCombinedHapticsReportMatchesVDSLayout(t *testing.T) {
+	sample := make([]byte, BluetoothHapticsSampleSize)
+	for i := range sample {
+		sample[i] = byte(i)
+	}
+	raw := make([]byte, OutputReportSize)
+	raw[0] = ReportIDOutput
+	raw[1] = 0xA1
+	raw[37] = 0x4D
+
+	report, err := BuildBluetoothCombinedHapticsReport(0x0A, 0x37, sample, raw)
+	if err != nil {
+		t.Fatalf("BuildBluetoothCombinedHapticsReport failed: %v", err)
+	}
+	if len(report) != BluetoothCombinedHapticsReportSize {
+		t.Fatalf("unexpected report size: got %d want %d", len(report), BluetoothCombinedHapticsReportSize)
+	}
+	if report[0] != BluetoothCombinedHapticsReportID || report[1] != 0xA0 {
+		t.Fatalf("unexpected 0x36 report header: % x", report[:2])
+	}
+	if !bytes.Equal(report[2:11], []byte{0x91, 0x07, 0xFE, 64, 64, 64, 64, 64, 0x37}) {
+		t.Fatalf("unexpected packet 0x11 body: % x", report[2:11])
+	}
+	if report[11] != 0x90 || report[12] != BluetoothCombinedStateSize {
+		t.Fatalf("unexpected state block header: % x", report[11:13])
+	}
+	if report[13] != raw[1] || report[13+36] != raw[37] {
+		t.Fatalf("native USB output payload was not preserved in state block: % x", report[13:76])
+	}
+	if report[76] != 0x92 || report[77] != BluetoothHapticsSampleSize || !bytes.Equal(report[78:142], sample) {
+		t.Fatalf("unexpected haptics block: % x", report[76:142])
+	}
+	if report[142] != 0x93 || report[143] != 0 {
+		t.Fatalf("unexpected empty speaker block: % x", report[142:144])
+	}
+
+	gotCRC := binary.LittleEndian.Uint32(report[BluetoothCombinedHapticsReportSize-4:])
+	wantCRC := dualSenseBluetoothCRC32(report[:BluetoothCombinedHapticsReportSize-4])
+	if gotCRC != wantCRC {
+		t.Fatalf("unexpected crc: got %#x want %#x", gotCRC, wantCRC)
+	}
+}
+
 func TestBuildBluetoothOutputReportFromUSBOutputMatchesHIDMaestroMapping(t *testing.T) {
 	usbReport := make([]byte, OutputReportSize)
 	usbReport[0] = ReportIDOutput

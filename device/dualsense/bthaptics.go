@@ -11,6 +11,16 @@ const (
 	BluetoothHapticsSampleSize = 64
 	BluetoothHapticsSampleRate = 3000
 
+	// BluetoothCombinedHapticsReportID is the transport used by vDS for
+	// controller audio/haptics. Unlike the legacy 0x32 packet, it carries the
+	// current output state and haptics sample in one HID transaction. The fixed
+	// 398-byte size is part of the DualSense Bluetooth framing.
+	BluetoothCombinedHapticsReportID   = 0x36
+	BluetoothCombinedHapticsReportSize = 398
+	BluetoothCombinedStateSize         = 63
+	BluetoothCombinedHapticsOffset     = 78
+	BluetoothCombinedSpeakerOffset     = 142
+
 	USBHapticsAudioSampleRate     = 48000
 	USBHapticsAudioChannels       = 4
 	USBHapticsAudioBytesPerSample = 2
@@ -30,6 +40,16 @@ const (
 
 var ErrInvalidBluetoothHapticsSample = errors.New("dualsense bluetooth haptics sample must be exactly 64 bytes")
 var ErrInvalidUSBOutputReport = errors.New("dualsense USB output report must be report 0x02 with at least 48 bytes")
+
+// defaultBluetoothCombinedState is the vDS default DualSense output state.
+// The remaining 16 bytes of the 63-byte state are intentionally zero. A game
+// output report replaces the first 47 bytes when one is available.
+var defaultBluetoothCombinedState = [BluetoothCombinedStateSize]byte{
+	0xfd, 0xf7, 0x00, 0x00, 0x7f, 0x64, 0xff, 0x09, 0x00, 0x0f, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x0a, 0x07, 0x00, 0x00, 0x02, 0x01, 0x00, 0xff, 0xd7, 0x00,
+}
 
 // BuildBluetoothHapticsReport builds the DualSense Bluetooth HID report used by
 // SAxense to stream 3 kHz stereo 8-bit haptics PCM to a paired controller.
@@ -56,6 +76,60 @@ func BuildBluetoothHapticsReport(sequence uint8, intervalIndex uint8, sample []b
 	copy(report[13:13+BluetoothHapticsSampleSize], sample)
 
 	binary.LittleEndian.PutUint32(report[BluetoothHapticsReportSize-4:], dualSenseBluetoothCRC32(report[:BluetoothHapticsReportSize-4]))
+	return report, nil
+}
+
+// BuildBluetoothCombinedHapticsReport builds the vDS-compatible 0x36 report.
+//
+// Real DualSense Bluetooth traffic combines state, haptics, and speaker data
+// into this report. VIIPER owns the virtual USB haptics stream, while
+// DS4Windows injects its already-encoded 200-byte Opus frame before forwarding
+// the report to a physical controller. Leaving the speaker block empty here is
+// intentional: fabricated Opus padding can make the controller reject the
+// entire haptics packet.
+func BuildBluetoothCombinedHapticsReport(sequence uint8, packetSequence uint8, sample []byte, rawOutputReport []byte) ([]byte, error) {
+	if len(sample) != BluetoothHapticsSampleSize {
+		return nil, ErrInvalidBluetoothHapticsSample
+	}
+
+	report := make([]byte, BluetoothCombinedHapticsReportSize)
+	report[0] = BluetoothCombinedHapticsReportID
+	report[1] = (sequence & 0x0F) << 4
+
+	// Packet 0x11 starts the Bluetooth audio/haptics stream. This is the same
+	// header and 64-byte interval contract used by vDS.
+	report[2] = 0x91
+	report[3] = 0x07
+	report[4] = 0xFE
+	report[5] = BluetoothHapticsSampleSize
+	report[6] = BluetoothHapticsSampleSize
+	report[7] = BluetoothHapticsSampleSize
+	report[8] = BluetoothHapticsSampleSize
+	report[9] = BluetoothHapticsSampleSize
+	report[10] = packetSequence
+
+	// Packet 0x10 is the 63-byte DualSense output state. Start from vDS's
+	// known-good state, then retain the game's native USB effect payload.
+	state := defaultBluetoothCombinedState
+	if len(rawOutputReport) >= OutputReportSize && rawOutputReport[0] == ReportIDOutput {
+		copy(state[:OutputReportSize-1], rawOutputReport[1:OutputReportSize])
+	}
+	report[11] = 0x90
+	report[12] = BluetoothCombinedStateSize
+	copy(report[13:13+BluetoothCombinedStateSize], state[:])
+
+	// Packet 0x12 is the 64-byte signed 8-bit stereo haptics payload.
+	report[76] = 0x92
+	report[77] = BluetoothHapticsSampleSize
+	copy(report[BluetoothCombinedHapticsOffset:BluetoothCombinedHapticsOffset+BluetoothHapticsSampleSize], sample)
+
+	// Packet 0x13 is the optional 200-byte Opus speaker lane. It is explicitly
+	// empty here; zero-filled bytes masquerading as Opus cause the controller to
+	// reject the whole packet on some firmware revisions.
+	report[BluetoothCombinedSpeakerOffset] = 0x93
+	report[BluetoothCombinedSpeakerOffset+1] = 0
+
+	binary.LittleEndian.PutUint32(report[BluetoothCombinedHapticsReportSize-4:], dualSenseBluetoothCRC32(report[:BluetoothCombinedHapticsReportSize-4]))
 	return report, nil
 }
 
