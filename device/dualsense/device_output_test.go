@@ -41,7 +41,7 @@ func TestDualSenseDescriptorDoesNotAdvertiseEdgeFeatureReports(t *testing.T) {
 	if desc.Device.IDProduct != DefaultPIDDS {
 		t.Fatalf("unexpected DualSense PID: %#x", desc.Device.IDProduct)
 	}
-	if desc.Strings[2] != "Wireless Controller" {
+	if desc.Strings[2] != "DualSense Wireless Controller" {
 		t.Fatalf("unexpected DualSense product string: %q", desc.Strings[2])
 	}
 

@@ -296,7 +296,11 @@ var defaultDescriptor = usb.Descriptor{
 	Strings: map[uint8]string{
 		0: "\u0409", // LangID: en-US (0x0409)
 		1: "Sony Interactive Entertainment",
-		2: "Wireless Controller",
+		// Preserve the product string exposed by a physical USB DualSense.
+		// Windows propagates this into the usbaudio device and its speaker
+		// endpoint, and some PlayStation titles use that identity when they
+		// choose a controller-specific audio route.
+		2: "DualSense Wireless Controller",
 	},
 }
 
