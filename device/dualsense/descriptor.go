@@ -21,6 +21,14 @@ var defaultDescriptor = usb.Descriptor{
 		BNumConfigurations: 0x01,
 		Speed:              3, // High speed; required for the 48 kHz UAC stream.
 	},
+	// Match the physical wired DualSense configuration header. The values below
+	// are part of the device identity exposed to host software, including titles
+	// that choose a controller-specific UAC route from the USB descriptor.
+	Configuration: usb.ConfigurationDescriptor{
+		BConfigurationValue: 0x01,
+		BMAttributes:        0xC0,
+		BMaxPower:           0xFA,
+	},
 	Interfaces: []usb.InterfaceConfig{
 		{
 			Descriptor: usb.InterfaceDescriptor{
