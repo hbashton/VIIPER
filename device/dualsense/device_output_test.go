@@ -69,6 +69,11 @@ func TestDualSenseDescriptorAdvertisesExperimentalHapticsAudioEndpoint(t *testin
 	if desc.Device.Speed != 3 || desc.Device.BcdDevice != 0x0100 {
 		t.Fatalf("unexpected virtual USB speed/version: speed=%d bcd=%#x", desc.Device.Speed, desc.Device.BcdDevice)
 	}
+	if desc.Configuration.BConfigurationValue != 0x01 ||
+		desc.Configuration.BMAttributes != 0xC0 ||
+		desc.Configuration.BMaxPower != 0xFA {
+		t.Fatalf("unexpected virtual USB configuration: %+v", desc.Configuration)
+	}
 	if desc.NumInterfaces() != 4 {
 		t.Fatalf("unexpected interface count: got %d want 4", desc.NumInterfaces())
 	}
