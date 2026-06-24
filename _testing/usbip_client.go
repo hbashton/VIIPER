@@ -213,7 +213,7 @@ func readExportedDeviceWithRawInternal(r net.Conn, readIfaces bool) (Device, []b
 }
 
 func (c *TestUsbIpClient) Submit(conn net.Conn, dir uint32, ep uint32, outPayload []byte, setup *[8]byte) error {
-	return c.SubmitWithTimeout(conn, dir, ep, outPayload, setup, 750*time.Millisecond)
+	return c.SubmitWithTimeout(conn, dir, ep, outPayload, setup, IntegrationTimeout)
 }
 
 func (c *TestUsbIpClient) SubmitWithTimeout(conn net.Conn, dir uint32, ep uint32, outPayload []byte, setup *[8]byte, timeout time.Duration) error {

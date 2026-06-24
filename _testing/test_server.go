@@ -12,6 +12,10 @@ import (
 	"github.com/Alia5/VIIPER/internal/server/usb"
 )
 
+// IntegrationTimeout covers the real localhost API and USB/IP hops used by
+// device tests. Hosted runners can legitimately schedule either side late.
+const IntegrationTimeout = 2 * time.Second
+
 type MockServer struct {
 	ApiServer *api.Server
 	UsbServer *usb.Server
