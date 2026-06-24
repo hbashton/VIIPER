@@ -892,15 +892,22 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 		// EP0 and OUT transfers never block and are handled in order. ISO OUT
 		// completions are paced so an audio client cannot burst seconds of PCM
 		// into the Bluetooth haptics path in one scheduler slice.
-		processingStarted := time.Now()
+		isIsoOut := dir == usbip.DirOut && isIso
+		var processingStarted time.Time
+		if isIsoOut {
+			processingStarted = time.Now()
+		}
 		respData := s.processSubmit(ctx, dev, ep, dir, setup, outPayload)
-		processingDuration := time.Since(processingStarted)
+		var processingDuration time.Duration
+		if isIsoOut {
+			processingDuration = time.Since(processingStarted)
+		}
 		actualLen := uint32(len(respData))
 		if dir == usbip.DirOut {
 			actualLen = uint32(len(outPayload))
 		}
 		completedPackets := completeIsoPackets(isoPackets, actualLen)
-		if dir == usbip.DirOut && isIso {
+		if isIsoOut {
 			requestedSleep := isoCompletionDelay(dev.GetDescriptor(), ep, len(isoPackets))
 			sleepStarted := time.Now()
 			time.Sleep(requestedSleep)
