@@ -664,14 +664,17 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 	var isoAudioURBs int
 	var isoAudioPackets int
 	var isoAudioBytes int
-	var isoAudioRequestedSleep time.Duration
-	var isoAudioActualSleep time.Duration
+	var isoAudioTransferDuration time.Duration
+	var isoAudioScheduledWait time.Duration
+	var isoAudioActualWait time.Duration
 	var isoAudioProcessing time.Duration
-	var isoAudioSleepOverruns int
-	var isoAudioMaximumSleepOverrun time.Duration
+	var isoAudioWaitOverruns int
+	var isoAudioMaximumWaitOverrun time.Duration
 	var isoAudioMaximumCompletionGap time.Duration
+	var isoAudioMaximumDeadlineLateness time.Duration
+	var nextIsoOutCompletion time.Time
 	logIsoAudioWindow := func(ep uint32, payloadBytes, packetCount int,
-		requestedSleep, actualSleep, processing time.Duration) {
+		transferDuration, scheduledWait, actualWait, processing, deadlineLateness time.Duration) {
 		now := time.Now()
 		if isoAudioWindowStarted.IsZero() {
 			isoAudioWindowStarted = now
@@ -686,15 +689,19 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 		isoAudioURBs++
 		isoAudioPackets += packetCount
 		isoAudioBytes += payloadBytes
-		isoAudioRequestedSleep += requestedSleep
-		isoAudioActualSleep += actualSleep
+		isoAudioTransferDuration += transferDuration
+		isoAudioScheduledWait += scheduledWait
+		isoAudioActualWait += actualWait
 		isoAudioProcessing += processing
-		if actualSleep > requestedSleep {
-			overrun := actualSleep - requestedSleep
-			isoAudioSleepOverruns++
-			if overrun > isoAudioMaximumSleepOverrun {
-				isoAudioMaximumSleepOverrun = overrun
+		if actualWait > scheduledWait {
+			overrun := actualWait - scheduledWait
+			isoAudioWaitOverruns++
+			if overrun > isoAudioMaximumWaitOverrun {
+				isoAudioMaximumWaitOverrun = overrun
 			}
+		}
+		if deadlineLateness > isoAudioMaximumDeadlineLateness {
+			isoAudioMaximumDeadlineLateness = deadlineLateness
 		}
 
 		elapsed := now.Sub(isoAudioWindowStarted)
@@ -709,24 +716,28 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 			"isoPackets", isoAudioPackets,
 			"bytes", isoAudioBytes,
 			"framesPerSecond", fmt.Sprintf("%.1f", framesPerSecond),
-			"requestedSleepMs", fmt.Sprintf("%.3f", float64(isoAudioRequestedSleep.Microseconds())/1000.0),
-			"actualSleepMs", fmt.Sprintf("%.3f", float64(isoAudioActualSleep.Microseconds())/1000.0),
+			"transferDurationMs", fmt.Sprintf("%.3f", float64(isoAudioTransferDuration.Microseconds())/1000.0),
+			"scheduledWaitMs", fmt.Sprintf("%.3f", float64(isoAudioScheduledWait.Microseconds())/1000.0),
+			"actualWaitMs", fmt.Sprintf("%.3f", float64(isoAudioActualWait.Microseconds())/1000.0),
 			"processingMs", fmt.Sprintf("%.3f", float64(isoAudioProcessing.Microseconds())/1000.0),
-			"sleepOverruns", isoAudioSleepOverruns,
-			"maxSleepOverrunMs", fmt.Sprintf("%.3f", float64(isoAudioMaximumSleepOverrun.Microseconds())/1000.0),
-			"maxCompletionGapMs", fmt.Sprintf("%.3f", float64(isoAudioMaximumCompletionGap.Microseconds())/1000.0))
+			"waitOverruns", isoAudioWaitOverruns,
+			"maxWaitOverrunMs", fmt.Sprintf("%.3f", float64(isoAudioMaximumWaitOverrun.Microseconds())/1000.0),
+			"maxCompletionGapMs", fmt.Sprintf("%.3f", float64(isoAudioMaximumCompletionGap.Microseconds())/1000.0),
+			"maxDeadlineLatenessMs", fmt.Sprintf("%.3f", float64(isoAudioMaximumDeadlineLateness.Microseconds())/1000.0))
 
 		isoAudioWindowStarted = now
 		isoAudioLastCompletion = now
 		isoAudioURBs = 0
 		isoAudioPackets = 0
 		isoAudioBytes = 0
-		isoAudioRequestedSleep = 0
-		isoAudioActualSleep = 0
+		isoAudioTransferDuration = 0
+		isoAudioScheduledWait = 0
+		isoAudioActualWait = 0
 		isoAudioProcessing = 0
-		isoAudioSleepOverruns = 0
-		isoAudioMaximumSleepOverrun = 0
+		isoAudioWaitOverruns = 0
+		isoAudioMaximumWaitOverrun = 0
 		isoAudioMaximumCompletionGap = 0
+		isoAudioMaximumDeadlineLateness = 0
 	}
 
 	for {
@@ -893,8 +904,23 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 		// completions are paced so an audio client cannot burst seconds of PCM
 		// into the Bluetooth haptics path in one scheduler slice.
 		isIsoOut := dir == usbip.DirOut && isIso
+		var isoTransferDuration time.Duration
+		var isoCompletionDeadline time.Time
 		var processingStarted time.Time
 		if isIsoOut {
+			isoTransferDuration = isoCompletionDelay(dev.GetDescriptor(), ep, len(isoPackets))
+			now := time.Now()
+			// A hardware USB controller schedules ISO completions against its
+			// service clock. Reserve this window before processing the payload,
+			// otherwise processing time becomes an unwanted addition to every
+			// 1 ms audio service interval. This mirrors vDS's next_iso_out_ready
+			// model while resetting after a genuine missed transfer window.
+			if nextIsoOutCompletion.IsZero() || now.Sub(nextIsoOutCompletion) > isoTransferDuration {
+				nextIsoOutCompletion = now.Add(isoTransferDuration)
+			} else {
+				nextIsoOutCompletion = nextIsoOutCompletion.Add(isoTransferDuration)
+			}
+			isoCompletionDeadline = nextIsoOutCompletion
 			processingStarted = time.Now()
 		}
 		respData := s.processSubmit(ctx, dev, ep, dir, setup, outPayload)
@@ -908,11 +934,20 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 		}
 		completedPackets := completeIsoPackets(isoPackets, actualLen)
 		if isIsoOut {
-			requestedSleep := isoCompletionDelay(dev.GetDescriptor(), ep, len(isoPackets))
-			sleepStarted := time.Now()
-			time.Sleep(requestedSleep)
-			logIsoAudioWindow(ep, len(outPayload), len(isoPackets), requestedSleep,
-				time.Since(sleepStarted), processingDuration)
+			waitStarted := time.Now()
+			scheduledWait := time.Until(isoCompletionDeadline)
+			if scheduledWait > 0 {
+				time.Sleep(scheduledWait)
+			} else {
+				scheduledWait = 0
+			}
+			completionTime := time.Now()
+			deadlineLateness := completionTime.Sub(isoCompletionDeadline)
+			if deadlineLateness < 0 {
+				deadlineLateness = 0
+			}
+			logIsoAudioWindow(ep, len(outPayload), len(isoPackets), isoTransferDuration,
+				scheduledWait, completionTime.Sub(waitStarted), processingDuration, deadlineLateness)
 		}
 		if err := writeRet(seq, actualLen, respData, completedPackets, isIso, ep == 0 || isIso); err != nil {
 			return err
