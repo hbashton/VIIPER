@@ -659,6 +659,75 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 	lastInResp := map[uint32][]byte{}
 
 	var outPayloadScratch []byte
+	var isoAudioWindowStarted time.Time
+	var isoAudioLastCompletion time.Time
+	var isoAudioURBs int
+	var isoAudioPackets int
+	var isoAudioBytes int
+	var isoAudioRequestedSleep time.Duration
+	var isoAudioActualSleep time.Duration
+	var isoAudioProcessing time.Duration
+	var isoAudioSleepOverruns int
+	var isoAudioMaximumSleepOverrun time.Duration
+	var isoAudioMaximumCompletionGap time.Duration
+	logIsoAudioWindow := func(ep uint32, payloadBytes, packetCount int,
+		requestedSleep, actualSleep, processing time.Duration) {
+		now := time.Now()
+		if isoAudioWindowStarted.IsZero() {
+			isoAudioWindowStarted = now
+		}
+		if !isoAudioLastCompletion.IsZero() {
+			gap := now.Sub(isoAudioLastCompletion)
+			if gap > isoAudioMaximumCompletionGap {
+				isoAudioMaximumCompletionGap = gap
+			}
+		}
+		isoAudioLastCompletion = now
+		isoAudioURBs++
+		isoAudioPackets += packetCount
+		isoAudioBytes += payloadBytes
+		isoAudioRequestedSleep += requestedSleep
+		isoAudioActualSleep += actualSleep
+		isoAudioProcessing += processing
+		if actualSleep > requestedSleep {
+			overrun := actualSleep - requestedSleep
+			isoAudioSleepOverruns++
+			if overrun > isoAudioMaximumSleepOverrun {
+				isoAudioMaximumSleepOverrun = overrun
+			}
+		}
+
+		elapsed := now.Sub(isoAudioWindowStarted)
+		if elapsed < 5*time.Second {
+			return
+		}
+
+		framesPerSecond := float64(isoAudioBytes/8) / elapsed.Seconds()
+		s.logger.Debug("DualSense ISO audio pacing",
+			"ep", ep,
+			"urbs", isoAudioURBs,
+			"isoPackets", isoAudioPackets,
+			"bytes", isoAudioBytes,
+			"framesPerSecond", fmt.Sprintf("%.1f", framesPerSecond),
+			"requestedSleepMs", fmt.Sprintf("%.3f", float64(isoAudioRequestedSleep.Microseconds())/1000.0),
+			"actualSleepMs", fmt.Sprintf("%.3f", float64(isoAudioActualSleep.Microseconds())/1000.0),
+			"processingMs", fmt.Sprintf("%.3f", float64(isoAudioProcessing.Microseconds())/1000.0),
+			"sleepOverruns", isoAudioSleepOverruns,
+			"maxSleepOverrunMs", fmt.Sprintf("%.3f", float64(isoAudioMaximumSleepOverrun.Microseconds())/1000.0),
+			"maxCompletionGapMs", fmt.Sprintf("%.3f", float64(isoAudioMaximumCompletionGap.Microseconds())/1000.0))
+
+		isoAudioWindowStarted = now
+		isoAudioLastCompletion = now
+		isoAudioURBs = 0
+		isoAudioPackets = 0
+		isoAudioBytes = 0
+		isoAudioRequestedSleep = 0
+		isoAudioActualSleep = 0
+		isoAudioProcessing = 0
+		isoAudioSleepOverruns = 0
+		isoAudioMaximumSleepOverrun = 0
+		isoAudioMaximumCompletionGap = 0
+	}
 
 	for {
 		select {
@@ -823,14 +892,20 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 		// EP0 and OUT transfers never block and are handled in order. ISO OUT
 		// completions are paced so an audio client cannot burst seconds of PCM
 		// into the Bluetooth haptics path in one scheduler slice.
+		processingStarted := time.Now()
 		respData := s.processSubmit(ctx, dev, ep, dir, setup, outPayload)
+		processingDuration := time.Since(processingStarted)
 		actualLen := uint32(len(respData))
 		if dir == usbip.DirOut {
 			actualLen = uint32(len(outPayload))
 		}
 		completedPackets := completeIsoPackets(isoPackets, actualLen)
 		if dir == usbip.DirOut && isIso {
-			time.Sleep(isoCompletionDelay(dev.GetDescriptor(), ep, len(isoPackets)))
+			requestedSleep := isoCompletionDelay(dev.GetDescriptor(), ep, len(isoPackets))
+			sleepStarted := time.Now()
+			time.Sleep(requestedSleep)
+			logIsoAudioWindow(ep, len(outPayload), len(isoPackets), requestedSleep,
+				time.Since(sleepStarted), processingDuration)
 		}
 		if err := writeRet(seq, actualLen, respData, completedPackets, isIso, ep == 0 || isIso); err != nil {
 			return err
