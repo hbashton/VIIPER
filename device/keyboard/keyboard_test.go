@@ -109,7 +109,7 @@ func TestInputReports(t *testing.T) {
 			if !assert.NoError(t, stream.WriteBinary(&tc.inputState)) {
 				return
 			}
-			got, err := usbipClient.PollInputReport(imp.Conn, tc.expectedReport, 750*time.Millisecond)
+			got, err := usbipClient.PollInputReport(imp.Conn, tc.expectedReport, viiperTesting.IntegrationTimeout)
 			if !assert.NoError(t, err) {
 				return
 			}
@@ -203,7 +203,7 @@ func TestLEDs(t *testing.T) {
 				return
 			}
 			var buf [1]byte
-			_ = stream.SetReadDeadline(time.Now().Add(750 * time.Millisecond))
+			_ = stream.SetReadDeadline(time.Now().Add(viiperTesting.IntegrationTimeout))
 			_, err := io.ReadFull(stream, buf[:])
 			if !assert.NoError(t, err) {
 				return
