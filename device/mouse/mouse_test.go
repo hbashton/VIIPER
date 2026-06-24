@@ -3,7 +3,6 @@ package mouse_test
 import (
 	"context"
 	"testing"
-	"time"
 
 	viiperTesting "github.com/Alia5/VIIPER/_testing"
 	"github.com/Alia5/VIIPER/device/mouse"
@@ -184,7 +183,7 @@ func TestInputReports(t *testing.T) {
 			if !assert.NoError(t, stream.WriteBinary(&tc.inputState)) {
 				return
 			}
-			got, err := usbipClient.PollInputReport(imp.Conn, tc.expectedReport, 750*time.Millisecond)
+			got, err := usbipClient.PollInputReport(imp.Conn, tc.expectedReport, viiperTesting.IntegrationTimeout)
 			if !assert.NoError(t, err) {
 				return
 			}
