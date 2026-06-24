@@ -20,6 +20,12 @@ const (
 	BluetoothCombinedStateSize         = 63
 	BluetoothCombinedHapticsOffset     = 78
 	BluetoothCombinedSpeakerOffset     = 142
+	// DS5Dongle exposes the five packet-0x11 buffer fields as a 16-127
+	// setting. Its default is 64, which retains a noticeably delayed haptics
+	// queue when the virtual USB stream is already paced in realtime. Keep the
+	// stream clock unchanged, but request the smallest documented queue from
+	// the physical controller.
+	BluetoothCombinedLowLatencyBufferLength = 16
 
 	USBHapticsAudioSampleRate     = 48000
 	USBHapticsAudioChannels       = 4
@@ -101,11 +107,11 @@ func BuildBluetoothCombinedHapticsReport(sequence uint8, packetSequence uint8, s
 	report[2] = 0x91
 	report[3] = 0x07
 	report[4] = 0xFE
-	report[5] = BluetoothHapticsSampleSize
-	report[6] = BluetoothHapticsSampleSize
-	report[7] = BluetoothHapticsSampleSize
-	report[8] = BluetoothHapticsSampleSize
-	report[9] = BluetoothHapticsSampleSize
+	report[5] = BluetoothCombinedLowLatencyBufferLength
+	report[6] = BluetoothCombinedLowLatencyBufferLength
+	report[7] = BluetoothCombinedLowLatencyBufferLength
+	report[8] = BluetoothCombinedLowLatencyBufferLength
+	report[9] = BluetoothCombinedLowLatencyBufferLength
 	report[10] = packetSequence
 
 	// Packet 0x10 is the 63-byte DualSense output state. Start from vDS's

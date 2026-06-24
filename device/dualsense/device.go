@@ -38,7 +38,11 @@ type DualSense struct {
 	hapticsSeq      uint8
 	hapticsInterval uint8
 	hapticsPCM      []byte
-	timestampBase   time.Time
+	// hapticsPCMStartedAt identifies the oldest PCM frame waiting to make a
+	// complete 10.667 ms Bluetooth haptics sample. It is only used by the
+	// opt-in traffic capture to expose queueing delay without affecting timing.
+	hapticsPCMStartedAt time.Time
+	timestampBase       time.Time
 
 	mtx sync.Mutex
 }
@@ -210,17 +214,22 @@ func (d *DualSense) handleHapticsAudioOut(out []byte) {
 	if len(out) == 0 {
 		return
 	}
+	receivedAt := time.Now()
 
 	recordTrafficBytes("host->device", "audio-haptics-out",
 		out,
 		"summary", fmt.Sprintf("ep=%d bytes=%d", EndpointHapticsAudioOut, len(out)))
 
 	d.mtx.Lock()
+	if len(d.hapticsPCM) == 0 {
+		d.hapticsPCMStartedAt = receivedAt
+	}
 	d.hapticsPCM = append(d.hapticsPCM, out...)
-	reports := d.drainBluetoothHapticsReportsLocked()
+	reports := d.drainBluetoothHapticsReportsLocked(receivedAt)
 	d.mtx.Unlock()
 
-	for _, report := range reports {
+	for _, pending := range reports {
+		report := pending.data
 		if len(report) == 0 {
 			continue
 		}
@@ -234,7 +243,9 @@ func (d *DualSense) handleHapticsAudioOut(out []byte) {
 			report,
 			"reportType", "output",
 			"reportID", fmt.Sprintf("0x%02X", report[0]),
-			"summary", fmt.Sprintf("from audio ep=%d bytes=%d", EndpointHapticsAudioOut, BluetoothHapticsSampleSize))
+			"summary", fmt.Sprintf("from audio ep=%d bytes=%d assemblyMs=%.3f",
+				EndpointHapticsAudioOut, BluetoothHapticsSampleSize,
+				float64(pending.assemblyDelay.Microseconds())/1000.0))
 
 		if d.outputFunc != nil {
 			d.mtx.Lock()
@@ -245,12 +256,27 @@ func (d *DualSense) handleHapticsAudioOut(out []byte) {
 				copy(feedback.BluetoothHapticsOutputReport[:], report)
 			}
 			d.mtx.Unlock()
+			dispatchStarted := time.Now()
 			d.outputFunc(feedback)
+			recordTrafficEvent(TrafficEvent{
+				Direction: "device->bridge",
+				Source:    "feedback-dispatch",
+				Length:    len(report),
+				Summary: fmt.Sprintf("report=0x%02X callbackMs=%.3f assemblyMs=%.3f",
+					report[0],
+					float64(time.Since(dispatchStarted).Microseconds())/1000.0,
+					float64(pending.assemblyDelay.Microseconds())/1000.0),
+			})
 		}
 	}
 }
 
-func (d *DualSense) drainBluetoothHapticsReportsLocked() [][]byte {
+type pendingBluetoothHapticsReport struct {
+	data          []byte
+	assemblyDelay time.Duration
+}
+
+func (d *DualSense) drainBluetoothHapticsReportsLocked(now time.Time) []pendingBluetoothHapticsReport {
 	const inputBytesPerReport = (BluetoothHapticsSampleSize / 2) *
 		USBHapticsAudioDownsample *
 		USBHapticsAudioFrameSize
@@ -259,7 +285,7 @@ func (d *DualSense) drainBluetoothHapticsReportsLocked() [][]byte {
 		return nil
 	}
 
-	reports := make([][]byte, 0, len(d.hapticsPCM)/inputBytesPerReport)
+	reports := make([]pendingBluetoothHapticsReport, 0, len(d.hapticsPCM)/inputBytesPerReport)
 	for len(d.hapticsPCM) >= inputBytesPerReport {
 		sample := make([]byte, BluetoothHapticsSampleSize)
 		copyUSBHapticsChannelsToBluetoothSample(sample, d.hapticsPCM[:inputBytesPerReport])
@@ -279,11 +305,21 @@ func (d *DualSense) drainBluetoothHapticsReportsLocked() [][]byte {
 		if err != nil {
 			slog.Warn("failed to build DualSense Bluetooth haptics report", "error", err)
 		} else {
-			reports = append(reports, report)
+			assemblyDelay := now.Sub(d.hapticsPCMStartedAt)
+			if d.hapticsPCMStartedAt.IsZero() || assemblyDelay < 0 {
+				assemblyDelay = 0
+			}
+			reports = append(reports, pendingBluetoothHapticsReport{
+				data:          report,
+				assemblyDelay: assemblyDelay,
+			})
 		}
 
 		copy(d.hapticsPCM, d.hapticsPCM[inputBytesPerReport:])
 		d.hapticsPCM = d.hapticsPCM[:len(d.hapticsPCM)-inputBytesPerReport]
+		if len(d.hapticsPCM) == 0 {
+			d.hapticsPCMStartedAt = time.Time{}
+		}
 	}
 
 	return reports

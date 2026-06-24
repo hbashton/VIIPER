@@ -73,8 +73,14 @@ func TestBuildBluetoothCombinedHapticsReportMatchesVDSLayout(t *testing.T) {
 	if report[0] != BluetoothCombinedHapticsReportID || report[1] != 0xA0 {
 		t.Fatalf("unexpected 0x36 report header: % x", report[:2])
 	}
-	if !bytes.Equal(report[2:11], []byte{0x91, 0x07, 0xFE, 64, 64, 64, 64, 64, 0x37}) {
+	if report[2] != 0x91 || report[3] != 0x07 || report[4] != 0xFE || report[10] != 0x37 {
 		t.Fatalf("unexpected packet 0x11 body: % x", report[2:11])
+	}
+	for _, bufferLength := range report[5:10] {
+		if bufferLength != BluetoothCombinedLowLatencyBufferLength {
+			t.Fatalf("unexpected combined haptics buffer length: got %#x want %#x",
+				bufferLength, BluetoothCombinedLowLatencyBufferLength)
+		}
 	}
 	if report[11] != 0x90 || report[12] != BluetoothCombinedStateSize {
 		t.Fatalf("unexpected state block header: % x", report[11:13])
