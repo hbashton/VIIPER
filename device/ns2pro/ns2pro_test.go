@@ -451,7 +451,7 @@ func TestStreamInputAndRumble(t *testing.T) {
 	require.NoError(t, stream.WriteBinary(&state))
 
 	expected := state.buildProReport(0, FeatureButtons|FeatureSticks, *defaultMetaState())
-	got := pollInputIgnoringCounter(t, usbipClient, imp.Conn, expected, 750*time.Millisecond)
+	got := pollInputIgnoringCounter(t, usbipClient, imp.Conn, expected, viiperTesting.IntegrationTimeout)
 	require.Len(t, got, InputReportSize)
 	got[1] = 0
 	assert.Equal(t, expected, got)
@@ -465,7 +465,7 @@ func TestStreamInputAndRumble(t *testing.T) {
 	require.NoError(t, usbipClient.Submit(imp.Conn, usbip.DirOut, 1, rumble, nil))
 
 	var outBuf [OutputWireSize]byte
-	_ = stream.SetReadDeadline(time.Now().Add(750 * time.Millisecond))
+	_ = stream.SetReadDeadline(time.Now().Add(viiperTesting.IntegrationTimeout))
 	_, err = io.ReadFull(stream, outBuf[:])
 	require.NoError(t, err)
 	var out OutputState
@@ -528,7 +528,7 @@ func controlIn(conn net.Conn, setup [8]byte) ([]byte, error) {
 		TransferBufferLen: uint32(binary.LittleEndian.Uint16(setup[6:8])),
 		Setup:             setup,
 	}
-	_ = conn.SetDeadline(time.Now().Add(750 * time.Millisecond))
+	_ = conn.SetDeadline(time.Now().Add(viiperTesting.IntegrationTimeout))
 	defer conn.SetDeadline(time.Time{})
 	if err := cmd.Write(conn); err != nil {
 		return nil, err
