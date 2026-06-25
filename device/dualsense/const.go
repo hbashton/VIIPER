@@ -41,10 +41,21 @@ const (
 )
 
 const (
-	InputReportSize  = 64
-	OutputReportSize = 48
-	InputStateSize   = 33
-	OutputStateSize  = 6
+	InputReportSize             = 64
+	OutputReportSize            = 48
+	InputStateSize              = 33
+	OutputStateSize             = 6
+	StreamFrameInputState       = 0x01
+	StreamFrameMicrophonePCM    = 0x02
+	USBMicrophoneSampleRate     = 48000
+	USBMicrophoneChannels       = 2
+	USBMicrophoneBytesPerSample = 2
+	USBMicrophonePacketFrames   = USBMicrophoneSampleRate / 1000
+	USBMicrophonePacketSize     = USBMicrophonePacketFrames *
+		USBMicrophoneChannels * USBMicrophoneBytesPerSample
+	USBMicrophoneClientFrameFrames = 480
+	USBMicrophoneClientFrameSize   = USBMicrophoneClientFrameFrames *
+		USBMicrophoneChannels * USBMicrophoneBytesPerSample
 
 	// OutputStateCompatExtSize is VIIPER's legacy compact server-to-client
 	// feedback packet: 6 base bytes plus two 11-byte DualSense trigger effect
