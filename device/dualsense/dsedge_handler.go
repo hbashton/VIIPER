@@ -3,7 +3,6 @@ package dualsense
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net"
 	"strings"
@@ -17,11 +16,13 @@ func init() {
 	api.RegisterDevice("dualsenseedge", &dsedgehandler{})
 	api.RegisterDevice("dualsenseedgeext", &dsedgehandler{extendedFeedback: true})
 	api.RegisterDevice("dualsenseedgecombinedext", &dsedgehandler{combinedBluetoothFeedback: true})
+	api.RegisterDevice("dualsenseedgecombinedmicext", &dsedgehandler{combinedBluetoothFeedback: true, microphoneInput: true})
 }
 
 type dsedgehandler struct {
 	extendedFeedback          bool
 	combinedBluetoothFeedback bool
+	microphoneInput           bool
 }
 
 func (h *dsedgehandler) CreateDevice(o *device.CreateOptions) (usb.Device, error) {
@@ -139,22 +140,7 @@ func (h *dsedgehandler) StreamHandler() api.StreamHandlerFunc {
 			}
 		})
 
-		buf := make([]byte, InputStateSize)
-		for {
-			if _, err := io.ReadFull(conn, buf); err != nil {
-				if err == io.EOF {
-					logger.Info("client disconnected")
-					return nil
-				}
-				return fmt.Errorf("read input state: %w", err)
-			}
-
-			var state InputState
-			if err := state.UnmarshalBinary(buf); err != nil {
-				return fmt.Errorf("unmarshal input state: %w", err)
-			}
-			dse.UpdateInputState(&state)
-		}
+		return readDualSenseInputStream(conn, dse, logger, h.microphoneInput)
 	}
 }
 

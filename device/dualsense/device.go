@@ -34,10 +34,12 @@ type DualSense struct {
 
 	subcommand [2]byte
 
-	seqCounter      uint8
-	hapticsSeq      uint8
-	hapticsInterval uint8
-	hapticsPCM      []byte
+	seqCounter       uint8
+	hapticsSeq       uint8
+	hapticsInterval  uint8
+	hapticsPCM       []byte
+	microphonePCM    []byte
+	microphoneSignal chan struct{}
 	// hapticsPCMStartedAt identifies the oldest PCM frame waiting to make a
 	// complete 10.667 ms Bluetooth haptics sample. It is only used by the
 	// opt-in traffic capture to expose queueing delay without affecting timing.
@@ -101,8 +103,9 @@ func new(o *device.CreateOptions, edge bool) (*DualSense, error) {
 	}
 
 	d := &DualSense{
-		descriptor: makeDescriptor(edge),
-		metaState:  metaState,
+		descriptor:       makeDescriptor(edge),
+		metaState:        metaState,
+		microphoneSignal: make(chan struct{}, 1),
 	}
 
 	if o != nil {
@@ -189,6 +192,8 @@ func (d *DualSense) HandleTransfer(ctx context.Context, ep uint32, dir uint32, o
 				d.mtx.Unlock()
 				return d.buildUSBInputReport(is, &ms)
 			}
+		case EndpointMicrophoneIn:
+			return d.handleMicrophoneIn(ctx)
 		default:
 			return nil
 		}
@@ -208,6 +213,45 @@ func (d *DualSense) HandleTransfer(ctx context.Context, ep uint32, dir uint32, o
 	}
 
 	return nil
+}
+
+func (d *DualSense) QueueMicrophonePCMFrame(frame []byte) {
+	if len(frame) != USBMicrophoneClientFrameSize {
+		return
+	}
+
+	d.mtx.Lock()
+	if len(d.microphonePCM) > USBMicrophoneClientFrameSize*4 {
+		d.microphonePCM = d.microphonePCM[len(d.microphonePCM)-USBMicrophoneClientFrameSize*4:]
+	}
+	d.microphonePCM = append(d.microphonePCM, frame...)
+	d.mtx.Unlock()
+
+	select {
+	case d.microphoneSignal <- struct{}{}:
+	default:
+	}
+}
+
+func (d *DualSense) handleMicrophoneIn(ctx context.Context) []byte {
+	for {
+		d.mtx.Lock()
+		if len(d.microphonePCM) > 0 {
+			packet := make([]byte, USBMicrophonePacketSize)
+			n := copy(packet, d.microphonePCM)
+			copy(d.microphonePCM, d.microphonePCM[n:])
+			d.microphonePCM = d.microphonePCM[:len(d.microphonePCM)-n]
+			d.mtx.Unlock()
+			return packet
+		}
+		d.mtx.Unlock()
+
+		select {
+		case <-ctx.Done():
+			return make([]byte, USBMicrophonePacketSize)
+		case <-d.microphoneSignal:
+		}
+	}
 }
 
 func (d *DualSense) handleHapticsAudioOut(out []byte) {
