@@ -17,11 +17,13 @@ func init() {
 	api.RegisterDevice("dualsense", &dshandler{})
 	api.RegisterDevice("dualsenseext", &dshandler{extendedFeedback: true})
 	api.RegisterDevice("dualsensecombinedext", &dshandler{combinedBluetoothFeedback: true})
+	api.RegisterDevice("dualsensecombinedmicext", &dshandler{combinedBluetoothFeedback: true, microphoneInput: true})
 }
 
 type dshandler struct {
 	extendedFeedback          bool
 	combinedBluetoothFeedback bool
+	microphoneInput           bool
 }
 
 func (h *dshandler) CreateDevice(o *device.CreateOptions) (usb.Device, error) {
@@ -139,6 +141,12 @@ func (h *dshandler) StreamHandler() api.StreamHandlerFunc {
 			}
 		})
 
+		return readDualSenseInputStream(conn, dse, logger, h.microphoneInput)
+	}
+}
+
+func readDualSenseInputStream(conn net.Conn, dse *DualSense, logger *slog.Logger, microphoneInput bool) error {
+	if !microphoneInput {
 		buf := make([]byte, InputStateSize)
 		for {
 			if _, err := io.ReadFull(conn, buf); err != nil {
@@ -154,6 +162,38 @@ func (h *dshandler) StreamHandler() api.StreamHandlerFunc {
 				return fmt.Errorf("unmarshal input state: %w", err)
 			}
 			dse.UpdateInputState(&state)
+		}
+	}
+
+	header := make([]byte, 1)
+	input := make([]byte, InputStateSize)
+	microphonePCM := make([]byte, USBMicrophoneClientFrameSize)
+	for {
+		if _, err := io.ReadFull(conn, header); err != nil {
+			if err == io.EOF {
+				logger.Info("client disconnected")
+				return nil
+			}
+			return fmt.Errorf("read stream frame type: %w", err)
+		}
+
+		switch header[0] {
+		case StreamFrameInputState:
+			if _, err := io.ReadFull(conn, input); err != nil {
+				return fmt.Errorf("read framed input state: %w", err)
+			}
+			var state InputState
+			if err := state.UnmarshalBinary(input); err != nil {
+				return fmt.Errorf("unmarshal framed input state: %w", err)
+			}
+			dse.UpdateInputState(&state)
+		case StreamFrameMicrophonePCM:
+			if _, err := io.ReadFull(conn, microphonePCM); err != nil {
+				return fmt.Errorf("read microphone pcm frame: %w", err)
+			}
+			dse.QueueMicrophonePCMFrame(microphonePCM)
+		default:
+			return fmt.Errorf("unknown DualSense framed stream packet type 0x%02X", header[0])
 		}
 	}
 }
