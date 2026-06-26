@@ -16,14 +16,20 @@ func makeStreamFrame(t *testing.T, frameType byte, payload []byte) []byte {
 	}
 
 	frame := make([]byte, StreamFrameHeaderSize+len(payload))
+	copy(frame, makeStreamFrameHeader(frameType, len(payload)))
+	copy(frame[StreamFrameHeaderSize:], payload)
+	return frame
+}
+
+func makeStreamFrameHeader(frameType byte, payloadLength int) []byte {
+	frame := make([]byte, StreamFrameHeaderSize)
 	frame[0] = StreamFrameMagic0
 	frame[1] = StreamFrameMagic1
 	frame[2] = StreamFrameMagic2
 	frame[3] = StreamFrameMagic3
 	frame[4] = StreamFrameVersion
 	frame[5] = frameType
-	binary.LittleEndian.PutUint16(frame[6:8], uint16(len(payload)))
-	copy(frame[StreamFrameHeaderSize:], payload)
+	binary.LittleEndian.PutUint16(frame[6:8], uint16(payloadLength))
 	return frame
 }
 
@@ -142,7 +148,7 @@ func TestQueueMicrophonePCMFrameRequiresActiveInterface(t *testing.T) {
 	}
 }
 
-func TestReadDualSenseInputStreamSanitizesTransportMagicInMotion(t *testing.T) {
+func TestReadDualSenseInputStreamDropsCorruptedTransportMagicInput(t *testing.T) {
 	dev, err := New(nil)
 	if err != nil {
 		t.Fatalf("New returned error: %v", err)
@@ -171,7 +177,7 @@ func TestReadDualSenseInputStreamSanitizesTransportMagicInMotion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MarshalBinary returned error: %v", err)
 	}
-	copy(inputPayload[25:29], []byte{StreamFrameMagic0, StreamFrameMagic1, StreamFrameMagic2, StreamFrameMagic3})
+	copy(inputPayload[25:33], makeStreamFrameHeader(StreamFrameMicrophonePCM, USBMicrophoneClientFrameSize))
 
 	if _, err := client.Write(makeStreamFrame(t, StreamFrameInputState, inputPayload)); err != nil {
 		t.Fatalf("write input frame: %v", err)
@@ -188,13 +194,67 @@ func TestReadDualSenseInputStreamSanitizesTransportMagicInMotion(t *testing.T) {
 	gotInput := *dev.inputState
 	dev.mtx.Unlock()
 
-	if gotInput.LX != state.LX || gotInput.R2 != state.R2 || gotInput.Buttons != state.Buttons {
-		t.Fatalf("non-motion input changed: got LX=%d R2=%d buttons=%#x", gotInput.LX, gotInput.R2, gotInput.Buttons)
+	neutral := NewInputState()
+	if gotInput.LX != neutral.LX || gotInput.LY != neutral.LY ||
+		gotInput.RX != neutral.RX || gotInput.RY != neutral.RY ||
+		gotInput.Buttons != neutral.Buttons || gotInput.DPad != neutral.DPad ||
+		gotInput.L2 != neutral.L2 || gotInput.R2 != neutral.R2 {
+		t.Fatalf("corrupted input was not reset to neutral controls: got LX=%d LY=%d RX=%d RY=%d buttons=%#x dpad=%#x L2=%d R2=%d",
+			gotInput.LX, gotInput.LY, gotInput.RX, gotInput.RY, gotInput.Buttons, gotInput.DPad, gotInput.L2, gotInput.R2)
 	}
 	if gotInput.GyroX != 0 || gotInput.GyroY != 0 || gotInput.GyroZ != 0 ||
 		gotInput.AccelX != DefaultAccelXRaw || gotInput.AccelY != DefaultAccelYRaw || gotInput.AccelZ != DefaultAccelZRaw {
-		t.Fatalf("motion was not sanitized: gyro=%d,%d,%d accel=%d,%d,%d",
+		t.Fatalf("corrupted input motion was not reset to neutral: gyro=%d,%d,%d accel=%d,%d,%d",
 			gotInput.GyroX, gotInput.GyroY, gotInput.GyroZ,
 			gotInput.AccelX, gotInput.AccelY, gotInput.AccelZ)
+	}
+}
+
+func TestReadDualSenseInputStreamKeepsPlainMagicInputBytes(t *testing.T) {
+	dev, err := New(nil)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	server, client := net.Pipe()
+	defer server.Close()
+
+	errCh := make(chan error, 1)
+	go func() {
+		logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+		errCh <- readDualSenseInputStream(server, dev, logger, true)
+	}()
+
+	state := NewInputState()
+	state.LX = int8(StreamFrameMagic0)
+	state.LY = int8(StreamFrameMagic1)
+	state.RX = int8(StreamFrameMagic2)
+	state.RY = int8(StreamFrameMagic3)
+	state.R2 = 77
+	inputPayload, err := state.MarshalBinary()
+	if err != nil {
+		t.Fatalf("MarshalBinary returned error: %v", err)
+	}
+
+	if _, err := client.Write(makeStreamFrame(t, StreamFrameInputState, inputPayload)); err != nil {
+		t.Fatalf("write input frame: %v", err)
+	}
+	if err := client.Close(); err != nil {
+		t.Fatalf("close client pipe: %v", err)
+	}
+
+	if err := <-errCh; err != nil {
+		t.Fatalf("readDualSenseInputStream returned error: %v", err)
+	}
+
+	dev.mtx.Lock()
+	gotInput := *dev.inputState
+	dev.mtx.Unlock()
+
+	if gotInput.LX != state.LX || gotInput.LY != state.LY ||
+		gotInput.RX != state.RX || gotInput.RY != state.RY ||
+		gotInput.R2 != state.R2 {
+		t.Fatalf("plain magic bytes should remain normal input: got LX=%d LY=%d RX=%d RY=%d R2=%d",
+			gotInput.LX, gotInput.LY, gotInput.RX, gotInput.RY, gotInput.R2)
 	}
 }
