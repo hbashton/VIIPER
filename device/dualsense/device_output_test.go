@@ -572,6 +572,40 @@ func TestDualSenseTouchTrackingZeroUsesActiveFallback(t *testing.T) {
 	}
 }
 
+func TestDualSenseUSBInputReportDropsTransportMagic(t *testing.T) {
+	dev, err := New(nil)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	state := NewInputState()
+	state.GyroZ = int16(uint16(StreamFrameMagic0) | uint16(StreamFrameMagic1)<<8)
+	state.AccelX = int16(uint16(StreamFrameMagic2) | uint16(StreamFrameMagic3)<<8)
+	state.LX = 17
+	state.RY = -42
+	state.R2 = 200
+	state.Buttons = ButtonCross
+
+	report := dev.buildUSBInputReport(state, &MetaState{BatteryStatus: BatteryFullyCharged})
+	if containsStreamMagic(report, 0, len(report)) {
+		t.Fatalf("USB input report leaked transport magic: % x", report)
+	}
+	if dev.corruptUSBInputReports != 1 {
+		t.Fatalf("expected one corrupted report reset, got %d", dev.corruptUSBInputReports)
+	}
+	if report[1] != 128 || report[2] != 128 || report[3] != 128 || report[4] != 128 ||
+		report[5] != 0 || report[6] != 0 || report[8] != DPadUSBNeutral ||
+		report[9] != 0 || report[10] != 0 {
+		t.Fatalf("corrupted report was not reset to neutral controls: % x", report[:11])
+	}
+	if report[33] != TouchInactiveMask || report[37] != TouchInactiveMask {
+		t.Fatalf("corrupted report was not reset to inactive touches: touch1=%#x touch2=%#x", report[33], report[37])
+	}
+	if report[53] != BatteryFullyCharged {
+		t.Fatalf("neutral report should preserve battery byte, got %#x", report[53])
+	}
+}
+
 func TestDualSenseExtendedFeedbackUsesNativeTriggerBlockSize(t *testing.T) {
 	out := OutputState{
 		RumbleSmall:              0x11,
