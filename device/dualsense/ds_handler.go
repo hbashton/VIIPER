@@ -169,7 +169,7 @@ func readDualSenseInputStream(conn net.Conn, dse *DualSense, logger *slog.Logger
 	header := make([]byte, StreamFrameHeaderSize)
 	input := make([]byte, InputStateSize)
 	microphonePCM := make([]byte, USBMicrophoneClientFrameSize)
-	corruptMotionFrames := 0
+	corruptInputFrames := 0
 	for {
 		if _, err := io.ReadFull(conn, header); err != nil {
 			if err == io.EOF {
@@ -202,10 +202,10 @@ func readDualSenseInputStream(conn net.Conn, dse *DualSense, logger *slog.Logger
 				return fmt.Errorf("read framed input state: %w", err)
 			}
 			if sanitizeInputStateTransportSignature(input) {
-				corruptMotionFrames++
-				if corruptMotionFrames <= 128 || isPowerOfTwo(corruptMotionFrames) {
-					logger.Warn("DualSense framed input contained transport signature in motion payload; motion reset to neutral",
-						"count", corruptMotionFrames)
+				corruptInputFrames++
+				if corruptInputFrames <= 128 || isPowerOfTwo(corruptInputFrames) {
+					logger.Warn("DualSense framed input contained transport signature; input reset to neutral",
+						"count", corruptInputFrames)
 				}
 			}
 			var state InputState
@@ -228,38 +228,52 @@ func readDualSenseInputStream(conn net.Conn, dse *DualSense, logger *slog.Logger
 }
 
 func sanitizeInputStateTransportSignature(input []byte) bool {
-	const motionOffset = 21
-	const motionLength = 12
-	if !containsStreamMagic(input, motionOffset, motionLength) {
+	if !containsStreamFrameHeader(input, 0, len(input)) {
 		return false
 	}
 
-	for i := motionOffset; i < motionOffset+motionLength && i < len(input); i++ {
-		input[i] = 0
+	neutral, err := NewInputState().MarshalBinary()
+	if err != nil {
+		for i := range input {
+			input[i] = 0
+		}
+		return true
 	}
-	if len(input) >= motionOffset+motionLength {
-		binary.LittleEndian.PutUint16(input[31:33], uint16(int(DefaultAccelZRaw)&0xFFFF))
-	}
+
+	copy(input, neutral)
 	return true
 }
 
-func containsStreamMagic(data []byte, offset int, length int) bool {
-	if len(data) < 4 || length < 4 {
+func containsStreamFrameHeader(data []byte, offset int, length int) bool {
+	if len(data) < StreamFrameHeaderSize || length < StreamFrameHeaderSize {
 		return false
 	}
 
 	start := max(offset, 0)
 	end := min(offset+length, len(data))
-	for i := start; i+3 < end; i++ {
+	for i := start; i+StreamFrameHeaderSize <= end; i++ {
 		if data[i] == StreamFrameMagic0 &&
 			data[i+1] == StreamFrameMagic1 &&
 			data[i+2] == StreamFrameMagic2 &&
-			data[i+3] == StreamFrameMagic3 {
+			data[i+3] == StreamFrameMagic3 &&
+			data[i+4] == StreamFrameVersion &&
+			isKnownStreamFrame(data[i+5], binary.LittleEndian.Uint16(data[i+6:i+8])) {
 			return true
 		}
 	}
 
 	return false
+}
+
+func isKnownStreamFrame(frameType byte, payloadLength uint16) bool {
+	switch frameType {
+	case StreamFrameInputState:
+		return payloadLength == InputStateSize
+	case StreamFrameMicrophonePCM:
+		return payloadLength == USBMicrophoneClientFrameSize
+	default:
+		return false
+	}
 }
 
 func isPowerOfTwo(value int) bool {
