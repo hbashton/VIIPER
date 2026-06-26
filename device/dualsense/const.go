@@ -46,10 +46,10 @@ const (
 	InputStateSize              = 33
 	OutputStateSize             = 6
 	StreamFrameHeaderSize       = 8
-	StreamFrameMagic0           = byte('V')
-	StreamFrameMagic1           = byte('P')
-	StreamFrameMagic2           = byte('C')
-	StreamFrameMagic3           = byte('M')
+	StreamFrameMagic0           = 0x56
+	StreamFrameMagic1           = 0x50
+	StreamFrameMagic2           = 0x43
+	StreamFrameMagic3           = 0x4D
 	StreamFrameVersion          = 0x01
 	StreamFrameInputState       = 0x01
 	StreamFrameMicrophonePCM    = 0x02
