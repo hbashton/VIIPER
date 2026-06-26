@@ -659,6 +659,8 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 	lastInResp := map[uint32][]byte{}
 
 	var outPayloadScratch []byte
+	var nextIsoInCompletion time.Time
+	var isoInCompletionMu sync.Mutex
 	var isoAudioWindowStarted time.Time
 	var isoAudioLastCompletion time.Time
 	var isoAudioURBs int
@@ -852,6 +854,40 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 			go func(seq, ep, dir uint32, submitted []usbip.IsoPacketDescriptor, iso bool) {
 				defer urbCancel()
 				var respData []byte
+				var completedPackets []usbip.IsoPacketDescriptor
+				if iso && len(submitted) > 0 {
+					isoTransferDuration := isoCompletionDelay(dev.GetDescriptor(), ep, len(submitted))
+					respData, completedPackets = s.buildIsoInResponse(urbCtx, dev, ep, dir, submitted)
+					if isoTransferDuration > 0 {
+						isoInCompletionMu.Lock()
+						now := time.Now()
+						if nextIsoInCompletion.IsZero() || now.Sub(nextIsoInCompletion) > isoTransferDuration {
+							nextIsoInCompletion = now.Add(isoTransferDuration)
+						} else {
+							nextIsoInCompletion = nextIsoInCompletion.Add(isoTransferDuration)
+						}
+						isoCompletionDeadline := nextIsoInCompletion
+						isoInCompletionMu.Unlock()
+
+						if wait := time.Until(isoCompletionDeadline); wait > 0 {
+							time.Sleep(wait)
+						}
+					}
+
+					pendingMu.Lock()
+					delete(pending, seq)
+					pendingMu.Unlock()
+
+					if err := writeRet(seq, uint32(len(respData)), respData, completedPackets, iso, true); err != nil {
+						if isClientDisconnect(err) {
+							s.logger.Debug("URB ISO-IN completion after disconnect", "seq", seq, "error", err)
+						} else {
+							s.logger.Error("write async ISO-IN RET_SUBMIT", "seq", seq, "error", err)
+						}
+					}
+					return
+				}
+
 				for {
 					attemptCtx, attemptCancel := urbCtx, context.CancelFunc(func() {})
 					if interval > 0 {
@@ -888,7 +924,7 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 				delete(pending, seq)
 				pendingMu.Unlock()
 
-				completedPackets := completeIsoPackets(submitted, uint32(len(respData)))
+				completedPackets = completeIsoPackets(submitted, uint32(len(respData)))
 				if err := writeRet(seq, uint32(len(respData)), respData, completedPackets, iso, true); err != nil {
 					if isClientDisconnect(err) {
 						s.logger.Debug("URB completion after disconnect", "seq", seq, "error", err)
@@ -999,6 +1035,94 @@ func completeIsoPackets(submitted []usbip.IsoPacketDescriptor, actualLen uint32)
 	return completed
 }
 
+func completeIsoPacketsWithActuals(submitted []usbip.IsoPacketDescriptor, actualLengths []uint32) []usbip.IsoPacketDescriptor {
+	if len(submitted) == 0 {
+		return nil
+	}
+
+	completed := make([]usbip.IsoPacketDescriptor, len(submitted))
+	for i, packet := range submitted {
+		completed[i] = packet
+		completed[i].Status = 0
+		if i < len(actualLengths) {
+			completed[i].ActualLength = min(packet.Length, actualLengths[i])
+		} else {
+			completed[i].ActualLength = 0
+		}
+	}
+
+	return completed
+}
+
+func (s *Server) buildIsoInResponse(
+	ctx context.Context,
+	dev usb.Device,
+	ep uint32,
+	dir uint32,
+	submitted []usbip.IsoPacketDescriptor,
+) ([]byte, []usbip.IsoPacketDescriptor) {
+	if len(submitted) == 0 {
+		return nil, nil
+	}
+
+	interval := isoPacketInterval(dev.GetDescriptor(), ep)
+	if interval <= 0 {
+		interval = time.Millisecond
+	}
+
+	actualLengths := make([]uint32, len(submitted))
+	totalLen := uint32(0)
+	for _, packet := range submitted {
+		if packet.Length == 0 {
+			continue
+		}
+		end := packet.Offset + packet.Length
+		if end > totalLen {
+			totalLen = end
+		}
+	}
+
+	respData := make([]byte, totalLen)
+	for i, packet := range submitted {
+		if packet.Length == 0 || packet.Offset >= uint32(len(respData)) {
+			continue
+		}
+
+		attemptCtx, cancel := context.WithTimeout(ctx, interval)
+		packetData := s.processSubmit(attemptCtx, dev, ep, dir, nil, nil)
+		cancel()
+		if ctx.Err() != nil {
+			return nil, nil
+		}
+		if len(packetData) == 0 {
+			packetData = make([]byte, int(packet.Length))
+		}
+
+		available := uint32(len(respData)) - packet.Offset
+		desired := min(packet.Length, available)
+		actual := min(desired, uint32(len(packetData)))
+		copy(respData[packet.Offset:packet.Offset+actual], packetData[:actual])
+		actualLengths[i] = actual
+	}
+
+	completed := completeIsoPacketsWithActuals(submitted, actualLengths)
+	actualTotal := uint32(0)
+	for i, packet := range completed {
+		if i >= len(submitted) || packet.ActualLength == 0 {
+			continue
+		}
+		end := submitted[i].Offset + packet.ActualLength
+		if end > actualTotal {
+			actualTotal = end
+		}
+	}
+	if actualTotal < uint32(len(respData)) {
+		respData = respData[:actualTotal]
+	}
+
+	return respData, completed
+}
+
 // isoCompletionDelay returns the USB service interval represented by an ISO
 // URB. ISO completions must follow this cadence; completing immediately causes
 // Windows to feed the virtual audio device in bursts instead of realtime.
@@ -1025,6 +1149,27 @@ func isoCompletionDelay(desc *usb.Descriptor, ep uint32, packetCount int) time.D
 	}
 
 	return min(time.Duration(packetCount)*usbServiceInterval(desc.Device.Speed, bInterval), 100*time.Millisecond)
+}
+
+func isoPacketInterval(desc *usb.Descriptor, ep uint32) time.Duration {
+	var bInterval uint8
+	for _, iface := range desc.Interfaces {
+		for _, endpoint := range iface.Endpoints {
+			if endpoint.BEndpointAddress&0x0F == uint8(ep)&0x0F && endpoint.BMAttributes&0x03 == 0x01 {
+				bInterval = endpoint.BInterval
+				break
+			}
+		}
+		if bInterval != 0 {
+			break
+		}
+	}
+
+	if bInterval == 0 {
+		return 0
+	}
+
+	return usbServiceInterval(desc.Device.Speed, bInterval)
 }
 
 // isClientDisconnect tests whether an error represents a normal client
