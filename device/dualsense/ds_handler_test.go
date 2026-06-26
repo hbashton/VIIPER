@@ -210,7 +210,7 @@ func TestReadDualSenseInputStreamDropsCorruptedTransportMagicInput(t *testing.T)
 	}
 }
 
-func TestReadDualSenseInputStreamKeepsPlainMagicInputBytes(t *testing.T) {
+func TestReadDualSenseInputStreamDropsPlainTransportMagicInputBytes(t *testing.T) {
 	dev, err := New(nil)
 	if err != nil {
 		t.Fatalf("New returned error: %v", err)
@@ -251,10 +251,11 @@ func TestReadDualSenseInputStreamKeepsPlainMagicInputBytes(t *testing.T) {
 	gotInput := *dev.inputState
 	dev.mtx.Unlock()
 
-	if gotInput.LX != state.LX || gotInput.LY != state.LY ||
-		gotInput.RX != state.RX || gotInput.RY != state.RY ||
-		gotInput.R2 != state.R2 {
-		t.Fatalf("plain magic bytes should remain normal input: got LX=%d LY=%d RX=%d RY=%d R2=%d",
+	neutral := NewInputState()
+	if gotInput.LX != neutral.LX || gotInput.LY != neutral.LY ||
+		gotInput.RX != neutral.RX || gotInput.RY != neutral.RY ||
+		gotInput.R2 != neutral.R2 {
+		t.Fatalf("plain transport magic bytes should reset input: got LX=%d LY=%d RX=%d RY=%d R2=%d",
 			gotInput.LX, gotInput.LY, gotInput.RX, gotInput.RY, gotInput.R2)
 	}
 }

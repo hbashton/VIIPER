@@ -42,6 +42,7 @@ type DualSense struct {
 	microphoneSignal          chan struct{}
 	speakerInterfaceActive    bool
 	microphoneInterfaceActive bool
+	corruptUSBInputReports    int
 	// hapticsPCMStartedAt identifies the oldest PCM frame waiting to make a
 	// complete 10.667 ms Bluetooth haptics sample. It is only used by the
 	// opt-in traffic capture to expose queueing delay without affecting timing.
@@ -868,9 +869,49 @@ func (d *DualSense) buildUSBInputReport(s *InputState, m *MetaState) []byte {
 
 	b[41] = d.seqCounter
 	binary.LittleEndian.PutUint32(b[49:53], ts)
-	b[53] = m.BatteryStatus
+	battery := byte(0)
+	if m != nil {
+		battery = m.BatteryStatus
+	}
+	b[53] = battery
+
+	if containsStreamMagic(b, 0, len(b)) {
+		d.corruptUSBInputReports++
+		count := d.corruptUSBInputReports
+		if count <= 128 || isPowerOfTwo(count) {
+			slog.Warn("DualSense USB input report contained stream transport signature; report reset to neutral",
+				"count", count)
+		}
+		resetUSBInputReportToNeutral(b, d.seqCounter, ts, battery)
+	}
 
 	return b
+}
+
+func resetUSBInputReportToNeutral(b []byte, seq uint8, timestamp uint32, battery byte) {
+	for i := range b {
+		b[i] = 0
+	}
+
+	b[0] = ReportIDInput
+	b[1] = 128
+	b[2] = 128
+	b[3] = 128
+	b[4] = 128
+	b[7] = seq
+	b[8] = DPadUSBNeutral
+
+	x, y, z := DefaultAccelRaw()
+	binary.LittleEndian.PutUint16(b[22:24], uint16(x))
+	binary.LittleEndian.PutUint16(b[24:26], uint16(y))
+	binary.LittleEndian.PutUint16(b[26:28], uint16(z))
+	binary.LittleEndian.PutUint32(b[28:32], timestamp)
+
+	b[33] = TouchInactiveMask
+	b[37] = TouchInactiveMask
+	b[41] = seq
+	binary.LittleEndian.PutUint32(b[49:53], timestamp)
+	b[53] = battery
 }
 
 func normalizeTouchTracking(active bool, tracking uint8) uint8 {
