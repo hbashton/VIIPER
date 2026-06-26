@@ -45,6 +45,12 @@ const (
 	OutputReportSize            = 48
 	InputStateSize              = 33
 	OutputStateSize             = 6
+	StreamFrameHeaderSize       = 8
+	StreamFrameMagic0           = byte('V')
+	StreamFrameMagic1           = byte('P')
+	StreamFrameMagic2           = byte('C')
+	StreamFrameMagic3           = byte('M')
+	StreamFrameVersion          = 0x01
 	StreamFrameInputState       = 0x01
 	StreamFrameMicrophonePCM    = 0x02
 	USBMicrophoneSampleRate     = 48000
