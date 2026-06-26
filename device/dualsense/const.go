@@ -36,6 +36,11 @@ const (
 )
 
 const (
+	InterfaceHapticsAudio = 0x01
+	InterfaceMicrophone   = 0x02
+)
+
+const (
 	ReportIDInput  = 0x01
 	ReportIDOutput = 0x02
 )

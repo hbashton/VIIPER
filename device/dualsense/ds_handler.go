@@ -169,6 +169,7 @@ func readDualSenseInputStream(conn net.Conn, dse *DualSense, logger *slog.Logger
 	header := make([]byte, StreamFrameHeaderSize)
 	input := make([]byte, InputStateSize)
 	microphonePCM := make([]byte, USBMicrophoneClientFrameSize)
+	corruptMotionFrames := 0
 	for {
 		if _, err := io.ReadFull(conn, header); err != nil {
 			if err == io.EOF {
@@ -200,6 +201,13 @@ func readDualSenseInputStream(conn net.Conn, dse *DualSense, logger *slog.Logger
 			if _, err := io.ReadFull(conn, input); err != nil {
 				return fmt.Errorf("read framed input state: %w", err)
 			}
+			if sanitizeInputStateTransportSignature(input) {
+				corruptMotionFrames++
+				if corruptMotionFrames <= 128 || isPowerOfTwo(corruptMotionFrames) {
+					logger.Warn("DualSense framed input contained transport signature in motion payload; motion reset to neutral",
+						"count", corruptMotionFrames)
+				}
+			}
 			var state InputState
 			if err := state.UnmarshalBinary(input); err != nil {
 				return fmt.Errorf("unmarshal framed input state: %w", err)
@@ -217,6 +225,45 @@ func readDualSenseInputStream(conn net.Conn, dse *DualSense, logger *slog.Logger
 			return fmt.Errorf("unknown DualSense framed stream packet type 0x%02X length %d", frameType, payloadLen)
 		}
 	}
+}
+
+func sanitizeInputStateTransportSignature(input []byte) bool {
+	const motionOffset = 21
+	const motionLength = 12
+	if !containsStreamMagic(input, motionOffset, motionLength) {
+		return false
+	}
+
+	for i := motionOffset; i < motionOffset+motionLength && i < len(input); i++ {
+		input[i] = 0
+	}
+	if len(input) >= motionOffset+motionLength {
+		binary.LittleEndian.PutUint16(input[31:33], uint16(int(DefaultAccelZRaw)&0xFFFF))
+	}
+	return true
+}
+
+func containsStreamMagic(data []byte, offset int, length int) bool {
+	if len(data) < 4 || length < 4 {
+		return false
+	}
+
+	start := max(offset, 0)
+	end := min(offset+length, len(data))
+	for i := start; i+3 < end; i++ {
+		if data[i] == StreamFrameMagic0 &&
+			data[i+1] == StreamFrameMagic1 &&
+			data[i+2] == StreamFrameMagic2 &&
+			data[i+3] == StreamFrameMagic3 {
+			return true
+		}
+	}
+
+	return false
+}
+
+func isPowerOfTwo(value int) bool {
+	return value > 0 && value&(value-1) == 0
 }
 
 func (h *dshandler) UpdateMetaState(meta string, dev *usb.Device) error {

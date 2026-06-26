@@ -12,7 +12,8 @@ import (
 )
 
 type altSettingTestDevice struct {
-	desc *usbdesc.Descriptor
+	desc      *usbdesc.Descriptor
+	altEvents [][2]uint8
 }
 
 func (d altSettingTestDevice) HandleTransfer(context.Context, uint32, uint32, []byte) []byte {
@@ -25,6 +26,10 @@ func (d altSettingTestDevice) GetDescriptor() *usbdesc.Descriptor {
 
 func (d altSettingTestDevice) GetDeviceSpecificArgs() map[string]any {
 	return nil
+}
+
+func (d *altSettingTestDevice) SetInterfaceAltSetting(iface, alt uint8) {
+	d.altEvents = append(d.altEvents, [2]uint8{iface, alt})
 }
 
 func TestBuildConfigDescriptorSupportsIADAndAlternateSettings(t *testing.T) {
@@ -103,7 +108,7 @@ func TestProcessSubmitTracksInterfaceAlternateSetting(t *testing.T) {
 			},
 		},
 	}
-	dev := altSettingTestDevice{desc: desc}
+	dev := &altSettingTestDevice{desc: desc}
 	server := New(ServerConfig{}, nil, nil)
 
 	getAlt := []byte{0x81, usbReqGetInterface, 0x00, 0x00, 0x02, 0x00, 0x01, 0x00}
@@ -113,6 +118,8 @@ func TestProcessSubmitTracksInterfaceAlternateSetting(t *testing.T) {
 	assert.Equal(t, []byte{0x00}, server.processSubmit(context.Background(), dev, 0, 0, getAlt, nil))
 	server.processSubmit(context.Background(), dev, 0, 0, setAltOne, nil)
 	assert.Equal(t, []byte{0x01}, server.processSubmit(context.Background(), dev, 0, 0, getAlt, nil))
+	assert.Equal(t, [][2]uint8{{2, 1}}, dev.altEvents)
 	server.processSubmit(context.Background(), dev, 0, 0, setConfig, nil)
 	assert.Equal(t, []byte{0x00}, server.processSubmit(context.Background(), dev, 0, 0, getAlt, nil))
+	assert.Equal(t, [][2]uint8{{2, 1}, {2, 0}}, dev.altEvents)
 }
