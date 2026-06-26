@@ -1,6 +1,7 @@
 package dualsense
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -165,7 +166,7 @@ func readDualSenseInputStream(conn net.Conn, dse *DualSense, logger *slog.Logger
 		}
 	}
 
-	header := make([]byte, 1)
+	header := make([]byte, StreamFrameHeaderSize)
 	input := make([]byte, InputStateSize)
 	microphonePCM := make([]byte, USBMicrophoneClientFrameSize)
 	for {
@@ -174,11 +175,28 @@ func readDualSenseInputStream(conn net.Conn, dse *DualSense, logger *slog.Logger
 				logger.Info("client disconnected")
 				return nil
 			}
-			return fmt.Errorf("read stream frame type: %w", err)
+			return fmt.Errorf("read stream frame header: %w", err)
 		}
 
-		switch header[0] {
+		if header[0] != StreamFrameMagic0 ||
+			header[1] != StreamFrameMagic1 ||
+			header[2] != StreamFrameMagic2 ||
+			header[3] != StreamFrameMagic3 {
+			return fmt.Errorf("invalid DualSense framed stream magic %02X %02X %02X %02X",
+				header[0], header[1], header[2], header[3])
+		}
+		if header[4] != StreamFrameVersion {
+			return fmt.Errorf("unsupported DualSense framed stream version 0x%02X", header[4])
+		}
+
+		frameType := header[5]
+		payloadLen := int(binary.LittleEndian.Uint16(header[6:8]))
+
+		switch frameType {
 		case StreamFrameInputState:
+			if payloadLen != InputStateSize {
+				return fmt.Errorf("invalid framed input state length %d", payloadLen)
+			}
 			if _, err := io.ReadFull(conn, input); err != nil {
 				return fmt.Errorf("read framed input state: %w", err)
 			}
@@ -188,12 +206,15 @@ func readDualSenseInputStream(conn net.Conn, dse *DualSense, logger *slog.Logger
 			}
 			dse.UpdateInputState(&state)
 		case StreamFrameMicrophonePCM:
+			if payloadLen != USBMicrophoneClientFrameSize {
+				return fmt.Errorf("invalid microphone pcm frame length %d", payloadLen)
+			}
 			if _, err := io.ReadFull(conn, microphonePCM); err != nil {
 				return fmt.Errorf("read microphone pcm frame: %w", err)
 			}
 			dse.QueueMicrophonePCMFrame(microphonePCM)
 		default:
-			return fmt.Errorf("unknown DualSense framed stream packet type 0x%02X", header[0])
+			return fmt.Errorf("unknown DualSense framed stream packet type 0x%02X length %d", frameType, payloadLen)
 		}
 	}
 }
