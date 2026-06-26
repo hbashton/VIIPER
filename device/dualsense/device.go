@@ -34,12 +34,14 @@ type DualSense struct {
 
 	subcommand [2]byte
 
-	seqCounter       uint8
-	hapticsSeq       uint8
-	hapticsInterval  uint8
-	hapticsPCM       []byte
-	microphonePCM    []byte
-	microphoneSignal chan struct{}
+	seqCounter                uint8
+	hapticsSeq                uint8
+	hapticsInterval           uint8
+	hapticsPCM                []byte
+	microphonePCM             []byte
+	microphoneSignal          chan struct{}
+	speakerInterfaceActive    bool
+	microphoneInterfaceActive bool
 	// hapticsPCMStartedAt identifies the oldest PCM frame waiting to make a
 	// complete 10.667 ms Bluetooth haptics sample. It is only used by the
 	// opt-in traffic capture to expose queueing delay without affecting timing.
@@ -169,7 +171,25 @@ func (d *DualSense) GetDeviceSpecificArgs() map[string]any {
 	if err != nil {
 		return map[string]any{}
 	}
+	res["speakerInterfaceActive"] = d.speakerInterfaceActive
+	res["microphoneInterfaceActive"] = d.microphoneInterfaceActive
+	res["queuedMicrophoneBytes"] = len(d.microphonePCM)
 	return res
+}
+
+func (d *DualSense) SetInterfaceAltSetting(iface, alt uint8) {
+	d.mtx.Lock()
+	defer d.mtx.Unlock()
+
+	switch iface {
+	case InterfaceHapticsAudio:
+		d.speakerInterfaceActive = alt != 0
+	case InterfaceMicrophone:
+		d.microphoneInterfaceActive = alt != 0
+		if !d.microphoneInterfaceActive {
+			d.microphonePCM = nil
+		}
+	}
 }
 
 func (d *DualSense) HandleTransfer(ctx context.Context, ep uint32, dir uint32, out []byte) []byte {
@@ -221,6 +241,11 @@ func (d *DualSense) QueueMicrophonePCMFrame(frame []byte) {
 	}
 
 	d.mtx.Lock()
+	if !d.microphoneInterfaceActive {
+		d.mtx.Unlock()
+		return
+	}
+
 	if len(d.microphonePCM) > USBMicrophoneClientFrameSize*4 {
 		d.microphonePCM = d.microphonePCM[len(d.microphonePCM)-USBMicrophoneClientFrameSize*4:]
 	}
@@ -236,6 +261,11 @@ func (d *DualSense) QueueMicrophonePCMFrame(frame []byte) {
 func (d *DualSense) handleMicrophoneIn(ctx context.Context) []byte {
 	for {
 		d.mtx.Lock()
+		if !d.microphoneInterfaceActive {
+			d.mtx.Unlock()
+			return make([]byte, USBMicrophonePacketSize)
+		}
+
 		if len(d.microphonePCM) > 0 {
 			packet := make([]byte, USBMicrophonePacketSize)
 			n := copy(packet, d.microphonePCM)

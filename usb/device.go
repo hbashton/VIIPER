@@ -31,3 +31,9 @@ type ControlDevice interface {
 	// If handled is true, the returned bytes (if any) will be used as the IN data stage.
 	HandleControl(bmRequestType, bRequest uint8, wValue, wIndex, wLength uint16, data []byte) (resp []byte, handled bool)
 }
+
+// InterfaceAltSettingDevice is an optional interface for devices that need to
+// react when the host opens or closes alternate USB interfaces.
+type InterfaceAltSettingDevice interface {
+	SetInterfaceAltSetting(iface, alt uint8)
+}

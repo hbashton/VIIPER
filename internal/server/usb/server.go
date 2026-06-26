@@ -1221,6 +1221,7 @@ func (s *Server) processSubmit(ctx context.Context, dev usb.Device, ep uint32, d
 	}
 	if breq == usbReqSetConfiguration && bm == usbReqTypeStandardToDevice {
 		s.clearInterfaceAlt(dev)
+		s.notifyInterfaceAltsCleared(dev)
 		return nil
 	}
 	if breq == usbReqGetConfiguration && bm == usbReqTypeStandardFromDevice {
@@ -1231,8 +1232,11 @@ func (s *Server) processSubmit(ctx context.Context, dev usb.Device, ep uint32, d
 	}
 	if breq == usbReqSetInterface && bm == usbReqTypeStandardFromInterface {
 		desc := dev.GetDescriptor()
-		if descriptorHasInterfaceAlt(desc, uint8(wIndex&usbIfaceIndexMask), uint8(wValue&0xff)) {
-			s.setInterfaceAlt(dev, uint8(wIndex&usbIfaceIndexMask), uint8(wValue&0xff))
+		iface := uint8(wIndex & usbIfaceIndexMask)
+		alt := uint8(wValue & 0xff)
+		if descriptorHasInterfaceAlt(desc, iface, alt) {
+			s.setInterfaceAlt(dev, iface, alt)
+			s.notifyInterfaceAlt(dev, iface, alt)
 		}
 		return nil
 	}
@@ -1438,6 +1442,37 @@ func descriptorHasInterfaceAlt(desc *usb.Descriptor, ifaceNumber, altSetting uin
 		}
 	}
 	return false
+}
+
+func descriptorInterfaceNumbers(desc *usb.Descriptor) []uint8 {
+	out := make([]uint8, 0, desc.NumInterfaces())
+	seen := map[uint8]struct{}{}
+	for _, iface := range desc.Interfaces {
+		n := iface.Descriptor.BInterfaceNumber
+		if _, ok := seen[n]; ok {
+			continue
+		}
+		seen[n] = struct{}{}
+		out = append(out, n)
+	}
+	return out
+}
+
+func (s *Server) notifyInterfaceAlt(dev usb.Device, iface, alt uint8) {
+	if notifier, ok := dev.(usb.InterfaceAltSettingDevice); ok {
+		notifier.SetInterfaceAltSetting(iface, alt)
+	}
+}
+
+func (s *Server) notifyInterfaceAltsCleared(dev usb.Device) {
+	notifier, ok := dev.(usb.InterfaceAltSettingDevice)
+	if !ok {
+		return
+	}
+
+	for _, iface := range descriptorInterfaceNumbers(dev.GetDescriptor()) {
+		notifier.SetInterfaceAltSetting(iface, 0)
+	}
 }
 
 func (s *Server) getInterfaceAlt(dev usb.Device, iface uint8) uint8 {

@@ -32,6 +32,7 @@ func TestReadDualSenseInputStreamAcceptsVersionedMicFrames(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New returned error: %v", err)
 	}
+	dev.SetInterfaceAltSetting(InterfaceMicrophone, 1)
 
 	server, client := net.Pipe()
 	defer server.Close()
@@ -114,5 +115,86 @@ func TestReadDualSenseInputStreamRejectsUnversionedMicFrames(t *testing.T) {
 	dev.mtx.Unlock()
 	if gotMicrophoneLen != 0 {
 		t.Fatalf("old style frame should not queue microphone data, got %d bytes", gotMicrophoneLen)
+	}
+}
+
+func TestQueueMicrophonePCMFrameRequiresActiveInterface(t *testing.T) {
+	dev, err := New(nil)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	frame := make([]byte, USBMicrophoneClientFrameSize)
+	dev.QueueMicrophonePCMFrame(frame)
+	if len(dev.microphonePCM) != 0 {
+		t.Fatalf("inactive mic interface should drop PCM, got %d bytes", len(dev.microphonePCM))
+	}
+
+	dev.SetInterfaceAltSetting(InterfaceMicrophone, 1)
+	dev.QueueMicrophonePCMFrame(frame)
+	if len(dev.microphonePCM) != USBMicrophoneClientFrameSize {
+		t.Fatalf("active mic interface should queue PCM, got %d bytes", len(dev.microphonePCM))
+	}
+
+	dev.SetInterfaceAltSetting(InterfaceMicrophone, 0)
+	if len(dev.microphonePCM) != 0 {
+		t.Fatalf("closing mic interface should drop queued PCM, got %d bytes", len(dev.microphonePCM))
+	}
+}
+
+func TestReadDualSenseInputStreamSanitizesTransportMagicInMotion(t *testing.T) {
+	dev, err := New(nil)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	server, client := net.Pipe()
+	defer server.Close()
+
+	errCh := make(chan error, 1)
+	go func() {
+		logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+		errCh <- readDualSenseInputStream(server, dev, logger, true)
+	}()
+
+	state := NewInputState()
+	state.LX = 12
+	state.R2 = 34
+	state.Buttons = ButtonCross
+	state.GyroX = 111
+	state.GyroY = 222
+	state.GyroZ = 333
+	state.AccelX = 444
+	state.AccelY = 555
+	state.AccelZ = 666
+	inputPayload, err := state.MarshalBinary()
+	if err != nil {
+		t.Fatalf("MarshalBinary returned error: %v", err)
+	}
+	copy(inputPayload[25:29], []byte{StreamFrameMagic0, StreamFrameMagic1, StreamFrameMagic2, StreamFrameMagic3})
+
+	if _, err := client.Write(makeStreamFrame(t, StreamFrameInputState, inputPayload)); err != nil {
+		t.Fatalf("write input frame: %v", err)
+	}
+	if err := client.Close(); err != nil {
+		t.Fatalf("close client pipe: %v", err)
+	}
+
+	if err := <-errCh; err != nil {
+		t.Fatalf("readDualSenseInputStream returned error: %v", err)
+	}
+
+	dev.mtx.Lock()
+	gotInput := *dev.inputState
+	dev.mtx.Unlock()
+
+	if gotInput.LX != state.LX || gotInput.R2 != state.R2 || gotInput.Buttons != state.Buttons {
+		t.Fatalf("non-motion input changed: got LX=%d R2=%d buttons=%#x", gotInput.LX, gotInput.R2, gotInput.Buttons)
+	}
+	if gotInput.GyroX != 0 || gotInput.GyroY != 0 || gotInput.GyroZ != 0 ||
+		gotInput.AccelX != DefaultAccelXRaw || gotInput.AccelY != DefaultAccelYRaw || gotInput.AccelZ != DefaultAccelZRaw {
+		t.Fatalf("motion was not sanitized: gyro=%d,%d,%d accel=%d,%d,%d",
+			gotInput.GyroX, gotInput.GyroY, gotInput.GyroZ,
+			gotInput.AccelX, gotInput.AccelY, gotInput.AccelZ)
 	}
 }
