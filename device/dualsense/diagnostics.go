@@ -115,6 +115,19 @@ func recordTrafficBytes(direction, source string, data []byte, fields ...any) {
 		Length:    len(data),
 		Hex:       hex.EncodeToString(data),
 	}
+	recordTrafficEventWithFields(event, fields...)
+}
+
+func recordTrafficSummary(direction, source string, length int, fields ...any) {
+	event := TrafficEvent{
+		Direction: direction,
+		Source:    source,
+		Length:    length,
+	}
+	recordTrafficEventWithFields(event, fields...)
+}
+
+func recordTrafficEventWithFields(event TrafficEvent, fields ...any) {
 	for i := 0; i+1 < len(fields); i += 2 {
 		key, _ := fields[i].(string)
 		value := fmt.Sprint(fields[i+1])

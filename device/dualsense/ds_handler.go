@@ -201,12 +201,21 @@ func readDualSenseInputStream(conn net.Conn, dse *DualSense, logger *slog.Logger
 			if _, err := io.ReadFull(conn, input); err != nil {
 				return fmt.Errorf("read framed input state: %w", err)
 			}
-			if sanitizeInputStateTransportSignature(input) {
+			corruptReason := inputStatePayloadCorruptionReason(input)
+			recordTrafficBytes("client->device", "framed-input-state",
+				input,
+				"summary", describeInputStatePayload(input, corruptReason))
+			if corruptReason != "" {
 				corruptInputFrames++
 				if corruptInputFrames <= 128 || isPowerOfTwo(corruptInputFrames) {
-					logger.Warn("DualSense framed input contained transport signature; input reset to neutral",
-						"count", corruptInputFrames)
+					logger.Warn("DualSense framed input was corrupt; input reset to neutral",
+						"count", corruptInputFrames,
+						"reason", corruptReason)
 				}
+				neutralizeInputStatePayload(input)
+				recordTrafficBytes("client->device", "framed-input-state-after-reset",
+					input,
+					"summary", describeInputStatePayload(input, "reset from "+corruptReason))
 			}
 			var state InputState
 			if err := state.UnmarshalBinary(input); err != nil {
@@ -220,6 +229,8 @@ func readDualSenseInputStream(conn net.Conn, dse *DualSense, logger *slog.Logger
 			if _, err := io.ReadFull(conn, microphonePCM); err != nil {
 				return fmt.Errorf("read microphone pcm frame: %w", err)
 			}
+			recordTrafficSummary("client->device", "framed-microphone-pcm", len(microphonePCM),
+				"summary", describeMicrophonePCMFrame(microphonePCM))
 			dse.QueueMicrophonePCMFrame(microphonePCM)
 		default:
 			return fmt.Errorf("unknown DualSense framed stream packet type 0x%02X length %d", frameType, payloadLen)
@@ -228,41 +239,90 @@ func readDualSenseInputStream(conn net.Conn, dse *DualSense, logger *slog.Logger
 }
 
 func sanitizeInputStateTransportSignature(input []byte) bool {
-	if !inputStatePayloadLooksCorrupt(input) {
+	if inputStatePayloadCorruptionReason(input) == "" {
 		return false
 	}
 
+	neutralizeInputStatePayload(input)
+	return true
+}
+
+func neutralizeInputStatePayload(input []byte) {
 	neutral, err := NewInputState().MarshalBinary()
 	if err != nil {
 		for i := range input {
 			input[i] = 0
 		}
-		return true
+		return
 	}
 
 	copy(input, neutral)
-	return true
 }
 
-func inputStatePayloadLooksCorrupt(input []byte) bool {
+func inputStatePayloadCorruptionReason(input []byte) string {
 	if len(input) < InputStateSize {
-		return false
+		return ""
 	}
 	if containsStreamMagic(input, 0, len(input)) {
-		return true
+		return "full transport magic in payload"
 	}
 
 	buttons := binary.LittleEndian.Uint32(input[4:8])
 	dpad := input[8]
 	if buttons&^validDualSenseInputButtons != 0 ||
 		dpad&^validDualSenseInputDPad != 0 {
-		return true
+		return fmt.Sprintf("invalid controls buttons=0x%08X dpad=0x%02X", buttons, dpad)
 	}
 
 	// The mic storm observed in the wild leaked the framed-stream marker into
 	// controls. Keep this scoped away from motion bytes so a legitimate gyro
 	// sample cannot be mistaken for transport framing.
-	return containsStreamMarkerFragment(input, 0, 11)
+	if containsStreamMarkerFragment(input, 0, 11) {
+		return "transport marker fragment in controls"
+	}
+
+	return ""
+}
+
+func inputStatePayloadLooksCorrupt(input []byte) bool {
+	return inputStatePayloadCorruptionReason(input) != ""
+}
+
+func describeInputStatePayload(input []byte, corruptReason string) string {
+	if len(input) < InputStateSize {
+		return fmt.Sprintf("len=%d corruptReason=%s", len(input), corruptReason)
+	}
+
+	buttons := binary.LittleEndian.Uint32(input[4:8])
+	dpad := input[8]
+	gyroX := int16(binary.LittleEndian.Uint16(input[21:23]))
+	gyroY := int16(binary.LittleEndian.Uint16(input[23:25]))
+	gyroZ := int16(binary.LittleEndian.Uint16(input[25:27]))
+	accelX := int16(binary.LittleEndian.Uint16(input[27:29]))
+	accelY := int16(binary.LittleEndian.Uint16(input[29:31]))
+	accelZ := int16(binary.LittleEndian.Uint16(input[31:33]))
+
+	return fmt.Sprintf(
+		"lx=%d ly=%d rx=%d ry=%d buttons=0x%08X dpad=0x%02X l2=%d r2=%d touch1Status=0x%02X touch2Status=0x%02X gyro=%d,%d,%d accel=%d,%d,%d fullMagic=%t markerFragControls=%t corruptReason=%s",
+		int8(input[0]),
+		int8(input[1]),
+		int8(input[2]),
+		int8(input[3]),
+		buttons,
+		dpad,
+		input[9],
+		input[10],
+		input[15],
+		input[20],
+		gyroX,
+		gyroY,
+		gyroZ,
+		accelX,
+		accelY,
+		accelZ,
+		containsStreamMagic(input, 0, len(input)),
+		containsStreamMarkerFragment(input, 0, 11),
+		corruptReason)
 }
 
 func containsStreamMagic(data []byte, offset int, length int) bool {
