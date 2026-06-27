@@ -893,7 +893,7 @@ func (d *DualSense) buildUSBInputReport(s *InputState, m *MetaState) []byte {
 	corruptReason := ""
 	if inputStateControlsInvalid(s) {
 		corruptReason = "invalid input control bits"
-	} else if containsStreamMagic(b, 0, len(b)) {
+	} else if containsStreamMagic(b) {
 		corruptReason = "transport signature"
 	}
 
@@ -951,8 +951,8 @@ func describeUSBInputReport(b []byte, count uint64, resetReason string) string {
 		b[37],
 		ts,
 		b[53],
-		containsStreamMagic(b, 0, len(b)),
-		containsStreamMarkerFragment(b, 0, len(b)),
+		containsStreamMagic(b),
+		containsStreamMarkerFragment(b, len(b)),
 		resetReason)
 }
 
