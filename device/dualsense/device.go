@@ -43,6 +43,7 @@ type DualSense struct {
 	speakerInterfaceActive    bool
 	microphoneInterfaceActive bool
 	corruptUSBInputReports    int
+	usbInputReportCount       uint64
 	// hapticsPCMStartedAt identifies the oldest PCM frame waiting to make a
 	// complete 10.667 ms Bluetooth haptics sample. It is only used by the
 	// opt-in traffic capture to expose queueing delay without affecting timing.
@@ -261,6 +262,9 @@ func (d *DualSense) QueueMicrophonePCMFrame(frame []byte) {
 	}
 	d.microphonePCM = append(d.microphonePCM, frame...)
 	d.mtx.Unlock()
+
+	recordTrafficSummary("client->device", "microphone-pcm-queued", len(frame),
+		"summary", describeMicrophonePCMFrame(frame))
 
 	select {
 	case d.microphoneSignal <- struct{}{}:
@@ -822,6 +826,8 @@ func (d *DualSense) featureReportCommandResponse() []byte {
 
 func (d *DualSense) buildUSBInputReport(s *InputState, m *MetaState) []byte {
 	b := make([]byte, InputReportSize)
+	d.usbInputReportCount++
+	reportCount := d.usbInputReportCount
 
 	b[0] = ReportIDInput
 
@@ -899,8 +905,15 @@ func (d *DualSense) buildUSBInputReport(s *InputState, m *MetaState) []byte {
 				"count", count,
 				"reason", corruptReason)
 		}
+		recordTrafficBytes("device->host", "usb-input-report-before-reset",
+			b,
+			"summary", describeUSBInputReport(b, reportCount, corruptReason))
 		resetUSBInputReportToNeutral(b, d.seqCounter, ts, battery)
 	}
+
+	recordTrafficBytes("device->host", "usb-input-report",
+		b,
+		"summary", describeUSBInputReport(b, reportCount, corruptReason))
 
 	return b
 }
@@ -911,6 +924,66 @@ func inputStateControlsInvalid(s *InputState) bool {
 	}
 	return s.Buttons&^validDualSenseInputButtons != 0 ||
 		s.DPad&^validDualSenseInputDPad != 0
+}
+
+func describeUSBInputReport(b []byte, count uint64, resetReason string) string {
+	if len(b) < 54 {
+		return fmt.Sprintf("count=%d len=%d resetReason=%s", count, len(b), resetReason)
+	}
+
+	ts := binary.LittleEndian.Uint32(b[28:32])
+	return fmt.Sprintf(
+		"count=%d reportId=0x%02X seq=%d lx=%d ly=%d rx=%d ry=%d l2=%d r2=%d raw8=0x%02X raw9=0x%02X raw10=0x%02X dpadUsb=0x%X touch1=0x%02X touch2=0x%02X ts=%d battery=0x%02X fullMagic=%t markerFrag=%t resetReason=%s",
+		count,
+		b[0],
+		b[7],
+		b[1],
+		b[2],
+		b[3],
+		b[4],
+		b[5],
+		b[6],
+		b[8],
+		b[9],
+		b[10],
+		b[8]&DPadMask,
+		b[33],
+		b[37],
+		ts,
+		b[53],
+		containsStreamMagic(b, 0, len(b)),
+		containsStreamMarkerFragment(b, 0, len(b)),
+		resetReason)
+}
+
+func describeMicrophonePCMFrame(frame []byte) string {
+	const sampleWidth = 2
+	if len(frame) < sampleWidth {
+		return fmt.Sprintf("len=%d", len(frame))
+	}
+
+	var sumAbs uint64
+	var peak uint16
+	sampleCount := 0
+	for i := 0; i+1 < len(frame); i += sampleWidth {
+		raw := binary.LittleEndian.Uint16(frame[i : i+2])
+		sample := int32(int16(raw))
+		if sample < 0 {
+			sample = -sample
+		}
+		if uint16(sample) > peak {
+			peak = uint16(sample)
+		}
+		sumAbs += uint64(sample)
+		sampleCount++
+	}
+
+	avg := uint64(0)
+	if sampleCount > 0 {
+		avg = sumAbs / uint64(sampleCount)
+	}
+
+	return fmt.Sprintf("pcmLen=%d samples=%d peak=%d avgAbs=%d", len(frame), sampleCount, peak, avg)
 }
 
 func resetUSBInputReportToNeutral(b []byte, seq uint8, timestamp uint32, battery byte) {
