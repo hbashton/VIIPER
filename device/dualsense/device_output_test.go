@@ -587,7 +587,7 @@ func TestDualSenseUSBInputReportDropsTransportMagic(t *testing.T) {
 	state.Buttons = ButtonCross
 
 	report := dev.buildUSBInputReport(state, &MetaState{BatteryStatus: BatteryFullyCharged})
-	if containsStreamMagic(report, 0, len(report)) {
+	if containsStreamMagic(report) {
 		t.Fatalf("USB input report leaked transport magic: % x", report)
 	}
 	if dev.corruptUSBInputReports != 1 {

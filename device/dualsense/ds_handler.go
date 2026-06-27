@@ -238,15 +238,6 @@ func readDualSenseInputStream(conn net.Conn, dse *DualSense, logger *slog.Logger
 	}
 }
 
-func sanitizeInputStateTransportSignature(input []byte) bool {
-	if inputStatePayloadCorruptionReason(input) == "" {
-		return false
-	}
-
-	neutralizeInputStatePayload(input)
-	return true
-}
-
 func neutralizeInputStatePayload(input []byte) {
 	neutral, err := NewInputState().MarshalBinary()
 	if err != nil {
@@ -263,7 +254,7 @@ func inputStatePayloadCorruptionReason(input []byte) string {
 	if len(input) < InputStateSize {
 		return ""
 	}
-	if containsStreamMagic(input, 0, len(input)) {
+	if containsStreamMagic(input) {
 		return "full transport magic in payload"
 	}
 
@@ -277,15 +268,11 @@ func inputStatePayloadCorruptionReason(input []byte) string {
 	// The mic storm observed in the wild leaked the framed-stream marker into
 	// controls. Keep this scoped away from motion bytes so a legitimate gyro
 	// sample cannot be mistaken for transport framing.
-	if containsStreamMarkerFragment(input, 0, 11) {
+	if containsStreamMarkerFragment(input, 11) {
 		return "transport marker fragment in controls"
 	}
 
 	return ""
-}
-
-func inputStatePayloadLooksCorrupt(input []byte) bool {
-	return inputStatePayloadCorruptionReason(input) != ""
 }
 
 func describeInputStatePayload(input []byte, corruptReason string) string {
@@ -320,20 +307,18 @@ func describeInputStatePayload(input []byte, corruptReason string) string {
 		accelX,
 		accelY,
 		accelZ,
-		containsStreamMagic(input, 0, len(input)),
-		containsStreamMarkerFragment(input, 0, 11),
+		containsStreamMagic(input),
+		containsStreamMarkerFragment(input, 11),
 		corruptReason)
 }
 
-func containsStreamMagic(data []byte, offset int, length int) bool {
+func containsStreamMagic(data []byte) bool {
 	const magicLength = 4
-	if len(data) < magicLength || length < magicLength {
+	if len(data) < magicLength {
 		return false
 	}
 
-	start := max(offset, 0)
-	end := min(offset+length, len(data))
-	for i := start; i+magicLength <= end; i++ {
+	for i := 0; i+magicLength <= len(data); i++ {
 		if data[i] == StreamFrameMagic0 &&
 			data[i+1] == StreamFrameMagic1 &&
 			data[i+2] == StreamFrameMagic2 &&
@@ -345,15 +330,14 @@ func containsStreamMagic(data []byte, offset int, length int) bool {
 	return false
 }
 
-func containsStreamMarkerFragment(data []byte, offset int, length int) bool {
+func containsStreamMarkerFragment(data []byte, length int) bool {
 	const markerLength = 3
 	if len(data) < markerLength || length < markerLength {
 		return false
 	}
 
-	start := max(offset, 0)
-	end := min(offset+length, len(data))
-	for i := start; i+markerLength <= end; i++ {
+	end := min(length, len(data))
+	for i := 0; i+markerLength <= end; i++ {
 		if data[i] == StreamFrameMagic0 &&
 			data[i+1] == StreamFrameMagic1 &&
 			data[i+2] == StreamFrameMagic2 {
