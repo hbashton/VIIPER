@@ -76,7 +76,7 @@ func TestReadDualSenseInputStreamAcceptsVersionedMicFrames(t *testing.T) {
 	}
 
 	dev.mtx.Lock()
-	gotInput := *dev.inputState
+	gotInput := dev.inputState
 	gotMicrophoneLen := len(dev.microphonePCM)
 	dev.mtx.Unlock()
 
@@ -191,7 +191,7 @@ func TestReadDualSenseInputStreamDropsCorruptedTransportMagicInput(t *testing.T)
 	}
 
 	dev.mtx.Lock()
-	gotInput := *dev.inputState
+	gotInput := dev.inputState
 	dev.mtx.Unlock()
 
 	neutral := NewInputState()
@@ -248,7 +248,7 @@ func TestReadDualSenseInputStreamDropsPlainTransportMagicInputBytes(t *testing.T
 	}
 
 	dev.mtx.Lock()
-	gotInput := *dev.inputState
+	gotInput := dev.inputState
 	dev.mtx.Unlock()
 
 	neutral := NewInputState()
@@ -257,5 +257,121 @@ func TestReadDualSenseInputStreamDropsPlainTransportMagicInputBytes(t *testing.T
 		gotInput.R2 != neutral.R2 {
 		t.Fatalf("plain transport magic bytes should reset input: got LX=%d LY=%d RX=%d RY=%d R2=%d",
 			gotInput.LX, gotInput.LY, gotInput.RX, gotInput.RY, gotInput.R2)
+	}
+}
+
+func TestReadDualSenseInputStreamDropsTransportMarkerFragments(t *testing.T) {
+	dev, err := New(nil)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	server, client := net.Pipe()
+	defer server.Close()
+
+	errCh := make(chan error, 1)
+	go func() {
+		logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+		errCh <- readDualSenseInputStream(server, dev, logger, true)
+	}()
+
+	state := NewInputState()
+	state.LX = 55
+	state.R2 = 88
+	inputPayload, err := state.MarshalBinary()
+	if err != nil {
+		t.Fatalf("MarshalBinary returned error: %v", err)
+	}
+	copy(inputPayload[6:9], []byte{StreamFrameMagic1, StreamFrameMagic2, StreamFrameMagic3})
+
+	if _, err := client.Write(makeStreamFrame(t, StreamFrameInputState, inputPayload)); err != nil {
+		t.Fatalf("write input frame: %v", err)
+	}
+	if err := client.Close(); err != nil {
+		t.Fatalf("close client pipe: %v", err)
+	}
+
+	if err := <-errCh; err != nil {
+		t.Fatalf("readDualSenseInputStream returned error: %v", err)
+	}
+
+	dev.mtx.Lock()
+	gotInput := dev.inputState
+	dev.mtx.Unlock()
+
+	neutral := NewInputState()
+	if gotInput.LX != neutral.LX || gotInput.R2 != neutral.R2 || gotInput.Buttons != neutral.Buttons {
+		t.Fatalf("transport marker fragment should reset input: got LX=%d R2=%d buttons=%#x",
+			gotInput.LX, gotInput.R2, gotInput.Buttons)
+	}
+}
+
+func TestReadDualSenseInputStreamDropsInvalidControlBits(t *testing.T) {
+	dev, err := New(nil)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	server, client := net.Pipe()
+	defer server.Close()
+
+	errCh := make(chan error, 1)
+	go func() {
+		logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+		errCh <- readDualSenseInputStream(server, dev, logger, true)
+	}()
+
+	state := NewInputState()
+	state.LX = -32
+	state.Buttons = validDualSenseInputButtons | 0x80000000
+	state.DPad = validDualSenseInputDPad | 0x80
+	inputPayload, err := state.MarshalBinary()
+	if err != nil {
+		t.Fatalf("MarshalBinary returned error: %v", err)
+	}
+
+	if _, err := client.Write(makeStreamFrame(t, StreamFrameInputState, inputPayload)); err != nil {
+		t.Fatalf("write input frame: %v", err)
+	}
+	if err := client.Close(); err != nil {
+		t.Fatalf("close client pipe: %v", err)
+	}
+
+	if err := <-errCh; err != nil {
+		t.Fatalf("readDualSenseInputStream returned error: %v", err)
+	}
+
+	dev.mtx.Lock()
+	gotInput := dev.inputState
+	dev.mtx.Unlock()
+
+	neutral := NewInputState()
+	if gotInput.LX != neutral.LX || gotInput.Buttons != neutral.Buttons || gotInput.DPad != neutral.DPad {
+		t.Fatalf("invalid control bits should reset input: got LX=%d buttons=%#x dpad=%#x",
+			gotInput.LX, gotInput.Buttons, gotInput.DPad)
+	}
+}
+
+func TestDualSenseUpdateInputStateCopiesState(t *testing.T) {
+	dev, err := New(nil)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	state := NewInputState()
+	state.LX = 44
+	state.Buttons = ButtonCross
+	dev.UpdateInputState(state)
+
+	state.LX = -91
+	state.Buttons = 0xFFFFFFFF
+
+	dev.mtx.Lock()
+	gotInput := dev.inputState
+	dev.mtx.Unlock()
+
+	if gotInput.LX != 44 || gotInput.Buttons != ButtonCross {
+		t.Fatalf("input state should be copied before publish: got LX=%d buttons=%#x",
+			gotInput.LX, gotInput.Buttons)
 	}
 }

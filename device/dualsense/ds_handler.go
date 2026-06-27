@@ -228,7 +228,7 @@ func readDualSenseInputStream(conn net.Conn, dse *DualSense, logger *slog.Logger
 }
 
 func sanitizeInputStateTransportSignature(input []byte) bool {
-	if !containsStreamMagic(input, 0, len(input)) {
+	if !inputStatePayloadLooksCorrupt(input) {
 		return false
 	}
 
@@ -244,6 +244,27 @@ func sanitizeInputStateTransportSignature(input []byte) bool {
 	return true
 }
 
+func inputStatePayloadLooksCorrupt(input []byte) bool {
+	if len(input) < InputStateSize {
+		return false
+	}
+	if containsStreamMagic(input, 0, len(input)) {
+		return true
+	}
+
+	buttons := binary.LittleEndian.Uint32(input[4:8])
+	dpad := input[8]
+	if buttons&^validDualSenseInputButtons != 0 ||
+		dpad&^validDualSenseInputDPad != 0 {
+		return true
+	}
+
+	// The mic storm observed in the wild leaked the framed-stream marker into
+	// controls. Keep this scoped away from motion bytes so a legitimate gyro
+	// sample cannot be mistaken for transport framing.
+	return containsStreamMarkerFragment(input, 0, 11)
+}
+
 func containsStreamMagic(data []byte, offset int, length int) bool {
 	const magicLength = 4
 	if len(data) < magicLength || length < magicLength {
@@ -257,6 +278,30 @@ func containsStreamMagic(data []byte, offset int, length int) bool {
 			data[i+1] == StreamFrameMagic1 &&
 			data[i+2] == StreamFrameMagic2 &&
 			data[i+3] == StreamFrameMagic3 {
+			return true
+		}
+	}
+
+	return false
+}
+
+func containsStreamMarkerFragment(data []byte, offset int, length int) bool {
+	const markerLength = 3
+	if len(data) < markerLength || length < markerLength {
+		return false
+	}
+
+	start := max(offset, 0)
+	end := min(offset+length, len(data))
+	for i := start; i+markerLength <= end; i++ {
+		if data[i] == StreamFrameMagic0 &&
+			data[i+1] == StreamFrameMagic1 &&
+			data[i+2] == StreamFrameMagic2 {
+			return true
+		}
+		if data[i] == StreamFrameMagic1 &&
+			data[i+1] == StreamFrameMagic2 &&
+			data[i+2] == StreamFrameMagic3 {
 			return true
 		}
 	}

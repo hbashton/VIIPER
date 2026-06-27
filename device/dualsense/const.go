@@ -110,12 +110,34 @@ const (
 	ButtonEdgeR4  uint32 = 0x00800000
 )
 
+const validDualSenseInputButtons uint32 = ButtonSquare |
+	ButtonCross |
+	ButtonCircle |
+	ButtonTriangle |
+	ButtonL1 |
+	ButtonR1 |
+	ButtonL2 |
+	ButtonR2 |
+	ButtonCreate |
+	ButtonOptions |
+	ButtonL3 |
+	ButtonR3 |
+	ButtonPS |
+	ButtonTouchpad |
+	ButtonMicMute |
+	ButtonEdgeLFn |
+	ButtonEdgeRFn |
+	ButtonEdgeL4 |
+	ButtonEdgeR4
+
 const (
 	DPadUp    = 0x01
 	DPadDown  = 0x02
 	DPadLeft  = 0x04
 	DPadRight = 0x08
 )
+
+const validDualSenseInputDPad uint8 = DPadUp | DPadDown | DPadLeft | DPadRight
 
 const (
 	DPadUSBUp        = 0x00

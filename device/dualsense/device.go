@@ -22,8 +22,8 @@ import (
 var rawOutputLogEnabled = os.Getenv("VIIPER_DUALSENSE_RAW_OUTPUT_LOG") == "1"
 
 type DualSense struct {
-	inputCh    chan *InputState
-	inputState *InputState
+	inputCh    chan InputState
+	inputState InputState
 	metaState  *MetaState
 
 	outputFunc                func(OutputState)
@@ -126,8 +126,8 @@ func new(o *device.CreateOptions, edge bool) (*DualSense, error) {
 		"pid", d.descriptor.Device.IDProduct,
 		"interfaces", len(d.descriptor.Interfaces))
 
-	d.inputState = NewInputState()
-	d.inputCh = make(chan *InputState, 1)
+	d.inputState = *NewInputState()
+	d.inputCh = make(chan InputState, 1)
 	d.inputCh <- d.inputState
 	d.timestampBase = time.Now()
 
@@ -145,14 +145,23 @@ func (d *DualSense) SetOutputCallback(f func(OutputState)) {
 }
 
 func (d *DualSense) UpdateInputState(state *InputState) {
+	next := *NewInputState()
+	if state != nil {
+		next = *state
+	}
+
 	d.mtx.Lock()
-	d.inputState = state
+	d.inputState = next
 	d.mtx.Unlock()
+
 	select {
 	case <-d.inputCh:
 	default:
 	}
-	d.inputCh <- state
+	select {
+	case d.inputCh <- next:
+	default:
+	}
 }
 
 func (d *DualSense) GetDescriptor() *usb.Descriptor {
@@ -204,14 +213,14 @@ func (d *DualSense) HandleTransfer(ctx context.Context, ep uint32, dir uint32, o
 					is := d.inputState
 					ms := *d.metaState
 					d.mtx.Unlock()
-					return d.buildUSBInputReport(is, &ms)
+					return d.buildUSBInputReport(&is, &ms)
 				}
 				return nil
 			case is := <-d.inputCh:
 				d.mtx.Lock()
 				ms := *d.metaState
 				d.mtx.Unlock()
-				return d.buildUSBInputReport(is, &ms)
+				return d.buildUSBInputReport(&is, &ms)
 			}
 		case EndpointMicrophoneIn:
 			return d.handleMicrophoneIn(ctx)
@@ -435,7 +444,7 @@ func (d *DualSense) HandleControl(bmRequestType, bRequest uint8, wValue, wIndex,
 		case hidGetReport:
 			if reportType == reportTypeInput && reportID == ReportIDInput {
 				d.mtx.Lock()
-				is := *d.inputState
+				is := d.inputState
 				ms := *d.metaState
 				d.mtx.Unlock()
 				b := d.buildUSBInputReport(&is, &ms)
@@ -875,17 +884,33 @@ func (d *DualSense) buildUSBInputReport(s *InputState, m *MetaState) []byte {
 	}
 	b[53] = battery
 
-	if containsStreamMagic(b, 0, len(b)) {
+	corruptReason := ""
+	if inputStateControlsInvalid(s) {
+		corruptReason = "invalid input control bits"
+	} else if containsStreamMagic(b, 0, len(b)) {
+		corruptReason = "transport signature"
+	}
+
+	if corruptReason != "" {
 		d.corruptUSBInputReports++
 		count := d.corruptUSBInputReports
 		if count <= 128 || isPowerOfTwo(count) {
-			slog.Warn("DualSense USB input report contained stream transport signature; report reset to neutral",
-				"count", count)
+			slog.Warn("DualSense USB input report was corrupt; report reset to neutral",
+				"count", count,
+				"reason", corruptReason)
 		}
 		resetUSBInputReportToNeutral(b, d.seqCounter, ts, battery)
 	}
 
 	return b
+}
+
+func inputStateControlsInvalid(s *InputState) bool {
+	if s == nil {
+		return false
+	}
+	return s.Buttons&^validDualSenseInputButtons != 0 ||
+		s.DPad&^validDualSenseInputDPad != 0
 }
 
 func resetUSBInputReportToNeutral(b []byte, seq uint8, timestamp uint32, battery byte) {
