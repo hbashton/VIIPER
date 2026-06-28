@@ -606,6 +606,37 @@ func TestDualSenseUSBInputReportDropsTransportMagic(t *testing.T) {
 	}
 }
 
+func TestDualSenseUSBInputReportDropsTransportMarkerFragmentWhenMicrophoneActive(t *testing.T) {
+	dev, err := New(nil)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	dev.SetInterfaceAltSetting(InterfaceMicrophone, 1)
+
+	state := NewInputState()
+	state.GyroX = int16(uint16(StreamFrameMagic0) | uint16(StreamFrameMagic1)<<8)
+	state.GyroY = int16(uint16(StreamFrameMagic2))
+	state.LX = 17
+	state.R2 = 200
+	state.Buttons = ButtonCross
+
+	report := dev.buildUSBInputReport(state, &MetaState{BatteryStatus: BatteryFullyCharged})
+	if containsStreamMarkerFragment(report, len(report)) {
+		t.Fatalf("USB input report leaked transport marker fragment: % x", report)
+	}
+	if dev.corruptUSBInputReports != 1 {
+		t.Fatalf("expected one corrupted report reset, got %d", dev.corruptUSBInputReports)
+	}
+	if report[1] != 128 || report[2] != 128 || report[3] != 128 || report[4] != 128 ||
+		report[5] != 0 || report[6] != 0 || report[8] != DPadUSBNeutral ||
+		report[9] != 0 || report[10] != 0 {
+		t.Fatalf("corrupted mic-active report was not reset to neutral controls: % x", report[:11])
+	}
+	if report[53] != BatteryFullyCharged {
+		t.Fatalf("neutral report should preserve battery byte, got %#x", report[53])
+	}
+}
+
 func TestDualSenseExtendedFeedbackUsesNativeTriggerBlockSize(t *testing.T) {
 	out := OutputState{
 		RumbleSmall:              0x11,

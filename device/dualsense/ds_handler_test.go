@@ -306,6 +306,52 @@ func TestReadDualSenseInputStreamDropsTransportMarkerFragments(t *testing.T) {
 	}
 }
 
+func TestReadDualSenseInputStreamDropsTransportMarkerFragmentsInTouchMotion(t *testing.T) {
+	dev, err := New(nil)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	server, client := net.Pipe()
+	defer server.Close()
+
+	errCh := make(chan error, 1)
+	go func() {
+		logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+		errCh <- readDualSenseInputStream(server, dev, logger, true)
+	}()
+
+	state := NewInputState()
+	state.LX = 55
+	state.R2 = 88
+	inputPayload, err := state.MarshalBinary()
+	if err != nil {
+		t.Fatalf("MarshalBinary returned error: %v", err)
+	}
+	copy(inputPayload[21:24], []byte{StreamFrameMagic0, StreamFrameMagic1, StreamFrameMagic2})
+
+	if _, err := client.Write(makeStreamFrame(t, StreamFrameInputState, inputPayload)); err != nil {
+		t.Fatalf("write input frame: %v", err)
+	}
+	if err := client.Close(); err != nil {
+		t.Fatalf("close client pipe: %v", err)
+	}
+
+	if err := <-errCh; err != nil {
+		t.Fatalf("readDualSenseInputStream returned error: %v", err)
+	}
+
+	dev.mtx.Lock()
+	gotInput := dev.inputState
+	dev.mtx.Unlock()
+
+	neutral := NewInputState()
+	if gotInput.LX != neutral.LX || gotInput.R2 != neutral.R2 || gotInput.GyroX != neutral.GyroX {
+		t.Fatalf("touch/motion transport marker fragment should reset input: got LX=%d R2=%d GyroX=%d",
+			gotInput.LX, gotInput.R2, gotInput.GyroX)
+	}
+}
+
 func TestReadDualSenseInputStreamDropsInvalidControlBits(t *testing.T) {
 	dev, err := New(nil)
 	if err != nil {
