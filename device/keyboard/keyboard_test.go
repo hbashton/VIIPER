@@ -14,6 +14,7 @@ import (
 	"github.com/Alia5/VIIPER/viiperclient"
 	"github.com/Alia5/VIIPER/virtualbus"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	_ "github.com/Alia5/VIIPER/internal/registry" // Register devices
 )
@@ -210,5 +211,29 @@ func TestLEDs(t *testing.T) {
 			}
 			assert.Equal(t, tc.ledMask, buf[0])
 		})
+	}
+}
+
+func TestLEDCallbackReplaysLatestHostState(t *testing.T) {
+	dev, err := keyboard.New(nil)
+	require.NoError(t, err)
+
+	dev.HandleTransfer(context.Background(), 1, usbip.DirOut,
+		[]byte{keyboard.LEDNumLock | keyboard.LEDCapsLock})
+
+	gotCh := make(chan keyboard.LEDState, 1)
+	dev.SetLEDCallback(func(led keyboard.LEDState) {
+		gotCh <- led
+	})
+
+	select {
+	case got := <-gotCh:
+		assert.True(t, got.NumLock)
+		assert.True(t, got.CapsLock)
+		assert.False(t, got.ScrollLock)
+		assert.False(t, got.Compose)
+		assert.False(t, got.Kana)
+	case <-time.After(viiperTesting.IntegrationTimeout):
+		t.Fatal("expected late LED callback to receive latest host state")
 	}
 }

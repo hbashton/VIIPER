@@ -18,6 +18,7 @@ type Keyboard struct {
 	inputCh     chan InputState
 	stateMu     sync.Mutex
 	ledState    uint8
+	ledSeen     bool
 	ledCallback func(LEDState)
 	descriptor  usb.Descriptor
 }
@@ -42,7 +43,20 @@ func New(o *device.CreateOptions) (*Keyboard, error) {
 
 // SetLEDCallback sets a callback that will be invoked when LED state changes.
 func (k *Keyboard) SetLEDCallback(f func(LEDState)) {
+	var latest LEDState
+	var replay bool
+
+	k.stateMu.Lock()
 	k.ledCallback = f
+	if f != nil && k.ledSeen {
+		latest = ledStateFromMask(k.ledState)
+		replay = true
+	}
+	k.stateMu.Unlock()
+
+	if replay {
+		f(latest)
+	}
 }
 
 // GetLEDState returns the current LED state from the host.
@@ -86,22 +100,30 @@ func (k *Keyboard) HandleTransfer(ctx context.Context, ep uint32, dir uint32, ou
 	if dir == usbip.DirOut && ep == 1 {
 		// 0x01 - LED state from host
 		if len(out) >= 1 {
+			ledState := ledStateFromMask(out[0])
+
 			k.stateMu.Lock()
 			k.ledState = out[0]
+			k.ledSeen = true
+			ledCallback := k.ledCallback
 			k.stateMu.Unlock()
 
-			if k.ledCallback != nil {
-				k.ledCallback(LEDState{
-					NumLock:    out[0]&LEDNumLock != 0,
-					CapsLock:   out[0]&LEDCapsLock != 0,
-					ScrollLock: out[0]&LEDScrollLock != 0,
-					Compose:    out[0]&LEDCompose != 0,
-					Kana:       out[0]&LEDKana != 0,
-				})
+			if ledCallback != nil {
+				ledCallback(ledState)
 			}
 		}
 	}
 	return nil
+}
+
+func ledStateFromMask(mask uint8) LEDState {
+	return LEDState{
+		NumLock:    mask&LEDNumLock != 0,
+		CapsLock:   mask&LEDCapsLock != 0,
+		ScrollLock: mask&LEDScrollLock != 0,
+		Compose:    mask&LEDCompose != 0,
+		Kana:       mask&LEDKana != 0,
+	}
 }
 
 // HID Report Descriptor for a full keyboard with 256-bit key bitmap and LED output.
