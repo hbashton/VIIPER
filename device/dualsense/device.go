@@ -897,6 +897,8 @@ func (d *DualSense) buildUSBInputReport(s *InputState, m *MetaState) []byte {
 		corruptReason = "transport signature"
 	} else if d.isMicrophoneInterfaceActive() && containsStreamMarkerFragment(b, len(b)) {
 		corruptReason = "transport marker fragment while microphone active"
+	} else if d.isMicrophoneInterfaceActive() && containsMicTransportLeakPattern(b[16:41]) {
+		corruptReason = "mic transport leak pattern while microphone active"
 	}
 
 	if corruptReason != "" {
