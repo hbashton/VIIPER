@@ -294,6 +294,8 @@ func (d *DualSense) handleMicrophoneIn(ctx context.Context) []byte {
 		case <-ctx.Done():
 			return make([]byte, USBMicrophonePacketSize)
 		case <-d.microphoneSignal:
+		case <-time.After(time.Millisecond):
+			return make([]byte, USBMicrophonePacketSize)
 		}
 	}
 }
@@ -891,14 +893,17 @@ func (d *DualSense) buildUSBInputReport(s *InputState, m *MetaState) []byte {
 	b[53] = battery
 
 	corruptReason := ""
+	microphoneActive := d.isMicrophoneInterfaceActive()
 	if inputStateControlsInvalid(s) {
 		corruptReason = "invalid input control bits"
 	} else if containsStreamMagic(b) {
 		corruptReason = "transport signature"
-	} else if d.isMicrophoneInterfaceActive() && containsStreamMarkerFragment(b, len(b)) {
+	} else if microphoneActive && containsStreamMarkerFragment(b, len(b)) {
 		corruptReason = "transport marker fragment while microphone active"
-	} else if d.isMicrophoneInterfaceActive() && containsMicTransportLeakPattern(b[16:41]) {
-		corruptReason = "mic transport leak pattern while microphone active"
+	} else if containsStrongMicTransportLeakPattern(b[16:41]) {
+		corruptReason = "mic transport leak pattern"
+	} else if microphoneActive && containsWeakMicTransportLeakPattern(b[16:41]) {
+		corruptReason = "weak mic transport leak pattern while microphone active"
 	}
 
 	if corruptReason != "" {
@@ -943,7 +948,7 @@ func describeUSBInputReport(b []byte, count uint64, resetReason string) string {
 
 	ts := binary.LittleEndian.Uint32(b[28:32])
 	return fmt.Sprintf(
-		"count=%d reportId=0x%02X seq=%d lx=%d ly=%d rx=%d ry=%d l2=%d r2=%d raw8=0x%02X raw9=0x%02X raw10=0x%02X dpadUsb=0x%X touch1=0x%02X touch2=0x%02X ts=%d battery=0x%02X fullMagic=%t markerFrag=%t resetReason=%s",
+		"count=%d reportId=0x%02X seq=%d lx=%d ly=%d rx=%d ry=%d l2=%d r2=%d raw8=0x%02X raw9=0x%02X raw10=0x%02X dpadUsb=0x%X touch1=0x%02X touch2=0x%02X ts=%d battery=0x%02X fullMagic=%t markerFrag=%t micLeak=%t resetReason=%s",
 		count,
 		b[0],
 		b[7],
@@ -963,6 +968,7 @@ func describeUSBInputReport(b []byte, count uint64, resetReason string) string {
 		b[53],
 		containsStreamMagic(b),
 		containsStreamMarkerFragment(b, len(b)),
+		containsMicTransportLeakPattern(b[16:41]),
 		resetReason)
 }
 

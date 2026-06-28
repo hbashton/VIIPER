@@ -398,6 +398,74 @@ func TestReadDualSenseInputStreamDropsMicTransportLeakPatternInTouchMotion(t *te
 	}
 }
 
+func TestReadDualSenseInputStreamDropsWeakMicTransportLeakPatternWhenMicrophoneActive(t *testing.T) {
+	dev, err := New(nil)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	dev.SetInterfaceAltSetting(InterfaceMicrophone, 1)
+
+	server, client := net.Pipe()
+	defer server.Close()
+
+	errCh := make(chan error, 1)
+	go func() {
+		logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+		errCh <- readDualSenseInputStream(server, dev, logger, true)
+	}()
+
+	state := NewInputState()
+	state.LX = 55
+	state.R2 = 88
+	inputPayload, err := state.MarshalBinary()
+	if err != nil {
+		t.Fatalf("MarshalBinary returned error: %v", err)
+	}
+	copy(inputPayload[21:24], []byte{0x01, 0x01, hidClassOUT})
+
+	if _, err := client.Write(makeStreamFrame(t, StreamFrameInputState, inputPayload)); err != nil {
+		t.Fatalf("write input frame: %v", err)
+	}
+	if err := client.Close(); err != nil {
+		t.Fatalf("close client pipe: %v", err)
+	}
+
+	if err := <-errCh; err != nil {
+		t.Fatalf("readDualSenseInputStream returned error: %v", err)
+	}
+
+	dev.mtx.Lock()
+	gotInput := dev.inputState
+	dev.mtx.Unlock()
+
+	neutral := NewInputState()
+	if gotInput.LX != neutral.LX || gotInput.R2 != neutral.R2 || gotInput.GyroX != neutral.GyroX {
+		t.Fatalf("weak touch/motion mic transport leak should reset input: got LX=%d R2=%d GyroX=%d",
+			gotInput.LX, gotInput.R2, gotInput.GyroX)
+	}
+}
+
+func TestContainsMicTransportLeakPatternShiftedFragments(t *testing.T) {
+	cases := [][]byte{
+		{StreamFrameMagic2, StreamFrameMagic3, 0x01, 0x01, hidClassOUT},
+		{StreamFrameMagic3, 0x01, 0x01, hidClassOUT},
+		{0x01, 0x01, hidClassOUT},
+		{StreamFrameMagic2, StreamFrameMagic1, 0x80, 0x87, StreamFrameMagic2},
+		{StreamFrameMagic1, 0x80, 0x87, StreamFrameMagic2},
+		{0x80, 0x87, StreamFrameMagic2},
+	}
+
+	for _, tc := range cases {
+		if !containsMicTransportLeakPattern(tc) {
+			t.Fatalf("expected shifted mic transport leak pattern to match: % x", tc)
+		}
+	}
+
+	if containsMicTransportLeakPattern([]byte{0x80, 0x87, 0x42}) {
+		t.Fatal("near miss should not match mic transport leak pattern")
+	}
+}
+
 func TestReadDualSenseInputStreamDropsInvalidControlBits(t *testing.T) {
 	dev, err := New(nil)
 	if err != nil {
