@@ -669,6 +669,67 @@ func TestDualSenseUSBInputReportDropsMicTransportLeakPatternWhenMicrophoneActive
 	}
 }
 
+func TestDualSenseUSBInputReportDropsShiftedMicTransportLeakPattern(t *testing.T) {
+	dev, err := New(nil)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	state := NewInputState()
+	state.GyroX = int16(0x014D)
+	state.GyroY = int16(0x2101)
+	state.LX = 17
+	state.R2 = 200
+	state.Buttons = ButtonCross
+
+	report := dev.buildUSBInputReport(state, &MetaState{BatteryStatus: BatteryFullyCharged})
+	if containsMicTransportLeakPattern(report[16:41]) {
+		t.Fatalf("USB input report leaked shifted mic transport pattern: % x", report)
+	}
+	if dev.corruptUSBInputReports != 1 {
+		t.Fatalf("expected one corrupted report reset, got %d", dev.corruptUSBInputReports)
+	}
+	if report[1] != 128 || report[2] != 128 || report[3] != 128 || report[4] != 128 ||
+		report[5] != 0 || report[6] != 0 || report[8] != DPadUSBNeutral ||
+		report[9] != 0 || report[10] != 0 {
+		t.Fatalf("shifted mic-leak report was not reset to neutral controls: % x", report[:11])
+	}
+	if report[53] != BatteryFullyCharged {
+		t.Fatalf("neutral report should preserve battery byte, got %#x", report[53])
+	}
+}
+
+func TestDualSenseUSBInputReportDropsWeakMicTransportLeakPatternWhenMicrophoneActive(t *testing.T) {
+	dev, err := New(nil)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	dev.SetInterfaceAltSetting(InterfaceMicrophone, 1)
+
+	state := NewInputState()
+	state.GyroX = int16(0x0101)
+	state.GyroY = int16(0x0021)
+	state.LX = 17
+	state.R2 = 200
+	state.Buttons = ButtonCross
+
+	report := dev.buildUSBInputReport(state, &MetaState{BatteryStatus: BatteryFullyCharged})
+	if containsWeakMicTransportLeakPattern(report[16:41]) {
+		t.Fatalf("USB input report leaked weak mic transport pattern: % x", report)
+	}
+	if dev.corruptUSBInputReports != 1 {
+		t.Fatalf("expected one corrupted report reset, got %d", dev.corruptUSBInputReports)
+	}
+	if report[1] != 128 || report[2] != 128 || report[3] != 128 || report[4] != 128 ||
+		report[5] != 0 || report[6] != 0 || report[8] != DPadUSBNeutral ||
+		report[9] != 0 || report[10] != 0 {
+		t.Fatalf("weak mic-leak report was not reset to neutral controls: % x", report[:11])
+	}
+	if report[53] != BatteryFullyCharged {
+		t.Fatalf("neutral report should preserve battery byte, got %#x", report[53])
+	}
+}
+
 func TestDualSenseExtendedFeedbackUsesNativeTriggerBlockSize(t *testing.T) {
 	out := OutputState{
 		RumbleSmall:              0x11,

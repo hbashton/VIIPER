@@ -201,7 +201,7 @@ func readDualSenseInputStream(conn net.Conn, dse *DualSense, logger *slog.Logger
 			if _, err := io.ReadFull(conn, input); err != nil {
 				return fmt.Errorf("read framed input state: %w", err)
 			}
-			corruptReason := inputStatePayloadCorruptionReason(input)
+			corruptReason := inputStatePayloadCorruptionReason(input, dse.isMicrophoneInterfaceActive())
 			recordTrafficBytes("client->device", "framed-input-state",
 				input,
 				"summary", describeInputStatePayload(input, corruptReason))
@@ -250,7 +250,7 @@ func neutralizeInputStatePayload(input []byte) {
 	copy(input, neutral)
 }
 
-func inputStatePayloadCorruptionReason(input []byte) string {
+func inputStatePayloadCorruptionReason(input []byte, microphoneActive bool) string {
 	if len(input) < InputStateSize {
 		return ""
 	}
@@ -274,8 +274,11 @@ func inputStatePayloadCorruptionReason(input []byte) string {
 	if containsStreamMarkerFragment(input[11:], len(input)-11) {
 		return "transport marker fragment in touch/motion"
 	}
-	if containsMicTransportLeakPattern(input[11:]) {
+	if containsStrongMicTransportLeakPattern(input[11:]) {
 		return "mic transport leak pattern in touch/motion"
+	}
+	if microphoneActive && containsWeakMicTransportLeakPattern(input[11:]) {
+		return "weak mic transport leak pattern in touch/motion"
 	}
 
 	return ""
@@ -361,8 +364,20 @@ func containsStreamMarkerFragment(data []byte, length int) bool {
 }
 
 func containsMicTransportLeakPattern(data []byte) bool {
+	return containsStrongMicTransportLeakPattern(data) ||
+		containsWeakMicTransportLeakPattern(data)
+}
+
+func containsStrongMicTransportLeakPattern(data []byte) bool {
 	return containsByteSequence(data, []byte{StreamFrameMagic2, StreamFrameMagic3, 0x01, 0x01, hidClassOUT}) ||
-		containsByteSequence(data, []byte{StreamFrameMagic2, StreamFrameMagic1, 0x80, 0x87, StreamFrameMagic2})
+		containsByteSequence(data, []byte{StreamFrameMagic3, 0x01, 0x01, hidClassOUT}) ||
+		containsByteSequence(data, []byte{StreamFrameMagic2, StreamFrameMagic1, 0x80, 0x87, StreamFrameMagic2}) ||
+		containsByteSequence(data, []byte{StreamFrameMagic1, 0x80, 0x87, StreamFrameMagic2})
+}
+
+func containsWeakMicTransportLeakPattern(data []byte) bool {
+	return containsByteSequence(data, []byte{0x01, 0x01, hidClassOUT}) ||
+		containsByteSequence(data, []byte{0x80, 0x87, StreamFrameMagic2})
 }
 
 func containsByteSequence(data []byte, sequence []byte) bool {
