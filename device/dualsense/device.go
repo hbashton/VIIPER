@@ -895,6 +895,8 @@ func (d *DualSense) buildUSBInputReport(s *InputState, m *MetaState) []byte {
 		corruptReason = "invalid input control bits"
 	} else if containsStreamMagic(b) {
 		corruptReason = "transport signature"
+	} else if d.isMicrophoneInterfaceActive() && containsStreamMarkerFragment(b, len(b)) {
+		corruptReason = "transport marker fragment while microphone active"
 	}
 
 	if corruptReason != "" {
@@ -916,6 +918,12 @@ func (d *DualSense) buildUSBInputReport(s *InputState, m *MetaState) []byte {
 		"summary", describeUSBInputReport(b, reportCount, corruptReason))
 
 	return b
+}
+
+func (d *DualSense) isMicrophoneInterfaceActive() bool {
+	d.mtx.Lock()
+	defer d.mtx.Unlock()
+	return d.microphoneInterfaceActive
 }
 
 func inputStateControlsInvalid(s *InputState) bool {

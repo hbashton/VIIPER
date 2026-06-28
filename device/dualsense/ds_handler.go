@@ -265,11 +265,14 @@ func inputStatePayloadCorruptionReason(input []byte) string {
 		return fmt.Sprintf("invalid controls buttons=0x%08X dpad=0x%02X", buttons, dpad)
 	}
 
-	// The mic storm observed in the wild leaked the framed-stream marker into
-	// controls. Keep this scoped away from motion bytes so a legitimate gyro
-	// sample cannot be mistaken for transport framing.
+	// The mic storm observed in the wild leaked framed-stream markers into
+	// touch and motion bytes too. A three-byte VPC/PCM fragment is specific
+	// enough to reject the whole input frame before it can become a HID report.
 	if containsStreamMarkerFragment(input, 11) {
 		return "transport marker fragment in controls"
+	}
+	if containsStreamMarkerFragment(input[11:], len(input)-11) {
+		return "transport marker fragment in touch/motion"
 	}
 
 	return ""
@@ -308,7 +311,7 @@ func describeInputStatePayload(input []byte, corruptReason string) string {
 		accelY,
 		accelZ,
 		containsStreamMagic(input),
-		containsStreamMarkerFragment(input, 11),
+		containsStreamMarkerFragment(input, len(input)),
 		corruptReason)
 }
 
