@@ -274,6 +274,9 @@ func inputStatePayloadCorruptionReason(input []byte) string {
 	if containsStreamMarkerFragment(input[11:], len(input)-11) {
 		return "transport marker fragment in touch/motion"
 	}
+	if containsMicTransportLeakPattern(input[11:]) {
+		return "mic transport leak pattern in touch/motion"
+	}
 
 	return ""
 }
@@ -293,7 +296,7 @@ func describeInputStatePayload(input []byte, corruptReason string) string {
 	accelZ := int16(binary.LittleEndian.Uint16(input[31:33]))
 
 	return fmt.Sprintf(
-		"lx=%d ly=%d rx=%d ry=%d buttons=0x%08X dpad=0x%02X l2=%d r2=%d touch1Status=0x%02X touch2Status=0x%02X gyro=%d,%d,%d accel=%d,%d,%d fullMagic=%t markerFragControls=%t corruptReason=%s",
+		"lx=%d ly=%d rx=%d ry=%d buttons=0x%08X dpad=0x%02X l2=%d r2=%d touch1Status=0x%02X touch2Status=0x%02X gyro=%d,%d,%d accel=%d,%d,%d fullMagic=%t markerFragControls=%t micLeak=%t corruptReason=%s",
 		int8(input[0]),
 		int8(input[1]),
 		int8(input[2]),
@@ -312,6 +315,7 @@ func describeInputStatePayload(input []byte, corruptReason string) string {
 		accelZ,
 		containsStreamMagic(input),
 		containsStreamMarkerFragment(input, len(input)),
+		containsMicTransportLeakPattern(input[11:]),
 		corruptReason)
 }
 
@@ -349,6 +353,32 @@ func containsStreamMarkerFragment(data []byte, length int) bool {
 		if data[i] == StreamFrameMagic1 &&
 			data[i+1] == StreamFrameMagic2 &&
 			data[i+2] == StreamFrameMagic3 {
+			return true
+		}
+	}
+
+	return false
+}
+
+func containsMicTransportLeakPattern(data []byte) bool {
+	return containsByteSequence(data, []byte{StreamFrameMagic2, StreamFrameMagic3, 0x01, 0x01, hidClassOUT}) ||
+		containsByteSequence(data, []byte{StreamFrameMagic2, StreamFrameMagic1, 0x80, 0x87, StreamFrameMagic2})
+}
+
+func containsByteSequence(data []byte, sequence []byte) bool {
+	if len(sequence) == 0 || len(data) < len(sequence) {
+		return false
+	}
+
+	for i := 0; i+len(sequence) <= len(data); i++ {
+		found := true
+		for j := range sequence {
+			if data[i+j] != sequence[j] {
+				found = false
+				break
+			}
+		}
+		if found {
 			return true
 		}
 	}
