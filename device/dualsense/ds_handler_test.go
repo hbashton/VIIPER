@@ -166,6 +166,56 @@ func TestReadDualSenseInputStreamV2AcceptsInterleavedStateAndMicrophoneFrames(t 
 	}
 }
 
+func TestBaseDispatcherHonorsCreatedV2StreamProtocol(t *testing.T) {
+	variant := &dshandler{
+		combinedBluetoothFeedback: true,
+		microphoneInput:           true,
+		streamFrameVersion:        StreamFrameVersionV2,
+	}
+	dev, err := variant.CreateDevice(nil)
+	if err != nil {
+		t.Fatalf("CreateDevice returned error: %v", err)
+	}
+
+	server, client := net.Pipe()
+	defer server.Close()
+
+	errCh := make(chan error, 1)
+	go func() {
+		logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+		// The runtime dispatcher infers the concrete Go type as plain
+		// "dualsense", so exercise the base registration here as well.
+		errCh <- (&dshandler{}).StreamHandler()(server, &dev, logger)
+	}()
+
+	state := NewInputState()
+	state.LX = 42
+	state.R2 = 99
+	state.Buttons = ButtonCross
+	payload, err := state.MarshalBinary()
+	if err != nil {
+		t.Fatalf("MarshalBinary returned error: %v", err)
+	}
+	if _, err := client.Write(makeStreamFrameV2(StreamFrameInputState, 0, payload)); err != nil {
+		t.Fatalf("write input frame: %v", err)
+	}
+	if err := client.Close(); err != nil {
+		t.Fatalf("close client pipe: %v", err)
+	}
+	if err := <-errCh; err != nil {
+		t.Fatalf("base stream handler rejected V2 variant framing: %v", err)
+	}
+
+	dualSense := dev.(*DualSense)
+	dualSense.mtx.Lock()
+	got := dualSense.inputState
+	dualSense.mtx.Unlock()
+	if got.LX != state.LX || got.R2 != state.R2 || got.Buttons != state.Buttons {
+		t.Fatalf("V2 frame was not preserved: got LX=%d R2=%d buttons=%#x",
+			got.LX, got.R2, got.Buttons)
+	}
+}
+
 func TestReadDualSenseInputStreamRejectsUnversionedMicFrames(t *testing.T) {
 	dev, err := New(nil)
 	if err != nil {
