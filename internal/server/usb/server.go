@@ -1071,20 +1071,18 @@ func (s *Server) buildIsoInResponse(
 	}
 
 	actualLengths := make([]uint32, len(submitted))
-	totalLen := uint32(0)
+	maximumLen := uint32(0)
 	for _, packet := range submitted {
-		if packet.Length == 0 {
-			continue
-		}
-		end := packet.Offset + packet.Length
-		if end > totalLen {
-			totalLen = end
-		}
+		maximumLen += packet.Length
 	}
 
-	respData := make([]byte, totalLen)
+	// USB/IP removes the padding between ISO packets on the wire. The client
+	// restores each packet at its descriptor offset after receiving the compact
+	// payload. Sending the original offset gaps here makes actual_length differ
+	// from the sum of packet actual lengths, so usbip-win2 discards capture data.
+	respData := make([]byte, 0, maximumLen)
 	for i, packet := range submitted {
-		if packet.Length == 0 || packet.Offset >= uint32(len(respData)) {
+		if packet.Length == 0 {
 			continue
 		}
 
@@ -1098,28 +1096,12 @@ func (s *Server) buildIsoInResponse(
 			packetData = make([]byte, int(packet.Length))
 		}
 
-		available := uint32(len(respData)) - packet.Offset
-		desired := min(packet.Length, available)
-		actual := min(desired, uint32(len(packetData)))
-		copy(respData[packet.Offset:packet.Offset+actual], packetData[:actual])
+		actual := min(packet.Length, uint32(len(packetData)))
+		respData = append(respData, packetData[:actual]...)
 		actualLengths[i] = actual
 	}
 
 	completed := completeIsoPacketsWithActuals(submitted, actualLengths)
-	actualTotal := uint32(0)
-	for i, packet := range completed {
-		if i >= len(submitted) || packet.ActualLength == 0 {
-			continue
-		}
-		end := submitted[i].Offset + packet.ActualLength
-		if end > actualTotal {
-			actualTotal = end
-		}
-	}
-	if actualTotal < uint32(len(respData)) {
-		respData = respData[:actualTotal]
-	}
-
 	return respData, completed
 }
 
