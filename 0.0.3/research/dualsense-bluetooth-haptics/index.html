@@ -1,0 +1,2022 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Virtual Input over IP EmulatoR - Documentation">
+      
+      
+        <meta name="author" content="Peter Repukat">
+      
+      
+      
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>DualSense Bluetooth Haptics Notes - VIIPER Documentation</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../stylesheets/extra.css">
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#dualsense-bluetooth-haptics-notes" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="VIIPER Documentation" class="md-header__button md-logo" aria-label="VIIPER Documentation" data-md-component="logo">
+      
+  <img src="../../viiper.svg" alt="logo">
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            VIIPER Documentation
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              DualSense Bluetooth Haptics Notes
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/Alia5/VIIPER" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    Alia5/VIIPER
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../.." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../getting-started/installation/" class="md-tabs__link">
+          
+  
+  
+  Getting Started
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../cli/overview/" class="md-tabs__link">
+          
+  
+  
+  CLI Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../api/overview/" class="md-tabs__link">
+          
+  
+  
+  API & Clients
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../libviiper/overview/" class="md-tabs__link">
+          
+  
+  
+  libVIIPER
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../devices/xbox360/" class="md-tabs__link">
+          
+  
+  
+  Devices
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../misc/support/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Community & Support
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../changelog/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Changelog
+
+      </a>
+    </li>
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="VIIPER Documentation" class="md-nav__button md-logo" aria-label="VIIPER Documentation" data-md-component="logo">
+      
+  <img src="../../viiper.svg" alt="logo">
+
+    </a>
+    VIIPER Documentation
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/Alia5/VIIPER" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    Alia5/VIIPER
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Getting Started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/installation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/quickstart/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quick Start
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    CLI Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../cli/overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../cli/server/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Server Command
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../cli/proxy/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Proxy Command
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../cli/codegen/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Code Generation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../cli/configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API & Clients
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    API & Clients
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../clients/go/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Go Client
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../clients/cpp/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    C++ Client Library
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../clients/csharp/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    C# Client Library
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../clients/rust/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Rust Client Library
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../clients/typescript/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    TypeScript Client Library
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../clients/generator/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Generator Documentation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    libVIIPER
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    libVIIPER
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../libviiper/overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devices/xbox360/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Xbox 360 Controller
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devices/dualshock4/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    DualShock 4
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devices/dualsense/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    DualSense
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devices/ns2pro/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Switch 2 Pro Controller
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devices/keyboard/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Keyboard
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devices/mouse/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Mouse
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Devices
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Devices
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devices/xbox360/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Xbox 360 Controller
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devices/dualshock4/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    DualShock 4
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devices/dualsense/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    DualSense
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devices/ns2pro/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Switch 2 Pro Controller
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devices/keyboard/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Keyboard
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devices/mouse/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Mouse
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../misc/support/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Community & Support
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../changelog/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Changelog
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#ground-truth" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Ground truth
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#padforge-hidmaestro-read" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        PadForge / HIDMaestro read
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-ghost-of-tsushima-is-likely-sending" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What Ghost of Tsushima is likely sending
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#required-next-implementation-path" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Required next implementation path
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#near-term-viiper-work-from-the-references" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Near-term VIIPER work from the references
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#debug-workflow" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Debug workflow
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#ghost-of-tsushima-bow-capture-2026-06-14" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Ghost of Tsushima bow capture, 2026-06-14
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#ghost-of-tsushima-bow-capture-with-rumble-disabled-2026-06-14" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Ghost of Tsushima bow capture with rumble disabled, 2026-06-14
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#experimental-saxense-bridge-in-viiper" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Experimental SAxense bridge in VIIPER
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#vds-reference-findings" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        vDS reference findings
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="dualsense-bluetooth-haptics-notes">DualSense Bluetooth Haptics Notes</h1>
+<p>These notes track the implementation path for forwarding a game's virtual
+DualSense haptics to a physical Bluetooth DualSense.</p>
+<h2 id="ground-truth">Ground truth</h2>
+<ul>
+<li>SAxense (<code>egormanga/SAxense</code>) streams haptics to a Bluetooth DualSense by
+  writing HID output report <code>0x32</code> to the controller's <code>hidraw</code> node.</li>
+<li>SAxense accepts signed 8-bit stereo PCM at 3000 Hz.</li>
+<li>Each Bluetooth report is 141 bytes:</li>
+<li>byte 0: report ID <code>0x32</code></li>
+<li>byte 1: tag/sequence nibble</li>
+<li>packet <code>0x11</code>: stream/control packet, length 7, body
+    <code>FE 00 00 00 00 FF &lt;interval-counter&gt;</code></li>
+<li>packet <code>0x12</code>: haptics PCM packet, length 64, body is 64 bytes of stereo
+    PCM</li>
+<li>final 4 bytes: DualSense Bluetooth CRC32 with seed <code>0xEADA2D49</code></li>
+<li>VIIPER now has <code>BuildBluetoothHapticsReport</code> mirroring that packet layout so
+  the runtime can package haptics PCM without re-discovering the format.</li>
+</ul>
+<h2 id="padforge-hidmaestro-read">PadForge / HIDMaestro read</h2>
+<p>PadForge and HIDMaestro are useful references, but mostly for the HID side of
+the problem.</p>
+<p>What the public code proves:</p>
+<ul>
+<li>PadForge uses HIDMaestro to create virtual DualSense / DualSense Edge HID
+  devices.</li>
+<li>HIDMaestro profiles declare USB DualSense output report <code>0x02</code> as 48 bytes.
+  The important HID fields are:</li>
+<li>byte 1: <code>validFlag0</code></li>
+<li>byte 2: <code>validFlag1</code></li>
+<li>bytes 3-4: compatible rumble motors</li>
+<li>byte 9: mute LED</li>
+<li>bytes 11-21: right trigger effect</li>
+<li>bytes 22-32: left trigger effect</li>
+<li>bytes 45-47: lightbar RGB</li>
+<li>bytes 1-47: <code>effectPayload</code></li>
+<li>HIDMaestro profiles declare Bluetooth DualSense output report <code>0x31</code> as 78
+  bytes, with a rolling tag, BT flag byte, shifted HID field offsets, and a
+  CRC32 footer using prefix <code>[0xA2, 0x31]</code>.</li>
+<li>PadForge listens for HIDMaestro <code>OutputDecoded</code>, takes the decoded
+  <code>effectPayload</code>, and forwards it to an assigned physical DualSense via
+  <code>SDL_SendGamepadEffect</code>.</li>
+<li>PadForge also has a raw HID writer that encodes profile fields through
+  HIDMaestro and writes to the physical HID path directly, bypassing SDL's
+  effect state machine when needed.</li>
+</ul>
+<p>What the public code does not prove:</p>
+<ul>
+<li>It does not obviously expose a virtual DualSense USB Audio Class function to
+  games.</li>
+<li>It does not obviously capture host-to-device isochronous audio endpoint
+  transfers from a game.</li>
+<li>Its README "audio" features appear, from source review, to include
+  audio-reactive user effects and HID effect passthrough, not necessarily the
+  native DualSense advanced-haptics audio interface that Ghost of Tsushima uses
+  on a wired controller.</li>
+</ul>
+<p>Practical takeaway:</p>
+<ul>
+<li>Use HIDMaestro's profiles as a spec oracle for USB <code>0x02</code> and Bluetooth
+  <code>0x31</code> HID report mapping.</li>
+<li>Keep PadForge's queueing model in mind: HID output callbacks should enqueue
+  and return quickly, while a worker forwards effects to physical hardware.</li>
+<li>Do not assume PadForge solves advanced haptics audio for VIIPER. The missing
+  piece is still a virtual USB audio/haptics function or another endpoint path
+  that lets the game send PCM-like haptics data to the virtual controller.</li>
+</ul>
+<h2 id="what-ghost-of-tsushima-is-likely-sending">What Ghost of Tsushima is likely sending</h2>
+<p>For native DualSense behavior, Ghosts can send separate channels of data:</p>
+<ul>
+<li>HID output report <code>0x02</code>: adaptive trigger state, lightbar/player LEDs, mute
+  LED, and ordinary compatible rumble flags.</li>
+<li>USB audio stream: advanced haptics, exposed by a real wired DualSense as an
+  audio function. SAxense's input format strongly suggests that the useful
+  Bluetooth haptics payload is 3000 Hz stereo 8-bit PCM.</li>
+</ul>
+<p>VIIPER's current DualSense device is HID-only. It captures report <code>0x02</code>, but it
+does not expose a virtual DualSense USB audio function yet. That means a game
+that sends advanced haptics through the DualSense audio interface has nowhere to
+send those frames in the current virtual device, and the HID traffic dump alone
+cannot recover them.</p>
+<h2 id="required-next-implementation-path">Required next implementation path</h2>
+<ol>
+<li>Capture a real wired DualSense USB descriptor, including all audio
+   interfaces, alternate settings, isochronous endpoints, and class-specific
+   audio descriptors.</li>
+<li>Extend VIIPER's DualSense descriptor to expose the same USB audio/haptics
+   interface in addition to the HID interface.</li>
+<li>Route host-to-device audio endpoint transfers into a DualSense haptics
+   diagnostics ring buffer.</li>
+<li>Add an experimental bridge that converts captured haptics PCM into
+   <code>BuildBluetoothHapticsReport</code> frames and writes them to the physical
+   Bluetooth DualSense transport.</li>
+<li>Keep HID report <code>0x02</code> handling separate for adaptive triggers and LEDs.</li>
+</ol>
+<h2 id="near-term-viiper-work-from-the-references">Near-term VIIPER work from the references</h2>
+<ol>
+<li>Add a USB <code>0x02</code> to BT <code>0x31</code> mapping helper using HIDMaestro's declared
+   offsets and CRC32 scope. This is for ordinary HID effects: rumble, lightbar,
+   mute LED, player LEDs, and adaptive trigger command blobs.</li>
+<li>Keep the raw USB <code>0x02</code> report in diagnostics, because Ghost's HID output
+   tells us when it is selecting the haptics path versus ordinary rumble.</li>
+<li>Add audio endpoint capture only after the descriptor exposes the real
+   DualSense audio interfaces. Until then, captures will show HID output only.</li>
+</ol>
+<h2 id="debug-workflow">Debug workflow</h2>
+<ol>
+<li>Start DualSense traffic capture in DS4Windows' VIIPER debugger.</li>
+<li>Keep capture running while the game has focus.</li>
+<li>Exercise the feature in game.</li>
+<li>Return to DS4Windows and use Export DS Traffic.</li>
+<li>Inspect the exported JSON for HID reports. If no audio endpoint capture is
+   present, that confirms the current virtual device is still HID-only and the
+   audio descriptor work is the next blocker.</li>
+</ol>
+<h2 id="ghost-of-tsushima-bow-capture-2026-06-14">Ghost of Tsushima bow capture, 2026-06-14</h2>
+<p>Capture file:</p>
+<ul>
+<li><code>%APPDATA%\DS4Windows\Logs\dualsense_traffic_20260614_103717.json</code></li>
+</ul>
+<p>Summary:</p>
+<ul>
+<li>2,497 total traffic events.</li>
+<li>1,248 parsed DualSense output reports.</li>
+<li>Three clear bow-draw clusters were captured.</li>
+<li>Each bow draw lasts roughly 1.5-1.7 seconds.</li>
+<li>Each bow draw contains:</li>
+<li>47-48 adaptive trigger output reports.</li>
+<li>94-100 compatible rumble output reports.</li>
+<li>large motor rumble ramping up to <code>0xFF</code>.</li>
+</ul>
+<p>Representative trigger sequence:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>21 ff 03 49 92 24 09 00 00 00 00
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>26 ff 03 49 92 24 09 00 00 7f 00
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>26 ff 03 49 92 24 09 00 00 7d 00
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>26 ff 03 49 92 24 09 00 00 7b 00
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>26 ff 03 49 92 24 09 00 00 79 00
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>26 ff 03 49 92 24 09 00 00 77 00
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>26 ff 03 49 92 24 09 00 00 75 00
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>26 ff 03 92 24 49 12 00 00 74 00
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>26 ff 03 92 24 49 12 00 00 72 00
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>26 ff 03 92 24 49 12 00 00 70 00
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>26 ff 03 92 24 49 12 00 00 6e 00
+<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>26 ff 03 92 24 49 12 00 00 6c 00
+</code></pre></div>
+<p>Representative compatible rumble report:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>02 02 40 00 ff 00 00 00 ...
+</code></pre></div>
+<p>Interpretation:</p>
+<ul>
+<li>Ghost is definitely driving the adaptive trigger over normal DualSense HID
+  output report <code>0x02</code>.</li>
+<li>The harsh vibration felt during bow draw is visible as a compatible rumble
+  ramp, not just inferred haptics.</li>
+<li>This capture does not include report <code>0x32</code> haptics PCM. That is expected:
+  report <code>0x32</code> is the Bluetooth HID report SAxense writes to the physical
+  controller after it already has PCM.</li>
+<li>The next bridge should first forward HID report <code>0x02</code> as Bluetooth <code>0x31</code>
+  for adaptive triggers, while keeping compatible rumble separate from future
+  SAxense-style haptics PCM.</li>
+</ul>
+<h2 id="ghost-of-tsushima-bow-capture-with-rumble-disabled-2026-06-14">Ghost of Tsushima bow capture with rumble disabled, 2026-06-14</h2>
+<p>Capture file:</p>
+<ul>
+<li><code>%APPDATA%\DS4Windows\Logs\dualsense_traffic_20260614_104112.json</code></li>
+</ul>
+<p>Summary:</p>
+<ul>
+<li>2,936 total traffic events.</li>
+<li>1,468 parsed DualSense output reports.</li>
+<li>Three clear bow-draw clusters were captured.</li>
+<li>Each bow draw lasts roughly 1.3 seconds.</li>
+<li>Each bow draw contains 47 adaptive-trigger output reports.</li>
+<li>Compatible rumble is absent: <code>small=0</code>, <code>large=0</code> for the draw clusters.</li>
+</ul>
+<p>Interpretation:</p>
+<ul>
+<li>Disabling game rumble removes the normal <code>0x02/0x40</code> compatible rumble ramp.</li>
+<li>The remaining vibration felt during bow draw comes from the adaptive trigger
+  effect mode itself, not from advanced haptics being converted into ordinary
+  controller rumble.</li>
+<li>This validates keeping the trigger HID path separate from the SAxense
+  haptics/audio path.</li>
+</ul>
+<h2 id="experimental-saxense-bridge-in-viiper">Experimental SAxense bridge in VIIPER</h2>
+<p>VIIPER now has an experimental DualSense haptics/audio OUT endpoint:</p>
+<ul>
+<li>endpoint: <code>0x05</code></li>
+<li>type: isochronous OUT</li>
+<li>format advertised in the descriptor: 4-channel, 16-bit, 48000 Hz PCM
+  (channels 3/4 are downsampled to the Bluetooth haptics stream; channels
+  1/2 remain available as the virtual controller speaker pair)</li>
+</ul>
+<p>When host software writes 64-byte haptics/audio chunks to this endpoint,
+VIIPER records:</p>
+<ul>
+<li><code>audio-haptics-out</code>: the raw host-to-device audio/haptics bytes.</li>
+<li><code>saxense-hid-0x32</code>: the generated 141-byte SAxense-style Bluetooth HID
+  haptics report.</li>
+</ul>
+<p>The extended DualSense feedback stream now appends one optional 141-byte
+Bluetooth haptics report after the existing 76-byte feedback payload. DS4Windows
+can forward that report to a real Bluetooth DualSense through its existing
+physical controller handle. This creates the first end-to-end testable contract:
+if Ghost opens the virtual audio endpoint, the traffic export should include
+<code>audio-haptics-out</code> events, matching <code>saxense-hid-0x32</code> packets, and the
+physical controller should receive report <code>0x32</code>.</p>
+<p>Windows reported the experimental audio interface as a failed <code>MEDIA</code> device on
+<code>USB\VID_054C&amp;PID_0CE6&amp;MI_01</code> while the AudioControl descriptor was malformed.
+The current UAC1 AudioControl topology is 0x002A bytes: header, Input Terminal,
+Feature Unit, and Output Terminal. The server also implements standard
+<code>GET_INTERFACE</code> / <code>SET_INTERFACE</code> handling so the audio streaming interface
+can switch from alternate setting 0 to alternate setting 1.</p>
+<p>Captured wired DualSense descriptors use a nine-byte audio OUT endpoint with
+two trailing zero bytes before the class-specific endpoint descriptor. VIIPER
+preserves that hardware layout. The virtual endpoint also answers UAC1
+<code>GET_CUR</code>, <code>GET_MIN</code>, <code>GET_MAX</code>, <code>GET_RES</code>, and <code>SET_CUR</code>
+sampling-frequency requests with the fixed 48 kHz format it advertises.</p>
+<p>Descriptor fidelity alone is not enough for usable audio. USB audio uses
+isochronous URBs, including packet-descriptor arrays and realtime completion.
+The current USBIP transport must implement those frames and pacing before the
+experimental audio function can be considered supported. vDS validates this
+requirement with a UdeCx driver that completes ISO URBs at audio cadence.</p>
+<h2 id="vds-reference-findings">vDS reference findings</h2>
+<p><code>hurryman2212/vds</code> includes captured DualSense USB descriptor data and a
+Windows UdeCx implementation. Its captured standard DualSense audio OUT path
+uses high-speed USB, endpoint <code>0x01</code>, a 392-byte maximum packet, interval 4
+(one millisecond at high speed), and 48 kHz four-channel S16_LE PCM. The
+driver reads each ISO packet descriptor, completes every packet, and delays the
+completion by the stream duration. Those are protocol requirements, not
+optimizations: immediate completions cause the host audio engine to burst PCM,
+which overflows a Bluetooth haptics queue and produces stutter.</p>
+<p>VIIPER now models the captured endpoint values and preserves USB/IP ISO packet
+descriptor arrays. A complete virtual DualSense audio implementation still
+needs the remaining captured composite topology (audio input and feature-unit
+controls) and hardware testing with the usbip-win2 client.</p>
+<p>Credit: SAxense research by egormanga/Sdore should be credited anywhere this
+Bluetooth haptics packet path is surfaced to users or shipped.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.instant", "navigation.tracking", "navigation.tabs", "navigation.sections", "navigation.expand", "navigation.top", "search.suggest", "search.highlight", "content.code.copy"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"default": "stable", "provider": "mike"}}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>
