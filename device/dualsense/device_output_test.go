@@ -31,6 +31,30 @@ func TestDualSenseUSBOutputReportDescriptorMatchesCapture(t *testing.T) {
 	}
 }
 
+func TestMicrophoneInUsesUSBIPEndpointNumber(t *testing.T) {
+	dev, err := New(nil)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	dev.SetInterfaceAltSetting(InterfaceMicrophone, 1)
+	frame := make([]byte, USBMicrophoneClientFrameSize)
+	for i := range frame {
+		frame[i] = byte(i)
+	}
+	dev.QueueMicrophonePCMFrame(frame)
+
+	packet := dev.HandleTransfer(context.Background(),
+		uint32(EndpointMicrophoneIn&0x0F), usbip.DirIn, nil)
+	if len(packet) != USBMicrophonePacketSize {
+		t.Fatalf("unexpected microphone packet length: got %d want %d",
+			len(packet), USBMicrophonePacketSize)
+	}
+	if !bytes.Equal(packet, frame[:USBMicrophonePacketSize]) {
+		t.Fatal("USB/IP endpoint 2 did not return queued microphone PCM")
+	}
+}
+
 func TestDualSenseDescriptorDoesNotAdvertiseEdgeFeatureReports(t *testing.T) {
 	dev, err := New(nil)
 	if err != nil {
