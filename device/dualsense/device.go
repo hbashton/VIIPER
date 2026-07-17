@@ -257,8 +257,10 @@ func (d *DualSense) QueueMicrophonePCMFrame(frame []byte) {
 		return
 	}
 
-	if len(d.microphonePCM) > USBMicrophoneClientFrameSize*4 {
-		d.microphonePCM = d.microphonePCM[len(d.microphonePCM)-USBMicrophoneClientFrameSize*4:]
+	const maximumBufferedBytes = USBMicrophoneClientFrameSize * 4
+	if overflow := len(d.microphonePCM) + len(frame) - maximumBufferedBytes; overflow > 0 {
+		copy(d.microphonePCM, d.microphonePCM[overflow:])
+		d.microphonePCM = d.microphonePCM[:len(d.microphonePCM)-overflow]
 	}
 	d.microphonePCM = append(d.microphonePCM, frame...)
 	d.mtx.Unlock()
@@ -893,17 +895,8 @@ func (d *DualSense) buildUSBInputReport(s *InputState, m *MetaState) []byte {
 	b[53] = battery
 
 	corruptReason := ""
-	microphoneActive := d.isMicrophoneInterfaceActive()
 	if inputStateControlsInvalid(s) {
 		corruptReason = "invalid input control bits"
-	} else if containsStreamMagic(b) {
-		corruptReason = "transport signature"
-	} else if microphoneActive && containsStreamMarkerFragment(b, len(b)) {
-		corruptReason = "transport marker fragment while microphone active"
-	} else if containsStrongMicTransportLeakPattern(b[16:41]) {
-		corruptReason = "mic transport leak pattern"
-	} else if microphoneActive && containsWeakMicTransportLeakPattern(b[16:41]) {
-		corruptReason = "weak mic transport leak pattern while microphone active"
 	}
 
 	if corruptReason != "" {
