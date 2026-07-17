@@ -920,12 +920,6 @@ func (d *DualSense) buildUSBInputReport(s *InputState, m *MetaState) []byte {
 	return b
 }
 
-func (d *DualSense) isMicrophoneInterfaceActive() bool {
-	d.mtx.Lock()
-	defer d.mtx.Unlock()
-	return d.microphoneInterfaceActive
-}
-
 func inputStateControlsInvalid(s *InputState) bool {
 	if s == nil {
 		return false
