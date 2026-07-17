@@ -204,9 +204,12 @@ func (d *DualSense) SetInterfaceAltSetting(iface, alt uint8) {
 }
 
 func (d *DualSense) HandleTransfer(ctx context.Context, ep uint32, dir uint32, out []byte) []byte {
+	// USB/IP carries the endpoint number separately from transfer direction,
+	// so an IN descriptor address such as 0x82 arrives here as endpoint 2.
+	epNumber := ep & 0x0F
 	if dir == usbip.DirIn {
-		switch ep {
-		case 4:
+		switch epNumber {
+		case EndpointIn & 0x0F:
 			select {
 			case <-ctx.Done():
 				if errors.Is(ctx.Err(), context.DeadlineExceeded) {
@@ -223,14 +226,14 @@ func (d *DualSense) HandleTransfer(ctx context.Context, ep uint32, dir uint32, o
 				d.mtx.Unlock()
 				return d.buildUSBInputReport(&is, &ms)
 			}
-		case EndpointMicrophoneIn:
+		case EndpointMicrophoneIn & 0x0F:
 			return d.handleMicrophoneIn(ctx)
 		default:
 			return nil
 		}
 	}
 
-	if dir == usbip.DirOut && ep == EndpointOut {
+	if dir == usbip.DirOut && epNumber == EndpointOut&0x0F {
 		recordTrafficBytes("host->device", "interrupt-out",
 			out,
 			"summary", fmt.Sprintf("ep=%d", ep))
@@ -238,7 +241,7 @@ func (d *DualSense) HandleTransfer(ctx context.Context, ep uint32, dir uint32, o
 			return nil
 		}
 	}
-	if dir == usbip.DirOut && ep == EndpointHapticsAudioOut {
+	if dir == usbip.DirOut && epNumber == EndpointHapticsAudioOut&0x0F {
 		d.handleHapticsAudioOut(out)
 		return nil
 	}
