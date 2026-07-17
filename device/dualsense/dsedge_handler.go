@@ -92,6 +92,8 @@ func (h *dsedgehandler) CreateDevice(o *device.CreateOptions) (usb.Device, error
 	}
 	dse.extendedFeedback = h.extendedFeedback
 	dse.combinedBluetoothFeedback = h.combinedBluetoothFeedback
+	dse.microphoneInput = h.microphoneInput
+	dse.streamFrameVersion = h.streamFrameVersion
 	return dse, nil
 }
 
@@ -142,7 +144,15 @@ func (h *dsedgehandler) StreamHandler() api.StreamHandlerFunc {
 			}
 		})
 
-		return readDualSenseInputStreamVersion(conn, dse, logger, h.microphoneInput, h.streamFrameVersion)
+		microphoneInput := h.microphoneInput || dse.microphoneInput
+		streamFrameVersion := h.streamFrameVersion
+		if dse.streamFrameVersion != 0 {
+			streamFrameVersion = dse.streamFrameVersion
+		}
+		logger.Info("DualSense Edge input stream configured",
+			"microphoneInput", microphoneInput,
+			"frameVersion", streamFrameVersion)
+		return readDualSenseInputStreamVersion(conn, dse, logger, microphoneInput, streamFrameVersion)
 	}
 }
 

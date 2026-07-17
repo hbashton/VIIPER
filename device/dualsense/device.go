@@ -31,6 +31,8 @@ type DualSense struct {
 	descriptor                usb.Descriptor
 	extendedFeedback          bool
 	combinedBluetoothFeedback bool
+	microphoneInput           bool
+	streamFrameVersion        byte
 
 	subcommand [2]byte
 
