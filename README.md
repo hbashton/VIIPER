@@ -1,245 +1,257 @@
-<img src="docs/viiper.svg" align="right" width="128"/>
-<br />
+<img src="docs/viiper.svg" align="right" width="128" alt="VIIPER logo" />
 
-[![Build Status](https://github.com/alia5/VIIPER/actions/workflows/snapshots.yml/badge.svg)](https://github.com/alia5/VIIPER/actions/workflows/snapshots.yml)
-[![codecov](https://codecov.io/github/Alia5/VIIPER/graph/badge.svg?token=5WTEELM3X3)](https://codecov.io/github/Alia5/VIIPER)
-[![License: GPL-3.0](https://img.shields.io/github/license/alia5/VIIPER)](https://github.com/alia5/VIIPER/blob/main/LICENSE.txt)
-[![Client Libraries: MIT](https://img.shields.io/badge/Client_Libraries-MIT-green)](https://github.com/alia5/VIIPER/blob/main/internal/codegen/common/license.go)
-[![Release](https://img.shields.io/github/v/release/alia5/VIIPER?include_prereleases&sort=semver)](https://github.com/alia5/VIIPER/releases)
-[![Downloads](https://img.shields.io/github/downloads/alia5/VIIPER/total?logo=github)](https://github.com/alia5/VIIPER/releases)
-[![Issues](https://img.shields.io/github/issues/alia5/VIIPER)](https://github.com/alia5/VIIPER/issues)
-[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/alia5/VIIPER/pulls)
-[![npm version](https://img.shields.io/npm/v/viiperclient?logo=npm)](https://www.npmjs.com/package/viiperclient)
-[![npm downloads](https://img.shields.io/npm/dm/viiperclient?logo=npm&label=downloads)](https://www.npmjs.com/package/viiperclient)
-[![NuGet version](https://img.shields.io/nuget/v/Viiper.Client?logo=nuget)](https://www.nuget.org/packages/Viiper.Client/)
-[![NuGet downloads](https://img.shields.io/nuget/dt/Viiper.Client?logo=nuget&label=downloads)](https://www.nuget.org/packages/Viiper.Client/)
-[![crates.io version](https://img.shields.io/crates/v/viiper-client?logo=rust)](https://crates.io/crates/viiper-client)
-[![crates.io downloads](https://img.shields.io/crates/d/viiper-client?logo=rust&label=downloads)](https://crates.io/crates/viiper-client)
-[![C++ Client Library](https://img.shields.io/badge/C++_Client_Library-Header_Only-blue)](https://github.com/Alia5/VIIPER/releases)
-[![Discord](https://img.shields.io/discord/368823110817808384?logo=discord&logoColor=white&label=Discord&color=%23535fe5
-)](https://discord.gg/hs34MtcHJY)
+# VIIPER
 
-# VIIPER 🐍
+[![Build](https://github.com/hbashton/VIIPER/actions/workflows/snapshots.yml/badge.svg)](https://github.com/hbashton/VIIPER/actions)
+[![Release](https://img.shields.io/github/v/release/hbashton/VIIPER?include_prereleases&sort=semver)](https://github.com/hbashton/VIIPER/releases)
+[![License](https://img.shields.io/github/license/hbashton/VIIPER)](LICENSE.txt)
 
-**Virtual** **I**nput over **IP** **E**mulato**R**
+**Virtual Input over IP EmulatoR**
 
-A **cross-platform virtual USB input framework** for creating virtual USB input devices (game controllers, keyboards, mice and more)
-that are indistinguishable from real hardware to the operating system and applications.
+VIIPER is a userspace virtual USB device framework built on USBIP. This
+hbashton fork is the backend used by the hbashton DS4Windows project for native
+virtual controller output, including the ongoing DualSense audio, haptics, and
+microphone work.
 
-VIIPER lets developers create and programmatically control virtual USB input devices (using USBIP under the hood),
-enabling seamless integration for gaming, automation, testing and remote control scenarios.
+This repository is forked from [Alia5/VIIPER](https://github.com/Alia5/VIIPER).
+The hbashton release channel contains the protocol and USB-audio changes needed
+by [hbashton/DS4Windows](https://github.com/hbashton/DS4Windows). Install links
+in this README download hbashton builds.
 
-- Runs on Linux and Windows.  
-- _(Optional)_ network support built in: control devices over a network with lower overhead than raw USBIP alone.  
-- VIIPER abstracts away all USB / USBIP details.  
-- VIIPER is portable and runs entirely in userspace.  
-    - Utilizes a generic USBIP kernel mode driver  
-      (built into Linux; on Windows [usbip-win2](https://github.com/vadimgrn/usbip-win2) provides a signed kernel mode driver)  
-      New device types never require touching kernel code.  
-- After installing USBIP once, VIIPER can run without additional dependencies or system-wide installation.  
+> **Windows releases from this fork are x64 only.** x86 Windows and x86
+> DS4Windows builds are not compatible with VIIPER. Use 64-bit Windows and the
+> x64 DS4Windows package.
 
-VIIPER comes in two distinct flavors:
+## Install for DS4Windows
 
-- **VIIPER server**  
-  a self-contained, (no dependencies, statically linked) portable, standalone executable  
-    - exposing a lightweight TCP-API
-    - control devices from any language or machine on the network  
-- **libVIIPER**  
-  a single shared library to embed device emulation directly into your application  
-  See Examples for C and C# [here](./examples/libVIIPER)  
-  or the [libVIIPER documentation](docs/libviiper/overview.md) for details and examples.  
+The simplest and recommended path is through a VIIPER-capable DS4Windows build:
 
-For why you should pick one over the other see the [FAQ](#why-choose-the-standalone-executable-and-interfacing-via-tcp-over-the-shared-object-libviiper-library)
+1. Download the newest VIIPER pre-release from
+   [hbashton/DS4Windows Releases](https://github.com/hbashton/DS4Windows/releases).
+2. Open **DS4Windows > Settings**.
+3. Under **VIIPER Virtual Controller Support**, click **Install / Repair VIIPER**.
+4. Accept the administrator prompt and restart Windows if `usbip-win2` was installed or updated.
+5. In a profile, choose a VIIPER output such as **DualSense (VIIPER)**.
 
-Beyond device emulation, VIIPER can proxy real USB devices for traffic inspection and reverse engineering.
+DS4Windows installs VIIPER to `%LOCALAPPDATA%\VIIPER\viiper.exe`, installs the
+required Windows USBIP driver when necessary, registers startup, and checks that
+the local VIIPER API responds.
 
-**Emulatable devices:**
+## Install VIIPER directly on Windows
 
-- Xbox 360 controller emulation; see [Devices › Xbox 360 Controller](docs/devices/xbox360.md)
-- HID Keyboard with N-key rollover and LED feedback; see [Devices › Keyboard](docs/devices/keyboard.md)
-- HID Mouse with 5 buttons and horizontal/vertical wheel; see [Devices › Mouse](docs/devices/mouse.md)
-- PS4 controller emulation; see [Devices › DualShock 4 Controller](docs/devices/dualshock4.md)
-- PS5 DualSense controller emulation (including Edge variant); see [Devices › DualSense Controller](docs/devices/dualsense.md)
-- Nintendo Switch 2 Pro Controller emulation; see [Devices › Switch 2 Pro Controller](docs/devices/ns2pro.md)
+Windows x64 users can run the hbashton installer from PowerShell:
 
-## 🔌 Requirements
+```powershell
+irm https://raw.githubusercontent.com/hbashton/VIIPER/main/scripts/install.ps1 | iex
+```
 
-**Linux:**
+The script:
 
-- **Arch Linux:**
-    - Install: `sudo pacman -S usbip`
-    - Docs: [Arch Wiki: USBIP](https://wiki.archlinux.org/title/USB/IP)
+1. Downloads the latest release from `hbashton/VIIPER`.
+2. Accepts either the packaged Windows ZIP or the `viiper.exe` asset used by current releases.
+3. Installs VIIPER to `%LOCALAPPDATA%\VIIPER\viiper.exe`.
+4. Installs or updates `usbip-win2` when required.
+5. Registers VIIPER for startup and starts the local server.
 
-- **Ubuntu:**  
-    - Install: `sudo apt install linux-tools-generic`
-    - Docs: [Ubuntu USBIP Manual](https://manpages.ubuntu.com/manpages/noble/man8/usbip.8.html)
+You can also download `viiper.exe` manually from the
+[latest hbashton release](https://github.com/hbashton/VIIPER/releases/latest).
+VIIPER itself is portable, but virtual devices on Windows still require the
+[`usbip-win2`](https://github.com/vadimgrn/usbip-win2) kernel driver.
 
-**Windows:**
+## What the hbashton fork adds
 
-- [usbip-win2](https://github.com/vadimgrn/usbip-win2) is by far the most complete implementation of USBIP for Windows (comes with a **SIGNED** kernel mode driver).
+### DS4Windows controller backends
 
----
+VIIPER can expose the following virtual USB devices for DS4Windows:
 
-## 🥫 Feeder application development
+- Xbox 360 controller
+- DualShock 4
+- DualSense
+- DualSense Edge
+- Nintendo Switch 2 Pro Controller
 
-You have two options for developing feeder applications that control the virtual devices created by VIIPER:
+The generic VIIPER keyboard and mouse devices remain available to other feeder
+applications.
 
-- Use the standalone VIIPER server and interface via the exposed TCP-API (preferably using one of the available client libraries)
-- Integrate libVIIPER directly into your application.  
-  See [Examples](examples/libVIIPER) for examples in either C or C#.
+### Native DualSense input
 
-### 🔌 API
+The virtual DualSense and DualSense Edge paths carry:
 
-VIIPER includes a lightweight TCP based API for device and bus management, as well as streaming device control.  
-It's designed to be trivial to drive from any language that can open a TCP socket and send null-byte-terminated commands.  
+- Face, shoulder, system, and mute buttons
+- Sticks and analog triggers
+- Touchpad click and two-finger coordinates
+- Gyroscope and accelerometer reports
+- DualSense Edge Fn buttons and back paddles
+- Battery and controller metadata used by the USB identity
 
-> [!TIP]
-Most of the time, you don't need to implement that raw protocol yourself, as client libraries are available.  
-See [Client Libraries](docs/api/overview.md).
+### Output reports and adaptive triggers
 
-- The TCP API uses a string-based request/response protocol terminated by null bytes (`\0`) for device and bus management.  
-    - Requests have a "_path_" and optional payload (sometimes  JSON).  
-    eg. `bus/{id}/add {"type": "keyboard", "idVendor": "0x6969"}\0`  
-    - Responses are often JSON as well!
-    - Errors are reported using JSON objectes similar to [RFC 7807 Problem Details](https://datatracker.ietf.org/doc/html/rfc7807)  
- <sup>The use of JSON allows for future extenability without breaking compatibility ;)<sup>
-- For controlling, or feeding, a device a long lived TCP stream is used, with a wire-protocol specific to each device type.  
-  After an initial "_handshake_" (`bus/{busId}/{deviceId}\0`) a _device-specific **binary protocol**_ is used to send input reports and receive output reports (e.g., rumble commands).
+VIIPER returns host output to DS4Windows instead of reducing every command to
+generic rumble. Extended DualSense streams preserve:
 
-VIIPER takes care of all USBIP protocol details, so you can focus on implementing the device logic only.  
-On `localhost` VIIPER also automatically attached the USBIP client, so you don't have to worry about USBIP details at all.
+- The native USB HID output report `0x02`
+- Lightbar, player LED, mute LED, and rumble state
+- Native-spaced left and right adaptive-trigger effect blocks
+- Optional Bluetooth haptics report `0x32`
+- Combined Bluetooth state, haptics, and speaker report `0x36`
 
-See the [API documentation](./docs/api) for details
+This lets DS4Windows forward game-authored adaptive-trigger commands and other
+DualSense output to a compatible physical controller.
 
----
+### Advanced haptics and speaker audio
 
-## 🛠️ VIIPER development
+The virtual DualSense includes the USB Audio Class interfaces expected by games.
+The hbashton fork implements USBIP isochronous packet descriptors, completion
+pacing, and audio-interface state so those endpoints can carry real data.
 
-### 🧰 Prerequisites
+With the matching DS4Windows bridge:
+
+- A game can open the virtual DualSense playback endpoint.
+- DualSense haptics samples are converted into the Bluetooth haptics lane.
+- Speaker samples can be forwarded to the physical controller speaker over Bluetooth.
+- Haptics and speaker data share the combined Bluetooth report without one path starving the other.
+
+### Microphone input
+
+The microphone-capable DualSense device types expose a virtual Windows recording
+endpoint. The framed feeder protocol accepts PCM microphone frames separately
+from controller input state, and the USBIP ISO-IN path supplies them to Windows.
+
+In the DS4Windows integration, microphone audio follows this path:
+
+1. The physical Bluetooth DualSense supplies its encoded microphone frames.
+2. DS4Windows decodes and conditions the signal.
+3. DS4Windows sends framed PCM to VIIPER.
+4. VIIPER presents that PCM through the virtual DualSense recording endpoint.
+
+Transport framing and microphone data are deliberately isolated from HID input
+reports. This prevents audio bytes from being interpreted as controller buttons,
+keyboard commands, or mouse movement.
+
+## Architecture
+
+```text
+Physical controller
+        |
+        | HID input, audio, and feedback
+        v
+DS4Windows feeder
+        |
+        | local framed TCP API
+        v
+VIIPER userspace USB device
+        |
+        | USBIP
+        v
+usbip-win2 virtual host controller
+        |
+        v
+Windows, games, and audio services
+```
+
+VIIPER does not emulate a Bluetooth radio and does not make the virtual device
+appear wirelessly paired. The game sees a native-style USB controller. DS4Windows
+is responsible for translating and forwarding supported feedback between that
+virtual USB device and the physical USB or Bluetooth controller.
+
+## Requirements
+
+### Windows
+
+- Windows 10 or Windows 11 x64
+- [`usbip-win2`](https://github.com/vadimgrn/usbip-win2)
+- The hbashton VIIPER executable for the protocol used by your DS4Windows build
+- Administrator approval for driver installation and startup registration
+
+The current hbashton release channel prioritizes Windows x64 and DS4Windows.
+The underlying VIIPER project remains cross-platform, but binaries and features
+available from this fork may differ from upstream.
+
+### Linux development
+
+Linux uses the kernel USBIP client and `vhci-hcd` module. Package names vary by
+distribution; common starting points are `linux-tools-generic` on Ubuntu and
+`usbip` on Arch Linux.
+
+## Server and API
+
+The standalone `viiper` executable exposes a lightweight TCP API for bus and
+device management. Management requests are null-terminated path/payload messages,
+while active devices use persistent binary streams for low-latency input and
+feedback.
+
+Localhost feeder applications can create a bus, add a device, open its stream,
+send input state, and receive output feedback. VIIPER handles USB descriptors,
+USBIP requests, and device attachment.
+
+See:
+
+- [API overview](docs/api/overview.md)
+- [DualSense protocol](docs/devices/dualsense.md)
+- [DualShock 4 protocol](docs/devices/dualshock4.md)
+- [Xbox 360 protocol](docs/devices/xbox360.md)
+- [Switch 2 Pro protocol](docs/devices/ns2pro.md)
+- [libVIIPER overview](docs/libviiper/overview.md)
+
+## Build from source
+
+### Prerequisites
 
 - [Go](https://go.dev/) 1.26 or newer
-- USBIP installed
-- (Optional) [just](https://github.com/casey/just)
-    - Windows: `winget install --id Casey.Just --exact`
-    - Linux/macOS: `cargo install just` or use your package manager
-- Windows compiler (required for `build-libVIIPER`):
-    - `winget install -e --id MartinStorsjo.LLVM-MinGW.UCRT`
-      `--accept-package-agreements --accept-source-agreements`
+- [just](https://github.com/casey/just), recommended
+- USBIP support for the target operating system
+- A C compiler only when building `libVIIPER`
 
-### 🔄 Building from Source
+### Build
 
-```bash
-git clone https://github.com/Alia5/VIIPER.git
+```powershell
+git clone https://github.com/hbashton/VIIPER.git
 cd VIIPER
 just build Release
 ```
 
-The binary will be in `dist/viiper-<goos>-<goarch>` (for example `dist/viiper-windows-amd64.exe`).
+The Windows executable is written to `dist/viiper-windows-amd64.exe`. Useful
+development commands include:
 
-For more build options:
-
-```bash
-just --list            # Show all available targets
-just test              # Run tests
+```powershell
+just test
+go test ./...
+go run ./cmd/viiper codegen
 ```
 
----
+Client bindings are generated for TypeScript, C#, C++, and Rust. Run code
+generation whenever a public device-state or feedback contract changes, then
+build the client examples before publishing the change.
 
-## 🤝 Contributing
+## Troubleshooting
 
-Contributions are welcome!  
-Please open issues or pull requests on GitHub.  
-See the [issues page](https://github.com/Alia5/VIIPER/issues) for bugs and feature requests.
+- **DS4Windows says VIIPER is unavailable:** run **Install / Repair VIIPER** and
+  restart Windows if `usbip-win2` was just installed.
+- **No virtual controller appears:** confirm `viiper.exe server` is running and
+  that the USBIP driver is installed.
+- **Several stale controllers appear:** stop DS4Windows and VIIPER, start VIIPER
+  once, then start DS4Windows. Report repeatable lifecycle bugs with both logs.
+- **DualSense audio or microphone endpoints are missing:** use matching
+  hbashton DS4Windows and VIIPER releases; older upstream VIIPER builds do not
+  contain the same extended device types.
+- **Input becomes corrupted while the microphone is active:** stop the test and
+  report the DS4Windows log plus the VIIPER log. Microphone-capable streams must
+  use the framed protocol and should never pass audio transport bytes into HID state.
 
----
+Report backend issues at
+[hbashton/VIIPER Issues](https://github.com/hbashton/VIIPER/issues). Report
+controller mapping or DS4Windows UI issues at
+[hbashton/DS4Windows Issues](https://github.com/hbashton/DS4Windows/issues).
 
-## ❓ FAQ
+## License
 
-### What is USBIP and why does VIIPER use it?
+The VIIPER server and core are licensed under GPL-3.0-or-later. Generated client
+libraries retain their documented MIT licensing. See [`LICENSE.txt`](LICENSE.txt)
+and the individual client packages for details.
 
-USBIP is a protocol that allows USB devices to be shared over a network.  
-VIIPER uses it because it's already built into Linux and available for Windows, making virtual device emulation possible without writing custom kernel drivers yourself.
+## Credits
 
-### Why choose the the standalone executable and interfacing via TCP over, and the (shared-object) libVIIPER library
-
-- Flexibility
-    - allows one to use VIIPER as a service on the same host as the USBIP-Client and use the feeder on a different, remote machine.
-    - allows for software written utilizing VIIPER to **not be** licensed under the terms of the GPLv3
-    - Allows users to idenpendently update VIIPER to receive updates and bugfixes  without affecting other components or having to recompile applications themselves.  
-       This also takes away maintenance burdens for feeder-application developers (likely you)
-
-### Can I use VIIPER for gaming?
-
-Yes! VIIPER can create virtual input devices that appear as real hardware to games and applications.  
-This works with Steam, native Windows games and any other application that supports the emulated device types.
-
-### How is VIIPER different from other controller emulators?
-
-Many controller emulation approaches require writing a custom kernel driver for every device type you want to support.  
-VIIPER uses USBIP to handle the USB protocol layer, so device emulation code lives entirely in userspace.  
-
-USBIP itself does require a kernel driver.  
-On Linux, the USBIP driver is built into the kernel.  
-On Windows, [usbip-win2](https://github.com/vadimgrn/usbip-win2) provides a signed kernel mode driver.  
-That driver is generic and does not need to know anything about specific device types.  
-All device-type logic stays in userspace.  
-
-This makes VIIPER portable, easier to extend and simpler to bundle with applications.  
-Adding a new device type never requires touching kernel code.
-
-### Can I add support for other device types?
-
-Yes! VIIPER's architecture is designed to be extensible.  
-Check the [xbox360 device implementation](./device/xbox360/) as a reference for creating new device types.  
-
-
-### You mentioned proxying USBIP?
-
-VIIPER as a proxy mode that sits between a USBIP client and a USBIP server (like a Linux machine sharing real USB devices).  
-THis intercepts and logs all URBs passing through, without handling the devices directly.  
-Useful for reverse engineering USB protocols and understanding how devices communicate.
-
-### What about TCP overhead or input latency performance?
-
-End-to-end input latency for virtual devices created with VIIPER could be typically well below 1 millisecond on a modern desktop (e.g. Windows / Ryzen 3900X test machine).  
-Detailed methodology and sample runs can be found in [E2E Latency Benchmarks](/docs/testing/e2e_latency.md).  
-However, to not stress the CPU excessively, reports get batched and sent every millisecond. So the best you will achive is a 1000Hz update rate, which is more than enough and more than what most real hardware devices provide.  
-_Note_: Actual device polling rates may be lower depending on the device type and configuration.
-
----
-
-## 📄 License
-
-```license
-VIIPER - Virtual Input over IP EmulatoR
-
-Copyright (C) 2025-2026 Peter Repukat
-
-This program is free software: you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License
-along with this program.  If not, see <https://www.gnu.org/licenses/>.
-```
-
-## Credits / Inspiration
-
-- [REDACTED-Bus aka ViGEmBus](https://github.com/nefarius/ViGEmBus)  
-  (Retired, but still widely used) Windows kernel-mode driver emulating well-known USB game controllers  
-  Shoutout and thank you to @nefarius for paving the way and always being a super decent guy!
-- [Valve Software](https://www.valvesoftware.com/)  
-  For creating the OG Steam Controller (2015) and Steam Input (and the way it, understandably, works...)  
-  that sent me down this rabbit hole in the first place  
-  <sup>I kinda hate you guys... in good way(?) ;)</sup>
-- **USBIP** without VIIPER would not be possible.
-    - [USBIP](https://usbip.sourceforge.net/)
-    - [USBIP-Win2](https://github.com/vadimgrn/usbip-win2)  
-- [SDL](https://www.libsdl.org/)  
-  For their excellent work on input device handling, reducing reversing efforts to a minimum.
+VIIPER was created by Peter Repukat and the Alia5/VIIPER contributors. This fork
+builds on that architecture for DS4Windows. It also depends on the USBIP project,
+`usbip-win2`, and controller/audio protocol research shared by SDL, SAxense,
+DualSense reverse-engineering projects, and the wider open-source community.
