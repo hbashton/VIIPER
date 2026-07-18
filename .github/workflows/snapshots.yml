@@ -2,7 +2,7 @@ name: Dev Snapshot Build
 
 on:
     push:
-        branches: ["main"]
+        branches: ["main", "microphone-rebuild"]
 
 permissions:
     contents: write
