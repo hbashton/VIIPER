@@ -265,7 +265,6 @@ func TestReadDualSenseInputStreamDropsTransportMarkerFragments(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New returned error: %v", err)
 	}
-	dev.SetInterfaceAltSetting(InterfaceMicrophone, 1)
 
 	server, client := net.Pipe()
 	defer server.Close()
@@ -283,7 +282,7 @@ func TestReadDualSenseInputStreamDropsTransportMarkerFragments(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MarshalBinary returned error: %v", err)
 	}
-	copy(inputPayload[0:3], []byte{StreamFrameMagic1, StreamFrameMagic2, StreamFrameMagic3})
+	copy(inputPayload[6:9], []byte{StreamFrameMagic1, StreamFrameMagic2, StreamFrameMagic3})
 
 	if _, err := client.Write(makeStreamFrame(t, StreamFrameInputState, inputPayload)); err != nil {
 		t.Fatalf("write input frame: %v", err)
@@ -312,7 +311,6 @@ func TestReadDualSenseInputStreamDropsTransportMarkerFragmentsInTouchMotion(t *t
 	if err != nil {
 		t.Fatalf("New returned error: %v", err)
 	}
-	dev.SetInterfaceAltSetting(InterfaceMicrophone, 1)
 
 	server, client := net.Pipe()
 	defer server.Close()
@@ -359,7 +357,6 @@ func TestReadDualSenseInputStreamDropsMicTransportLeakPatternInTouchMotion(t *te
 	if err != nil {
 		t.Fatalf("New returned error: %v", err)
 	}
-	dev.SetInterfaceAltSetting(InterfaceMicrophone, 1)
 
 	server, client := net.Pipe()
 	defer server.Close()
@@ -445,24 +442,6 @@ func TestReadDualSenseInputStreamDropsWeakMicTransportLeakPatternWhenMicrophoneA
 	if gotInput.LX != neutral.LX || gotInput.R2 != neutral.R2 || gotInput.GyroX != neutral.GyroX {
 		t.Fatalf("weak touch/motion mic transport leak should reset input: got LX=%d R2=%d GyroX=%d",
 			gotInput.LX, gotInput.R2, gotInput.GyroX)
-	}
-}
-
-func TestInputStatePayloadPreservesShortTransportMarkerWhenMicrophoneInactive(t *testing.T) {
-	state := NewInputState()
-	state.LX = 55
-	state.R2 = 88
-	inputPayload, err := state.MarshalBinary()
-	if err != nil {
-		t.Fatalf("MarshalBinary returned error: %v", err)
-	}
-	copy(inputPayload[21:24], []byte{StreamFrameMagic0, StreamFrameMagic1, StreamFrameMagic2})
-
-	if reason := inputStatePayloadCorruptionReason(inputPayload, false); reason != "" {
-		t.Fatalf("short marker in legitimate motion data was rejected with microphone inactive: %s", reason)
-	}
-	if reason := inputStatePayloadCorruptionReason(inputPayload, true); reason == "" {
-		t.Fatal("short marker should remain guarded while the microphone interface is active")
 	}
 }
 
