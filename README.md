@@ -113,16 +113,20 @@ With the matching DS4Windows bridge:
 
 ### Microphone input
 
-The microphone-capable DualSense device types expose a virtual Windows recording
-endpoint. The framed feeder protocol accepts PCM microphone frames separately
-from controller input state, and the USBIP ISO-IN path supplies them to Windows.
+The microphone-capable DualSense, DualSense Edge, and DualShock 4 device types
+expose virtual Windows recording endpoints. The framed feeder protocol accepts
+PCM microphone frames separately from controller input state, and the USBIP
+ISO-IN path supplies them to Windows.
 
 In the DS4Windows integration, microphone audio follows this path:
 
-1. The physical Bluetooth DualSense supplies its encoded microphone frames.
+1. The physical Bluetooth DualSense or DualShock 4 supplies its encoded
+   microphone frames.
 2. DS4Windows decodes and conditions the signal.
-3. DS4Windows sends framed PCM to VIIPER.
-4. VIIPER presents that PCM through the virtual DualSense recording endpoint.
+3. DS4Windows converts the PCM to the emulated controller's native format and
+   sends it to VIIPER.
+4. VIIPER presents that PCM through the selected virtual controller's recording
+   endpoint.
 
 Transport framing and microphone data are deliberately isolated from HID input
 reports. This prevents audio bytes from being interpreted as controller buttons,
