@@ -3,11 +3,17 @@
 The DualShock 4 virtual gamepad emulates a complete PlayStation 4 Controller (V1)
 connected via USB.
 It supports sticks, triggers, D-pad, face/shoulder buttons, PS button,
-touchpad click, IMU (gyro + accelerometer), and touchpad finger coordinates.
+touchpad click, IMU (gyro + accelerometer), touchpad finger coordinates, and
+the native DualShock 4 USB speaker and microphone interfaces.
 
 === "TCP API"
 
     Use `dualshock4` as the device type when adding a device via the API or client libraries.
+
+    Use `dualshock4micv2` when the feeder also supplies microphone input. This
+    variant keeps the 31-byte controller state and 320-byte, 16 kHz mono PCM
+    microphone frames in separate CRC-protected framed packets. The legacy
+    `dualshock4` stream remains unchanged for existing clients.
 
     ## Client Library Support
 

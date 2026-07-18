@@ -21,10 +21,85 @@ var defaultDescriptor = usb.Descriptor{
 		BNumConfigurations: 0x01,
 		Speed:              2,
 	},
+	Configuration: usb.ConfigurationDescriptor{
+		BConfigurationValue: 0x01,
+		BMAttributes:        0xC0,
+		BMaxPower:           0xFA,
+	},
 	Interfaces: []usb.InterfaceConfig{
 		{
 			Descriptor: usb.InterfaceDescriptor{
-				BInterfaceNumber:   0x00,
+				BInterfaceNumber:   InterfaceAudioControl,
+				BAlternateSetting:  0x00,
+				BNumEndpoints:      0x00,
+				BInterfaceClass:    0x01,
+				BInterfaceSubClass: 0x01,
+				BInterfaceProtocol: 0x00,
+				IInterface:         0x00,
+			},
+			ClassDescriptors: []usb.ClassSpecificDescriptor{
+				// Faithful CUH-ZCT2 UAC1 AudioControl topology: stereo USB
+				// stream -> headset, plus headset microphone -> USB stream.
+				{DescriptorType: 0x24, Payload: usb.Data{0x01, 0x00, 0x01, 0x47, 0x00, 0x02, InterfaceSpeaker, InterfaceMicrophone}},
+				{DescriptorType: 0x24, Payload: usb.Data{0x02, 0x01, 0x01, 0x01, 0x06, 0x02, 0x03, 0x00, 0x00, 0x00}},
+				{DescriptorType: 0x24, Payload: usb.Data{0x06, 0x02, 0x01, 0x01, 0x03, 0x00, 0x00, 0x00}},
+				{DescriptorType: 0x24, Payload: usb.Data{0x03, 0x03, 0x02, 0x04, 0x04, 0x02, 0x00}},
+				{DescriptorType: 0x24, Payload: usb.Data{0x02, 0x04, 0x02, 0x04, 0x03, 0x01, 0x00, 0x00, 0x00, 0x00}},
+				{DescriptorType: 0x24, Payload: usb.Data{0x06, 0x05, 0x04, 0x01, 0x03, 0x00, 0x00}},
+				{DescriptorType: 0x24, Payload: usb.Data{0x03, 0x06, 0x01, 0x01, 0x01, 0x05, 0x00}},
+			},
+		},
+		{
+			Descriptor: usb.InterfaceDescriptor{
+				BInterfaceNumber: InterfaceSpeaker, BAlternateSetting: 0x00,
+				BNumEndpoints: 0x00, BInterfaceClass: 0x01, BInterfaceSubClass: 0x02,
+			},
+		},
+		{
+			Descriptor: usb.InterfaceDescriptor{
+				BInterfaceNumber: InterfaceSpeaker, BAlternateSetting: 0x01,
+				BNumEndpoints: 0x01, BInterfaceClass: 0x01, BInterfaceSubClass: 0x02,
+			},
+			ClassDescriptors: []usb.ClassSpecificDescriptor{
+				{DescriptorType: 0x24, Payload: usb.Data{0x01, 0x01, 0x01, 0x01, 0x00}},
+				{DescriptorType: 0x24, Payload: usb.Data{0x02, 0x01, USBSpeakerChannels, USBSpeakerBytesPerSample, 0x10, 0x01, 0x00, 0x7D, 0x00}},
+			},
+			Endpoints: []usb.EndpointDescriptor{{
+				BEndpointAddress: EndpointAudioOut,
+				BMAttributes:     0x09,
+				WMaxPacketSize:   USBSpeakerMaxPacketSize,
+				BInterval:        0x01,
+				Trailing:         usb.Data{0x00, 0x00},
+				ClassDescriptors: []usb.ClassSpecificDescriptor{{DescriptorType: 0x25, Payload: usb.Data{0x01, 0x00, 0x00, 0x00, 0x00}}},
+			}},
+		},
+		{
+			Descriptor: usb.InterfaceDescriptor{
+				BInterfaceNumber: InterfaceMicrophone, BAlternateSetting: 0x00,
+				BNumEndpoints: 0x00, BInterfaceClass: 0x01, BInterfaceSubClass: 0x02,
+			},
+		},
+		{
+			Descriptor: usb.InterfaceDescriptor{
+				BInterfaceNumber: InterfaceMicrophone, BAlternateSetting: 0x01,
+				BNumEndpoints: 0x01, BInterfaceClass: 0x01, BInterfaceSubClass: 0x02,
+			},
+			ClassDescriptors: []usb.ClassSpecificDescriptor{
+				{DescriptorType: 0x24, Payload: usb.Data{0x01, 0x06, 0x01, 0x01, 0x00}},
+				{DescriptorType: 0x24, Payload: usb.Data{0x02, 0x01, USBMicrophoneChannels, USBMicrophoneBytesPerSample, 0x10, 0x01, 0x80, 0x3E, 0x00}},
+			},
+			Endpoints: []usb.EndpointDescriptor{{
+				BEndpointAddress: EndpointMicrophoneIn,
+				BMAttributes:     0x05,
+				WMaxPacketSize:   USBMicrophoneMaxPacketSize,
+				BInterval:        0x01,
+				Trailing:         usb.Data{0x00, 0x00},
+				ClassDescriptors: []usb.ClassSpecificDescriptor{{DescriptorType: 0x25, Payload: usb.Data{0x01, 0x00, 0x00, 0x00, 0x00}}},
+			}},
+		},
+		{
+			Descriptor: usb.InterfaceDescriptor{
+				BInterfaceNumber:   InterfaceHID,
 				BAlternateSetting:  0x00,
 				BNumEndpoints:      0x02,
 				BInterfaceClass:    0x03,
@@ -355,13 +430,13 @@ var defaultDescriptor = usb.Descriptor{
 					BEndpointAddress: EndpointIn,
 					BMAttributes:     0x03,
 					WMaxPacketSize:   64,
-					BInterval:        4,
+					BInterval:        5,
 				},
 				{
 					BEndpointAddress: EndpointOut,
 					BMAttributes:     0x03,
 					WMaxPacketSize:   64,
-					BInterval:        4,
+					BInterval:        5,
 				},
 			},
 		},

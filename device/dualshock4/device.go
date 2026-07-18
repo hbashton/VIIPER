@@ -32,6 +32,13 @@ type DualShock4 struct {
 	usbPacketCounter uint32
 	timestampBase    time.Time
 
+	speakerInterfaceActive    bool
+	microphoneInterfaceActive bool
+	microphoneInput           bool
+	streamFrameVersion        byte
+	microphonePCM             []byte
+	microphoneSignal          chan struct{}
+
 	mtx sync.Mutex
 }
 
@@ -71,8 +78,9 @@ func New(o *device.CreateOptions) (*DualShock4, error) {
 	}
 
 	d := &DualShock4{
-		descriptor: defaultDescriptor,
-		metaState:  metaState,
+		descriptor:       defaultDescriptor,
+		metaState:        metaState,
+		microphoneSignal: make(chan struct{}, 1),
 	}
 	if o != nil {
 		if o.IDVendor != nil {
@@ -150,12 +158,31 @@ func (d *DualShock4) GetDeviceSpecificArgs() map[string]any {
 	if err != nil {
 		return map[string]any{}
 	}
+	res["speakerInterfaceActive"] = d.speakerInterfaceActive
+	res["microphoneInterfaceActive"] = d.microphoneInterfaceActive
+	res["queuedMicrophoneBytes"] = len(d.microphonePCM)
 	return res
 }
 
+func (d *DualShock4) SetInterfaceAltSetting(iface, alt uint8) {
+	d.mtx.Lock()
+	defer d.mtx.Unlock()
+
+	switch iface {
+	case InterfaceSpeaker:
+		d.speakerInterfaceActive = alt != 0
+	case InterfaceMicrophone:
+		d.microphoneInterfaceActive = alt != 0
+		if !d.microphoneInterfaceActive {
+			d.microphonePCM = nil
+		}
+	}
+}
+
 func (d *DualShock4) HandleTransfer(ctx context.Context, ep uint32, dir uint32, out []byte) []byte {
+	epNumber := ep & 0x0F
 	if dir == usbip.DirIn {
-		switch ep {
+		switch epNumber {
 		case 4:
 			select {
 			case <-ctx.Done():
@@ -173,12 +200,14 @@ func (d *DualShock4) HandleTransfer(ctx context.Context, ep uint32, dir uint32, 
 				d.mtx.Unlock()
 				return d.buildUSBInputReport(is, &ms)
 			}
+		case EndpointMicrophoneIn & 0x0F:
+			return d.handleMicrophoneIn(ctx)
 		default:
 			return nil
 		}
 	}
 
-	if dir == usbip.DirOut && ep == 3 {
+	if dir == usbip.DirOut && epNumber == EndpointOut&0x0F {
 		if len(out) >= 11 && out[0] == ReportIDOutput {
 			feedback := parseOutputReport(out)
 			d.mtx.Lock()
@@ -191,11 +220,75 @@ func (d *DualShock4) HandleTransfer(ctx context.Context, ep uint32, dir uint32, 
 			}
 		}
 	}
+	if dir == usbip.DirOut && epNumber == EndpointAudioOut&0x0F {
+		// DS4Windows captures this render endpoint with WASAPI loopback and
+		// forwards it to the connected physical controller. VIIPER still has
+		// to consume and pace the USB/IP isochronous transfer so Windows keeps
+		// the endpoint active, but it must not duplicate the audio here.
+		return nil
+	}
 
 	return nil
 }
 
+func (d *DualShock4) QueueMicrophonePCMFrame(frame []byte) {
+	if len(frame) != USBMicrophoneClientFrameSize {
+		return
+	}
+
+	d.mtx.Lock()
+	if !d.microphoneInterfaceActive {
+		d.mtx.Unlock()
+		return
+	}
+
+	const maximumBufferedBytes = USBMicrophoneClientFrameSize * 4
+	if overflow := len(d.microphonePCM) + len(frame) - maximumBufferedBytes; overflow > 0 {
+		copy(d.microphonePCM, d.microphonePCM[overflow:])
+		d.microphonePCM = d.microphonePCM[:len(d.microphonePCM)-overflow]
+	}
+	d.microphonePCM = append(d.microphonePCM, frame...)
+	d.mtx.Unlock()
+
+	select {
+	case d.microphoneSignal <- struct{}{}:
+	default:
+	}
+}
+
+func (d *DualShock4) handleMicrophoneIn(ctx context.Context) []byte {
+	for {
+		d.mtx.Lock()
+		if !d.microphoneInterfaceActive {
+			d.mtx.Unlock()
+			return make([]byte, USBMicrophonePacketSize)
+		}
+
+		if len(d.microphonePCM) > 0 {
+			packet := make([]byte, USBMicrophonePacketSize)
+			n := copy(packet, d.microphonePCM)
+			copy(d.microphonePCM, d.microphonePCM[n:])
+			d.microphonePCM = d.microphonePCM[:len(d.microphonePCM)-n]
+			d.mtx.Unlock()
+			return packet
+		}
+		d.mtx.Unlock()
+
+		select {
+		case <-ctx.Done():
+			return make([]byte, USBMicrophonePacketSize)
+		case <-d.microphoneSignal:
+		case <-time.After(time.Millisecond):
+			return make([]byte, USBMicrophonePacketSize)
+		}
+	}
+}
+
 func (d *DualShock4) HandleControl(bmRequestType, bRequest uint8, wValue, wIndex, wLength uint16, data []byte) ([]byte, bool) {
+	if response, handled := handleAudioControlRequest(bmRequestType, bRequest, wValue, wIndex, wLength); handled {
+		return response, true
+	}
+
 	reportType := uint8(wValue >> 8)
 	reportID := uint8(wValue & 0xFF)
 
@@ -270,6 +363,62 @@ func (d *DualShock4) HandleControl(bmRequestType, bRequest uint8, wValue, wIndex
 		"wIndex", wIndex,
 		"wLength", wLength,
 		"dataLen", len(data))
+
+	return nil, false
+}
+
+const (
+	audioClassRequestSetCurrent    = 0x01
+	audioClassRequestGetCurrent    = 0x81
+	audioClassRequestGetMinimum    = 0x82
+	audioClassRequestGetMaximum    = 0x83
+	audioClassRequestGetResolution = 0x84
+
+	audioClassEndpointOut = 0x22
+	audioClassEndpointIn  = 0xA2
+
+	audioControlSamplingFrequency = 0x01
+)
+
+// handleAudioControlRequest implements the endpoint sampling-frequency
+// controls advertised by the real CUH-ZCT2 UAC1 descriptor. Windows validates
+// these requests before opening the render and capture endpoints.
+func handleAudioControlRequest(bmRequestType, bRequest uint8, wValue, wIndex, wLength uint16) ([]byte, bool) {
+	endpoint := uint8(wIndex)
+	if (endpoint != EndpointAudioOut && endpoint != EndpointMicrophoneIn) ||
+		uint8(wValue>>8) != audioControlSamplingFrequency {
+		return nil, false
+	}
+
+	var sampleRate int
+	switch endpoint {
+	case EndpointAudioOut:
+		sampleRate = USBSpeakerSampleRate
+	case EndpointMicrophoneIn:
+		sampleRate = USBMicrophoneSampleRate
+	}
+
+	switch bmRequestType {
+	case audioClassEndpointIn:
+		switch bRequest {
+		case audioClassRequestGetCurrent, audioClassRequestGetMinimum, audioClassRequestGetMaximum:
+			response := []byte{byte(sampleRate), byte(sampleRate >> 8), byte(sampleRate >> 16)}
+			if wLength < uint16(len(response)) {
+				response = response[:wLength]
+			}
+			return response, true
+		case audioClassRequestGetResolution:
+			response := []byte{0x00, 0x00, 0x00}
+			if wLength < uint16(len(response)) {
+				response = response[:wLength]
+			}
+			return response, true
+		}
+	case audioClassEndpointOut:
+		if bRequest == audioClassRequestSetCurrent {
+			return nil, true
+		}
+	}
 
 	return nil, false
 }
