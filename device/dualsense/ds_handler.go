@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"log/slog"
 	"net"
@@ -18,13 +19,15 @@ func init() {
 	api.RegisterDevice("dualsense", &dshandler{})
 	api.RegisterDevice("dualsenseext", &dshandler{extendedFeedback: true})
 	api.RegisterDevice("dualsensecombinedext", &dshandler{combinedBluetoothFeedback: true})
-	api.RegisterDevice("dualsensecombinedmicext", &dshandler{combinedBluetoothFeedback: true, microphoneInput: true})
+	api.RegisterDevice("dualsensecombinedmicext", &dshandler{combinedBluetoothFeedback: true, microphoneInput: true, streamFrameVersion: StreamFrameVersion})
+	api.RegisterDevice("dualsensecombinedmicv2", &dshandler{combinedBluetoothFeedback: true, microphoneInput: true, streamFrameVersion: StreamFrameVersionV2})
 }
 
 type dshandler struct {
 	extendedFeedback          bool
 	combinedBluetoothFeedback bool
 	microphoneInput           bool
+	streamFrameVersion        byte
 }
 
 func (h *dshandler) CreateDevice(o *device.CreateOptions) (usb.Device, error) {
@@ -92,6 +95,8 @@ func (h *dshandler) CreateDevice(o *device.CreateOptions) (usb.Device, error) {
 	}
 	dse.extendedFeedback = h.extendedFeedback
 	dse.combinedBluetoothFeedback = h.combinedBluetoothFeedback
+	dse.microphoneInput = h.microphoneInput
+	dse.streamFrameVersion = h.streamFrameVersion
 	return dse, nil
 }
 
@@ -142,11 +147,23 @@ func (h *dshandler) StreamHandler() api.StreamHandlerFunc {
 			}
 		})
 
-		return readDualSenseInputStream(conn, dse, logger, h.microphoneInput)
+		microphoneInput := h.microphoneInput || dse.microphoneInput
+		streamFrameVersion := h.streamFrameVersion
+		if dse.streamFrameVersion != 0 {
+			streamFrameVersion = dse.streamFrameVersion
+		}
+		logger.Info("DualSense input stream configured",
+			"microphoneInput", microphoneInput,
+			"frameVersion", streamFrameVersion)
+		return readDualSenseInputStreamVersion(conn, dse, logger, microphoneInput, streamFrameVersion)
 	}
 }
 
 func readDualSenseInputStream(conn net.Conn, dse *DualSense, logger *slog.Logger, microphoneInput bool) error {
+	return readDualSenseInputStreamVersion(conn, dse, logger, microphoneInput, StreamFrameVersion)
+}
+
+func readDualSenseInputStreamVersion(conn net.Conn, dse *DualSense, logger *slog.Logger, microphoneInput bool, frameVersion byte) error {
 	if !microphoneInput {
 		buf := make([]byte, InputStateSize)
 		for {
@@ -166,10 +183,15 @@ func readDualSenseInputStream(conn net.Conn, dse *DualSense, logger *slog.Logger
 		}
 	}
 
-	header := make([]byte, StreamFrameHeaderSize)
+	headerSize := StreamFrameHeaderSize
+	if frameVersion == StreamFrameVersionV2 {
+		headerSize = StreamFrameV2HeaderSize
+	}
+	header := make([]byte, headerSize)
 	input := make([]byte, InputStateSize)
 	microphonePCM := make([]byte, USBMicrophoneClientFrameSize)
-	corruptInputFrames := 0
+	var expectedSequence uint32
+	sequenceInitialized := false
 	for {
 		if _, err := io.ReadFull(conn, header); err != nil {
 			if err == io.EOF {
@@ -186,36 +208,56 @@ func readDualSenseInputStream(conn net.Conn, dse *DualSense, logger *slog.Logger
 			return fmt.Errorf("invalid DualSense framed stream magic %02X %02X %02X %02X",
 				header[0], header[1], header[2], header[3])
 		}
-		if header[4] != StreamFrameVersion {
+		if header[4] != frameVersion {
 			return fmt.Errorf("unsupported DualSense framed stream version 0x%02X", header[4])
 		}
 
 		frameType := header[5]
 		payloadLen := int(binary.LittleEndian.Uint16(header[6:8]))
 
+		var payload []byte
 		switch frameType {
 		case StreamFrameInputState:
 			if payloadLen != InputStateSize {
 				return fmt.Errorf("invalid framed input state length %d", payloadLen)
 			}
-			if _, err := io.ReadFull(conn, input); err != nil {
-				return fmt.Errorf("read framed input state: %w", err)
+			payload = input
+		case StreamFrameMicrophonePCM:
+			if payloadLen != USBMicrophoneClientFrameSize {
+				return fmt.Errorf("invalid microphone pcm frame length %d", payloadLen)
 			}
-			corruptReason := inputStatePayloadCorruptionReason(input, dse.isMicrophoneInterfaceActive())
+			payload = microphonePCM
+		default:
+			return fmt.Errorf("unknown DualSense framed stream packet type 0x%02X length %d", frameType, payloadLen)
+		}
+
+		if _, err := io.ReadFull(conn, payload); err != nil {
+			return fmt.Errorf("read framed packet type 0x%02X: %w", frameType, err)
+		}
+
+		if frameVersion == StreamFrameVersionV2 {
+			sequence := binary.LittleEndian.Uint32(header[8:12])
+			if sequenceInitialized && sequence != expectedSequence {
+				return fmt.Errorf("DualSense framed stream sequence mismatch: got %d expected %d", sequence, expectedSequence)
+			}
+			expectedSequence = sequence + 1
+			sequenceInitialized = true
+
+			receivedCRC := binary.LittleEndian.Uint32(header[12:16])
+			calculatedCRC := framedStreamCRC(header[4:12], payload)
+			if receivedCRC != calculatedCRC {
+				return fmt.Errorf("DualSense framed stream CRC mismatch for sequence %d: got %08X expected %08X", sequence, receivedCRC, calculatedCRC)
+			}
+		}
+
+		switch frameType {
+		case StreamFrameInputState:
+			corruptReason := inputStatePayloadCorruptionReason(input)
 			recordTrafficBytes("client->device", "framed-input-state",
 				input,
 				"summary", describeInputStatePayload(input, corruptReason))
 			if corruptReason != "" {
-				corruptInputFrames++
-				if corruptInputFrames <= 128 || isPowerOfTwo(corruptInputFrames) {
-					logger.Warn("DualSense framed input was corrupt; input reset to neutral",
-						"count", corruptInputFrames,
-						"reason", corruptReason)
-				}
-				neutralizeInputStatePayload(input)
-				recordTrafficBytes("client->device", "framed-input-state-after-reset",
-					input,
-					"summary", describeInputStatePayload(input, "reset from "+corruptReason))
+				return fmt.Errorf("invalid framed input state: %s", corruptReason)
 			}
 			var state InputState
 			if err := state.UnmarshalBinary(input); err != nil {
@@ -223,39 +265,23 @@ func readDualSenseInputStream(conn net.Conn, dse *DualSense, logger *slog.Logger
 			}
 			dse.UpdateInputState(&state)
 		case StreamFrameMicrophonePCM:
-			if payloadLen != USBMicrophoneClientFrameSize {
-				return fmt.Errorf("invalid microphone pcm frame length %d", payloadLen)
-			}
-			if _, err := io.ReadFull(conn, microphonePCM); err != nil {
-				return fmt.Errorf("read microphone pcm frame: %w", err)
-			}
 			recordTrafficSummary("client->device", "framed-microphone-pcm", len(microphonePCM),
 				"summary", describeMicrophonePCMFrame(microphonePCM))
 			dse.QueueMicrophonePCMFrame(microphonePCM)
-		default:
-			return fmt.Errorf("unknown DualSense framed stream packet type 0x%02X length %d", frameType, payloadLen)
 		}
 	}
 }
 
-func neutralizeInputStatePayload(input []byte) {
-	neutral, err := NewInputState().MarshalBinary()
-	if err != nil {
-		for i := range input {
-			input[i] = 0
-		}
-		return
-	}
-
-	copy(input, neutral)
+func framedStreamCRC(headerFields, payload []byte) uint32 {
+	hash := crc32.NewIEEE()
+	_, _ = hash.Write(headerFields)
+	_, _ = hash.Write(payload)
+	return hash.Sum32()
 }
 
-func inputStatePayloadCorruptionReason(input []byte, microphoneActive bool) string {
+func inputStatePayloadCorruptionReason(input []byte) string {
 	if len(input) < InputStateSize {
-		return ""
-	}
-	if containsStreamMagic(input) {
-		return "full transport magic in payload"
+		return fmt.Sprintf("invalid length %d", len(input))
 	}
 
 	buttons := binary.LittleEndian.Uint32(input[4:8])
@@ -263,22 +289,6 @@ func inputStatePayloadCorruptionReason(input []byte, microphoneActive bool) stri
 	if buttons&^validDualSenseInputButtons != 0 ||
 		dpad&^validDualSenseInputDPad != 0 {
 		return fmt.Sprintf("invalid controls buttons=0x%08X dpad=0x%02X", buttons, dpad)
-	}
-
-	// The mic storm observed in the wild leaked framed-stream markers into
-	// touch and motion bytes too. A three-byte VPC/PCM fragment is specific
-	// enough to reject the whole input frame before it can become a HID report.
-	if containsStreamMarkerFragment(input, 11) {
-		return "transport marker fragment in controls"
-	}
-	if containsStreamMarkerFragment(input[11:], len(input)-11) {
-		return "transport marker fragment in touch/motion"
-	}
-	if containsStrongMicTransportLeakPattern(input[11:]) {
-		return "mic transport leak pattern in touch/motion"
-	}
-	if microphoneActive && containsWeakMicTransportLeakPattern(input[11:]) {
-		return "weak mic transport leak pattern in touch/motion"
 	}
 
 	return ""

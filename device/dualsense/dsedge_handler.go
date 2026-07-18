@@ -16,13 +16,15 @@ func init() {
 	api.RegisterDevice("dualsenseedge", &dsedgehandler{})
 	api.RegisterDevice("dualsenseedgeext", &dsedgehandler{extendedFeedback: true})
 	api.RegisterDevice("dualsenseedgecombinedext", &dsedgehandler{combinedBluetoothFeedback: true})
-	api.RegisterDevice("dualsenseedgecombinedmicext", &dsedgehandler{combinedBluetoothFeedback: true, microphoneInput: true})
+	api.RegisterDevice("dualsenseedgecombinedmicext", &dsedgehandler{combinedBluetoothFeedback: true, microphoneInput: true, streamFrameVersion: StreamFrameVersion})
+	api.RegisterDevice("dualsenseedgecombinedmicv2", &dsedgehandler{combinedBluetoothFeedback: true, microphoneInput: true, streamFrameVersion: StreamFrameVersionV2})
 }
 
 type dsedgehandler struct {
 	extendedFeedback          bool
 	combinedBluetoothFeedback bool
 	microphoneInput           bool
+	streamFrameVersion        byte
 }
 
 func (h *dsedgehandler) CreateDevice(o *device.CreateOptions) (usb.Device, error) {
@@ -90,6 +92,8 @@ func (h *dsedgehandler) CreateDevice(o *device.CreateOptions) (usb.Device, error
 	}
 	dse.extendedFeedback = h.extendedFeedback
 	dse.combinedBluetoothFeedback = h.combinedBluetoothFeedback
+	dse.microphoneInput = h.microphoneInput
+	dse.streamFrameVersion = h.streamFrameVersion
 	return dse, nil
 }
 
@@ -140,7 +144,15 @@ func (h *dsedgehandler) StreamHandler() api.StreamHandlerFunc {
 			}
 		})
 
-		return readDualSenseInputStream(conn, dse, logger, h.microphoneInput)
+		microphoneInput := h.microphoneInput || dse.microphoneInput
+		streamFrameVersion := h.streamFrameVersion
+		if dse.streamFrameVersion != 0 {
+			streamFrameVersion = dse.streamFrameVersion
+		}
+		logger.Info("DualSense Edge input stream configured",
+			"microphoneInput", microphoneInput,
+			"frameVersion", streamFrameVersion)
+		return readDualSenseInputStreamVersion(conn, dse, logger, microphoneInput, streamFrameVersion)
 	}
 }
 
