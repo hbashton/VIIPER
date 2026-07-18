@@ -657,6 +657,23 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 
 	var respMu sync.Mutex
 	lastInResp := map[uint32][]byte{}
+	var nonIsoInOrderMu sync.Mutex
+	nonIsoInOrderCond := sync.NewCond(&nonIsoInOrderMu)
+	nextNonIsoInTicket := map[uint32]uint64{}
+	activeNonIsoInTicket := map[uint32]uint64{}
+	waitForNonIsoInTurn := func(ep uint32, ticket uint64) {
+		nonIsoInOrderMu.Lock()
+		for ticket != activeNonIsoInTicket[ep] {
+			nonIsoInOrderCond.Wait()
+		}
+		nonIsoInOrderMu.Unlock()
+	}
+	completeNonIsoInTurn := func(ep uint32) {
+		nonIsoInOrderMu.Lock()
+		activeNonIsoInTicket[ep]++
+		nonIsoInOrderCond.Broadcast()
+		nonIsoInOrderMu.Unlock()
+	}
 
 	var outPayloadScratch []byte
 	var nextIsoInCompletion time.Time
@@ -850,9 +867,23 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 			pending[seq] = urbCancel
 			pendingMu.Unlock()
 			interval := endpointInterval(dev.GetDescriptor(), ep)
+			var nonIsoInTicket uint64
+			if !isIso {
+				nonIsoInOrderMu.Lock()
+				nonIsoInTicket = nextNonIsoInTicket[ep]
+				nextNonIsoInTicket[ep]++
+				nonIsoInOrderMu.Unlock()
+			}
 
-			go func(seq, ep, dir uint32, submitted []usbip.IsoPacketDescriptor, iso bool) {
+			go func(seq, ep, dir uint32, submitted []usbip.IsoPacketDescriptor, iso bool, ticket uint64) {
 				defer urbCancel()
+				if !iso {
+					// Windows can queue several interrupt-IN URBs at once. Keep
+					// their device reads and completions in submission order so
+					// HID report sequence numbers cannot arrive out of order.
+					waitForNonIsoInTurn(ep, ticket)
+					defer completeNonIsoInTurn(ep)
+				}
 				var respData []byte
 				var completedPackets []usbip.IsoPacketDescriptor
 				if iso && len(submitted) > 0 {
@@ -932,7 +963,7 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 						s.logger.Error("write async RET_SUBMIT", "seq", seq, "error", err)
 					}
 				}
-			}(seq, ep, dir, isoPackets, isIso)
+			}(seq, ep, dir, isoPackets, isIso, nonIsoInTicket)
 			continue
 		}
 

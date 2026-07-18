@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/hex"
+	"sync"
 	"testing"
 
 	"github.com/Alia5/VIIPER/usbip"
@@ -645,6 +646,47 @@ func TestDualSenseUSBInputReportNeutralizesInvalidControlBits(t *testing.T) {
 	}
 	if report[53] != BatteryFullyCharged {
 		t.Fatalf("neutral report should preserve battery byte, got %#x", report[53])
+	}
+}
+
+func TestDualSenseUSBInputReportSequencesAreUniqueDuringConcurrentReads(t *testing.T) {
+	dev, err := New(nil)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	const reportCount = 64
+	start := make(chan struct{})
+	reports := make(chan []byte, reportCount)
+	var wg sync.WaitGroup
+	for i := 0; i < reportCount; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			reports <- dev.buildUSBInputReport(NewInputState(), &MetaState{})
+		}()
+	}
+
+	close(start)
+	wg.Wait()
+	close(reports)
+
+	sequences := make(map[byte]bool, reportCount)
+	for report := range reports {
+		sequence := report[7]
+		if sequences[sequence] {
+			t.Fatalf("duplicate USB input report sequence %d", sequence)
+		}
+		sequences[sequence] = true
+	}
+	for sequence := 1; sequence <= reportCount; sequence++ {
+		if !sequences[byte(sequence)] {
+			t.Fatalf("missing USB input report sequence %d", sequence)
+		}
+	}
+	if dev.usbInputReportCount != reportCount {
+		t.Fatalf("unexpected report count: got %d want %d", dev.usbInputReportCount, reportCount)
 	}
 }
 
