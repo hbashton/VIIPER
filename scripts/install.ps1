@@ -2,8 +2,13 @@ $ErrorActionPreference = "Stop"
 
 $viiperVersion = "dev-snapshot"
 
-$repo = "Alia5/VIIPER"
-$apiUrl = "https://api.github.com/repos/$repo/releases/tags/$viiperVersion"
+$repo = "hbashton/VIIPER"
+$apiUrl = if ($viiperVersion -eq "dev-snapshot" -or $viiperVersion -eq "latest") {
+    "https://api.github.com/repos/$repo/releases/latest"
+}
+else {
+    "https://api.github.com/repos/$repo/releases/tags/$viiperVersion"
+}
 
 Write-Host "Fetching VIIPER release: $viiperVersion..."
 $releaseData = Invoke-RestMethod -Uri $apiUrl -ErrorAction Stop
@@ -22,11 +27,23 @@ $arch = if ([Environment]::Is64BitOperatingSystem) { "amd64" } else {
 }
 
 if ((Get-CimInstance Win32_ComputerSystem).SystemType -match "ARM") {
-    $arch = "arm64"
+    Write-Host "Error: The current hbashton VIIPER package supports Windows x64 only" -ForegroundColor Red
+    exit 1
 }
 
-$archiveName = "viiper-windows-$arch.zip"
-$downloadUrl = "https://github.com/$repo/releases/download/$version/$archiveName"
+$preferredAssetNames = @("viiper-windows-$arch.zip", "viiper.exe")
+$asset = $null
+foreach ($assetName in $preferredAssetNames) {
+    $asset = $releaseData.assets | Where-Object { $_.name -eq $assetName } | Select-Object -First 1
+    if ($asset) { break }
+}
+
+if (-not $asset) {
+    $availableAssets = ($releaseData.assets | ForEach-Object { $_.name }) -join ", "
+    throw "Release '$version' in $repo does not contain a supported Windows x64 asset. Assets found: $availableAssets"
+}
+
+$downloadUrl = $asset.browser_download_url
 
 Write-Host "Downloading from: $downloadUrl"
 $tempDir = New-TemporaryFile | ForEach-Object { Remove-Item $_; New-Item -ItemType Directory -Path $_ }
@@ -52,12 +69,21 @@ try {
         catch { return $null }
     }
 
-    $tempArchive = Join-Path $tempDir "release.zip"
-    Invoke-WebRequest -Uri $downloadUrl -OutFile $tempArchive -ErrorAction Stop
+    $tempDownload = Join-Path $tempDir $asset.name
+    Invoke-WebRequest -Uri $downloadUrl -OutFile $tempDownload -ErrorAction Stop
 
-    Expand-Archive -LiteralPath $tempArchive -DestinationPath $tempDir -Force
-
-    $tempViiper = Join-Path $tempDir "viiper.exe"
+    if ([IO.Path]::GetExtension($asset.name) -eq ".zip") {
+        $extractDir = Join-Path $tempDir "release"
+        Expand-Archive -LiteralPath $tempDownload -DestinationPath $extractDir -Force
+        $tempViiper = Get-ChildItem -Path $extractDir -Recurse -Filter "viiper.exe" |
+            Select-Object -First 1 -ExpandProperty FullName
+        if (-not $tempViiper) {
+            throw "Downloaded VIIPER archive did not contain viiper.exe"
+        }
+    }
+    else {
+        $tempViiper = $tempDownload
+    }
 
     $newVersion = Get-ViiperVersion $tempViiper
     if (-not $newVersion) { $newVersion = "unknown" }
