@@ -265,20 +265,23 @@ func inputStatePayloadCorruptionReason(input []byte, microphoneActive bool) stri
 		return fmt.Sprintf("invalid controls buttons=0x%08X dpad=0x%02X", buttons, dpad)
 	}
 
-	// The mic storm observed in the wild leaked framed-stream markers into
-	// touch and motion bytes too. A three-byte VPC/PCM fragment is specific
-	// enough to reject the whole input frame before it can become a HID report.
-	if containsStreamMarkerFragment(input, 11) {
-		return "transport marker fragment in controls"
-	}
-	if containsStreamMarkerFragment(input[11:], len(input)-11) {
-		return "transport marker fragment in touch/motion"
-	}
-	if containsStrongMicTransportLeakPattern(input[11:]) {
-		return "mic transport leak pattern in touch/motion"
-	}
-	if microphoneActive && containsWeakMicTransportLeakPattern(input[11:]) {
-		return "weak mic transport leak pattern in touch/motion"
+	// Short marker fragments can occur naturally in stick, touch, or motion
+	// samples. They only indicate transport leakage while the framed microphone
+	// path is active. Full framing magic and invalid controls remain guarded
+	// regardless of the interface state.
+	if microphoneActive {
+		if containsStreamMarkerFragment(input, 11) {
+			return "transport marker fragment in controls"
+		}
+		if containsStreamMarkerFragment(input[11:], len(input)-11) {
+			return "transport marker fragment in touch/motion"
+		}
+		if containsStrongMicTransportLeakPattern(input[11:]) {
+			return "mic transport leak pattern in touch/motion"
+		}
+		if containsWeakMicTransportLeakPattern(input[11:]) {
+			return "weak mic transport leak pattern in touch/motion"
+		}
 	}
 
 	return ""
