@@ -52,7 +52,8 @@ type DualSense struct {
 	hapticsPCMStartedAt time.Time
 	timestampBase       time.Time
 
-	mtx sync.Mutex
+	mtx           sync.Mutex
+	inputReportMu sync.Mutex
 }
 
 func New(o *device.CreateOptions) (*DualSense, error) {
@@ -834,6 +835,9 @@ func (d *DualSense) featureReportCommandResponse() []byte {
 }
 
 func (d *DualSense) buildUSBInputReport(s *InputState, m *MetaState) []byte {
+	d.inputReportMu.Lock()
+	defer d.inputReportMu.Unlock()
+
 	b := make([]byte, InputReportSize)
 	d.usbInputReportCount++
 	reportCount := d.usbInputReportCount
