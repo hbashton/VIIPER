@@ -31,6 +31,8 @@ type DualSense struct {
 	descriptor                usb.Descriptor
 	extendedFeedback          bool
 	combinedBluetoothFeedback bool
+	microphoneInput           bool
+	streamFrameVersion        byte
 
 	subcommand [2]byte
 
@@ -204,9 +206,12 @@ func (d *DualSense) SetInterfaceAltSetting(iface, alt uint8) {
 }
 
 func (d *DualSense) HandleTransfer(ctx context.Context, ep uint32, dir uint32, out []byte) []byte {
+	// USB/IP carries the endpoint number separately from transfer direction,
+	// so an IN descriptor address such as 0x82 arrives here as endpoint 2.
+	epNumber := ep & 0x0F
 	if dir == usbip.DirIn {
-		switch ep {
-		case 4:
+		switch epNumber {
+		case EndpointIn & 0x0F:
 			select {
 			case <-ctx.Done():
 				if errors.Is(ctx.Err(), context.DeadlineExceeded) {
@@ -223,14 +228,14 @@ func (d *DualSense) HandleTransfer(ctx context.Context, ep uint32, dir uint32, o
 				d.mtx.Unlock()
 				return d.buildUSBInputReport(&is, &ms)
 			}
-		case EndpointMicrophoneIn:
+		case EndpointMicrophoneIn & 0x0F:
 			return d.handleMicrophoneIn(ctx)
 		default:
 			return nil
 		}
 	}
 
-	if dir == usbip.DirOut && ep == EndpointOut {
+	if dir == usbip.DirOut && epNumber == EndpointOut&0x0F {
 		recordTrafficBytes("host->device", "interrupt-out",
 			out,
 			"summary", fmt.Sprintf("ep=%d", ep))
@@ -238,7 +243,7 @@ func (d *DualSense) HandleTransfer(ctx context.Context, ep uint32, dir uint32, o
 			return nil
 		}
 	}
-	if dir == usbip.DirOut && ep == EndpointHapticsAudioOut {
+	if dir == usbip.DirOut && epNumber == EndpointHapticsAudioOut&0x0F {
 		d.handleHapticsAudioOut(out)
 		return nil
 	}
@@ -257,8 +262,10 @@ func (d *DualSense) QueueMicrophonePCMFrame(frame []byte) {
 		return
 	}
 
-	if len(d.microphonePCM) > USBMicrophoneClientFrameSize*4 {
-		d.microphonePCM = d.microphonePCM[len(d.microphonePCM)-USBMicrophoneClientFrameSize*4:]
+	const maximumBufferedBytes = USBMicrophoneClientFrameSize * 4
+	if overflow := len(d.microphonePCM) + len(frame) - maximumBufferedBytes; overflow > 0 {
+		copy(d.microphonePCM, d.microphonePCM[overflow:])
+		d.microphonePCM = d.microphonePCM[:len(d.microphonePCM)-overflow]
 	}
 	d.microphonePCM = append(d.microphonePCM, frame...)
 	d.mtx.Unlock()
@@ -893,17 +900,8 @@ func (d *DualSense) buildUSBInputReport(s *InputState, m *MetaState) []byte {
 	b[53] = battery
 
 	corruptReason := ""
-	microphoneActive := d.isMicrophoneInterfaceActive()
 	if inputStateControlsInvalid(s) {
 		corruptReason = "invalid input control bits"
-	} else if containsStreamMagic(b) {
-		corruptReason = "transport signature"
-	} else if microphoneActive && containsStreamMarkerFragment(b, len(b)) {
-		corruptReason = "transport marker fragment while microphone active"
-	} else if containsStrongMicTransportLeakPattern(b[16:41]) {
-		corruptReason = "mic transport leak pattern"
-	} else if microphoneActive && containsWeakMicTransportLeakPattern(b[16:41]) {
-		corruptReason = "weak mic transport leak pattern while microphone active"
 	}
 
 	if corruptReason != "" {
@@ -925,12 +923,6 @@ func (d *DualSense) buildUSBInputReport(s *InputState, m *MetaState) []byte {
 		"summary", describeUSBInputReport(b, reportCount, corruptReason))
 
 	return b
-}
-
-func (d *DualSense) isMicrophoneInterfaceActive() bool {
-	d.mtx.Lock()
-	defer d.mtx.Unlock()
-	return d.microphoneInterfaceActive
 }
 
 func inputStateControlsInvalid(s *InputState) bool {
