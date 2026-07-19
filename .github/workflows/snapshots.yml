@@ -2,7 +2,7 @@ name: Dev Snapshot Build
 
 on:
     push:
-        branches: ["main", "microphone-rebuild"]
+        branches: ["main", "microphone-rebuild", "ds4-audio-emulation"]
 
 permissions:
     contents: write
