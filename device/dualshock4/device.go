@@ -22,6 +22,7 @@ type DualShock4 struct {
 	metaState  *MetaState
 
 	outputFunc  func(OutputState)
+	speakerFunc func([]byte)
 	outputState OutputState
 	outputSeen  bool
 	descriptor  usb.Descriptor
@@ -35,6 +36,7 @@ type DualShock4 struct {
 	speakerInterfaceActive    bool
 	microphoneInterfaceActive bool
 	microphoneInput           bool
+	speakerOutput             bool
 	streamFrameVersion        byte
 	microphonePCM             []byte
 	microphoneSignal          chan struct{}
@@ -130,6 +132,12 @@ func (d *DualShock4) SetOutputCallback(f func(OutputState)) {
 	}
 }
 
+func (d *DualShock4) SetSpeakerCallback(f func([]byte)) {
+	d.mtx.Lock()
+	d.speakerFunc = f
+	d.mtx.Unlock()
+}
+
 func (d *DualShock4) UpdateInputState(state *InputState) {
 	d.mtx.Lock()
 	d.inputState = state
@@ -221,10 +229,16 @@ func (d *DualShock4) HandleTransfer(ctx context.Context, ep uint32, dir uint32, 
 		}
 	}
 	if dir == usbip.DirOut && epNumber == EndpointAudioOut&0x0F {
-		// DS4Windows captures this render endpoint with WASAPI loopback and
-		// forwards it to the connected physical controller. VIIPER still has
-		// to consume and pace the USB/IP isochronous transfer so Windows keeps
-		// the endpoint active, but it must not duplicate the audio here.
+		d.mtx.Lock()
+		speakerActive := d.speakerInterfaceActive
+		speakerFunc := d.speakerFunc
+		d.mtx.Unlock()
+		if speakerActive && speakerFunc != nil && len(out) > 0 {
+			// The USB/IP receive buffer is owned by the transfer handler. Give the
+			// device-stream writer an immutable copy so it can forward without
+			// holding up realtime isochronous completion.
+			speakerFunc(append([]byte(nil), out...))
+		}
 		return nil
 	}
 

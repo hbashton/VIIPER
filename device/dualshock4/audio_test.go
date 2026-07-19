@@ -92,6 +92,56 @@ func TestAudioInterfacesTrackAlternateSettings(t *testing.T) {
 	assert.Equal(t, make([]byte, USBMicrophonePacketSize), microphone)
 }
 
+func TestSpeakerTransferIsForwardedWithoutLoopbackCapture(t *testing.T) {
+	dev, err := New(nil)
+	require.NoError(t, err)
+	dev.SetInterfaceAltSetting(InterfaceSpeaker, 1)
+
+	forwarded := make(chan []byte, 1)
+	dev.SetSpeakerCallback(func(pcm []byte) { forwarded <- pcm })
+	pcm := make([]byte, 128)
+	for index := range pcm {
+		pcm[index] = byte(index)
+	}
+
+	dev.HandleTransfer(context.Background(), uint32(EndpointAudioOut),
+		usbip.DirOut, pcm)
+	got := <-forwarded
+	assert.Equal(t, pcm, got)
+
+	// The callback owns a copy; reusing the USB/IP buffer must not mutate it.
+	pcm[0] = 0xFF
+	assert.Equal(t, byte(0), got[0])
+	dev.SetSpeakerCallback(nil)
+}
+
+func TestDuplexWriterFramesSpeakerPCM(t *testing.T) {
+	server, client := net.Pipe()
+	writer := newDualShock4OutputWriter(server, StreamFrameVersionV3)
+	go writer.Run()
+
+	pcm := []byte{0x00, 0x01, 0xFE, 0xFF}
+	writer.EnqueueAudio(StreamFrameSpeakerPCM, pcm)
+	header := make([]byte, StreamFrameV2HeaderSize)
+	_, err := io.ReadFull(client, header)
+	require.NoError(t, err)
+	payload := make([]byte, binary.LittleEndian.Uint16(header[6:8]))
+	_, err = io.ReadFull(client, payload)
+	require.NoError(t, err)
+
+	assert.Equal(t, []byte{StreamFrameMagic0, StreamFrameMagic1,
+		StreamFrameMagic2, StreamFrameMagic3}, header[:4])
+	assert.Equal(t, byte(StreamFrameVersionV3), header[4])
+	assert.Equal(t, byte(StreamFrameSpeakerPCM), header[5])
+	assert.Equal(t, uint32(0), binary.LittleEndian.Uint32(header[8:12]))
+	assert.Equal(t, dualShock4FramedStreamCRC(header[4:12], payload),
+		binary.LittleEndian.Uint32(header[12:16]))
+	assert.Equal(t, pcm, payload)
+
+	require.NoError(t, client.Close())
+	writer.Stop()
+}
+
 func TestFramedStreamQueuesDS4MicrophonePCM(t *testing.T) {
 	dev, err := New(nil)
 	require.NoError(t, err)

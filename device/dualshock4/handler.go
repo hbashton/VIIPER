@@ -8,6 +8,8 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"sync"
+	"time"
 
 	"github.com/Alia5/VIIPER/device"
 	"github.com/Alia5/VIIPER/internal/server/api"
@@ -19,10 +21,15 @@ func init() {
 	api.RegisterDevice("dualshock4micv2", &handler{
 		microphoneInput: true, streamFrameVersion: StreamFrameVersionV2,
 	})
+	api.RegisterDevice("dualshock4audioduplexv3", &handler{
+		microphoneInput: true, speakerOutput: true,
+		streamFrameVersion: StreamFrameVersionV3,
+	})
 }
 
 type handler struct {
 	microphoneInput    bool
+	speakerOutput      bool
 	streamFrameVersion byte
 }
 
@@ -65,6 +72,7 @@ func (h *handler) CreateDevice(o *device.CreateOptions) (usb.Device, error) {
 		return nil, err
 	}
 	ds4.microphoneInput = h.microphoneInput
+	ds4.speakerOutput = h.speakerOutput
 	ds4.streamFrameVersion = h.streamFrameVersion
 	return ds4, nil
 }
@@ -88,27 +96,165 @@ func (h *handler) StreamHandler() api.StreamHandlerFunc {
 			return fmt.Errorf("%w: expected DualShock4", device.ErrWrongDeviceType)
 		}
 
-		ds4.SetOutputCallback(func(feedback OutputState) {
-			data, err := feedback.MarshalBinary()
-			if err != nil {
-				logger.Error("failed to marshal feedback", "error", err)
-				return
-			}
-			if _, err := conn.Write(data); err != nil {
-				logger.Error("failed to send feedback", "error", err)
-			}
-		})
-
 		microphoneInput := h.microphoneInput || ds4.microphoneInput
+		speakerOutput := h.speakerOutput || ds4.speakerOutput
 		streamFrameVersion := h.streamFrameVersion
 		if ds4.streamFrameVersion != 0 {
 			streamFrameVersion = ds4.streamFrameVersion
 		}
 		logger.Info("DualShock 4 input stream configured",
 			"microphoneInput", microphoneInput,
+			"speakerOutput", speakerOutput,
 			"frameVersion", streamFrameVersion)
+
+		var writer *dualShock4OutputWriter
+		if speakerOutput && streamFrameVersion == StreamFrameVersionV3 {
+			writer = newDualShock4OutputWriter(conn, streamFrameVersion)
+			ds4.SetOutputCallback(func(feedback OutputState) {
+				data, err := feedback.MarshalBinary()
+				if err != nil {
+					logger.Error("failed to marshal feedback", "error", err)
+					return
+				}
+				writer.EnqueueControl(StreamFrameOutputState, data)
+			})
+			ds4.SetSpeakerCallback(func(pcm []byte) {
+				writer.EnqueueAudio(StreamFrameSpeakerPCM, pcm)
+			})
+			go writer.Run()
+			defer func() {
+				ds4.SetOutputCallback(nil)
+				ds4.SetSpeakerCallback(nil)
+				writer.Stop()
+			}()
+		} else {
+			ds4.SetOutputCallback(func(feedback OutputState) {
+				data, err := feedback.MarshalBinary()
+				if err != nil {
+					logger.Error("failed to marshal feedback", "error", err)
+					return
+				}
+				if _, err := conn.Write(data); err != nil {
+					logger.Error("failed to send feedback", "error", err)
+				}
+			})
+			defer ds4.SetOutputCallback(nil)
+		}
+
 		return readDualShock4InputStream(conn, ds4, logger,
 			microphoneInput, streamFrameVersion)
+	}
+}
+
+type dualShock4OutputFrame struct {
+	frameType byte
+	payload   []byte
+}
+
+// dualShock4OutputWriter keeps USB isochronous completion independent from
+// local TCP backpressure. Control feedback and speaker PCM share one writer so
+// their framing sequence is strictly monotonic and conn.Write is never raced.
+type dualShock4OutputWriter struct {
+	conn     net.Conn
+	version  byte
+	control  chan dualShock4OutputFrame
+	audio    chan dualShock4OutputFrame
+	stop     chan struct{}
+	done     chan struct{}
+	stopOnce sync.Once
+	sequence uint32
+}
+
+func newDualShock4OutputWriter(conn net.Conn, version byte) *dualShock4OutputWriter {
+	return &dualShock4OutputWriter{
+		conn: conn, version: version,
+		control: make(chan dualShock4OutputFrame, 32),
+		audio:   make(chan dualShock4OutputFrame, 256),
+		stop:    make(chan struct{}), done: make(chan struct{}),
+	}
+}
+
+func (w *dualShock4OutputWriter) EnqueueControl(frameType byte, payload []byte) {
+	w.enqueue(w.control, frameType, payload)
+}
+
+func (w *dualShock4OutputWriter) EnqueueAudio(frameType byte, payload []byte) {
+	w.enqueue(w.audio, frameType, payload)
+}
+
+func (w *dualShock4OutputWriter) enqueue(queue chan dualShock4OutputFrame,
+	frameType byte, payload []byte) {
+	frame := dualShock4OutputFrame{frameType: frameType,
+		payload: append([]byte(nil), payload...)}
+	select {
+	case <-w.stop:
+		return
+	case queue <- frame:
+	default:
+		// Never block the USB/IP isochronous or HID callback. The receiver
+		// bounds its own latency too, so dropping newest under pathological
+		// backpressure is preferable to stalling the virtual USB device.
+	}
+}
+
+func (w *dualShock4OutputWriter) Run() {
+	defer close(w.done)
+	for {
+		// Give feedback priority without starving speaker packets.
+		select {
+		case frame := <-w.control:
+			if !w.write(frame) {
+				return
+			}
+			continue
+		default:
+		}
+
+		select {
+		case <-w.stop:
+			return
+		case frame := <-w.control:
+			if !w.write(frame) {
+				return
+			}
+		case frame := <-w.audio:
+			if !w.write(frame) {
+				return
+			}
+		}
+	}
+}
+
+func (w *dualShock4OutputWriter) write(frame dualShock4OutputFrame) bool {
+	if len(frame.payload) > int(^uint16(0)) {
+		return true
+	}
+	header := make([]byte, StreamFrameV2HeaderSize)
+	header[0] = StreamFrameMagic0
+	header[1] = StreamFrameMagic1
+	header[2] = StreamFrameMagic2
+	header[3] = StreamFrameMagic3
+	header[4] = w.version
+	header[5] = frame.frameType
+	binary.LittleEndian.PutUint16(header[6:8], uint16(len(frame.payload)))
+	binary.LittleEndian.PutUint32(header[8:12], w.sequence)
+	w.sequence++
+	binary.LittleEndian.PutUint32(header[12:16],
+		dualShock4FramedStreamCRC(header[4:12], frame.payload))
+	packet := append(header, frame.payload...)
+	if _, err := w.conn.Write(packet); err != nil {
+		_ = w.conn.Close()
+		return false
+	}
+	return true
+}
+
+func (w *dualShock4OutputWriter) Stop() {
+	w.stopOnce.Do(func() { close(w.stop) })
+	_ = w.conn.SetWriteDeadline(time.Now().Add(250 * time.Millisecond))
+	select {
+	case <-w.done:
+	case <-time.After(300 * time.Millisecond):
 	}
 }
 
@@ -133,7 +279,8 @@ func readDualShock4InputStream(conn net.Conn, ds4 *DualShock4,
 		}
 	}
 
-	if frameVersion != StreamFrameVersionV2 {
+	if frameVersion != StreamFrameVersionV2 &&
+		frameVersion != StreamFrameVersionV3 {
 		return fmt.Errorf("unsupported DualShock 4 framed stream version 0x%02X",
 			frameVersion)
 	}
