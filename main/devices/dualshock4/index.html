@@ -2148,16 +2148,11 @@
 <p>The DualShock 4 virtual gamepad emulates a complete PlayStation 4 Controller (V1)
 connected via USB.
 It supports sticks, triggers, D-pad, face/shoulder buttons, PS button,
-touchpad click, IMU (gyro + accelerometer), touchpad finger coordinates, and
-the native DualShock 4 USB speaker and microphone interfaces.</p>
+touchpad click, IMU (gyro + accelerometer), and touchpad finger coordinates.</p>
 <div class="tabbed-set tabbed-alternate" data-tabs="1:2"><input checked="checked" id="__tabbed_1_1" name="__tabbed_1" type="radio" /><input id="__tabbed_1_2" name="__tabbed_1" type="radio" /><div class="tabbed-labels"><label for="__tabbed_1_1">TCP API</label><label for="__tabbed_1_2">libVIIPER</label></div>
 <div class="tabbed-content">
 <div class="tabbed-block">
 <p>Use <code>dualshock4</code> as the device type when adding a device via the API or client libraries.</p>
-<p>Use <code>dualshock4micv2</code> when the feeder also supplies microphone input. This
-variant keeps the 31-byte controller state and 320-byte, 16 kHz mono PCM
-microphone frames in separate CRC-protected framed packets. The legacy
-<code>dualshock4</code> stream remains unchanged for existing clients.</p>
 <h2 id="client-library-support">Client Library Support</h2>
 <p>The wire protocol is abstracted by client libraries.
 The <strong>Go client</strong> includes built-in types (<code>/device/dualshock4</code>),
