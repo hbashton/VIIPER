@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"sync/atomic"
 
 	"github.com/Alia5/VIIPER/device"
@@ -13,10 +14,14 @@ import (
 )
 
 type Xbox360 struct {
-	tick       uint64
-	inputCh    chan InputState
-	rumbleFunc func(XRumbleState)
-	descriptor usb.Descriptor
+	tick             uint64
+	inputCh          chan InputState
+	rumbleDispatchMu sync.Mutex
+	rumbleMu         sync.Mutex
+	rumbleFunc       func(XRumbleState)
+	rumbleState      XRumbleState
+	rumbleSeen       bool
+	descriptor       usb.Descriptor
 }
 
 type Xbox360CreateOptions struct {
@@ -53,7 +58,18 @@ func New(o *device.CreateOptions) (*Xbox360, error) {
 
 // SetRumbleCallback sets a callback that will be invoked when rumble commands arrive.
 func (x *Xbox360) SetRumbleCallback(f func(XRumbleState)) {
+	x.rumbleDispatchMu.Lock()
+	defer x.rumbleDispatchMu.Unlock()
+
+	x.rumbleMu.Lock()
 	x.rumbleFunc = f
+	latest := x.rumbleState
+	replay := f != nil && x.rumbleSeen
+	x.rumbleMu.Unlock()
+
+	if replay {
+		f(latest)
+	}
 }
 
 // UpdateInputState updates the device's current input state (thread-safe).
@@ -88,16 +104,28 @@ func (x *Xbox360) HandleTransfer(ctx context.Context, ep uint32, dir uint32, out
 		// [5..7]=Reserved (often 0x00).
 		// Some other outbound reports (e.g. LED control) use different IDs/lengths; we ignore those here.
 		if len(out) >= 8 && out[0] == 0x00 && out[1] == 0x08 {
-			rumble := XRumbleState{
+			x.emitRumble(XRumbleState{
 				LeftMotor:  out[3], // big / low-frequency motor
 				RightMotor: out[4], // small / high-frequency motor
-			}
-			if x.rumbleFunc != nil {
-				x.rumbleFunc(rumble)
-			}
+			})
 		}
 	}
 	return nil
+}
+
+func (x *Xbox360) emitRumble(rumble XRumbleState) {
+	x.rumbleDispatchMu.Lock()
+	defer x.rumbleDispatchMu.Unlock()
+
+	x.rumbleMu.Lock()
+	x.rumbleState = rumble
+	x.rumbleSeen = true
+	rumbleFunc := x.rumbleFunc
+	x.rumbleMu.Unlock()
+
+	if rumbleFunc != nil {
+		rumbleFunc(rumble)
+	}
 }
 
 func MakeDescriptor() usb.Descriptor {
