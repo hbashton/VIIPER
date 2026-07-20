@@ -6,7 +6,9 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/Alia5/VIIPER/usbip"
 	"github.com/stretchr/testify/assert"
@@ -142,6 +144,266 @@ func TestDuplexWriterFramesSpeakerPCM(t *testing.T) {
 	writer.Stop()
 }
 
+func TestAudioInterfaceTransitionsDropPreviousGeneration(t *testing.T) {
+	dev, err := New(nil)
+	require.NoError(t, err)
+	server, client := net.Pipe()
+	writer := newDualShock4OutputWriter(server, StreamFrameVersionV3)
+	dev.SetSpeakerCallback(func(pcm []byte) {
+		writer.EnqueueAudioOwned(StreamFrameSpeakerPCM, pcm)
+	})
+	dev.SetSpeakerResetCallback(writer.ResetSpeaker)
+
+	dev.SetInterfaceAltSetting(InterfaceSpeaker, 1)
+	dev.SetInterfaceAltSetting(InterfaceMicrophone, 1)
+	stale := []byte{0x11, 0x22, 0x33, 0x44}
+	dev.HandleTransfer(context.Background(), uint32(EndpointAudioOut),
+		usbip.DirOut, stale)
+	require.Len(t, writer.audio, 1)
+	microphone := make([]byte, USBMicrophoneClientFrameSize)
+	for range microphoneTargetClientFrames {
+		dev.QueueMicrophonePCMFrame(microphone)
+	}
+	require.Equal(t, true,
+		dev.GetDeviceSpecificArgs()["microphoneQueuePrimed"])
+
+	dev.SetInterfaceAltSetting(InterfaceSpeaker, 0)
+	dev.SetInterfaceAltSetting(InterfaceMicrophone, 0)
+	require.Empty(t, writer.audio,
+		"closing the speaker interface retained stale PCM")
+	state := dev.GetDeviceSpecificArgs()
+	assert.Equal(t, 0, state["queuedMicrophoneBytes"])
+	assert.Equal(t, false, state["microphoneQueuePrimed"])
+	dev.SetInterfaceAltSetting(InterfaceSpeaker, 1)
+	dev.SetInterfaceAltSetting(InterfaceMicrophone, 1)
+	state = dev.GetDeviceSpecificArgs()
+	assert.Equal(t, true, state["speakerInterfaceActive"])
+	assert.Equal(t, true, state["microphoneInterfaceActive"])
+
+	go writer.Run()
+	fresh := []byte{0x55, 0x66, 0x77, 0x88}
+	dev.HandleTransfer(context.Background(), uint32(EndpointAudioOut),
+		usbip.DirOut, fresh)
+	assert.Equal(t, fresh, readDualShock4OutputPayload(t, client))
+
+	dev.SetSpeakerCallback(nil)
+	dev.SetSpeakerResetCallback(nil)
+	require.NoError(t, client.Close())
+	writer.Stop()
+}
+
+func TestEndpointResetDropsSpeakerAndMicrophoneWithoutChangingAlt(t *testing.T) {
+	dev, err := New(nil)
+	require.NoError(t, err)
+	server, client := net.Pipe()
+	writer := newDualShock4OutputWriter(server, StreamFrameVersionV3)
+	dev.SetSpeakerCallback(func(pcm []byte) {
+		writer.EnqueueAudioOwned(StreamFrameSpeakerPCM, pcm)
+	})
+	dev.SetSpeakerResetCallback(writer.ResetSpeaker)
+	dev.SetInterfaceAltSetting(InterfaceSpeaker, 1)
+	dev.SetInterfaceAltSetting(InterfaceMicrophone, 1)
+
+	dev.HandleTransfer(context.Background(), uint32(EndpointAudioOut),
+		usbip.DirOut, []byte{0x10, 0x20, 0x30, 0x40})
+	require.Len(t, writer.audio, 1)
+	microphone := make([]byte, USBMicrophoneClientFrameSize)
+	for index := range microphone {
+		microphone[index] = byte(index + 1)
+	}
+	for range microphoneTargetClientFrames {
+		dev.QueueMicrophonePCMFrame(microphone)
+	}
+	require.Equal(t, true,
+		dev.GetDeviceSpecificArgs()["microphoneQueuePrimed"])
+
+	dev.ResetEndpoint(EndpointAudioOut)
+	dev.ResetEndpoint(EndpointMicrophoneIn)
+	state := dev.GetDeviceSpecificArgs()
+	assert.Equal(t, true, state["speakerInterfaceActive"])
+	assert.Equal(t, true, state["microphoneInterfaceActive"])
+	assert.Equal(t, 0, state["queuedMicrophoneBytes"])
+	assert.Equal(t, false, state["microphoneQueuePrimed"])
+	require.Empty(t, writer.audio,
+		"speaker endpoint reset retained stale PCM")
+
+	go writer.Run()
+	fresh := []byte{0x50, 0x60, 0x70, 0x80}
+	dev.HandleTransfer(context.Background(), uint32(EndpointAudioOut),
+		usbip.DirOut, fresh)
+	assert.Equal(t, fresh, readDualShock4OutputPayload(t, client))
+
+	dev.SetSpeakerCallback(nil)
+	dev.SetSpeakerResetCallback(nil)
+	require.NoError(t, client.Close())
+	writer.Stop()
+}
+
+type dualShock4WriteGateConn struct {
+	net.Conn
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (c *dualShock4WriteGateConn) Write(payload []byte) (int, error) {
+	c.once.Do(func() { close(c.started) })
+	<-c.release
+	return len(payload), nil
+}
+
+func TestSpeakerResetWaitsForInFlightWrite(t *testing.T) {
+	server, client := net.Pipe()
+	gate := &dualShock4WriteGateConn{
+		Conn: server, started: make(chan struct{}), release: make(chan struct{}),
+	}
+	writer := newDualShock4OutputWriter(gate, StreamFrameVersionV3)
+	go writer.Run()
+	writer.EnqueueAudio(StreamFrameSpeakerPCM, []byte{0x01, 0x02, 0x03, 0x04})
+
+	select {
+	case <-gate.started:
+	case <-time.After(time.Second):
+		t.Fatal("speaker writer did not start")
+	}
+	resetDone := make(chan struct{})
+	go func() {
+		writer.ResetSpeaker()
+		close(resetDone)
+	}()
+	select {
+	case <-resetDone:
+		t.Fatal("speaker reset crossed an in-flight write")
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	close(gate.release)
+	select {
+	case <-resetDone:
+	case <-time.After(time.Second):
+		t.Fatal("speaker reset did not finish after the write completed")
+	}
+
+	require.NoError(t, client.Close())
+	writer.Stop()
+}
+
+type dualShock4DeadlineBlockConn struct {
+	net.Conn
+	started     chan struct{}
+	unblock     chan struct{}
+	startedOnce sync.Once
+	unblockOnce sync.Once
+	mu          sync.Mutex
+	writes      [][]byte
+	deadlines   []time.Time
+	closeCount  int
+}
+
+func (c *dualShock4DeadlineBlockConn) Write(payload []byte) (int, error) {
+	c.mu.Lock()
+	c.writes = append(c.writes, append([]byte(nil), payload...))
+	c.mu.Unlock()
+	c.startedOnce.Do(func() { close(c.started) })
+	<-c.unblock
+	return 0, context.DeadlineExceeded
+}
+
+func (c *dualShock4DeadlineBlockConn) SetWriteDeadline(deadline time.Time) error {
+	c.mu.Lock()
+	c.deadlines = append(c.deadlines, deadline)
+	c.mu.Unlock()
+	if !deadline.IsZero() {
+		c.unblockOnce.Do(func() { close(c.unblock) })
+	}
+	return nil
+}
+
+func (c *dualShock4DeadlineBlockConn) Close() error {
+	c.mu.Lock()
+	c.closeCount++
+	c.mu.Unlock()
+	c.unblockOnce.Do(func() { close(c.unblock) })
+	return c.Conn.Close()
+}
+
+func (c *dualShock4DeadlineBlockConn) snapshot() ([][]byte, []time.Time, int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	writes := make([][]byte, len(c.writes))
+	for index := range c.writes {
+		writes[index] = append([]byte(nil), c.writes[index]...)
+	}
+	return writes, append([]time.Time(nil), c.deadlines...), c.closeCount
+}
+
+func TestSpeakerResetBoundsBlockedWriteAndDropsQueuedGeneration(t *testing.T) {
+	server, client := net.Pipe()
+	conn := &dualShock4DeadlineBlockConn{
+		Conn: server, started: make(chan struct{}), unblock: make(chan struct{}),
+	}
+	writer := newDualShock4OutputWriter(conn, StreamFrameVersionV3)
+	writer.EnqueueAudio(StreamFrameSpeakerPCM, []byte{0x11})
+	go writer.Run()
+	select {
+	case <-conn.started:
+	case <-time.After(time.Second):
+		t.Fatal("speaker writer did not enter the blocked write")
+	}
+	writer.EnqueueAudio(StreamFrameSpeakerPCM, []byte{0x22})
+
+	resetStarted := time.Now()
+	resetDone := make(chan struct{})
+	go func() {
+		writer.ResetSpeaker()
+		close(resetDone)
+	}()
+	select {
+	case <-resetDone:
+	case <-time.After(time.Second):
+		t.Fatal("speaker reset did not bound the blocked write")
+	}
+	if elapsed := time.Since(resetStarted); elapsed > time.Second {
+		t.Fatalf("speaker reset exceeded its bounded wait: %s", elapsed)
+	}
+	select {
+	case <-writer.done:
+	case <-time.After(time.Second):
+		t.Fatal("writer did not stop so the timed-out stream could reconnect")
+	}
+
+	writes, deadlines, closeCount := conn.snapshot()
+	require.Len(t, writes, 1,
+		"queued old-generation speaker PCM was replayed after reset")
+	require.GreaterOrEqual(t, len(writes[0]), StreamFrameV2HeaderSize+1)
+	assert.Equal(t, byte(0x11), writes[0][StreamFrameV2HeaderSize])
+	require.Len(t, deadlines, 1,
+		"timed-out stream must not clear its reset deadline")
+	assert.False(t, deadlines[0].IsZero())
+	assert.GreaterOrEqual(t, deadlines[0].Sub(resetStarted),
+		dualShock4SpeakerResetWriteTimeout-50*time.Millisecond)
+	assert.GreaterOrEqual(t, closeCount, 1,
+		"timed-out stream was not closed for reconnect")
+	assert.Empty(t, writer.audio)
+	writer.EnqueueAudio(StreamFrameSpeakerPCM, []byte{0x33})
+	assert.Empty(t, writer.audio,
+		"failed writer accepted audio instead of waiting for reconnect")
+
+	require.NoError(t, client.Close())
+}
+
+func readDualShock4OutputPayload(t *testing.T, reader io.Reader) []byte {
+	t.Helper()
+	header := make([]byte, StreamFrameV2HeaderSize)
+	_, err := io.ReadFull(reader, header)
+	require.NoError(t, err)
+	require.Equal(t, byte(StreamFrameSpeakerPCM), header[5])
+	payload := make([]byte, binary.LittleEndian.Uint16(header[6:8]))
+	_, err = io.ReadFull(reader, payload)
+	require.NoError(t, err)
+	return payload
+}
+
 func TestFramedStreamQueuesDS4MicrophonePCM(t *testing.T) {
 	dev, err := New(nil)
 	require.NoError(t, err)
@@ -164,8 +426,10 @@ func TestFramedStreamQueuesDS4MicrophonePCM(t *testing.T) {
 
 	_, err = client.Write(makeDualShock4StreamFrame(StreamFrameInputState, 0, input))
 	require.NoError(t, err)
-	_, err = client.Write(makeDualShock4StreamFrame(StreamFrameMicrophonePCM, 1, microphone))
-	require.NoError(t, err)
+	for sequence := uint32(1); sequence <= microphoneTargetClientFrames; sequence++ {
+		_, err = client.Write(makeDualShock4StreamFrame(StreamFrameMicrophonePCM, sequence, microphone))
+		require.NoError(t, err)
+	}
 	require.NoError(t, client.Close())
 	require.NoError(t, <-done)
 
@@ -173,6 +437,57 @@ func TestFramedStreamQueuesDS4MicrophonePCM(t *testing.T) {
 		uint32(EndpointMicrophoneIn&0x0F), usbip.DirIn, nil)
 	require.Len(t, packet, USBMicrophonePacketSize)
 	assert.Equal(t, microphone[:USBMicrophonePacketSize], packet)
+}
+
+func TestDS4MicrophoneQueuePrimesAndExposesRecoveryTelemetry(t *testing.T) {
+	dev, err := New(nil)
+	require.NoError(t, err)
+	dev.SetInterfaceAltSetting(InterfaceMicrophone, 1)
+
+	frame := make([]byte, USBMicrophoneClientFrameSize)
+	for index := range frame {
+		frame[index] = byte(index + 1)
+	}
+	for count := 0; count < microphoneTargetClientFrames-1; count++ {
+		dev.QueueMicrophonePCMFrame(frame)
+	}
+
+	packet := dev.HandleTransfer(context.Background(),
+		uint32(EndpointMicrophoneIn&0x0F), usbip.DirIn, nil)
+	assert.Equal(t, make([]byte, USBMicrophonePacketSize), packet)
+	state := dev.GetDeviceSpecificArgs()
+	assert.Equal(t, USBMicrophoneClientFrameSize*microphoneTargetClientFrames,
+		state["microphoneQueueTargetBytes"])
+	assert.Equal(t, USBMicrophoneClientFrameSize*microphoneMaximumClientFrames,
+		state["microphoneQueueMaximumBytes"])
+	assert.Equal(t, false, state["microphoneQueuePrimed"])
+
+	dev.QueueMicrophonePCMFrame(frame)
+	packet = dev.HandleTransfer(context.Background(),
+		uint32(EndpointMicrophoneIn&0x0F), usbip.DirIn, nil)
+	assert.Equal(t, frame[:USBMicrophonePacketSize], packet)
+
+	packetsPerClientFrame := USBMicrophoneClientFrameSize / USBMicrophonePacketSize
+	for count := 1; count < microphoneTargetClientFrames*packetsPerClientFrame; count++ {
+		packet = dev.HandleTransfer(context.Background(),
+			uint32(EndpointMicrophoneIn&0x0F), usbip.DirIn, nil)
+		assert.NotEqual(t, make([]byte, USBMicrophonePacketSize), packet)
+	}
+	packet = dev.HandleTransfer(context.Background(),
+		uint32(EndpointMicrophoneIn&0x0F), usbip.DirIn, nil)
+	assert.Equal(t, make([]byte, USBMicrophonePacketSize), packet)
+	state = dev.GetDeviceSpecificArgs()
+	assert.Equal(t, uint64(1), state["microphoneUnderruns"])
+	assert.Equal(t, uint64(0), state["microphoneReprimes"])
+	assert.Equal(t, false, state["microphoneQueuePrimed"])
+
+	for count := 0; count < microphoneTargetClientFrames; count++ {
+		dev.QueueMicrophonePCMFrame(frame)
+	}
+	state = dev.GetDeviceSpecificArgs()
+	assert.Equal(t, uint64(1), state["microphoneUnderruns"])
+	assert.Equal(t, uint64(1), state["microphoneReprimes"])
+	assert.Equal(t, true, state["microphoneQueuePrimed"])
 }
 
 func makeDualShock4StreamFrame(frameType byte, sequence uint32,

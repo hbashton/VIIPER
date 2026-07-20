@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Alia5/VIIPER/device"
@@ -119,12 +120,14 @@ func (h *handler) StreamHandler() api.StreamHandlerFunc {
 				writer.EnqueueControl(StreamFrameOutputState, data)
 			})
 			ds4.SetSpeakerCallback(func(pcm []byte) {
-				writer.EnqueueAudio(StreamFrameSpeakerPCM, pcm)
+				writer.EnqueueAudioOwned(StreamFrameSpeakerPCM, pcm)
 			})
+			ds4.SetSpeakerResetCallback(writer.ResetSpeaker)
 			go writer.Run()
 			defer func() {
 				ds4.SetOutputCallback(nil)
 				ds4.SetSpeakerCallback(nil)
+				ds4.SetSpeakerResetCallback(nil)
 				writer.Stop()
 			}()
 		} else {
@@ -147,22 +150,33 @@ func (h *handler) StreamHandler() api.StreamHandlerFunc {
 }
 
 type dualShock4OutputFrame struct {
-	frameType byte
-	payload   []byte
+	frameType  byte
+	payload    []byte
+	pooled     bool
+	audio      bool
+	generation uint64
 }
+
+const dualShock4SpeakerResetWriteTimeout = 250 * time.Millisecond
 
 // dualShock4OutputWriter keeps USB isochronous completion independent from
 // local TCP backpressure. Control feedback and speaker PCM share one writer so
 // their framing sequence is strictly monotonic and conn.Write is never raced.
 type dualShock4OutputWriter struct {
-	conn     net.Conn
-	version  byte
-	control  chan dualShock4OutputFrame
-	audio    chan dualShock4OutputFrame
-	stop     chan struct{}
-	done     chan struct{}
-	stopOnce sync.Once
-	sequence uint32
+	conn            net.Conn
+	version         byte
+	control         chan dualShock4OutputFrame
+	audio           chan dualShock4OutputFrame
+	stop            chan struct{}
+	done            chan struct{}
+	stopOnce        sync.Once
+	enqueueLock     sync.RWMutex
+	audioWrite      sync.Mutex
+	stopped         bool
+	audioGeneration atomic.Uint64
+	sequence        uint32
+	packet          []byte
+	audioPool       sync.Pool
 }
 
 func newDualShock4OutputWriter(conn net.Conn, version byte) *dualShock4OutputWriter {
@@ -175,35 +189,92 @@ func newDualShock4OutputWriter(conn net.Conn, version byte) *dualShock4OutputWri
 }
 
 func (w *dualShock4OutputWriter) EnqueueControl(frameType byte, payload []byte) {
-	w.enqueue(w.control, frameType, payload)
+	if len(payload) == 0 {
+		return
+	}
+	w.enqueueLock.RLock()
+	defer w.enqueueLock.RUnlock()
+	if w.stopped {
+		return
+	}
+	w.enqueueFrameLocked(w.control, dualShock4OutputFrame{
+		frameType: frameType,
+		payload:   append([]byte(nil), payload...),
+	})
 }
 
 func (w *dualShock4OutputWriter) EnqueueAudio(frameType byte, payload []byte) {
-	w.enqueue(w.audio, frameType, payload)
+	if len(payload) == 0 {
+		return
+	}
+	w.enqueueLock.RLock()
+	defer w.enqueueLock.RUnlock()
+	if w.stopped {
+		return
+	}
+	var owned []byte
+	if value := w.audioPool.Get(); value != nil {
+		owned = value.([]byte)
+	}
+	if cap(owned) < len(payload) {
+		owned = make([]byte, len(payload))
+	} else {
+		owned = owned[:len(payload)]
+	}
+	copy(owned, payload)
+	frame := dualShock4OutputFrame{
+		frameType: frameType, payload: owned, pooled: true, audio: true,
+		generation: w.audioGeneration.Load(),
+	}
+	if !w.enqueueFrameLocked(w.audio, frame) {
+		w.audioPool.Put(owned[:0])
+	}
 }
 
-func (w *dualShock4OutputWriter) enqueue(queue chan dualShock4OutputFrame,
-	frameType byte, payload []byte) {
-	frame := dualShock4OutputFrame{frameType: frameType,
-		payload: append([]byte(nil), payload...)}
-	select {
-	case <-w.stop:
+// EnqueueAudioOwned accepts the immutable buffer transferred by DualShock4's
+// USB/IP callback. Keeping ownership avoids copying the 10 ms PCM block twice.
+func (w *dualShock4OutputWriter) EnqueueAudioOwned(frameType byte, payload []byte) {
+	if len(payload) == 0 {
 		return
+	}
+	w.enqueueLock.RLock()
+	defer w.enqueueLock.RUnlock()
+	if w.stopped {
+		return
+	}
+	w.enqueueFrameLocked(w.audio, dualShock4OutputFrame{
+		frameType: frameType, payload: payload, audio: true,
+		generation: w.audioGeneration.Load(),
+	})
+}
+
+// enqueueFrameLocked requires enqueueLock to be held for reading. Reset and
+// shutdown take the write side before draining, so a producer cannot publish a
+// stale frame after the final empty-queue observation.
+func (w *dualShock4OutputWriter) enqueueFrameLocked(
+	queue chan dualShock4OutputFrame, frame dualShock4OutputFrame) bool {
+	select {
 	case queue <- frame:
+		return true
 	default:
 		// Never block the USB/IP isochronous or HID callback. The receiver
 		// bounds its own latency too, so dropping newest under pathological
 		// backpressure is preferable to stalling the virtual USB device.
+		return false
 	}
 }
 
 func (w *dualShock4OutputWriter) Run() {
-	defer close(w.done)
+	defer func() {
+		w.requestStop()
+		w.drainAudioQueue()
+		close(w.done)
+	}()
 	for {
 		// Give feedback priority without starving speaker packets.
 		select {
 		case frame := <-w.control:
-			if !w.write(frame) {
+			if !w.writeAndRelease(frame) {
 				return
 			}
 			continue
@@ -214,13 +285,78 @@ func (w *dualShock4OutputWriter) Run() {
 		case <-w.stop:
 			return
 		case frame := <-w.control:
-			if !w.write(frame) {
+			if !w.writeAndRelease(frame) {
 				return
 			}
 		case frame := <-w.audio:
-			if !w.write(frame) {
+			if !w.writeAndRelease(frame) {
 				return
 			}
+		}
+	}
+}
+
+func (w *dualShock4OutputWriter) writeAndRelease(frame dualShock4OutputFrame) bool {
+	if frame.audio {
+		w.audioWrite.Lock()
+		defer w.audioWrite.Unlock()
+		if frame.generation != w.audioGeneration.Load() {
+			w.release(frame)
+			return true
+		}
+	}
+
+	ok := w.write(frame)
+	w.release(frame)
+	return ok
+}
+
+// ResetSpeaker advances the audio generation, drains every queued frame, and
+// waits for an already-started write. Once it returns, no speaker PCM accepted
+// before the interface or endpoint reset can appear on the client stream.
+func (w *dualShock4OutputWriter) ResetSpeaker() {
+	w.enqueueLock.Lock()
+	w.audioGeneration.Add(1)
+	w.drainAudioQueue()
+	w.enqueueLock.Unlock()
+
+	deadlineArmed := false
+	if w.conn != nil {
+		if err := w.conn.SetWriteDeadline(
+			time.Now().Add(dualShock4SpeakerResetWriteTimeout)); err != nil {
+			w.failStream()
+		} else {
+			deadlineArmed = true
+		}
+	}
+
+	w.audioWrite.Lock()
+	if deadlineArmed {
+		w.clearWriteDeadlineIfViable()
+	}
+	w.audioWrite.Unlock()
+}
+
+func (w *dualShock4OutputWriter) clearWriteDeadlineIfViable() {
+	w.enqueueLock.RLock()
+	if w.stopped {
+		w.enqueueLock.RUnlock()
+		return
+	}
+	err := w.conn.SetWriteDeadline(time.Time{})
+	w.enqueueLock.RUnlock()
+	if err != nil {
+		w.failStream()
+	}
+}
+
+func (w *dualShock4OutputWriter) drainAudioQueue() {
+	for {
+		select {
+		case frame := <-w.audio:
+			w.release(frame)
+		default:
+			return
 		}
 	}
 }
@@ -229,7 +365,13 @@ func (w *dualShock4OutputWriter) write(frame dualShock4OutputFrame) bool {
 	if len(frame.payload) > int(^uint16(0)) {
 		return true
 	}
-	header := make([]byte, StreamFrameV2HeaderSize)
+	packetLength := StreamFrameV2HeaderSize + len(frame.payload)
+	if cap(w.packet) < packetLength {
+		w.packet = make([]byte, packetLength)
+	} else {
+		w.packet = w.packet[:packetLength]
+	}
+	header := w.packet[:StreamFrameV2HeaderSize]
 	header[0] = StreamFrameMagic0
 	header[1] = StreamFrameMagic1
 	header[2] = StreamFrameMagic2
@@ -241,21 +383,48 @@ func (w *dualShock4OutputWriter) write(frame dualShock4OutputFrame) bool {
 	w.sequence++
 	binary.LittleEndian.PutUint32(header[12:16],
 		dualShock4FramedStreamCRC(header[4:12], frame.payload))
-	packet := append(header, frame.payload...)
-	if _, err := w.conn.Write(packet); err != nil {
-		_ = w.conn.Close()
-		return false
+	copy(w.packet[StreamFrameV2HeaderSize:], frame.payload)
+	remaining := w.packet
+	for len(remaining) > 0 {
+		n, err := w.conn.Write(remaining)
+		if err != nil || n <= 0 {
+			w.failStream()
+			return false
+		}
+		remaining = remaining[n:]
 	}
 	return true
 }
 
+func (w *dualShock4OutputWriter) failStream() {
+	w.requestStop()
+	if w.conn != nil {
+		_ = w.conn.Close()
+	}
+}
+
+func (w *dualShock4OutputWriter) release(frame dualShock4OutputFrame) {
+	if frame.pooled {
+		w.audioPool.Put(frame.payload[:0])
+	}
+}
+
 func (w *dualShock4OutputWriter) Stop() {
-	w.stopOnce.Do(func() { close(w.stop) })
+	w.requestStop()
 	_ = w.conn.SetWriteDeadline(time.Now().Add(250 * time.Millisecond))
 	select {
 	case <-w.done:
 	case <-time.After(300 * time.Millisecond):
 	}
+}
+
+func (w *dualShock4OutputWriter) requestStop() {
+	w.stopOnce.Do(func() {
+		w.enqueueLock.Lock()
+		w.stopped = true
+		close(w.stop)
+		w.enqueueLock.Unlock()
+	})
 }
 
 func readDualShock4InputStream(conn net.Conn, ds4 *DualShock4,

@@ -36,6 +36,7 @@ const (
 )
 
 const (
+	InterfaceAudioControl = 0x00
 	InterfaceHapticsAudio = 0x01
 	InterfaceMicrophone   = 0x02
 )
@@ -58,14 +59,19 @@ const (
 	StreamFrameMagic3           = 0x4D
 	StreamFrameVersion          = 0x01
 	StreamFrameVersionV2        = 0x02
+	StreamFrameVersionV3        = 0x03
 	StreamFrameInputState       = 0x01
 	StreamFrameMicrophonePCM    = 0x02
+	StreamFrameOutputState      = 0x81
+	StreamFrameSpeakerPCM       = 0x82
 	USBMicrophoneSampleRate     = 48000
 	USBMicrophoneChannels       = 2
 	USBMicrophoneBytesPerSample = 2
 	USBMicrophonePacketFrames   = USBMicrophoneSampleRate / 1000
 	USBMicrophonePacketSize     = USBMicrophonePacketFrames *
 		USBMicrophoneChannels * USBMicrophoneBytesPerSample
+	USBMicrophoneMaxPacketSize = USBMicrophonePacketSize +
+		USBMicrophoneChannels*USBMicrophoneBytesPerSample
 	USBMicrophoneClientFrameFrames = 480
 	USBMicrophoneClientFrameSize   = USBMicrophoneClientFrameFrames *
 		USBMicrophoneChannels * USBMicrophoneBytesPerSample

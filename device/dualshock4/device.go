@@ -12,8 +12,14 @@ import (
 	"time"
 
 	"github.com/Alia5/VIIPER/device"
+	"github.com/Alia5/VIIPER/device/internal/microphonebuffer"
 	"github.com/Alia5/VIIPER/usb"
 	"github.com/Alia5/VIIPER/usbip"
+)
+
+const (
+	microphoneTargetClientFrames  = 6  // 60 ms absorbs the DS4's 8/8/8/16 ms framing and host scheduling jitter.
+	microphoneMaximumClientFrames = 20 // 200 ms emergency ceiling for full-duplex BT bursts; steady state remains about 55 ms.
 )
 
 type DualShock4 struct {
@@ -21,11 +27,12 @@ type DualShock4 struct {
 	inputState *InputState
 	metaState  *MetaState
 
-	outputFunc  func(OutputState)
-	speakerFunc func([]byte)
-	outputState OutputState
-	outputSeen  bool
-	descriptor  usb.Descriptor
+	outputFunc       func(OutputState)
+	speakerFunc      func([]byte)
+	speakerResetFunc func()
+	outputState      OutputState
+	outputSeen       bool
+	descriptor       usb.Descriptor
 
 	probeSelector       [3]byte
 	telemetrySubcommand byte
@@ -38,7 +45,7 @@ type DualShock4 struct {
 	microphoneInput           bool
 	speakerOutput             bool
 	streamFrameVersion        byte
-	microphonePCM             []byte
+	microphoneBuffer          microphonebuffer.Buffer
 	microphoneSignal          chan struct{}
 
 	mtx sync.Mutex
@@ -80,8 +87,15 @@ func New(o *device.CreateOptions) (*DualShock4, error) {
 	}
 
 	d := &DualShock4{
-		descriptor:       defaultDescriptor,
-		metaState:        metaState,
+		descriptor: defaultDescriptor,
+		metaState:  metaState,
+		microphoneBuffer: microphonebuffer.New(
+			USBMicrophonePacketSize,
+			USBMicrophoneChannels*USBMicrophoneBytesPerSample,
+			USBMicrophoneClientFrameSize,
+			microphoneTargetClientFrames,
+			microphoneMaximumClientFrames,
+		),
 		microphoneSignal: make(chan struct{}, 1),
 	}
 	if o != nil {
@@ -138,6 +152,15 @@ func (d *DualShock4) SetSpeakerCallback(f func([]byte)) {
 	d.mtx.Unlock()
 }
 
+// SetSpeakerResetCallback installs the transport-side queue reset paired with
+// SetSpeakerCallback. Interface transitions and endpoint pipe resets must drop
+// speaker PCM from the previous USB presentation generation.
+func (d *DualShock4) SetSpeakerResetCallback(f func()) {
+	d.mtx.Lock()
+	d.speakerResetFunc = f
+	d.mtx.Unlock()
+}
+
 func (d *DualShock4) UpdateInputState(state *InputState) {
 	d.mtx.Lock()
 	d.inputState = state
@@ -168,22 +191,80 @@ func (d *DualShock4) GetDeviceSpecificArgs() map[string]any {
 	}
 	res["speakerInterfaceActive"] = d.speakerInterfaceActive
 	res["microphoneInterfaceActive"] = d.microphoneInterfaceActive
-	res["queuedMicrophoneBytes"] = len(d.microphonePCM)
+	microphoneState := d.microphoneBuffer.State()
+	res["queuedMicrophoneBytes"] = microphoneState.QueuedBytes
+	res["microphoneQueueTargetBytes"] = microphoneState.TargetBytes
+	res["microphoneQueueMaximumBytes"] = microphoneState.MaximumBytes
+	res["microphoneFilteredQueueBytes"] = microphoneState.FilteredBytes
+	res["microphoneQueuePrimed"] = microphoneState.Primed
+	res["microphoneUnderruns"] = microphoneState.Underruns
+	res["microphoneReprimes"] = microphoneState.Reprimes
+	res["microphoneDroppedBytes"] = microphoneState.DroppedBytes
+	res["microphonePacketsRead"] = microphoneState.PacketsRead
+	res["microphoneZeroPackets"] = microphoneState.ZeroPackets
+	res["microphoneOverflowEvents"] = microphoneState.OverflowEvents
+	res["microphoneShortPackets"] = microphoneState.ShortPackets
+	res["microphoneLongPackets"] = microphoneState.LongPackets
+	res["microphoneServoRatePPM"] = microphoneState.ServoRatePPM
+	res["microphoneLowWaterBytes"] = microphoneState.LowWaterBytes
+	res["microphoneHighWaterBytes"] = microphoneState.HighWaterBytes
+	res["microphoneQueueFrames"] = microphoneState.QueueFrames
+	res["microphoneQueueFastGaps"] = microphoneState.QueueFastGaps
+	res["microphoneQueueLateGaps"] = microphoneState.QueueLateGaps
+	res["microphoneQueueMinGapUS"] = microphoneState.QueueMinGapUS
+	res["microphoneQueueMaxGapUS"] = microphoneState.QueueMaxGapUS
+	res["microphoneReadFastGaps"] = microphoneState.ReadFastGaps
+	res["microphoneReadLateGaps"] = microphoneState.ReadLateGaps
+	res["microphoneReadMinGapUS"] = microphoneState.ReadMinGapUS
+	res["microphoneReadMaxGapUS"] = microphoneState.ReadMaxGapUS
 	return res
 }
 
 func (d *DualShock4) SetInterfaceAltSetting(iface, alt uint8) {
 	d.mtx.Lock()
-	defer d.mtx.Unlock()
-
+	var resetSpeaker func()
 	switch iface {
 	case InterfaceSpeaker:
+		wasActive := d.speakerInterfaceActive
 		d.speakerInterfaceActive = alt != 0
-	case InterfaceMicrophone:
-		d.microphoneInterfaceActive = alt != 0
-		if !d.microphoneInterfaceActive {
-			d.microphonePCM = nil
+		if wasActive != d.speakerInterfaceActive {
+			resetSpeaker = d.speakerResetFunc
 		}
+	case InterfaceMicrophone:
+		wasActive := d.microphoneInterfaceActive
+		d.microphoneInterfaceActive = alt != 0
+		if wasActive != d.microphoneInterfaceActive {
+			d.microphoneBuffer.Reset()
+			d.drainMicrophoneSignal()
+		}
+	}
+	d.mtx.Unlock()
+
+	// The transport reset may wait for an in-flight socket write. Never hold the
+	// device mutex across that wait: output and USB teardown callbacks also need
+	// to acquire it before the writer can finish shutting down.
+	if resetSpeaker != nil {
+		resetSpeaker()
+	}
+}
+
+// ResetEndpoint implements usb.EndpointResetDevice. CLEAR_FEATURE(HALT)
+// preserves the selected alternate setting while establishing a hard data
+// generation boundary for the affected audio pipe.
+func (d *DualShock4) ResetEndpoint(endpoint uint8) {
+	d.mtx.Lock()
+	var resetSpeaker func()
+	switch endpoint {
+	case EndpointAudioOut:
+		resetSpeaker = d.speakerResetFunc
+	case EndpointMicrophoneIn:
+		d.microphoneBuffer.Reset()
+		d.drainMicrophoneSignal()
+	}
+	d.mtx.Unlock()
+
+	if resetSpeaker != nil {
+		resetSpeaker()
 	}
 }
 
@@ -230,15 +311,16 @@ func (d *DualShock4) HandleTransfer(ctx context.Context, ep uint32, dir uint32, 
 	}
 	if dir == usbip.DirOut && epNumber == EndpointAudioOut&0x0F {
 		d.mtx.Lock()
-		speakerActive := d.speakerInterfaceActive
-		speakerFunc := d.speakerFunc
-		d.mtx.Unlock()
-		if speakerActive && speakerFunc != nil && len(out) > 0 {
+		if d.speakerInterfaceActive && d.speakerFunc != nil && len(out) > 0 {
 			// The USB/IP receive buffer is owned by the transfer handler. Give the
-			// device-stream writer an immutable copy so it can forward without
-			// holding up realtime isochronous completion.
-			speakerFunc(append([]byte(nil), out...))
+			// device-stream writer an immutable copy; its owned enqueue path then
+			// forwards this same allocation without making a second copy. Complete
+			// the synchronous enqueue under the device lock so a subsequent
+			// interface or endpoint reset cannot flush the queue and then be raced
+			// by a pre-reset callback publishing stale PCM afterward.
+			d.speakerFunc(append([]byte(nil), out...))
 		}
+		d.mtx.Unlock()
 		return nil
 	}
 
@@ -256,12 +338,7 @@ func (d *DualShock4) QueueMicrophonePCMFrame(frame []byte) {
 		return
 	}
 
-	const maximumBufferedBytes = USBMicrophoneClientFrameSize * 4
-	if overflow := len(d.microphonePCM) + len(frame) - maximumBufferedBytes; overflow > 0 {
-		copy(d.microphonePCM, d.microphonePCM[overflow:])
-		d.microphonePCM = d.microphonePCM[:len(d.microphonePCM)-overflow]
-	}
-	d.microphonePCM = append(d.microphonePCM, frame...)
+	d.microphoneBuffer.QueueFrame(frame)
 	d.mtx.Unlock()
 
 	select {
@@ -270,30 +347,54 @@ func (d *DualShock4) QueueMicrophonePCMFrame(frame []byte) {
 	}
 }
 
+// ResetMicrophonePCM clears capture transport state after the current API
+// stream ends. The API generation coordinator suppresses this reset when that
+// stream was displaced by a same-device replacement.
+func (d *DualShock4) ResetMicrophonePCM() {
+	d.mtx.Lock()
+	d.microphoneBuffer.Reset()
+	d.drainMicrophoneSignal()
+	d.mtx.Unlock()
+}
+
 func (d *DualShock4) handleMicrophoneIn(ctx context.Context) []byte {
+	packet := make([]byte, USBMicrophoneMaxPacketSize)
 	for {
 		d.mtx.Lock()
 		if !d.microphoneInterfaceActive {
+			d.microphoneBuffer.RecordZeroPacket()
 			d.mtx.Unlock()
-			return make([]byte, USBMicrophonePacketSize)
+			return packet[:USBMicrophonePacketSize]
 		}
 
-		if len(d.microphonePCM) > 0 {
-			packet := make([]byte, USBMicrophonePacketSize)
-			n := copy(packet, d.microphonePCM)
-			copy(d.microphonePCM, d.microphonePCM[n:])
-			d.microphonePCM = d.microphonePCM[:len(d.microphonePCM)-n]
+		if actualLength, ok := d.microphoneBuffer.ReadPacket(packet); ok {
 			d.mtx.Unlock()
-			return packet
+			return packet[:actualLength]
 		}
 		d.mtx.Unlock()
 
 		select {
 		case <-ctx.Done():
-			return make([]byte, USBMicrophonePacketSize)
+			d.mtx.Lock()
+			d.microphoneBuffer.RecordZeroPacket()
+			d.mtx.Unlock()
+			return packet[:USBMicrophonePacketSize]
 		case <-d.microphoneSignal:
 		case <-time.After(time.Millisecond):
-			return make([]byte, USBMicrophonePacketSize)
+			d.mtx.Lock()
+			d.microphoneBuffer.RecordZeroPacket()
+			d.mtx.Unlock()
+			return packet[:USBMicrophonePacketSize]
+		}
+	}
+}
+
+func (d *DualShock4) drainMicrophoneSignal() {
+	for {
+		select {
+		case <-d.microphoneSignal:
+		default:
+			return
 		}
 	}
 }
