@@ -14,6 +14,7 @@ import (
 	"github.com/Alia5/VIIPER/viiperclient"
 	"github.com/Alia5/VIIPER/virtualbus"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	_ "github.com/Alia5/VIIPER/internal/registry" // Register devices
 )
@@ -476,4 +477,42 @@ func TestRumble(t *testing.T) {
 		})
 	}
 
+}
+
+func TestRumbleCallbackReplaysLatestHostState(t *testing.T) {
+	dev, err := xbox360.New(nil)
+	require.NoError(t, err)
+
+	// The all-zero state is the first packet Windows normally sends. Keep an
+	// explicit seen bit so it is replayed even though it equals the Go zero value.
+	dev.HandleTransfer(context.Background(), 1, usbip.DirOut,
+		[]byte{0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00})
+
+	gotCh := make(chan xbox360.XRumbleState, 1)
+	dev.SetRumbleCallback(func(rumble xbox360.XRumbleState) {
+		gotCh <- rumble
+	})
+
+	select {
+	case got := <-gotCh:
+		assert.Equal(t, xbox360.XRumbleState{}, got)
+	case <-time.After(viiperTesting.IntegrationTimeout):
+		t.Fatal("expected late callback to receive latest host rumble state")
+	}
+}
+
+func TestRumbleCallbackDoesNotInventInitialFeedback(t *testing.T) {
+	dev, err := xbox360.New(nil)
+	require.NoError(t, err)
+
+	gotCh := make(chan xbox360.XRumbleState, 1)
+	dev.SetRumbleCallback(func(rumble xbox360.XRumbleState) {
+		gotCh <- rumble
+	})
+
+	select {
+	case got := <-gotCh:
+		t.Fatalf("unexpected feedback before host output: %+v", got)
+	default:
+	}
 }
