@@ -150,11 +150,15 @@ func (h *handler) StreamHandler() api.StreamHandlerFunc {
 }
 
 type dualShock4OutputFrame struct {
-	frameType  byte
-	payload    []byte
-	pooled     bool
-	audio      bool
-	generation uint64
+	frameType    byte
+	payload      []byte
+	pooledBuffer *dualShock4AudioBuffer
+	audio        bool
+	generation   uint64
+}
+
+type dualShock4AudioBuffer struct {
+	data []byte
 }
 
 const dualShock4SpeakerResetWriteTimeout = 250 * time.Millisecond
@@ -212,22 +216,26 @@ func (w *dualShock4OutputWriter) EnqueueAudio(frameType byte, payload []byte) {
 	if w.stopped {
 		return
 	}
-	var owned []byte
+	var buffer *dualShock4AudioBuffer
 	if value := w.audioPool.Get(); value != nil {
-		owned = value.([]byte)
+		buffer = value.(*dualShock4AudioBuffer)
+	} else {
+		buffer = &dualShock4AudioBuffer{}
 	}
+	owned := buffer.data
 	if cap(owned) < len(payload) {
 		owned = make([]byte, len(payload))
 	} else {
 		owned = owned[:len(payload)]
 	}
+	buffer.data = owned
 	copy(owned, payload)
 	frame := dualShock4OutputFrame{
-		frameType: frameType, payload: owned, pooled: true, audio: true,
+		frameType: frameType, payload: owned, pooledBuffer: buffer, audio: true,
 		generation: w.audioGeneration.Load(),
 	}
 	if !w.enqueueFrameLocked(w.audio, frame) {
-		w.audioPool.Put(owned[:0])
+		w.releaseAudioBuffer(buffer)
 	}
 }
 
@@ -404,9 +412,14 @@ func (w *dualShock4OutputWriter) failStream() {
 }
 
 func (w *dualShock4OutputWriter) release(frame dualShock4OutputFrame) {
-	if frame.pooled {
-		w.audioPool.Put(frame.payload[:0])
+	if frame.pooledBuffer != nil {
+		w.releaseAudioBuffer(frame.pooledBuffer)
 	}
+}
+
+func (w *dualShock4OutputWriter) releaseAudioBuffer(buffer *dualShock4AudioBuffer) {
+	buffer.data = buffer.data[:0]
+	w.audioPool.Put(buffer)
 }
 
 func (w *dualShock4OutputWriter) Stop() {

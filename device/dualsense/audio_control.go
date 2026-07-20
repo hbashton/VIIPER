@@ -43,6 +43,10 @@ const (
 
 var audioGainBufferPool sync.Pool
 
+type audioGainBuffer struct {
+	data []byte
+}
+
 type audioFeatureState struct {
 	mute          bool
 	volume        int16
@@ -142,11 +146,12 @@ func (s *audioFeatureState) applyPCM(src []byte, channels int) ([]byte, func()) 
 		return src, nil
 	}
 
-	dst := acquireAudioGainBuffer(len(src))
+	buffer := acquireAudioGainBuffer(len(src))
+	dst := buffer.data
 	copy(dst, src)
 	s.applyPCMInPlace(dst, channels)
 
-	return dst, func() { releaseAudioGainBuffer(dst) }
+	return dst, func() { releaseAudioGainBuffer(buffer) }
 }
 
 // applyPCMInPlace is used for freshly allocated USB capture packets. Applying
@@ -184,19 +189,25 @@ func (r *audioGainRamp) next() float64 {
 	return r.current
 }
 
-func acquireAudioGainBuffer(length int) []byte {
+func acquireAudioGainBuffer(length int) *audioGainBuffer {
+	var buffer *audioGainBuffer
 	if pooled := audioGainBufferPool.Get(); pooled != nil {
-		buffer := pooled.([]byte)
-		if cap(buffer) >= length {
-			return buffer[:length]
-		}
+		buffer = pooled.(*audioGainBuffer)
+	} else {
+		buffer = &audioGainBuffer{}
 	}
-	return make([]byte, length)
+	if cap(buffer.data) < length {
+		buffer.data = make([]byte, length)
+	} else {
+		buffer.data = buffer.data[:length]
+	}
+	return buffer
 }
 
-func releaseAudioGainBuffer(buffer []byte) {
+func releaseAudioGainBuffer(buffer *audioGainBuffer) {
 	if buffer != nil {
-		audioGainBufferPool.Put(buffer[:0])
+		buffer.data = buffer.data[:0]
+		audioGainBufferPool.Put(buffer)
 	}
 }
 
