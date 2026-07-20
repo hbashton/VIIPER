@@ -115,20 +115,13 @@ func (g *Generator) ScanAll() (*meta.Metadata, error) {
 
 	g.logger.Debug("Discovering device packages")
 	deviceBaseDir := "device"
-	entries, err := os.ReadDir(deviceBaseDir)
+	devicePaths, err := discoverDevicePackagePaths(deviceBaseDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read device directory: %w", err)
 	}
 
-	var devicePaths []string
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-
-		deviceName := entry.Name()
-		devicePath := filepath.Join(deviceBaseDir, deviceName)
-		devicePaths = append(devicePaths, devicePath)
+	for _, devicePath := range devicePaths {
+		deviceName := filepath.Base(devicePath)
 
 		g.logger.Debug("Scanning device package", "device", deviceName)
 		deviceConsts, err := scanner.ScanDeviceConstants(devicePath)
@@ -169,4 +162,24 @@ func (g *Generator) ScanAll() (*meta.Metadata, error) {
 	md.Routes = enriched
 
 	return md, nil
+}
+
+func discoverDevicePackagePaths(deviceBaseDir string) ([]string, error) {
+	entries, err := os.ReadDir(deviceBaseDir)
+	if err != nil {
+		return nil, err
+	}
+
+	devicePaths := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		// Go's internal directory contains implementation-only helpers, not a
+		// virtual device API that client libraries should expose.
+		if !entry.IsDir() || entry.Name() == "internal" {
+			continue
+		}
+
+		devicePaths = append(devicePaths, filepath.Join(deviceBaseDir, entry.Name()))
+	}
+
+	return devicePaths, nil
 }

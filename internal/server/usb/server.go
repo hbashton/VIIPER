@@ -913,7 +913,7 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 			}
 			go func(seq, ep, dir uint32, submitted []usbip.IsoPacketDescriptor, iso bool,
 				previousIsoIn <-chan time.Time, isoInDone chan time.Time,
-				isoServiceStart, isoServiceEnd time.Time,
+				isoServiceStart time.Time,
 				isoTransferDuration, isoPacketDuration time.Duration) {
 				defer urbCancel()
 				var respData []byte
@@ -941,10 +941,10 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 					// RET_SUBMIT delivery is not part of the USB service clock. If a
 					// prior socket write or scheduler slice was late, do not replay
 					// expired service slots in a burst and drain future microphone PCM.
-					isoServiceStart, isoServiceEnd = reanchorIsoServiceWindow(
+					isoServiceStart, _ = reanchorIsoServiceWindow(
 						isoServiceStart, previousServiceEnd, isoTransferDuration,
 						isoPacketDuration, time.Now())
-					respData, completedPackets, isoServiceEnd = s.buildIsoInResponse(
+					respData, completedPackets, isoServiceEnd := s.buildIsoInResponse(
 						urbCtx, dev, ep, dir, submitted, isoServiceStart)
 					if urbCtx.Err() != nil {
 						pendingMu.Lock()
@@ -1023,7 +1023,7 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 					}
 				}
 			}(seq, ep, dir, isoPackets, isIso, previousIsoIn, isoInDone,
-				isoServiceStart, isoServiceEnd, isoTransferDuration, isoPacketDuration)
+				isoServiceStart, isoTransferDuration, isoPacketDuration)
 			continue
 		}
 
