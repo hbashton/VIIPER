@@ -42,7 +42,9 @@ func TestMicrophoneInUsesUSBIPEndpointNumber(t *testing.T) {
 	for i := range frame {
 		frame[i] = byte(i)
 	}
-	dev.QueueMicrophonePCMFrame(frame)
+	for range microphoneTargetClientFrames {
+		dev.QueueMicrophonePCMFrame(frame)
+	}
 
 	packet := dev.HandleTransfer(context.Background(),
 		uint32(EndpointMicrophoneIn&0x0F), usbip.DirIn, nil)
@@ -297,6 +299,7 @@ func TestDualSenseHapticsAudioOutBuildsSAxenseReports(t *testing.T) {
 	dev.SetOutputCallback(func(out OutputState) {
 		got = out
 	})
+	dev.SetInterfaceAltSetting(InterfaceHapticsAudio, 1)
 
 	SetTrafficDiagnosticsEnabled(true, true)
 	defer SetTrafficDiagnosticsEnabled(rawOutputLogEnabled, true)
@@ -356,6 +359,7 @@ func TestDualSenseCombinedHapticsAudioOutBuildsVDSReports(t *testing.T) {
 	dev.SetOutputCallback(func(out OutputState) {
 		got = out
 	})
+	dev.SetInterfaceAltSetting(InterfaceHapticsAudio, 1)
 
 	pcm := make([]byte, (BluetoothHapticsSampleSize/2)*USBHapticsAudioDownsample*USBHapticsAudioFrameSize)
 	for outputFrame := 0; outputFrame < BluetoothHapticsSampleSize/2; outputFrame++ {

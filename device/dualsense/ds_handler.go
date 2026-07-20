@@ -21,12 +21,14 @@ func init() {
 	api.RegisterDevice("dualsensecombinedext", &dshandler{combinedBluetoothFeedback: true})
 	api.RegisterDevice("dualsensecombinedmicext", &dshandler{combinedBluetoothFeedback: true, microphoneInput: true, streamFrameVersion: StreamFrameVersion})
 	api.RegisterDevice("dualsensecombinedmicv2", &dshandler{combinedBluetoothFeedback: true, microphoneInput: true, streamFrameVersion: StreamFrameVersionV2})
+	api.RegisterDevice("dualsensecombinedaudioduplexv3", &dshandler{combinedBluetoothFeedback: true, microphoneInput: true, speakerOutput: true, streamFrameVersion: StreamFrameVersionV3})
 }
 
 type dshandler struct {
 	extendedFeedback          bool
 	combinedBluetoothFeedback bool
 	microphoneInput           bool
+	speakerOutput             bool
 	streamFrameVersion        byte
 }
 
@@ -96,6 +98,7 @@ func (h *dshandler) CreateDevice(o *device.CreateOptions) (usb.Device, error) {
 	dse.extendedFeedback = h.extendedFeedback
 	dse.combinedBluetoothFeedback = h.combinedBluetoothFeedback
 	dse.microphoneInput = h.microphoneInput
+	dse.speakerOutput = h.speakerOutput
 	dse.streamFrameVersion = h.streamFrameVersion
 	return dse, nil
 }
@@ -128,7 +131,18 @@ func (h *dshandler) StreamHandler() api.StreamHandlerFunc {
 			return fmt.Errorf("%w: expected DualSenseEdge", device.ErrWrongDeviceType)
 		}
 
-		dse.SetOutputCallback(func(feedback OutputState) {
+		microphoneInput := h.microphoneInput || dse.microphoneInput
+		speakerOutput := h.speakerOutput || dse.speakerOutput
+		streamFrameVersion := h.streamFrameVersion
+		if dse.streamFrameVersion != 0 {
+			streamFrameVersion = dse.streamFrameVersion
+		}
+		logger.Info("DualSense input stream configured",
+			"microphoneInput", microphoneInput,
+			"speakerOutput", speakerOutput,
+			"frameVersion", streamFrameVersion)
+
+		marshalFeedback := func(feedback OutputState) ([]byte, error) {
 			var data []byte
 			var err error
 			if h.combinedBluetoothFeedback || dse.combinedBluetoothFeedback {
@@ -139,22 +153,50 @@ func (h *dshandler) StreamHandler() api.StreamHandlerFunc {
 				data, err = feedback.MarshalBinary()
 			}
 			if err != nil {
-				logger.Error("failed to marshal feedback", "error", err)
-				return
+				return nil, err
 			}
-			if _, err := conn.Write(data); err != nil {
-				logger.Error("failed to send feedback", "error", err)
-			}
-		})
-
-		microphoneInput := h.microphoneInput || dse.microphoneInput
-		streamFrameVersion := h.streamFrameVersion
-		if dse.streamFrameVersion != 0 {
-			streamFrameVersion = dse.streamFrameVersion
+			return data, nil
 		}
-		logger.Info("DualSense input stream configured",
-			"microphoneInput", microphoneInput,
-			"frameVersion", streamFrameVersion)
+
+		if speakerOutput {
+			if streamFrameVersion != StreamFrameVersionV3 {
+				return fmt.Errorf("DualSense speaker output requires framed stream version 0x%02X",
+					StreamFrameVersionV3)
+			}
+
+			writer := newDualSenseOutputWriter(conn, streamFrameVersion,
+				dse.beginSpeakerStream(), logger)
+			go writer.Run()
+			dse.SetOutputCallback(func(feedback OutputState) {
+				data, err := marshalFeedback(feedback)
+				if err != nil {
+					logger.Error("failed to marshal feedback", "error", err)
+					return
+				}
+				writer.EnqueueControl(StreamFrameOutputState, data)
+			})
+			dse.SetSpeakerCallback(writer.EnqueueSpeakerFromUSB)
+			dse.SetSpeakerResetCallback(writer.ResetSpeaker)
+			defer func() {
+				dse.SetOutputCallback(nil)
+				dse.SetSpeakerCallback(nil)
+				dse.SetSpeakerResetCallback(nil)
+				writer.Stop()
+			}()
+		} else {
+			dse.SetOutputCallback(func(feedback OutputState) {
+				data, err := marshalFeedback(feedback)
+				if err != nil {
+					logger.Error("failed to marshal feedback", "error", err)
+					return
+				}
+				if _, err := conn.Write(data); err != nil {
+					logger.Error("failed to send feedback", "error", err)
+				}
+			})
+			defer dse.SetOutputCallback(nil)
+		}
+
 		return readDualSenseInputStreamVersion(conn, dse, logger, microphoneInput, streamFrameVersion)
 	}
 }
@@ -183,8 +225,16 @@ func readDualSenseInputStreamVersion(conn net.Conn, dse *DualSense, logger *slog
 		}
 	}
 
+	if frameVersion != StreamFrameVersion &&
+		frameVersion != StreamFrameVersionV2 &&
+		frameVersion != StreamFrameVersionV3 {
+		return fmt.Errorf("unsupported DualSense framed stream version 0x%02X",
+			frameVersion)
+	}
+
 	headerSize := StreamFrameHeaderSize
-	if frameVersion == StreamFrameVersionV2 {
+	if frameVersion == StreamFrameVersionV2 ||
+		frameVersion == StreamFrameVersionV3 {
 		headerSize = StreamFrameV2HeaderSize
 	}
 	header := make([]byte, headerSize)
@@ -235,7 +285,8 @@ func readDualSenseInputStreamVersion(conn net.Conn, dse *DualSense, logger *slog
 			return fmt.Errorf("read framed packet type 0x%02X: %w", frameType, err)
 		}
 
-		if frameVersion == StreamFrameVersionV2 {
+		if frameVersion == StreamFrameVersionV2 ||
+			frameVersion == StreamFrameVersionV3 {
 			sequence := binary.LittleEndian.Uint32(header[8:12])
 			if sequenceInitialized && sequence != expectedSequence {
 				return fmt.Errorf("DualSense framed stream sequence mismatch: got %d expected %d", sequence, expectedSequence)

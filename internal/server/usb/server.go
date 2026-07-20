@@ -140,6 +140,7 @@ const (
 	// USB request types (bmRequestType)
 	usbReqTypeStandardToDevice      = 0x00
 	usbReqTypeStandardFromInterface = 0x01
+	usbReqTypeStandardToEndpoint    = 0x02
 	usbReqTypeStandardToInterface   = 0x81
 	usbReqTypeStandardFromDevice    = 0x80
 	usbReqTypeMask                  = 0x60
@@ -572,6 +573,11 @@ func (lc *logConn) Write(p []byte) (int, error) {
 
 func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 	_ = conn.SetDeadline(time.Time{})
+	// Alternate settings belong to this USB/IP attachment, not to the lifetime
+	// of the virtual device. Windows does not necessarily send SET_INTERFACE 0
+	// before an abrupt detach, so always return every interface to alt 0 when
+	// this URB stream ends.
+	defer s.resetInterfaceAlts(dev)
 
 	var writer io.Writer
 	var bw *batchingWriter
@@ -659,8 +665,18 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 	lastInResp := map[uint32][]byte{}
 
 	var outPayloadScratch []byte
-	var nextIsoInCompletion time.Time
-	var isoInCompletionMu sync.Mutex
+	// Windows keeps several ISO-IN URBs outstanding. Preserve submission order
+	// independently for each endpoint while still accepting unrelated URBs.
+	// Each job owns a planned USB service window so TCP write time cannot make
+	// the virtual microphone clock drift slower on every completion.
+	type isoInSchedule struct {
+		tail      <-chan time.Time
+		nextStart time.Time
+	}
+	completedIsoIn := make(chan time.Time, 1)
+	completedIsoIn <- time.Time{}
+	close(completedIsoIn)
+	isoInSchedules := make(map[uint32]isoInSchedule)
 	var isoAudioWindowStarted time.Time
 	var isoAudioLastCompletion time.Time
 	var isoAudioURBs int
@@ -817,10 +833,16 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 		}
 		xferLen := binary.BigEndian.Uint32(hdr[urbHdrOffsetLength : urbHdrOffsetLength+4])
 		packetCountWire := int32(binary.BigEndian.Uint32(hdr[urbHdrOffsetPackets : urbHdrOffsetPackets+4]))
-		isIso := packetCountWire >= 0
 		if packetCountWire < -1 || packetCountWire > maxIsoPackets {
 			return fmt.Errorf("invalid ISO packet count %d", packetCountWire)
 		}
+		// NumberOfPackets == -1 is normally the USB/IP marker for a
+		// non-isochronous URB. Do not trust that marker for endpoints whose USB
+		// descriptor says they are isochronous: a malformed microphone URB must
+		// never fall through to the generic IN path and consume queued PCM.
+		descriptorIsoIn := dir == usbip.DirIn && endpointIsIsochronous(
+			dev.GetDescriptor(), ep, dir)
+		isIso := packetCountWire >= 0 || descriptorIsoIn
 		setup := hdr[urbHdrOffsetSetup:urbHdrSize]
 
 		var outPayload []byte
@@ -845,34 +867,102 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 		}
 
 		if dir == usbip.DirIn && ep != 0 {
+			// An ISO IN request without packet descriptors has nowhere to place a
+			// service packet. Complete it empty (and explicitly as ISO) without
+			// calling HandleTransfer, which would otherwise drain microphone data
+			// ahead of the host's audio clock.
+			if isIso && len(isoPackets) == 0 {
+				if err := writeRet(seq, 0, nil, nil, true, true); err != nil {
+					return err
+				}
+				continue
+			}
+
 			urbCtx, urbCancel := context.WithCancel(ctx)
 			pendingMu.Lock()
 			pending[seq] = urbCancel
 			pendingMu.Unlock()
 			interval := endpointInterval(dev.GetDescriptor(), ep)
 
-			go func(seq, ep, dir uint32, submitted []usbip.IsoPacketDescriptor, iso bool) {
+			var previousIsoIn <-chan time.Time
+			var isoInDone chan time.Time
+			var isoServiceStart time.Time
+			var isoServiceEnd time.Time
+			var isoTransferDuration time.Duration
+			var isoPacketDuration time.Duration
+			if isIso && len(isoPackets) > 0 {
+				isoTransferDuration = isoCompletionDelay(
+					dev.GetDescriptor(), ep, len(isoPackets))
+				isoPacketDuration = isoPacketInterval(dev.GetDescriptor(), ep)
+				schedule, found := isoInSchedules[ep]
+				if !found {
+					schedule.tail = completedIsoIn
+				}
+				previousIsoIn = schedule.tail
+				isoInDone = make(chan time.Time, 1)
+				now := time.Now()
+				isoServiceStart = schedule.nextStart
+				if isoServiceStart.IsZero() ||
+					now.Sub(isoServiceStart) > isoTransferDuration {
+					isoServiceStart = now
+				}
+				isoServiceEnd = isoServiceStart.Add(isoTransferDuration)
+				isoInSchedules[ep] = isoInSchedule{
+					tail: isoInDone, nextStart: isoServiceEnd,
+				}
+			}
+			go func(seq, ep, dir uint32, submitted []usbip.IsoPacketDescriptor, iso bool,
+				previousIsoIn <-chan time.Time, isoInDone chan time.Time,
+				isoServiceStart, isoServiceEnd time.Time,
+				isoTransferDuration, isoPacketDuration time.Duration) {
 				defer urbCancel()
 				var respData []byte
 				var completedPackets []usbip.IsoPacketDescriptor
 				if iso && len(submitted) > 0 {
-					isoTransferDuration := isoCompletionDelay(dev.GetDescriptor(), ep, len(submitted))
-					respData, completedPackets = s.buildIsoInResponse(urbCtx, dev, ep, dir, submitted)
-					if isoTransferDuration > 0 {
-						isoInCompletionMu.Lock()
-						now := time.Now()
-						if nextIsoInCompletion.IsZero() || now.Sub(nextIsoInCompletion) > isoTransferDuration {
-							nextIsoInCompletion = now.Add(isoTransferDuration)
-						} else {
-							nextIsoInCompletion = nextIsoInCompletion.Add(isoTransferDuration)
-						}
-						isoCompletionDeadline := nextIsoInCompletion
-						isoInCompletionMu.Unlock()
-
-						if wait := time.Until(isoCompletionDeadline); wait > 0 {
-							time.Sleep(wait)
-						}
+					var signalNextOnce sync.Once
+					signalNext := func(serviceEnd time.Time) {
+						signalNextOnce.Do(func() {
+							isoInDone <- serviceEnd
+							close(isoInDone)
+						})
 					}
+					// Cancellation must never strand a later URB behind this one.
+					defer func() { signalNext(time.Now()) }()
+					var previousServiceEnd time.Time
+					select {
+					case <-urbCtx.Done():
+						pendingMu.Lock()
+						delete(pending, seq)
+						pendingMu.Unlock()
+						return
+					case previousServiceEnd = <-previousIsoIn:
+					}
+
+					// RET_SUBMIT delivery is not part of the USB service clock. If a
+					// prior socket write or scheduler slice was late, do not replay
+					// expired service slots in a burst and drain future microphone PCM.
+					isoServiceStart, isoServiceEnd = reanchorIsoServiceWindow(
+						isoServiceStart, previousServiceEnd, isoTransferDuration,
+						isoPacketDuration, time.Now())
+					respData, completedPackets, isoServiceEnd = s.buildIsoInResponse(
+						urbCtx, dev, ep, dir, submitted, isoServiceStart)
+					if urbCtx.Err() != nil {
+						pendingMu.Lock()
+						delete(pending, seq)
+						pendingMu.Unlock()
+						return
+					}
+					if isoTransferDuration > 0 && !waitUntilContext(
+						urbCtx, isoServiceEnd) {
+						pendingMu.Lock()
+						delete(pending, seq)
+						pendingMu.Unlock()
+						return
+					}
+					// Release the next endpoint service window before serializing this
+					// completion to the USB/IP socket. A congested response writer must
+					// not stall or bunch the microphone sampling clock.
+					signalNext(isoServiceEnd)
 
 					pendingMu.Lock()
 					delete(pending, seq)
@@ -932,7 +1022,8 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 						s.logger.Error("write async RET_SUBMIT", "seq", seq, "error", err)
 					}
 				}
-			}(seq, ep, dir, isoPackets, isIso)
+			}(seq, ep, dir, isoPackets, isIso, previousIsoIn, isoInDone,
+				isoServiceStart, isoServiceEnd, isoTransferDuration, isoPacketDuration)
 			continue
 		}
 
@@ -1004,6 +1095,25 @@ func endpointInterval(desc *usb.Descriptor, ep uint32) time.Duration {
 	return 0
 }
 
+func endpointIsIsochronous(desc *usb.Descriptor, ep, dir uint32) bool {
+	if desc == nil || ep == 0 {
+		return false
+	}
+
+	epAddr := uint8(ep) & 0x0f
+	if dir == usbip.DirIn {
+		epAddr |= 0x80
+	}
+	for i := range desc.Interfaces {
+		for _, endpoint := range desc.Interfaces[i].Endpoints {
+			if endpoint.BEndpointAddress == epAddr && endpoint.BMAttributes&0x03 == 0x01 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func usbServiceInterval(speed uint32, bInterval uint8) time.Duration {
 	if bInterval == 0 {
 		return 0
@@ -1060,14 +1170,18 @@ func (s *Server) buildIsoInResponse(
 	ep uint32,
 	dir uint32,
 	submitted []usbip.IsoPacketDescriptor,
-) ([]byte, []usbip.IsoPacketDescriptor) {
+	serviceStart time.Time,
+) ([]byte, []usbip.IsoPacketDescriptor, time.Time) {
 	if len(submitted) == 0 {
-		return nil, nil
+		return nil, nil, serviceStart
 	}
 
 	interval := isoPacketInterval(dev.GetDescriptor(), ep)
 	if interval <= 0 {
 		interval = time.Millisecond
+	}
+	if serviceStart.IsZero() {
+		serviceStart = time.Now()
 	}
 
 	actualLengths := make([]uint32, len(submitted))
@@ -1081,7 +1195,17 @@ func (s *Server) buildIsoInResponse(
 	// payload. Sending the original offset gaps here makes actual_length differ
 	// from the sum of packet actual lengths, so usbip-win2 discards capture data.
 	respData := make([]byte, 0, maximumLen)
+	nextServiceSlot := serviceStart
 	for i, packet := range submitted {
+		// Consume each packet at its virtual USB service time. Windows submits
+		// several capture URBs in advance, so dequeuing the whole URB here without
+		// pacing would consume future microphone audio in one scheduler slice.
+		nextServiceSlot = reanchorMissedIsoPacketSlot(
+			nextServiceSlot, interval, time.Now())
+		if !waitUntilContext(ctx, nextServiceSlot) {
+			return nil, nil, time.Time{}
+		}
+		nextServiceSlot = nextServiceSlot.Add(interval)
 		if packet.Length == 0 {
 			continue
 		}
@@ -1090,7 +1214,7 @@ func (s *Server) buildIsoInResponse(
 		packetData := s.processSubmit(attemptCtx, dev, ep, dir, nil, nil)
 		cancel()
 		if ctx.Err() != nil {
-			return nil, nil
+			return nil, nil, time.Time{}
 		}
 		if len(packetData) == 0 {
 			packetData = make([]byte, int(packet.Length))
@@ -1102,7 +1226,53 @@ func (s *Server) buildIsoInResponse(
 	}
 
 	completed := completeIsoPacketsWithActuals(submitted, actualLengths)
-	return respData, completed
+	return respData, completed, nextServiceSlot
+}
+
+func waitUntilContext(ctx context.Context, deadline time.Time) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	wait := time.Until(deadline)
+	if wait <= 0 {
+		return true
+	}
+
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+func reanchorIsoServiceWindow(plannedStart, previousServiceEnd time.Time,
+	duration, packetInterval time.Duration, now time.Time) (time.Time, time.Time) {
+	start := plannedStart
+	if previousServiceEnd.After(start) {
+		start = previousServiceEnd
+	}
+	if start.IsZero() {
+		start = now
+	} else if packetInterval > 0 && now.Sub(start) >= packetInterval {
+		// Preserve the absolute clock across ordinary timer jitter, but do not
+		// replay a service slot that is at least one complete packet late.
+		start = now
+	}
+	return start, start.Add(duration)
+}
+
+func reanchorMissedIsoPacketSlot(planned time.Time, interval time.Duration,
+	now time.Time) time.Time {
+	if planned.IsZero() {
+		return now
+	}
+	if interval > 0 && now.Sub(planned) >= interval {
+		return now
+	}
+	return planned
 }
 
 // isoCompletionDelay returns the USB service interval represented by an ISO
@@ -1194,6 +1364,7 @@ func (s *Server) processSubmit(ctx context.Context, dev usb.Device, ep uint32, d
 	wValue := binary.LittleEndian.Uint16(setup[2:4])
 	wIndex := binary.LittleEndian.Uint16(setup[4:6])
 	wLength := binary.LittleEndian.Uint16(setup[6:8])
+	desc := dev.GetDescriptor()
 
 	if breq == usbReqGetStatus {
 		return []byte{0x00, 0x00}
@@ -1202,18 +1373,24 @@ func (s *Server) processSubmit(ctx context.Context, dev usb.Device, ep uint32, d
 		return nil
 	}
 	if breq == usbReqSetConfiguration && bm == usbReqTypeStandardToDevice {
-		s.clearInterfaceAlt(dev)
-		s.notifyInterfaceAltsCleared(dev)
+		s.resetInterfaceAlts(dev)
 		return nil
 	}
 	if breq == usbReqGetConfiguration && bm == usbReqTypeStandardFromDevice {
 		return []byte{0x01}
 	}
+	if breq == usbReqClearFeature && bm == usbReqTypeStandardToEndpoint &&
+		wValue == 0 && wLength == 0 && uint8(wIndex>>8) == 0 &&
+		descriptorHasEndpoint(desc, uint8(wIndex)) {
+		if resetter, ok := dev.(usb.EndpointResetDevice); ok {
+			resetter.ResetEndpoint(uint8(wIndex))
+		}
+		return nil
+	}
 	if breq == usbReqGetInterface && bm == usbReqTypeStandardToInterface {
 		return []byte{s.getInterfaceAlt(dev, uint8(wIndex&usbIfaceIndexMask))}
 	}
 	if breq == usbReqSetInterface && bm == usbReqTypeStandardFromInterface {
-		desc := dev.GetDescriptor()
 		iface := uint8(wIndex & usbIfaceIndexMask)
 		alt := uint8(wValue & 0xff)
 		if descriptorHasInterfaceAlt(desc, iface, alt) {
@@ -1222,8 +1399,6 @@ func (s *Server) processSubmit(ctx context.Context, dev usb.Device, ep uint32, d
 		}
 		return nil
 	}
-
-	desc := dev.GetDescriptor()
 
 	if breq == usbReqGetDescriptor && bm == usbReqTypeStandardFromDevice {
 		dtype := uint8(wValue >> 8)
@@ -1303,6 +1478,23 @@ func (s *Server) processSubmit(ctx context.Context, dev usb.Device, ep uint32, d
 		return data
 	}
 
+	// Handle common HID state requests before controller-specific dispatch. The
+	// descriptor slice contains alternate-setting entries, so interface numbers
+	// must be resolved logically rather than used as slice indexes.
+	if ifaceConfig, ok := desc.Interface(uint8(wIndex & usbIfaceIndexMask)); ok &&
+		ifaceConfig.Descriptor.BInterfaceClass == usbInterfaceClassHID {
+		switch {
+		case bm == hidReqTypeIn && breq == hidReqGetIdle:
+			return []byte{0x00}
+		case bm == hidReqTypeOut && breq == hidReqSetIdle:
+			return nil
+		case bm == hidReqTypeIn && breq == hidReqGetProtocol:
+			return []byte{0x01}
+		case bm == hidReqTypeOut && breq == hidReqSetProtocol:
+			return nil
+		}
+	}
+
 	if cd, ok := dev.(usb.ControlDevice); ok {
 		if resp, handled := cd.HandleControl(bm, breq, wValue, wIndex, wLength, out); handled {
 			if resp == nil {
@@ -1315,17 +1507,9 @@ func (s *Server) processSubmit(ctx context.Context, dev usb.Device, ep uint32, d
 		}
 	}
 
-	if iface := int(wIndex & usbIfaceIndexMask); iface >= 0 && iface < len(desc.Interfaces) {
-		if desc.Interfaces[iface].Descriptor.BInterfaceClass == usbInterfaceClassHID {
+	if ifaceConfig, ok := desc.Interface(uint8(wIndex & usbIfaceIndexMask)); ok {
+		if ifaceConfig.Descriptor.BInterfaceClass == usbInterfaceClassHID {
 			switch {
-			case bm == hidReqTypeIn && breq == hidReqGetIdle:
-				return []byte{0x00}
-			case bm == hidReqTypeOut && breq == hidReqSetIdle:
-				return nil
-			case bm == hidReqTypeIn && breq == hidReqGetProtocol:
-				return []byte{0x01}
-			case bm == hidReqTypeOut && breq == hidReqSetProtocol:
-				return nil
 			case (bm == hidReqTypeIn || bm == hidReqTypeOut) && (breq == hidReqGetReport || breq == hidReqSetReport):
 				return nil
 			}
@@ -1426,6 +1610,20 @@ func descriptorHasInterfaceAlt(desc *usb.Descriptor, ifaceNumber, altSetting uin
 	return false
 }
 
+func descriptorHasEndpoint(desc *usb.Descriptor, endpointAddress uint8) bool {
+	if desc == nil || endpointAddress&0x0f == 0 {
+		return false
+	}
+	for _, iface := range desc.Interfaces {
+		for _, endpoint := range iface.Endpoints {
+			if endpoint.BEndpointAddress == endpointAddress {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func descriptorInterfaceNumbers(desc *usb.Descriptor) []uint8 {
 	out := make([]uint8, 0, desc.NumInterfaces())
 	seen := map[uint8]struct{}{}
@@ -1487,4 +1685,9 @@ func (s *Server) clearInterfaceAlt(dev usb.Device) {
 	s.altsMu.Lock()
 	defer s.altsMu.Unlock()
 	delete(s.alts, dev)
+}
+
+func (s *Server) resetInterfaceAlts(dev usb.Device) {
+	s.clearInterfaceAlt(dev)
+	s.notifyInterfaceAltsCleared(dev)
 }

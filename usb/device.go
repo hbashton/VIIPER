@@ -37,3 +37,10 @@ type ControlDevice interface {
 type InterfaceAltSettingDevice interface {
 	SetInterfaceAltSetting(iface, alt uint8)
 }
+
+// EndpointResetDevice is notified after the host clears the halt feature on a
+// known endpoint. Windows uses this standard request as part of pipe reset and
+// audio stream teardown even for virtual isochronous endpoints.
+type EndpointResetDevice interface {
+	ResetEndpoint(endpointAddress uint8)
+}

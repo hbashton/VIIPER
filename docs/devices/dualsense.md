@@ -92,6 +92,42 @@ IMU (gyro + accelerometer), and touchpad finger coordinates.
 
     See `/device/dualsense/state.go` for the `OutputState` wire definition.
 
+    ### Full-duplex audio stream (V3)
+
+    `dualsensecombinedaudioduplexv3` and
+    `dualsenseedgecombinedaudioduplexv3` are opt-in variants for clients that
+    transport microphone input and native speaker output on the controller
+    stream. The older device names and their wire formats remain unchanged, so
+    a client can fall back to `dualsensecombinedmicv2` or the legacy raw stream.
+
+    Every V3 packet has a 16-byte header followed by its payload:
+
+    | Offset | Size | Field |
+    | --- | --- | --- |
+    | 0 | 4 | ASCII `VPCM` |
+    | 4 | 1 | Version `0x03` |
+    | 5 | 1 | Frame type |
+    | 6 | 2 | Payload length, little endian |
+    | 8 | 4 | Sequence, little endian |
+    | 12 | 4 | IEEE CRC32, little endian |
+
+    The CRC covers header bytes 4..11 followed by the payload. Sequence
+    numbers increase independently in each direction and are shared by all
+    frame types in that direction.
+
+    | Direction | Type | Payload |
+    | --- | --- | --- |
+    | Client to VIIPER | `0x01` | 33-byte controller input state |
+    | Client to VIIPER | `0x02` | 1,920-byte microphone block: signed 16-bit little-endian, 48 kHz, stereo, 10 ms |
+    | VIIPER to client | `0x81` | 474-byte combined extended feedback state |
+    | VIIPER to client | `0x82` | Native speaker PCM: signed 16-bit little-endian, 48 kHz, stereo |
+
+    Windows exposes the virtual playback endpoint as four channels. V3 speaker
+    frames contain only channels 1 and 2 (front left/right); channels 3 and 4
+    remain reserved for advanced haptics. A normal ten-packet USB/IP audio URB
+    therefore produces a 1,920-byte, 10 ms speaker frame, although clients must
+    honor the payload length rather than assume a fixed block size.
+
     ## Reference
 
     ### Button Constants

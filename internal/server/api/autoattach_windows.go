@@ -6,8 +6,11 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"unsafe"
 
@@ -170,7 +173,7 @@ func attachViaCommand(ctx context.Context, deviceExportMeta *usbip.ExportMeta, u
 
 	cmd := exec.CommandContext(
 		ctx,
-		"usbip",
+		resolveUsbipExecutable(),
 		"--tcp-port",
 		strconv.FormatUint(uint64(usbipServerPort), 10),
 		"attach",
@@ -188,6 +191,39 @@ func attachViaCommand(ctx context.Context, deviceExportMeta *usbip.ExportMeta, u
 	logger.Debug("usbip attach output", "output", string(output))
 
 	return nil
+}
+
+func resolveUsbipExecutable() string {
+	if path, err := exec.LookPath("usbip"); err == nil {
+		return path
+	}
+
+	// The usbip-win2 installer does not consistently add its directory to
+	// PATH for already-running services. Prefer the standard install location
+	// before returning the bare command and its useful original error.
+	seen := make(map[string]struct{})
+	for _, root := range []string{
+		os.Getenv("ProgramW6432"),
+		os.Getenv("ProgramFiles"),
+		os.Getenv("ProgramFiles(x86)"),
+	} {
+		if root == "" {
+			continue
+		}
+
+		candidate := filepath.Join(root, "USBip", "usbip.exe")
+		key := strings.ToLower(candidate)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			return candidate
+		}
+	}
+
+	return "usbip"
 }
 
 func getDeviceInterfacePath(guid *windows.GUID) (string, error) {

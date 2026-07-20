@@ -70,7 +70,7 @@ var defaultDescriptor = usb.Descriptor{
 				{DescriptorType: 0x24, Payload: usb.Data{0x01, 0x06, 0x01, 0x01, 0x00}},
 				{DescriptorType: 0x24, Payload: usb.Data{0x02, 0x01, 0x02, 0x02, 0x10, 0x01, 0x80, 0xBB, 0x00}},
 			},
-			Endpoints: []usb.EndpointDescriptor{{BEndpointAddress: EndpointMicrophoneIn, BMAttributes: 0x05, WMaxPacketSize: 0x00C4, BInterval: 4, Trailing: usb.Data{0x00, 0x00}, ClassDescriptors: []usb.ClassSpecificDescriptor{{DescriptorType: 0x25, Payload: usb.Data{0x01, 0x00, 0x00, 0x00, 0x00}}}}},
+			Endpoints: []usb.EndpointDescriptor{{BEndpointAddress: EndpointMicrophoneIn, BMAttributes: 0x05, WMaxPacketSize: USBMicrophoneMaxPacketSize, BInterval: 4, Trailing: usb.Data{0x00, 0x00}, ClassDescriptors: []usb.ClassSpecificDescriptor{{DescriptorType: 0x25, Payload: usb.Data{0x01, 0x00, 0x00, 0x00, 0x00}}}}},
 		},
 		{
 			Descriptor: usb.InterfaceDescriptor{BInterfaceNumber: 0x03, BAlternateSetting: 0x00, BNumEndpoints: 0x02, BInterfaceClass: 0x03, BInterfaceSubClass: 0x00, BInterfaceProtocol: 0x00},
