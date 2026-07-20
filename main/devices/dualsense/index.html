@@ -1278,6 +1278,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#full-duplex-audio-stream-v3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Full-duplex audio stream (V3)
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -1712,6 +1723,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#full-duplex-audio-stream-v3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Full-duplex audio stream (V3)
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -2047,6 +2069,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#full-duplex-audio-stream-v3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Full-duplex audio stream (V3)
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -2264,6 +2297,93 @@ report ID. The extended VIIPER feedback stream includes that native report
 so DS4Windows can pass through host haptics/control semantics to physical
 DualSense hardware when available.</p>
 <p>See <code>/device/dualsense/state.go</code> for the <code>OutputState</code> wire definition.</p>
+<h3 id="full-duplex-audio-stream-v3">Full-duplex audio stream (V3)</h3>
+<p><code>dualsensecombinedaudioduplexv3</code> and
+<code>dualsenseedgecombinedaudioduplexv3</code> are opt-in variants for clients that
+transport microphone input and native speaker output on the controller
+stream. The older device names and their wire formats remain unchanged, so
+a client can fall back to <code>dualsensecombinedmicv2</code> or the legacy raw stream.</p>
+<p>Every V3 packet has a 16-byte header followed by its payload:</p>
+<table>
+<thead>
+<tr>
+<th>Offset</th>
+<th>Size</th>
+<th>Field</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>4</td>
+<td>ASCII <code>VPCM</code></td>
+</tr>
+<tr>
+<td>4</td>
+<td>1</td>
+<td>Version <code>0x03</code></td>
+</tr>
+<tr>
+<td>5</td>
+<td>1</td>
+<td>Frame type</td>
+</tr>
+<tr>
+<td>6</td>
+<td>2</td>
+<td>Payload length, little endian</td>
+</tr>
+<tr>
+<td>8</td>
+<td>4</td>
+<td>Sequence, little endian</td>
+</tr>
+<tr>
+<td>12</td>
+<td>4</td>
+<td>IEEE CRC32, little endian</td>
+</tr>
+</tbody>
+</table>
+<p>The CRC covers header bytes 4..11 followed by the payload. Sequence
+numbers increase independently in each direction and are shared by all
+frame types in that direction.</p>
+<table>
+<thead>
+<tr>
+<th>Direction</th>
+<th>Type</th>
+<th>Payload</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Client to VIIPER</td>
+<td><code>0x01</code></td>
+<td>33-byte controller input state</td>
+</tr>
+<tr>
+<td>Client to VIIPER</td>
+<td><code>0x02</code></td>
+<td>1,920-byte microphone block: signed 16-bit little-endian, 48 kHz, stereo, 10 ms</td>
+</tr>
+<tr>
+<td>VIIPER to client</td>
+<td><code>0x81</code></td>
+<td>474-byte combined extended feedback state</td>
+</tr>
+<tr>
+<td>VIIPER to client</td>
+<td><code>0x82</code></td>
+<td>Native speaker PCM: signed 16-bit little-endian, 48 kHz, stereo</td>
+</tr>
+</tbody>
+</table>
+<p>Windows exposes the virtual playback endpoint as four channels. V3 speaker
+frames contain only channels 1 and 2 (front left/right); channels 3 and 4
+remain reserved for advanced haptics. A normal ten-packet USB/IP audio URB
+therefore produces a 1,920-byte, 10 ms speaker frame, although clients must
+honor the payload length rather than assume a fixed block size.</p>
 <h2 id="reference">Reference</h2>
 <h3 id="button-constants">Button Constants</h3>
 <table>
