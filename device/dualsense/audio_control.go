@@ -54,6 +54,7 @@ type audioFeatureState struct {
 	maximum       int16
 	resolution    int16
 	defaultVolume int16
+	applyVolume   bool
 	gain          audioGainRamp
 }
 
@@ -63,13 +64,14 @@ type audioGainRamp struct {
 	framesRemaining int
 }
 
-func newAudioFeatureState(minimum, maximum, resolution, defaultVolume int16) audioFeatureState {
+func newAudioFeatureState(minimum, maximum, resolution, defaultVolume int16, applyVolume bool) audioFeatureState {
 	return audioFeatureState{
 		volume:        defaultVolume,
 		minimum:       minimum,
 		maximum:       maximum,
 		resolution:    resolution,
 		defaultVolume: defaultVolume,
+		applyVolume:   applyVolume,
 		gain: audioGainRamp{
 			current: 1.0,
 			target:  1.0,
@@ -83,6 +85,7 @@ func newSpeakerAudioFeatureState() audioFeatureState {
 		audioSpeakerVolumeMaximum,
 		audioSpeakerVolumeResolution,
 		audioSpeakerVolumeDefault,
+		true,
 	)
 }
 
@@ -92,6 +95,7 @@ func newMicrophoneAudioFeatureState() audioFeatureState {
 		audioMicrophoneVolumeMaximum,
 		audioMicrophoneVolumeResolution,
 		audioMicrophoneVolumeDefault,
+		false,
 	)
 }
 
@@ -109,7 +113,9 @@ func (s *audioFeatureState) setVolume(volume int16) {
 		return
 	}
 	s.volume = volume
-	s.beginGainTransition()
+	if s.applyVolume {
+		s.beginGainTransition()
+	}
 }
 
 func (s *audioFeatureState) beginGainTransition() {
@@ -123,12 +129,19 @@ func (s *audioFeatureState) resetStreamGain() {
 	s.gain.framesRemaining = 0
 }
 
-// targetGain is relative to the feature unit's default value. In particular,
-// the microphone advertises the DualSense-style 0..+48 dB hardware range while
-// its +48 dB default remains unity for the already calibrated decoded PCM path.
+// targetGain is relative to the feature unit's default value for render PCM.
+// The DualSense microphone's physical-style 0..+48 dB feature range describes
+// hardware ADC gain. Windows initializes that control to 0 dB even when its
+// endpoint slider reads 100%; applying it again to already captured client PCM
+// attenuates the virtual microphone by exactly 48 dB. Match the physical device
+// and DS5 Bridge boundary: retain and round-trip that host control, but leave
+// client-provided capture PCM at unity. Mute remains effective for both paths.
 func (s *audioFeatureState) targetGain() float64 {
 	if s.mute {
 		return 0
+	}
+	if !s.applyVolume {
+		return 1
 	}
 	return math.Pow(10, float64(int(s.volume)-int(s.defaultVolume))/(256.0*20.0))
 }

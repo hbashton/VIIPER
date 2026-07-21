@@ -202,15 +202,21 @@ func TestDualSenseAudioGainDefaultsAreNeutralAndChangesRamp(t *testing.T) {
 		binary.LittleEndian.PutUint16(micFrame[offset:offset+2], uint16(int16(10000)))
 	}
 	micProcessed, micRelease := microphone.applyPCM(micFrame, USBMicrophoneChannels)
+	if micRelease != nil || !bytes.Equal(micProcessed, micFrame) {
+		t.Fatal("physical-style microphone gain control attenuated client capture PCM")
+	}
+
+	microphone.setMute(true)
+	micProcessed, micRelease = microphone.applyPCM(micFrame, USBMicrophoneChannels)
 	if micRelease == nil {
-		t.Fatal("microphone volume change did not process PCM")
+		t.Fatal("microphone mute did not process PCM")
 	}
 	defer micRelease()
 	micFirst := int16(binary.LittleEndian.Uint16(micProcessed[:2]))
 	micLastOffset := (audioGainRampFrames - 1) * USBMicrophoneChannels * 2
 	micLast := int16(binary.LittleEndian.Uint16(micProcessed[micLastOffset : micLastOffset+2]))
-	if micFirst <= micLast || micFirst >= 10000 || micLast < 35 || micLast > 45 {
-		t.Fatalf("microphone relative gain ramp was unexpected: first=%d last=%d", micFirst, micLast)
+	if micFirst <= 0 || micFirst >= 10000 || micLast != 0 {
+		t.Fatalf("microphone mute ramp was unexpected: first=%d last=%d", micFirst, micLast)
 	}
 }
 
