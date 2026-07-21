@@ -19,6 +19,7 @@ func init() {
 	api.RegisterDevice("dualsenseedgecombinedmicext", &dsedgehandler{combinedBluetoothFeedback: true, microphoneInput: true, streamFrameVersion: StreamFrameVersion})
 	api.RegisterDevice("dualsenseedgecombinedmicv2", &dsedgehandler{combinedBluetoothFeedback: true, microphoneInput: true, streamFrameVersion: StreamFrameVersionV2})
 	api.RegisterDevice("dualsenseedgecombinedaudioduplexv3", &dsedgehandler{combinedBluetoothFeedback: true, microphoneInput: true, speakerOutput: true, streamFrameVersion: StreamFrameVersionV3})
+	api.RegisterDevice("dualsenseedgecombinedaudioduplexv4", &dsedgehandler{combinedBluetoothFeedback: true, microphoneInput: true, speakerOutput: true, streamFrameVersion: StreamFrameVersionV4})
 }
 
 type dsedgehandler struct {
@@ -156,9 +157,10 @@ func (h *dsedgehandler) StreamHandler() api.StreamHandlerFunc {
 		}
 
 		if speakerOutput {
-			if streamFrameVersion != StreamFrameVersionV3 {
-				return fmt.Errorf("DualSense Edge speaker output requires framed stream version 0x%02X",
-					StreamFrameVersionV3)
+			if streamFrameVersion != StreamFrameVersionV3 &&
+				streamFrameVersion != StreamFrameVersionV4 {
+				return fmt.Errorf("DualSense Edge speaker output requires framed stream version 0x%02X or 0x%02X",
+					StreamFrameVersionV3, StreamFrameVersionV4)
 			}
 
 			writer := newDualSenseOutputWriter(conn, streamFrameVersion,
@@ -172,11 +174,23 @@ func (h *dsedgehandler) StreamHandler() api.StreamHandlerFunc {
 				}
 				writer.EnqueueControl(StreamFrameOutputState, data)
 			})
-			dse.SetSpeakerCallback(writer.EnqueueSpeakerFromUSB)
+			if streamFrameVersion == StreamFrameVersionV4 {
+				dse.SetAtomicAudioHapticsCallback(func(feedback OutputState, speakerPCM []byte) {
+					data, err := marshalFeedback(feedback)
+					if err != nil {
+						logger.Error("failed to marshal atomic audio/haptics feedback", "error", err)
+						return
+					}
+					writer.EnqueueAtomicAudioHaptics(data, speakerPCM)
+				})
+			} else {
+				dse.SetSpeakerCallback(writer.EnqueueSpeakerFromUSB)
+			}
 			dse.SetSpeakerResetCallback(writer.ResetSpeaker)
 			defer func() {
 				dse.SetOutputCallback(nil)
 				dse.SetSpeakerCallback(nil)
+				dse.SetAtomicAudioHapticsCallback(nil)
 				dse.SetSpeakerResetCallback(nil)
 				writer.Stop()
 			}()
