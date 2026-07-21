@@ -108,6 +108,47 @@ func TestDualSenseV3WriterFramesNativeSpeakerPairAndFeedback(t *testing.T) {
 	}
 }
 
+func TestDualSenseV4WriterKeepsFeedbackAndSpeakerGenerationAtomic(t *testing.T) {
+	server, client := net.Pipe()
+	writer := newDualSenseOutputWriter(server, StreamFrameVersionV4, nil, nil)
+	go writer.Run()
+
+	feedback := make([]byte, 474)
+	feedback[76] = 0x36
+	feedback[154] = 0x41
+	speaker := make([]byte, 512*2*USBHapticsAudioBytesPerSample)
+	for index := range speaker {
+		speaker[index] = byte(index)
+	}
+	writer.EnqueueAtomicAudioHaptics(feedback, speaker)
+
+	header, payload := readDualSenseOutputFrame(t, client)
+	if header[4] != StreamFrameVersionV4 ||
+		header[5] != StreamFrameAtomicAudioHaptics {
+		t.Fatalf("unexpected atomic frame header: % x", header)
+	}
+	feedbackLength := int(binary.LittleEndian.Uint16(payload[:2]))
+	if feedbackLength != len(feedback) {
+		t.Fatalf("unexpected atomic feedback length: got %d want %d",
+			feedbackLength, len(feedback))
+	}
+	if got := payload[2 : 2+feedbackLength]; string(got) != string(feedback) {
+		t.Fatal("atomic frame changed native feedback")
+	}
+	if got := payload[2+feedbackLength:]; string(got) != string(speaker) {
+		t.Fatal("atomic frame changed matching speaker PCM")
+	}
+
+	_ = client.Close()
+	writer.Stop()
+	state := writer.telemetry.snapshot()
+	if state.ReceivedPayloads != 1 || state.ReceivedBytes != uint64(len(speaker)) ||
+		state.EnqueuedPayloads != 1 || state.WrittenPayloads != 1 ||
+		state.DroppedPayloads != 0 {
+		t.Fatalf("unexpected V4 atomic telemetry: %+v", state)
+	}
+}
+
 func TestDualSenseV3WriterShutdownReturnsEveryQueuedSpeakerBuffer(t *testing.T) {
 	server, client := net.Pipe()
 	writer := newDualSenseOutputWriter(server, StreamFrameVersionV3, nil, nil)
@@ -475,6 +516,86 @@ func TestDualSenseAndEdgeV3VariantsForwardSpeakerAndAcceptInput(t *testing.T) {
 				t.Fatalf("unexpected exposed speaker state: %+v", speakerState)
 			}
 		})
+	}
+}
+
+func TestDualSenseV4HandlerPairsTheSameUSBGeneration(t *testing.T) {
+	variant := &dshandler{
+		combinedBluetoothFeedback: true,
+		microphoneInput:           true,
+		speakerOutput:             true,
+		streamFrameVersion:        StreamFrameVersionV4,
+	}
+	dev, err := variant.CreateDevice(nil)
+	if err != nil {
+		t.Fatalf("CreateDevice returned error: %v", err)
+	}
+
+	server, client := net.Pipe()
+	errCh := make(chan error, 1)
+	go func() {
+		logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+		errCh <- variant.StreamHandler()(server, &dev, logger)
+	}()
+
+	state := NewInputState()
+	inputPayload, err := state.MarshalBinary()
+	if err != nil {
+		t.Fatalf("MarshalBinary returned error: %v", err)
+	}
+	if _, err := client.Write(makeStreamFrameWithCRC(StreamFrameVersionV4,
+		StreamFrameInputState, 0, inputPayload)); err != nil {
+		t.Fatalf("write V4 input state: %v", err)
+	}
+
+	dualSense := dev.(*DualSense)
+	dualSense.SetInterfaceAltSetting(InterfaceHapticsAudio, 1)
+	usbPCM := make([]byte, 512*USBHapticsAudioFrameSize)
+	negativeRearSample := int16(-12000)
+	for frame := 0; frame < 512; frame++ {
+		offset := frame * USBHapticsAudioFrameSize
+		binary.LittleEndian.PutUint16(usbPCM[offset:offset+2],
+			uint16(int16(frame+1)))
+		binary.LittleEndian.PutUint16(usbPCM[offset+2:offset+4],
+			uint16(int16(-frame-1)))
+		binary.LittleEndian.PutUint16(usbPCM[offset+4:offset+6],
+			uint16(int16(12000)))
+		binary.LittleEndian.PutUint16(usbPCM[offset+6:offset+8],
+			uint16(negativeRearSample))
+	}
+	dualSense.HandleTransfer(context.Background(),
+		EndpointHapticsAudioOut, usbip.DirOut, usbPCM)
+
+	header, payload := readDualSenseOutputFrame(t, client)
+	if header[4] != StreamFrameVersionV4 ||
+		header[5] != StreamFrameAtomicAudioHaptics {
+		t.Fatalf("unexpected V4 atomic frame: % x", header)
+	}
+	feedbackLength := int(binary.LittleEndian.Uint16(payload[:2]))
+	feedback := payload[2 : 2+feedbackLength]
+	speaker := payload[2+feedbackLength:]
+	if feedbackLength != 474 || len(speaker) != 512*4 {
+		t.Fatalf("unexpected V4 generation sizes: feedback=%d speaker=%d",
+			feedbackLength, len(speaker))
+	}
+	if feedback[76] != 0x36 || feedback[152] != 0x92 ||
+		feedback[153] != BluetoothHapticsSampleSize {
+		t.Fatalf("atomic feedback omitted combined haptics: % x",
+			feedback[76:154])
+	}
+	for frame := 0; frame < 512; frame++ {
+		offset := frame * 4
+		left := int16(binary.LittleEndian.Uint16(speaker[offset : offset+2]))
+		right := int16(binary.LittleEndian.Uint16(speaker[offset+2 : offset+4]))
+		if left != int16(frame+1) || right != int16(-frame-1) {
+			t.Fatalf("speaker generation diverged at frame %d: %d/%d",
+				frame, left, right)
+		}
+	}
+
+	_ = client.Close()
+	if err := <-errCh; err != nil {
+		t.Fatalf("V4 stream handler returned error: %v", err)
 	}
 }
 

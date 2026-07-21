@@ -16,9 +16,17 @@ const (
 	// USB/IP URBs. Reserve the captured maximum packet size for every packet;
 	// the normal 48 kHz four-channel payload is 3,840 bytes and becomes a
 	// 1,920-byte native stereo speaker block.
-	dualSenseSpeakerPayloadCapacity = USBHapticsAudioMaxPacketSize * 10 / 2
-	dualSenseSpeakerTraceInterval   = 10 * time.Second
-	dualSenseSpeakerResetTimeout    = 250 * time.Millisecond
+	// A V4 frame carries one complete 512-source-frame generation: the
+	// marshalled native feedback plus its matching front-channel stereo PCM.
+	// Keep the fixed pool large enough for that indivisible payload; V3 uses
+	// the same pool and simply consumes the smaller PCM-only prefix.
+	dualSenseSpeakerPayloadCapacity = dualSenseAtomicFeedbackPrefix +
+		OutputStateCombinedExtSize +
+		(BluetoothHapticsSampleSize/2)*USBHapticsAudioDownsample*
+			2*USBHapticsAudioBytesPerSample
+	dualSenseSpeakerTraceInterval = 10 * time.Second
+	dualSenseSpeakerResetTimeout  = 250 * time.Millisecond
+	dualSenseAtomicFeedbackPrefix = 2
 )
 
 type dualSenseSpeakerStreamTelemetry struct {
@@ -223,6 +231,56 @@ func (w *dualSenseOutputWriter) EnqueueSpeakerFromUSB(usbPCM []byte) {
 	}
 }
 
+// EnqueueAtomicAudioHaptics publishes one V4 generation. A little-endian
+// feedback length prefixes the native extended feedback; the remaining bytes
+// are the matching 512-frame stereo PCM block.
+func (w *dualSenseOutputWriter) EnqueueAtomicAudioHaptics(feedback, speakerPCM []byte) {
+	if len(feedback) == 0 || len(feedback) > int(^uint16(0)) ||
+		len(speakerPCM) == 0 {
+		return
+	}
+
+	w.enqueueLock.RLock()
+	defer w.enqueueLock.RUnlock()
+	if w.stopped {
+		return
+	}
+
+	w.telemetry.receivedPayloads.Add(1)
+	w.telemetry.receivedBytes.Add(uint64(len(speakerPCM)))
+	var buffer []byte
+	select {
+	case buffer = <-w.audioFree:
+	default:
+		w.recordSpeakerDrop(len(speakerPCM))
+		return
+	}
+
+	length := dualSenseAtomicFeedbackPrefix + len(feedback) + len(speakerPCM)
+	if length > cap(buffer) {
+		w.audioFree <- buffer[:cap(buffer)]
+		w.recordSpeakerDrop(len(speakerPCM))
+		return
+	}
+	buffer = buffer[:length]
+	binary.LittleEndian.PutUint16(buffer[:dualSenseAtomicFeedbackPrefix],
+		uint16(len(feedback)))
+	copy(buffer[dualSenseAtomicFeedbackPrefix:], feedback)
+	copy(buffer[dualSenseAtomicFeedbackPrefix+len(feedback):], speakerPCM)
+	frame := dualSenseOutputFrame{
+		frameType:  StreamFrameAtomicAudioHaptics,
+		payload:    buffer,
+		audio:      true,
+		generation: w.audioGeneration.Load(),
+	}
+	if !w.enqueueFrameLocked(w.audio, frame) {
+		w.audioFree <- buffer[:cap(buffer)]
+		w.recordSpeakerDrop(len(speakerPCM))
+		return
+	}
+	w.recordSpeakerEnqueue(len(speakerPCM))
+}
+
 func (w *dualSenseOutputWriter) recordSpeakerEnqueue(length int) {
 	w.telemetry.enqueuedPayloads.Add(1)
 	w.telemetry.enqueuedBytes.Add(uint64(length))
@@ -413,10 +471,10 @@ func (w *dualSenseOutputWriter) traceSpeakerState(final bool) {
 	w.lastTrace = now
 	state := w.telemetry.snapshot()
 	log := w.logger.Debug
-	message := "DualSense V3 speaker stream"
+	message := "DualSense framed speaker stream"
 	if final {
 		log = w.logger.Info
-		message = "DualSense V3 speaker stream stopped"
+		message = "DualSense framed speaker stream stopped"
 	}
 	log(message,
 		"receivedPayloads", state.ReceivedPayloads,

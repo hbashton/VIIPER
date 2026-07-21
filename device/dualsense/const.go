@@ -47,28 +47,34 @@ const (
 )
 
 const (
-	InputReportSize             = 64
-	OutputReportSize            = 48
-	InputStateSize              = 33
-	OutputStateSize             = 6
-	StreamFrameHeaderSize       = 8
-	StreamFrameV2HeaderSize     = 16
-	StreamFrameMagic0           = 0x56
-	StreamFrameMagic1           = 0x50
-	StreamFrameMagic2           = 0x43
-	StreamFrameMagic3           = 0x4D
-	StreamFrameVersion          = 0x01
-	StreamFrameVersionV2        = 0x02
-	StreamFrameVersionV3        = 0x03
-	StreamFrameInputState       = 0x01
-	StreamFrameMicrophonePCM    = 0x02
-	StreamFrameOutputState      = 0x81
-	StreamFrameSpeakerPCM       = 0x82
-	USBMicrophoneSampleRate     = 48000
-	USBMicrophoneChannels       = 2
-	USBMicrophoneBytesPerSample = 2
-	USBMicrophonePacketFrames   = USBMicrophoneSampleRate / 1000
-	USBMicrophonePacketSize     = USBMicrophonePacketFrames *
+	InputReportSize          = 64
+	OutputReportSize         = 48
+	InputStateSize           = 33
+	OutputStateSize          = 6
+	StreamFrameHeaderSize    = 8
+	StreamFrameV2HeaderSize  = 16
+	StreamFrameMagic0        = 0x56
+	StreamFrameMagic1        = 0x50
+	StreamFrameMagic2        = 0x43
+	StreamFrameMagic3        = 0x4D
+	StreamFrameVersion       = 0x01
+	StreamFrameVersionV2     = 0x02
+	StreamFrameVersionV3     = 0x03
+	StreamFrameVersionV4     = 0x04
+	StreamFrameInputState    = 0x01
+	StreamFrameMicrophonePCM = 0x02
+	StreamFrameOutputState   = 0x81
+	StreamFrameSpeakerPCM    = 0x82
+	// V4 keeps the native feedback generated from one 512-frame USB audio
+	// generation beside the matching front-channel speaker PCM. The bridge can
+	// therefore publish one physical Bluetooth report without independently
+	// scheduled speaker and haptics lanes drifting at a load boundary.
+	StreamFrameAtomicAudioHaptics = 0x83
+	USBMicrophoneSampleRate       = 48000
+	USBMicrophoneChannels         = 2
+	USBMicrophoneBytesPerSample   = 2
+	USBMicrophonePacketFrames     = USBMicrophoneSampleRate / 1000
+	USBMicrophonePacketSize       = USBMicrophonePacketFrames *
 		USBMicrophoneChannels * USBMicrophoneBytesPerSample
 	USBMicrophoneMaxPacketSize = USBMicrophonePacketSize +
 		USBMicrophoneChannels*USBMicrophoneBytesPerSample

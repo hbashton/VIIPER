@@ -33,6 +33,7 @@ type DualSense struct {
 	metaState  *MetaState
 
 	speakerFunc               func([]byte)
+	atomicAudioHapticsFunc    func(OutputState, []byte)
 	speakerResetFunc          func()
 	outputFunc                func(OutputState)
 	outputState               OutputState
@@ -176,6 +177,15 @@ func (d *DualSense) SetOutputCallback(f func(OutputState)) {
 func (d *DualSense) SetSpeakerCallback(f func([]byte)) {
 	d.mtx.Lock()
 	d.speakerFunc = f
+	d.mtx.Unlock()
+}
+
+// SetAtomicAudioHapticsCallback installs the V4 transport consumer. Each
+// callback contains native feedback and the exact front-channel PCM generation
+// from which its Bluetooth haptics block was derived.
+func (d *DualSense) SetAtomicAudioHapticsCallback(f func(OutputState, []byte)) {
+	d.mtx.Lock()
+	d.atomicAudioHapticsFunc = f
 	d.mtx.Unlock()
 }
 
@@ -474,6 +484,7 @@ func (d *DualSense) handleHapticsAudioOut(out []byte) {
 
 	processed, release := d.speakerAudioFeature.applyPCM(out, USBHapticsAudioChannels)
 	speakerFunc := d.speakerFunc
+	atomicAudioHapticsFunc := d.atomicAudioHapticsFunc
 	if len(d.hapticsPCM) == 0 {
 		d.hapticsPCMStartedAt = receivedAt
 	}
@@ -483,7 +494,7 @@ func (d *DualSense) handleHapticsAudioOut(out []byte) {
 	// an alternate-setting or endpoint reset a hard generation barrier: once the
 	// reset acquires the lock, no pre-reset callback can enqueue stale PCM after
 	// the transport queue has been flushed.
-	if speakerFunc != nil {
+	if speakerFunc != nil && atomicAudioHapticsFunc == nil {
 		speakerFunc(processed)
 	}
 	d.mtx.Unlock()
@@ -512,7 +523,8 @@ func (d *DualSense) handleHapticsAudioOut(out []byte) {
 
 		d.mtx.Lock()
 		outputFunc := d.outputFunc
-		if outputFunc != nil {
+		atomicAudioHapticsFunc = d.atomicAudioHapticsFunc
+		if outputFunc != nil || atomicAudioHapticsFunc != nil {
 			feedback := d.outputState
 			if d.combinedBluetoothFeedback {
 				copy(feedback.BluetoothCombinedOutputReport[:], report)
@@ -521,7 +533,11 @@ func (d *DualSense) handleHapticsAudioOut(out []byte) {
 			}
 			d.mtx.Unlock()
 			dispatchStarted := time.Now()
-			outputFunc(feedback)
+			if atomicAudioHapticsFunc != nil {
+				atomicAudioHapticsFunc(feedback, pending.speakerPCM)
+			} else {
+				outputFunc(feedback)
+			}
 			recordTrafficEvent(TrafficEvent{
 				Direction: "device->bridge",
 				Source:    "feedback-dispatch",
@@ -539,6 +555,7 @@ func (d *DualSense) handleHapticsAudioOut(out []byte) {
 
 type pendingBluetoothHapticsReport struct {
 	data          []byte
+	speakerPCM    []byte
 	assemblyDelay time.Duration
 }
 
@@ -554,7 +571,11 @@ func (d *DualSense) drainBluetoothHapticsReportsLocked(now time.Time) []pendingB
 	reports := make([]pendingBluetoothHapticsReport, 0, len(d.hapticsPCM)/inputBytesPerReport)
 	for len(d.hapticsPCM) >= inputBytesPerReport {
 		sample := make([]byte, BluetoothHapticsSampleSize)
-		copyUSBHapticsChannelsToBluetoothSample(sample, d.hapticsPCM[:inputBytesPerReport])
+		generationPCM := d.hapticsPCM[:inputBytesPerReport]
+		copyUSBHapticsChannelsToBluetoothSample(sample, generationPCM)
+		speakerPCM := make([]byte, (inputBytesPerReport/USBHapticsAudioFrameSize)*
+			2*USBHapticsAudioBytesPerSample)
+		copyDualSenseSpeakerChannels(speakerPCM, generationPCM)
 
 		seq := d.hapticsSeq
 		interval := d.hapticsInterval
@@ -577,6 +598,7 @@ func (d *DualSense) drainBluetoothHapticsReportsLocked(now time.Time) []pendingB
 			}
 			reports = append(reports, pendingBluetoothHapticsReport{
 				data:          report,
+				speakerPCM:    speakerPCM,
 				assemblyDelay: assemblyDelay,
 			})
 		}
