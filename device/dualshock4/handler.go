@@ -26,11 +26,16 @@ func init() {
 		microphoneInput: true, speakerOutput: true,
 		streamFrameVersion: StreamFrameVersionV3,
 	})
+	api.RegisterDevice("dualshock4audioonlyduplexv3", &handler{
+		microphoneInput: true, speakerOutput: true, audioOnly: true,
+		streamFrameVersion: StreamFrameVersionV3,
+	})
 }
 
 type handler struct {
 	microphoneInput    bool
 	speakerOutput      bool
+	audioOnly          bool
 	streamFrameVersion byte
 }
 
@@ -74,6 +79,9 @@ func (h *handler) CreateDevice(o *device.CreateOptions) (usb.Device, error) {
 	}
 	ds4.microphoneInput = h.microphoneInput
 	ds4.speakerOutput = h.speakerOutput
+	if h.audioOnly {
+		ds4.descriptor = makeAudioOnlyDescriptor()
+	}
 	ds4.streamFrameVersion = h.streamFrameVersion
 	return ds4, nil
 }

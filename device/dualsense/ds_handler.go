@@ -23,6 +23,8 @@ func init() {
 	api.RegisterDevice("dualsensecombinedmicv2", &dshandler{combinedBluetoothFeedback: true, microphoneInput: true, streamFrameVersion: StreamFrameVersionV2})
 	api.RegisterDevice("dualsensecombinedaudioduplexv3", &dshandler{combinedBluetoothFeedback: true, microphoneInput: true, speakerOutput: true, streamFrameVersion: StreamFrameVersionV3})
 	api.RegisterDevice("dualsensecombinedaudioduplexv4", &dshandler{combinedBluetoothFeedback: true, microphoneInput: true, speakerOutput: true, streamFrameVersion: StreamFrameVersionV4})
+	api.RegisterDevice("dualsenseaudioonlyduplexv3", &dshandler{combinedBluetoothFeedback: true, microphoneInput: true, speakerOutput: true, audioOnly: true, streamFrameVersion: StreamFrameVersionV3})
+	api.RegisterDevice("dualsenseaudioonlyduplexv4", &dshandler{combinedBluetoothFeedback: true, microphoneInput: true, speakerOutput: true, audioOnly: true, streamFrameVersion: StreamFrameVersionV4})
 }
 
 type dshandler struct {
@@ -30,6 +32,7 @@ type dshandler struct {
 	combinedBluetoothFeedback bool
 	microphoneInput           bool
 	speakerOutput             bool
+	audioOnly                 bool
 	streamFrameVersion        byte
 }
 
@@ -100,6 +103,9 @@ func (h *dshandler) CreateDevice(o *device.CreateOptions) (usb.Device, error) {
 	dse.combinedBluetoothFeedback = h.combinedBluetoothFeedback
 	dse.microphoneInput = h.microphoneInput
 	dse.speakerOutput = h.speakerOutput
+	if h.audioOnly {
+		dse.descriptor = makeAudioOnlyDescriptor(false)
+	}
 	dse.streamFrameVersion = h.streamFrameVersion
 	return dse, nil
 }

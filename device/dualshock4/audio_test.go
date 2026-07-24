@@ -64,6 +64,30 @@ func TestDescriptorExposesNativeDS4AudioTopology(t *testing.T) {
 	assert.Equal(t, 225, configurationLength)
 }
 
+func TestAudioOnlyDescriptorKeepsAudioAndRemovesHID(t *testing.T) {
+	desc := makeAudioOnlyDescriptor()
+	assert.Equal(t, uint8(3), desc.NumInterfaces())
+
+	var speakerEndpointFound bool
+	var microphoneEndpointFound bool
+	for _, iface := range desc.Interfaces {
+		assert.Nil(t, iface.HID)
+		assert.NotEqual(t, uint8(0x03),
+			iface.Descriptor.BInterfaceClass)
+		for _, endpoint := range iface.Endpoints {
+			switch endpoint.BEndpointAddress {
+			case EndpointAudioOut:
+				speakerEndpointFound = true
+			case EndpointMicrophoneIn:
+				microphoneEndpointFound = true
+			}
+		}
+	}
+
+	assert.True(t, speakerEndpointFound)
+	assert.True(t, microphoneEndpointFound)
+}
+
 func TestAudioSamplingFrequencyControlsMatchDS4Hardware(t *testing.T) {
 	dev, err := New(nil)
 	require.NoError(t, err)
