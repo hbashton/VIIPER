@@ -10,6 +10,35 @@ import (
 	"github.com/Alia5/VIIPER/usbip"
 )
 
+func TestAudioOnlyDescriptorKeepsAudioAndRemovesHID(t *testing.T) {
+	desc := makeAudioOnlyDescriptor(false)
+	if got := desc.NumInterfaces(); got != 3 {
+		t.Fatalf("audio-only descriptor exposes %d interfaces; want 3", got)
+	}
+
+	var speakerEndpointFound bool
+	var microphoneEndpointFound bool
+	for _, iface := range desc.Interfaces {
+		if iface.HID != nil || iface.Descriptor.BInterfaceClass == 0x03 {
+			t.Fatalf("audio-only descriptor retained HID interface %d",
+				iface.Descriptor.BInterfaceNumber)
+		}
+		for _, endpoint := range iface.Endpoints {
+			switch endpoint.BEndpointAddress {
+			case EndpointHapticsAudioOut:
+				speakerEndpointFound = true
+			case EndpointMicrophoneIn:
+				microphoneEndpointFound = true
+			}
+		}
+	}
+
+	if !speakerEndpointFound || !microphoneEndpointFound {
+		t.Fatalf("audio-only descriptor endpoints: speaker=%t microphone=%t",
+			speakerEndpointFound, microphoneEndpointFound)
+	}
+}
+
 func TestDualSenseUSBOutputReportDescriptorMatchesCapture(t *testing.T) {
 	dev, err := New(nil)
 	if err != nil {

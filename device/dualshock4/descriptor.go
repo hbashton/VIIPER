@@ -447,3 +447,23 @@ var defaultDescriptor = usb.Descriptor{
 		2: "Wireless Controller",
 	},
 }
+
+// makeAudioOnlyDescriptor retains the native DS4 UAC interfaces while
+// omitting the HID gamepad interface. This lets a client pair the audio
+// function with a separate Xbox or Switch virtual controller without exposing
+// a second game-visible pad.
+func makeAudioOnlyDescriptor() usb.Descriptor {
+	desc := defaultDescriptor
+	desc.Interfaces = make([]usb.InterfaceConfig, 0,
+		len(defaultDescriptor.Interfaces))
+	for _, iface := range defaultDescriptor.Interfaces {
+		if iface.HID == nil && iface.Descriptor.BInterfaceClass != 0x03 {
+			desc.Interfaces = append(desc.Interfaces, iface)
+		}
+	}
+	desc.Strings = make(map[uint8]string, len(defaultDescriptor.Strings))
+	for key, value := range defaultDescriptor.Strings {
+		desc.Strings[key] = value
+	}
+	return desc
+}

@@ -356,6 +356,22 @@ func makeDescriptor(edge bool) usb.Descriptor {
 	return desc
 }
 
+// makeAudioOnlyDescriptor retains the native PlayStation UAC interfaces while
+// omitting the HID gamepad interface. It is used as a sidecar for profiles
+// whose game-visible controller is Xbox or Switch, so Windows can expose the
+// speaker/microphone endpoints without enumerating a second game controller.
+func makeAudioOnlyDescriptor(edge bool) usb.Descriptor {
+	desc := makeDescriptor(edge)
+	interfaces := make([]usb.InterfaceConfig, 0, len(desc.Interfaces))
+	for _, iface := range desc.Interfaces {
+		if iface.HID == nil && iface.Descriptor.BInterfaceClass != 0x03 {
+			interfaces = append(interfaces, iface)
+		}
+	}
+	desc.Interfaces = interfaces
+	return desc
+}
+
 func withoutEdgeFeatureReports(items []hid.Item) []hid.Item {
 	filtered := make([]hid.Item, 0, len(items))
 	for i := 0; i < len(items); i++ {
