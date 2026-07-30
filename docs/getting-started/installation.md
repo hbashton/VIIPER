@@ -135,7 +135,7 @@ You must have a USBIP-Client implementation available on your system to use VIIP
     === "Windows"
 
         ```powershell
-        irm https://alia5.github.io/VIIPER/stable/install.ps1 | iex
+        irm https://raw.githubusercontent.com/hbashton/VIIPER/main/scripts/install.ps1 | iex
         ```
 
         Installs to: `%LOCALAPPDATA%\VIIPER\viiper.exe`
@@ -151,7 +151,7 @@ You must have a USBIP-Client implementation available on your system to use VIIP
     === "Linux"
 
         ```bash
-        curl -fsSL https://alia5.github.io/VIIPER/stable/install.sh | sh
+        curl -fsSL https://raw.githubusercontent.com/hbashton/VIIPER/main/scripts/install.sh | sh
         ```
 
         Installs to: `/usr/local/bin/viiper`
