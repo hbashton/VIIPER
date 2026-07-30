@@ -1,6 +1,24 @@
+param(
+    [switch]$Yes
+)
+
 $ErrorActionPreference = "Stop"
 
 $viiperVersion = "dev-snapshot"
+
+Write-Host "VIIPER setup plan:" -ForegroundColor Cyan
+Write-Host "  1. Download and install VIIPER first." -ForegroundColor Cyan
+Write-Host "  2. Verify or install signed usbip-win2 0.9.7.7." -ForegroundColor Cyan
+Write-Host "  3. Verify the USBIP ABI before starting VIIPER." -ForegroundColor Cyan
+Write-Host "USB hubs may restart, and Windows may require a reboot." -ForegroundColor Yellow
+if (-not $Yes) {
+    Write-Host "Save work first; replacing an incompatible driver can require an automatic restart." -ForegroundColor Yellow
+    $answer = Read-Host "Continue with VIIPER setup? [Y/N]"
+    if ($answer -notmatch '^(?i:y|yes)$') {
+        Write-Host "Setup canceled. No changes were made." -ForegroundColor Yellow
+        exit 1223
+    }
+}
 
 $repo = "hbashton/VIIPER"
 $apiUrl = if ($viiperVersion -eq "dev-snapshot" -or $viiperVersion -eq "latest") {
@@ -10,7 +28,7 @@ else {
     "https://api.github.com/repos/$repo/releases/tags/$viiperVersion"
 }
 
-Write-Host "Fetching VIIPER release: $viiperVersion..."
+Write-Host "[1/4] Fetching VIIPER release: $viiperVersion..." -ForegroundColor Cyan
 $releaseData = Invoke-RestMethod -Uri $apiUrl -ErrorAction Stop
 $version = $releaseData.tag_name
 
@@ -276,9 +294,15 @@ try {
                     -WindowStyle Hidden -Wait | Out-Null
             }
             catch { }
-            throw "USBIP could not unload its active kernel driver within " +
-                "30 seconds. Restart Windows, then run setup again; it will " +
-                "resume with pinned $targetVersion."
+            Write-Host (
+                "The old USBIP kernel driver requires a reboot to unload. " +
+                "Windows will restart automatically in 15 seconds; run " +
+                "setup again after sign-in to finish pinned $targetVersion."
+            ) -ForegroundColor Yellow
+            Start-Process shutdown.exe -Verb RunAs `
+                -ArgumentList "/r /t 15 /c `"Completing safe USBIP $targetVersion replacement`"" `
+                -WindowStyle Hidden -Wait | Out-Null
+            throw "USBIP requires a restart before $targetVersion can be installed."
         }
         $uninstall.Refresh()
         if ($uninstall.ExitCode -notin @(0, 1641, 3010)) {
@@ -360,7 +384,8 @@ try {
     }
 
     Write-Host ""
-    Write-Host "Checking USBIP drivers..." -ForegroundColor Cyan
+    Write-Host "[2/4] VIIPER binary installed." -ForegroundColor Green
+    Write-Host "[3/4] Checking USBIP drivers..." -ForegroundColor Cyan
 
     $usbipTargetVersion = [Version]"0.9.7.7"
     $usbipInstalledVersion = $null
@@ -448,7 +473,9 @@ try {
             $removedMismatchedPackage = Remove-MismatchedUsbipPackage `
                 $usbipEntry $usbipInstalledVersion $usbipTargetVersion
             Write-Host "Installing USBIP drivers (UAC prompt will appear)..." -ForegroundColor Yellow
-            $installerProcess = Start-Process -FilePath $usbipInstaller -ArgumentList "/S" -Verb RunAs -Wait -PassThru
+            $installerProcess = Start-Process -FilePath $usbipInstaller `
+                -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART" `
+                -Verb RunAs -Wait -PassThru
             if ($installerProcess.ExitCode -notin @(0, 1641, 3010)) {
                 throw "USBIP installer exited with code $($installerProcess.ExitCode)."
             }
@@ -461,6 +488,7 @@ try {
         }
     }
 
+    Write-Host "[4/4] Verifying runtime readiness..." -ForegroundColor Cyan
     $usbipRuntime = Test-UsbipRuntime $usbipTargetVersion
     if (-not $usbipRuntime.Healthy) {
         $needsReboot = $true
