@@ -85,6 +85,153 @@ try {
         $tempViiper = $tempDownload
     }
 
+    function Get-RunningPadSenseProcesses {
+        try {
+            return @(Get-CimInstance Win32_Process -ErrorAction Stop |
+                Where-Object { $_.Name -match "^PadSense.*\.exe$" })
+        }
+        catch {
+            return @(Get-Process -ErrorAction SilentlyContinue |
+                Where-Object { $_.ProcessName -match "^PadSense" } |
+                ForEach-Object {
+                    [pscustomobject]@{
+                        Name = "$($_.ProcessName).exe"
+                        ProcessId = $_.Id
+                    }
+                })
+        }
+    }
+
+    function Assert-PadSenseNotRunning {
+        $processes = @(Get-RunningPadSenseProcesses)
+        if ($processes.Count -eq 0) { return }
+
+        $owners = ($processes | ForEach-Object {
+            "$($_.Name) PID=$($_.ProcessId)"
+        }) -join ", "
+        throw "PadSense is running ($owners) and may own active USBIP " +
+            "imports. Close PadSense completely, including its " +
+            "tray/background process, then run setup again. The usbip-win2 " +
+            "driver transition was not started."
+    }
+
+    function Stop-ControllerBackends {
+        $targets = @(Get-Process -Name "DS4Windows", "viiper" `
+            -ErrorAction SilentlyContinue)
+        if ($targets.Count -eq 0) { return }
+
+        Write-Host "Stopping DS4Windows and VIIPER before the USBIP driver transition..." -ForegroundColor Yellow
+        foreach ($process in $targets) {
+            try { [void]$process.CloseMainWindow() } catch { }
+        }
+        Start-Sleep -Milliseconds 750
+        foreach ($process in $targets) {
+            try {
+                if (-not $process.HasExited) {
+                    Stop-Process -Id $process.Id -Force -ErrorAction Stop
+                }
+            }
+            catch { }
+        }
+        Start-Sleep -Milliseconds 500
+
+        $remaining = @(Get-Process -Name "DS4Windows", "viiper" `
+            -ErrorAction SilentlyContinue)
+        if ($remaining.Count -gt 0) {
+            $owners = ($remaining | ForEach-Object {
+                "$($_.ProcessName).exe PID=$($_.Id)"
+            }) -join ", "
+            throw "Could not stop controller backend process(es): $owners. " +
+                "Close them manually, then run setup again. The usbip-win2 " +
+                "driver transition was not started."
+        }
+    }
+
+    function Get-CanonicalUsbipPath {
+        foreach ($root in @($env:ProgramW6432, $env:ProgramFiles, ${env:ProgramFiles(x86)})) {
+            if (-not $root) { continue }
+            $candidate = Join-Path $root "USBip\usbip.exe"
+            if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+                return $candidate
+            }
+        }
+        return $null
+    }
+
+    function Test-UsbipRuntime([Version]$expectedVersion) {
+        $usbipPath = Get-CanonicalUsbipPath
+        if (-not $usbipPath) {
+            return [pscustomobject]@{
+                Healthy = $false
+                Reason = "missing"
+                Detail = "canonical usbip.exe is missing"
+            }
+        }
+
+        $actualVersion = $null
+        try { $actualVersion = [Version](Get-Item -LiteralPath $usbipPath).VersionInfo.FileVersion }
+        catch { }
+        if (-not $actualVersion -or $actualVersion -lt $expectedVersion) {
+            return [pscustomobject]@{
+                Healthy = $false
+                Reason = "version"
+                Detail = "usbip.exe version is '$actualVersion'; expected $expectedVersion"
+            }
+        }
+
+        $previousErrorActionPreference = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try {
+            $output = & $usbipPath port 2>&1
+        }
+        finally {
+            $ErrorActionPreference = $previousErrorActionPreference
+        }
+        $exitCode = $LASTEXITCODE
+        $text = ($output | Out-String).Trim()
+        if ($text -match "(?i)ABI\s+mismatch|unexpected\s+size.*(?:input|structure)") {
+            return [pscustomobject]@{
+                Healthy = $false
+                Reason = "abi-mismatch"
+                Detail = "usbip.exe port failed (exit $exitCode): $text"
+            }
+        }
+
+        if ($exitCode -ne 0) {
+            return [pscustomobject]@{
+                Healthy = $false
+                Reason = "probe-failed"
+                Detail = "usbip.exe port failed (exit $exitCode): $text"
+            }
+        }
+
+        return [pscustomobject]@{
+            Healthy = $true
+            Reason = "ready"
+            Detail = "0.9.7.8 ABI probe passed"
+        }
+    }
+
+    function Invoke-ViiperInstallRegistration([string]$path) {
+        # `viiper install` launches the persistent server before the brief
+        # registration process exits. Start-Process -Wait follows descendants
+        # and hangs on that server, so wait only on the registration PID.
+        $registration = Start-Process -WindowStyle Hidden $path `
+            -ArgumentList "install" -PassThru
+        if (-not $registration.WaitForExit(15000)) {
+            try {
+                & taskkill.exe /PID $registration.Id /T /F | Out-Null
+            }
+            catch { }
+            throw "VIIPER registration did not finish within 15 seconds. Its process tree was stopped safely; run setup again."
+        }
+
+        $registration.Refresh()
+        if ($registration.ExitCode -ne 0) {
+            throw "VIIPER registration failed with exit code $($registration.ExitCode)."
+        }
+    }
+
     $newVersion = Get-ViiperVersion $tempViiper
     if (-not $newVersion) { $newVersion = "unknown" }
     Write-Host "Downloaded VIIPER version: $newVersion"
@@ -139,7 +286,7 @@ try {
     Write-Host ""
     Write-Host "Checking USBIP drivers..." -ForegroundColor Cyan
 
-    $usbipTargetVersion = [Version]"0.9.7.7"
+    $usbipTargetVersion = [Version]"0.9.7.8"
     $usbipInstalledVersion = $null
 
     $usbipEntry = Get-ItemProperty "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*" -ErrorAction SilentlyContinue |
@@ -162,46 +309,90 @@ try {
     }
 
     $needsReboot = $false
-    $needsUsbipInstall = $true
+    $usbipRuntimeBefore = Test-UsbipRuntime $usbipTargetVersion
+    $needsUsbipInstall = -not $usbipRuntimeBefore.Healthy -and
+        $usbipRuntimeBefore.Reason -ne "abi-mismatch"
+    if ($usbipRuntimeBefore.Reason -eq "abi-mismatch") {
+        $needsReboot = $true
+    }
 
-    if ($usbipInstalledVersion) {
-        if ($usbipInstalledVersion -ge $usbipTargetVersion) {
-            Write-Host "USBIP drivers already up to date (installed: $usbipInstalledVersion)" -ForegroundColor Green
-            $needsUsbipInstall = $false
+    if (-not $needsUsbipInstall) {
+        if ($usbipRuntimeBefore.Healthy) {
+            Write-Host (
+                "USBIP 0.9.7.8 userspace/driver ABI is ready at the canonical " +
+                "Program Files path."
+            ) -ForegroundColor Green
         }
         else {
-            Write-Host "USBIP drivers outdated (installed: $usbipInstalledVersion, required: $usbipTargetVersion). Updating..." -ForegroundColor Yellow
+            Write-Host (
+                "USBIP 0.9.7.8 is already installed. Skipping a redundant " +
+                "reinstall; restart Windows to load its matching driver."
+            ) -ForegroundColor Yellow
         }
     }
+    elseif ($usbipInstalledVersion -and
+            $usbipInstalledVersion -lt $usbipTargetVersion) {
+        Write-Host (
+            "USBIP drivers outdated (installed: $usbipInstalledVersion, " +
+            "required: $usbipTargetVersion). Updating..."
+        ) -ForegroundColor Yellow
+    }
+    elseif ($usbipInstalledVersion) {
+        Write-Host (
+            "USBIP reports version $usbipInstalledVersion, but its canonical " +
+            "0.9.7.8 runtime is not usable ($($usbipRuntimeBefore.Detail)). " +
+            "Repairing the exact 0.9.7.8 package..."
+        ) -ForegroundColor Yellow
+    }
     else {
-        Write-Host "USBIP drivers not found. Installing..." -ForegroundColor Yellow
+        Write-Host (
+            "USBIP 0.9.7.8 is missing or unusable " +
+            "($($usbipRuntimeBefore.Detail)). Installing the exact package..."
+        ) -ForegroundColor Yellow
     }
 
     if ($needsUsbipInstall) {
         Write-Host "This requires administrator privileges." -ForegroundColor Yellow
 
-        $usbipInstallerUrl = "https://github.com/vadimgrn/usbip-win2/releases/download/v.0.9.7.7/USBip-0.9.7.7-x64.exe"
+        Assert-PadSenseNotRunning
+        Stop-ControllerBackends
+
+        $usbipInstallerUrl = "https://github.com/vadimgrn/usbip-win2/releases/download/v.0.9.7.8/USBip-0.9.7.8-x64.exe"
         $usbipInstaller = Join-Path $tempDir "USBip-setup.exe"
 
         try {
             Write-Host "  Downloading usbip-win2 installer..." -ForegroundColor Cyan
             Invoke-WebRequest -Uri $usbipInstallerUrl -OutFile $usbipInstaller -ErrorAction Stop
+            $usbipInstallerHash = (Get-FileHash -LiteralPath $usbipInstaller -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($usbipInstallerHash -ne "44451fe06f4186125c2a5ecd25b099c5560a61a60b1e56f5a0758e77a60afa44") {
+                throw "USBIP installer integrity check failed."
+            }
+            Assert-PadSenseNotRunning
             Write-Host "Installing USBIP drivers (UAC prompt will appear)..." -ForegroundColor Yellow
-            Start-Process -FilePath $usbipInstaller -ArgumentList "/S" -Verb RunAs -Wait
+            $installerProcess = Start-Process -FilePath $usbipInstaller -ArgumentList "/S" -Verb RunAs -Wait -PassThru
+            if ($installerProcess.ExitCode -notin @(0, 1641, 3010)) {
+                throw "USBIP installer exited with code $($installerProcess.ExitCode)."
+            }
             Write-Host "USBIP drivers installed/updated successfully" -ForegroundColor Green
-            $needsReboot = $true
+            $needsReboot = $installerProcess.ExitCode -in @(1641, 3010)
         }
         catch {
-            Write-Host "Warning: Failed to install USBIP drivers - $($_.Exception.Message)" -ForegroundColor Yellow
-            Write-Host "You may need to install usbip-win2 manually from:" -ForegroundColor Yellow
-            Write-Host "  https://github.com/vadimgrn/usbip-win2/releases" -ForegroundColor Yellow
+            throw "Failed to install USBIP drivers: $($_.Exception.Message)"
         }
     }
 
-    if (-not $isUpdate) {
-        Write-Host "Configuring system startup..."
+    $usbipRuntime = Test-UsbipRuntime $usbipTargetVersion
+    if (-not $usbipRuntime.Healthy) {
+        $needsReboot = $true
+        Write-Host "USBIP 0.9.7.8 is installed but not active yet: $($usbipRuntime.Detail)" -ForegroundColor Yellow
     }
-    Start-Process -WindowStyle Hidden  "$installPath" -ArgumentList "install"
+
+    if (-not $needsReboot) {
+        if (-not $isUpdate) {
+            Write-Host "Configuring system startup..."
+        }
+        Invoke-ViiperInstallRegistration $installPath
+    }
     
     Write-Host "VIIPER installed successfully!" -ForegroundColor Green
     Write-Host "Binary installed to: $installPath"
@@ -212,19 +403,24 @@ try {
         else {
             Write-Host "Update complete. Startup/autostart configuration was left unchanged."
         }
-        Write-Host "VIIPER service has been restarted."
+        if (-not $needsReboot) {
+            Write-Host "VIIPER service has been restarted."
+        }
     }
     else {
-        Write-Host "VIIPER server is now running and will start automatically on boot."
+        if (-not $needsReboot) {
+            Write-Host "VIIPER server is now running and will start automatically on boot."
+        }
     }
 
-    taskkill.exe /IM "viiper.exe" /F > $null 2>&1
-    Start-Process -WindowStyle Hidden  "$installPath" -ArgumentList "server"
-    
     if ($needsReboot) {
         Write-Host ""
-        Write-Host "IMPORTANT: A system reboot is required for USBIP drivers to function properly." -ForegroundColor Yellow
-        Write-Host "Please restart your computer before using VIIPER." -ForegroundColor Yellow
+        Write-Host "USBIP 0.9.7.8 requires a restart before VIIPER can run safely." -ForegroundColor Yellow
+        Write-Host "VIIPER was intentionally left stopped; restart Windows, then launch DS4Windows." -ForegroundColor Yellow
+    }
+    else {
+        taskkill.exe /IM "viiper.exe" /F > $null 2>&1
+        Start-Process -WindowStyle Hidden "$installPath" -ArgumentList "server"
     }
 }
 finally {

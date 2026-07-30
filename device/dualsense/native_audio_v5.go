@@ -19,7 +19,21 @@ func appendDualSenseV5Speaker(dst, src []byte) []byte {
 
 	start := len(dst)
 	dst = append(dst, make([]byte, frames*dualSenseV5SpeakerFrameSize)...)
-	copyDualSenseSpeakerChannels(dst[start:],
+	copyDualSenseV5SpeakerChannels(dst[start:],
 		src[:frames*USBHapticsAudioFrameSize])
 	return dst
+}
+
+// copyDualSenseV5SpeakerChannels copies the front stereo pair from the native
+// four-channel USB endpoint. Rear channels remain on the haptics clock.
+func copyDualSenseV5SpeakerChannels(dst, src []byte) int {
+	frames := min(len(src)/USBHapticsAudioFrameSize,
+		len(dst)/dualSenseV5SpeakerFrameSize)
+	for frame := 0; frame < frames; frame++ {
+		source := frame * USBHapticsAudioFrameSize
+		destination := frame * dualSenseV5SpeakerFrameSize
+		copy(dst[destination:destination+dualSenseV5SpeakerFrameSize],
+			src[source:source+dualSenseV5SpeakerFrameSize])
+	}
+	return frames * dualSenseV5SpeakerFrameSize
 }

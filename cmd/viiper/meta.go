@@ -23,7 +23,7 @@ var descriptionTemplate = `
 Virtual Input over IP EmulatoR
   Version: %s (%s)
            %s
-  Source:  https://github.com/Alia5/VIIPER
+  Source:  https://github.com/hbashton/VIIPER
   License: GPLv3
 `
 

@@ -3,8 +3,6 @@ package dualsense
 import (
 	"encoding/json"
 	"fmt"
-	"log/slog"
-	"net"
 	"strings"
 
 	"github.com/Alia5/VIIPER/device"
@@ -13,23 +11,10 @@ import (
 )
 
 func init() {
-	api.RegisterDevice("dualsenseedge", &dsedgehandler{})
-	api.RegisterDevice("dualsenseedgeext", &dsedgehandler{extendedFeedback: true})
-	api.RegisterDevice("dualsenseedgecombinedext", &dsedgehandler{combinedBluetoothFeedback: true})
-	api.RegisterDevice("dualsenseedgecombinedmicext", &dsedgehandler{combinedBluetoothFeedback: true, microphoneInput: true, streamFrameVersion: StreamFrameVersion})
-	api.RegisterDevice("dualsenseedgecombinedmicv2", &dsedgehandler{combinedBluetoothFeedback: true, microphoneInput: true, streamFrameVersion: StreamFrameVersionV2})
-	api.RegisterDevice("dualsenseedgecombinedaudioduplexv3", &dsedgehandler{combinedBluetoothFeedback: true, microphoneInput: true, speakerOutput: true, streamFrameVersion: StreamFrameVersionV3})
-	api.RegisterDevice("dualsenseedgecombinedaudioduplexv4", &dsedgehandler{combinedBluetoothFeedback: true, microphoneInput: true, speakerOutput: true, streamFrameVersion: StreamFrameVersionV4})
-	api.RegisterDevice("dualsenseedgecombinedaudioduplexv5", &dsedgehandler{combinedBluetoothFeedback: true, microphoneInput: true, speakerOutput: true, streamFrameVersion: StreamFrameVersionV5})
+	api.RegisterDevice(DeviceTypeEdgeCombinedAudioDuplexV5, &dsedgehandler{})
 }
 
-type dsedgehandler struct {
-	extendedFeedback          bool
-	combinedBluetoothFeedback bool
-	microphoneInput           bool
-	speakerOutput             bool
-	streamFrameVersion        byte
-}
+type dsedgehandler struct{}
 
 func (h *dsedgehandler) CreateDevice(o *device.CreateOptions) (usb.Device, error) {
 	if o == nil {
@@ -94,125 +79,11 @@ func (h *dsedgehandler) CreateDevice(o *device.CreateOptions) (usb.Device, error
 	if err != nil {
 		return nil, err
 	}
-	dse.extendedFeedback = h.extendedFeedback
-	dse.combinedBluetoothFeedback = h.combinedBluetoothFeedback
-	dse.microphoneInput = h.microphoneInput
-	dse.speakerOutput = h.speakerOutput
-	dse.streamFrameVersion = h.streamFrameVersion
 	return dse, nil
 }
 
 func (h *dsedgehandler) StreamHandler() api.StreamHandlerFunc {
-	return func(conn net.Conn, devPtr *usb.Device, logger *slog.Logger) error {
-		defer func() {
-			if devPtr == nil || *devPtr == nil {
-				return
-			}
-			dse, ok := (*devPtr).(*DualSense)
-			if !ok {
-				slog.Warn("device is not DualSenseEdge on disconnect")
-				return
-			}
-			dse.mtx.Lock()
-			serial := dse.metaState.SerialNumber
-			mac := dse.metaState.MACAddress
-			dse.mtx.Unlock()
-			delete(serials, serial)
-			delete(macs, mac)
-			slog.Debug("DualSenseEdge disconnected, serial/mac released", "serial", serial, "mac", mac)
-		}()
-
-		if devPtr == nil || *devPtr == nil {
-			return fmt.Errorf("nil device")
-		}
-		dse, ok := (*devPtr).(*DualSense)
-		if !ok {
-			return fmt.Errorf("%w: expected DualSenseEdge", device.ErrWrongDeviceType)
-		}
-
-		microphoneInput := h.microphoneInput || dse.microphoneInput
-		speakerOutput := h.speakerOutput || dse.speakerOutput
-		streamFrameVersion := h.streamFrameVersion
-		if dse.streamFrameVersion != 0 {
-			streamFrameVersion = dse.streamFrameVersion
-		}
-		logger.Info("DualSense Edge input stream configured",
-			"microphoneInput", microphoneInput,
-			"speakerOutput", speakerOutput,
-			"frameVersion", streamFrameVersion)
-
-		marshalFeedback := func(feedback OutputState) ([]byte, error) {
-			var data []byte
-			var err error
-			if h.combinedBluetoothFeedback || dse.combinedBluetoothFeedback {
-				data, err = feedback.MarshalCombinedExtendedBinary()
-			} else if h.extendedFeedback || dse.extendedFeedback {
-				data, err = feedback.MarshalExtendedBinary()
-			} else {
-				data, err = feedback.MarshalBinary()
-			}
-			if err != nil {
-				return nil, err
-			}
-			return data, nil
-		}
-
-		if speakerOutput {
-			if streamFrameVersion != StreamFrameVersionV3 &&
-				streamFrameVersion != StreamFrameVersionV4 &&
-				streamFrameVersion != StreamFrameVersionV5 {
-				return fmt.Errorf("DualSense Edge speaker output requires framed stream version 0x%02X, 0x%02X, or 0x%02X",
-					StreamFrameVersionV3, StreamFrameVersionV4, StreamFrameVersionV5)
-			}
-
-			writer := newDualSenseOutputWriter(conn, streamFrameVersion,
-				dse.beginSpeakerStream(), logger)
-			go writer.Run()
-			dse.SetOutputCallback(func(feedback OutputState) {
-				data, err := marshalFeedback(feedback)
-				if err != nil {
-					logger.Error("failed to marshal feedback", "error", err)
-					return
-				}
-				writer.EnqueueControl(StreamFrameOutputState, data)
-			})
-			if streamFrameVersion == StreamFrameVersionV4 ||
-				streamFrameVersion == StreamFrameVersionV5 {
-				dse.SetAtomicAudioHapticsCallback(func(feedback OutputState, speakerPCM []byte) {
-					data, err := marshalFeedback(feedback)
-					if err != nil {
-						logger.Error("failed to marshal atomic audio/haptics feedback", "error", err)
-						return
-					}
-					writer.EnqueueAtomicAudioHaptics(data, speakerPCM)
-				})
-			} else {
-				dse.SetSpeakerCallback(writer.EnqueueSpeakerFromUSB)
-			}
-			dse.SetSpeakerResetCallback(writer.ResetSpeaker)
-			defer func() {
-				dse.SetOutputCallback(nil)
-				dse.SetSpeakerCallback(nil)
-				dse.SetAtomicAudioHapticsCallback(nil)
-				dse.SetSpeakerResetCallback(nil)
-				writer.Stop()
-			}()
-		} else {
-			dse.SetOutputCallback(func(feedback OutputState) {
-				data, err := marshalFeedback(feedback)
-				if err != nil {
-					logger.Error("failed to marshal feedback", "error", err)
-					return
-				}
-				if _, err := conn.Write(data); err != nil {
-					logger.Error("failed to send feedback", "error", err)
-				}
-			})
-			defer dse.SetOutputCallback(nil)
-		}
-
-		return readDualSenseInputStreamVersion(conn, dse, logger, microphoneInput, streamFrameVersion)
-	}
+	return dualSenseV5StreamHandler("DualSense Edge")
 }
 
 func (h *dsedgehandler) UpdateMetaState(meta string, dev *usb.Device) error {

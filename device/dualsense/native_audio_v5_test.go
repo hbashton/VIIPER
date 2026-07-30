@@ -265,10 +265,10 @@ func TestDualSenseV5SpeakerCombinesFreshStateWithCompletedRearSample(t *testing.
 
 func TestDualSenseV5WriterPublishesExactAtomicContract(t *testing.T) {
 	server, client := net.Pipe()
-	writer := newDualSenseOutputWriter(server, StreamFrameVersionV5, nil, nil)
+	writer := newDualSenseOutputWriter(server, nil, nil)
 	go writer.Run()
 
-	feedback := make([]byte, OutputStateCombinedExtSize)
+	feedback := make([]byte, OutputStateV5Size)
 	feedback[OutputStateCombinedBluetoothOffset] = BluetoothCombinedHapticsReportID
 	speaker := make([]byte, dualSenseV5SpeakerPayloadSize)
 	for index := range speaker {
@@ -299,7 +299,7 @@ func TestDualSenseV5WriterPublishesExactAtomicContract(t *testing.T) {
 }
 
 func TestDualSenseV5WriterRetainsNewestGenerationWhenBounded(t *testing.T) {
-	writer := newDualSenseOutputWriter(nil, StreamFrameVersionV5, nil, nil)
+	writer := newDualSenseOutputWriter(nil, nil, nil)
 	for generation := 0; generation <= dualSenseOutputAudioQueueCapacity; generation++ {
 		feedback := []byte{byte(generation)}
 		speaker := make([]byte, dualSenseV5SpeakerPayloadSize)
@@ -342,8 +342,6 @@ func newV5CaptureDevice(t *testing.T) (*DualSense, *[]capturedV5Generation) {
 	if err != nil {
 		t.Fatalf("New returned error: %v", err)
 	}
-	device.combinedBluetoothFeedback = true
-	device.streamFrameVersion = StreamFrameVersionV5
 	captured := make([]capturedV5Generation, 0, 2)
 	device.SetAtomicAudioHapticsCallback(func(feedback OutputState, speaker []byte) {
 		generation := capturedV5Generation{
@@ -374,7 +372,7 @@ func makeV5USBPCM(firstFrame, frames int, rearBias int16) []byte {
 
 func frontStereoFromUSB(pcm []byte) []byte {
 	front := make([]byte, len(pcm)/USBHapticsAudioFrameSize*dualSenseV5SpeakerFrameSize)
-	copyDualSenseSpeakerChannels(front, pcm)
+	copyDualSenseV5SpeakerChannels(front, pcm)
 	return front
 }
 

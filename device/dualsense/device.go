@@ -3,14 +3,12 @@ package dualsense
 import (
 	"context"
 	"encoding/binary"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"math"
 	"net"
-	"os"
 	"sync"
 	"time"
 
@@ -25,24 +23,17 @@ const (
 	microphoneMaximumClientFrames = 20 // 200 ms emergency ceiling for full-duplex BT bursts; steady state remains about 55 ms.
 )
 
-var rawOutputLogEnabled = os.Getenv("VIIPER_DUALSENSE_RAW_OUTPUT_LOG") == "1"
-
 type DualSense struct {
+	deviceType string
 	inputCh    chan InputState
 	inputState InputState
 	metaState  *MetaState
 
-	speakerFunc               func([]byte)
-	atomicAudioHapticsFunc    func(OutputState, []byte)
-	speakerResetFunc          func()
-	outputFunc                func(OutputState)
-	outputState               OutputState
-	descriptor                usb.Descriptor
-	extendedFeedback          bool
-	combinedBluetoothFeedback bool
-	microphoneInput           bool
-	speakerOutput             bool
-	streamFrameVersion        byte
+	atomicAudioHapticsFunc func(OutputState, []byte)
+	speakerResetFunc       func()
+	outputFunc             func(OutputState)
+	outputState            OutputState
+	descriptor             usb.Descriptor
 
 	subcommand [2]byte
 
@@ -60,10 +51,9 @@ type DualSense struct {
 	speakerInterfaceActive    bool
 	microphoneInterfaceActive bool
 	corruptUSBInputReports    int
-	usbInputReportCount       uint64
 	// hapticsPCMStartedAt identifies the oldest PCM frame waiting to make a
-	// complete 10.667 ms Bluetooth haptics sample. It is only used by the
-	// opt-in traffic capture to expose queueing delay without affecting timing.
+	// complete 10.667 ms Bluetooth haptics sample. It feeds ordinary stream
+	// health telemetry without affecting presentation timing.
 	hapticsPCMStartedAt time.Time
 	timestampBase       time.Time
 
@@ -124,6 +114,7 @@ func new(o *device.CreateOptions, edge bool) (*DualSense, error) {
 	}
 
 	d := &DualSense{
+		deviceType:             DeviceTypeCombinedAudioDuplexV5,
 		descriptor:             makeDescriptor(edge),
 		metaState:              metaState,
 		speakerAudioFeature:    newSpeakerAudioFeatureState(),
@@ -136,6 +127,9 @@ func new(o *device.CreateOptions, edge bool) (*DualSense, error) {
 			microphoneMaximumClientFrames,
 		),
 		microphoneSignal: make(chan struct{}, 1),
+	}
+	if edge {
+		d.deviceType = DeviceTypeEdgeCombinedAudioDuplexV5
 	}
 
 	if o != nil {
@@ -161,6 +155,13 @@ func new(o *device.CreateOptions, edge bool) (*DualSense, error) {
 	return d, nil
 }
 
+// VIIPERDeviceType preserves the exact registered transport contract for
+// stream dispatch. Multiple V5 endpoint variants share the DualSense concrete
+// type, so reflection on the package name cannot distinguish them.
+func (d *DualSense) VIIPERDeviceType() string {
+	return d.deviceType
+}
+
 func (d *DualSense) SetMetaState(meta MetaState) {
 	d.mtx.Lock()
 	defer d.mtx.Unlock()
@@ -173,18 +174,9 @@ func (d *DualSense) SetOutputCallback(f func(OutputState)) {
 	d.mtx.Unlock()
 }
 
-// SetSpeakerCallback installs a synchronous consumer for the native virtual
-// USB audio payload. The callback must copy any bytes it retains after it
-// returns; the framed V3 writer does so into its fixed buffer pool.
-func (d *DualSense) SetSpeakerCallback(f func([]byte)) {
-	d.mtx.Lock()
-	d.speakerFunc = f
-	d.mtx.Unlock()
-}
-
-// SetAtomicAudioHapticsCallback installs the V4/V5 transport consumer. Each
-// callback contains native feedback and one front-channel PCM generation. V4
-// retains 512 native speaker frames. V5 follows PadSense: it emits exactly 480
+// SetAtomicAudioHapticsCallback installs the V5 transport consumer. Each
+// callback contains native feedback and one front-channel PCM generation.
+// The PadSense contract emits exactly 480
 // raw 48 kHz speaker frames and consumes one independently completed rear
 // haptics sample, or silence when that 512-frame lane has not completed yet.
 func (d *DualSense) SetAtomicAudioHapticsCallback(f func(OutputState, []byte)) {
@@ -194,8 +186,8 @@ func (d *DualSense) SetAtomicAudioHapticsCallback(f func(OutputState, []byte)) {
 }
 
 // SetSpeakerResetCallback installs the transport-side queue reset paired with
-// SetSpeakerCallback. USB interface close/reopen and endpoint reset must discard
-// queued speaker PCM from the previous presentation generation.
+// SetAtomicAudioHapticsCallback. USB interface close/reopen and endpoint reset
+// must discard queued speaker PCM from the previous presentation generation.
 func (d *DualSense) SetSpeakerResetCallback(f func()) {
 	d.mtx.Lock()
 	d.speakerResetFunc = f
@@ -380,9 +372,6 @@ func (d *DualSense) HandleTransfer(ctx context.Context, ep uint32, dir uint32, o
 	}
 
 	if dir == usbip.DirOut && epNumber == EndpointOut&0x0F {
-		recordTrafficBytes("host->device", "interrupt-out",
-			out,
-			"summary", fmt.Sprintf("ep=%d", ep))
 		if d.handleOutputReport(out) {
 			return nil
 		}
@@ -408,9 +397,6 @@ func (d *DualSense) QueueMicrophonePCMFrame(frame []byte) {
 
 	d.microphoneBuffer.QueueFrame(frame)
 	d.mtx.Unlock()
-
-	recordTrafficSummary("client->device", "microphone-pcm-queued", len(frame),
-		"summary", describeMicrophonePCMFrame(frame))
 
 	select {
 	case d.microphoneSignal <- struct{}{}:
@@ -478,10 +464,6 @@ func (d *DualSense) handleHapticsAudioOut(out []byte) {
 	}
 	receivedAt := time.Now()
 
-	recordTrafficBytes("host->device", "audio-haptics-out",
-		out,
-		"summary", fmt.Sprintf("ep=%d bytes=%d", EndpointHapticsAudioOut, len(out)))
-
 	d.mtx.Lock()
 	if !d.speakerInterfaceActive {
 		d.mtx.Unlock()
@@ -489,81 +471,34 @@ func (d *DualSense) handleHapticsAudioOut(out []byte) {
 	}
 
 	processed, release := d.speakerAudioFeature.applyPCM(out, USBHapticsAudioChannels)
-	speakerFunc := d.speakerFunc
 	atomicAudioHapticsFunc := d.atomicAudioHapticsFunc
-	var reports []pendingBluetoothHapticsReport
-	if d.streamFrameVersion == StreamFrameVersionV5 {
-		reports = d.consumeDualSenseV5AudioLocked(processed, receivedAt)
-	} else {
-		if len(d.hapticsPCM) == 0 {
-			d.hapticsPCMStartedAt = receivedAt
-		}
-		d.hapticsPCM = append(d.hapticsPCM, processed...)
-		reports = d.drainBluetoothHapticsReportsLocked(receivedAt)
-	}
+	reports := d.consumeDualSenseV5AudioLocked(processed, receivedAt)
 	// The callback is deliberately completed under the device lock. This makes
 	// an alternate-setting or endpoint reset a hard generation barrier: once the
 	// reset acquires the lock, no pre-reset callback can enqueue stale PCM after
 	// the transport queue has been flushed.
-	if speakerFunc != nil && atomicAudioHapticsFunc == nil {
-		speakerFunc(processed)
-	}
 	d.mtx.Unlock()
 	if release != nil {
 		release()
 	}
 
 	for _, pending := range reports {
-		report := pending.data
-		if pending.hasFeedback {
-			report = pending.feedback.BluetoothCombinedOutputReport[:]
-		}
+		report := pending.feedback.BluetoothCombinedOutputReport[:]
 		if len(report) == 0 {
 			continue
 		}
-
-		trafficSource := "saxense-hid-0x32"
-		if d.combinedBluetoothFeedback {
-			trafficSource = "vds-hid-0x36"
-		}
-
-		recordTrafficBytes("device->physical", trafficSource,
-			report,
-			"reportType", "output",
-			"reportID", fmt.Sprintf("0x%02X", report[0]),
-			"summary", fmt.Sprintf("from audio ep=%d bytes=%d assemblyMs=%.3f",
-				EndpointHapticsAudioOut, BluetoothHapticsSampleSize,
-				float64(pending.assemblyDelay.Microseconds())/1000.0))
 
 		d.mtx.Lock()
 		outputFunc := d.outputFunc
 		atomicAudioHapticsFunc = d.atomicAudioHapticsFunc
 		if outputFunc != nil || atomicAudioHapticsFunc != nil {
 			feedback := pending.feedback
-			if !pending.hasFeedback {
-				feedback = d.outputState
-				if d.combinedBluetoothFeedback {
-					copy(feedback.BluetoothCombinedOutputReport[:], report)
-				} else {
-					copy(feedback.BluetoothHapticsOutputReport[:], report)
-				}
-			}
 			d.mtx.Unlock()
-			dispatchStarted := time.Now()
 			if atomicAudioHapticsFunc != nil {
 				atomicAudioHapticsFunc(feedback, pending.speakerPCM)
 			} else {
 				outputFunc(feedback)
 			}
-			recordTrafficEvent(TrafficEvent{
-				Direction: "device->bridge",
-				Source:    "feedback-dispatch",
-				Length:    len(report),
-				Summary: fmt.Sprintf("report=0x%02X callbackMs=%.3f assemblyMs=%.3f",
-					report[0],
-					float64(time.Since(dispatchStarted).Microseconds())/1000.0,
-					float64(pending.assemblyDelay.Microseconds())/1000.0),
-			})
 		} else {
 			d.mtx.Unlock()
 		}
@@ -571,11 +506,9 @@ func (d *DualSense) handleHapticsAudioOut(out []byte) {
 }
 
 type pendingBluetoothHapticsReport struct {
-	data          []byte
 	speakerPCM    []byte
 	assemblyDelay time.Duration
 	feedback      OutputState
-	hasFeedback   bool
 }
 
 type dualSenseV5HapticsGeneration struct {
@@ -635,7 +568,6 @@ func (d *DualSense) consumeDualSenseV5AudioLocked(src []byte,
 					speakerPCM:    d.v5SpeakerPCM,
 					assemblyDelay: assemblyDelay,
 					feedback:      feedback,
-					hasFeedback:   true,
 				})
 			}
 			d.v5SpeakerPCM = nil
@@ -687,60 +619,6 @@ func (d *DualSense) buildDualSenseV5FeedbackLocked() (OutputState,
 	return feedback, assemblyDelay, true
 }
 
-func (d *DualSense) drainBluetoothHapticsReportsLocked(now time.Time) []pendingBluetoothHapticsReport {
-	const inputBytesPerReport = (BluetoothHapticsSampleSize / 2) *
-		USBHapticsAudioDownsample *
-		USBHapticsAudioFrameSize
-
-	if len(d.hapticsPCM) < inputBytesPerReport {
-		return nil
-	}
-
-	reports := make([]pendingBluetoothHapticsReport, 0, len(d.hapticsPCM)/inputBytesPerReport)
-	for len(d.hapticsPCM) >= inputBytesPerReport {
-		sample := make([]byte, BluetoothHapticsSampleSize)
-		generationPCM := d.hapticsPCM[:inputBytesPerReport]
-		copyUSBHapticsChannelsToBluetoothSample(sample, generationPCM)
-		speakerPCM := make([]byte, (inputBytesPerReport/USBHapticsAudioFrameSize)*
-			2*USBHapticsAudioBytesPerSample)
-		copyDualSenseSpeakerChannels(speakerPCM, generationPCM)
-
-		seq := d.hapticsSeq
-		interval := d.hapticsInterval
-		d.hapticsSeq++
-		d.hapticsInterval++
-
-		var report []byte
-		var err error
-		if d.combinedBluetoothFeedback {
-			report, err = BuildBluetoothCombinedHapticsReport(seq, interval, sample, d.outputState.RawOutputReport[:])
-		} else {
-			report, err = BuildBluetoothHapticsReport(seq, interval, sample)
-		}
-		if err != nil {
-			slog.Warn("failed to build DualSense Bluetooth haptics report", "error", err)
-		} else {
-			assemblyDelay := now.Sub(d.hapticsPCMStartedAt)
-			if d.hapticsPCMStartedAt.IsZero() || assemblyDelay < 0 {
-				assemblyDelay = 0
-			}
-			reports = append(reports, pendingBluetoothHapticsReport{
-				data:          report,
-				speakerPCM:    speakerPCM,
-				assemblyDelay: assemblyDelay,
-			})
-		}
-
-		copy(d.hapticsPCM, d.hapticsPCM[inputBytesPerReport:])
-		d.hapticsPCM = d.hapticsPCM[:len(d.hapticsPCM)-inputBytesPerReport]
-		if len(d.hapticsPCM) == 0 {
-			d.hapticsPCMStartedAt = time.Time{}
-		}
-	}
-
-	return reports
-}
-
 func copyUSBHapticsChannelsToBluetoothSample(dst []byte, src []byte) {
 	const framesPerOutputSample = BluetoothHapticsSampleSize / 2
 
@@ -785,14 +663,6 @@ func (d *DualSense) HandleControl(bmRequestType, bRequest uint8, wValue, wIndex,
 				if wLength > 0 && int(wLength) < len(b) {
 					b = b[:wLength]
 				}
-				recordTrafficBytes("device->host", "control-get-report",
-					b,
-					"request", "GET_REPORT",
-					"reportType", describeReportType(reportType),
-					"reportID", fmt.Sprintf("0x%02X", reportID),
-					"value", fmt.Sprintf("0x%04X", wValue),
-					"index", fmt.Sprintf("0x%04X", wIndex),
-					"summary", "input report")
 				return b, true
 			}
 			if reportType == reportTypeFeature {
@@ -801,14 +671,6 @@ func (d *DualSense) HandleControl(bmRequestType, bRequest uint8, wValue, wIndex,
 					if wLength > 0 && int(wLength) < len(b) {
 						b = b[:wLength]
 					}
-					recordTrafficBytes("device->host", "control-get-report",
-						b,
-						"request", "GET_REPORT",
-						"reportType", describeReportType(reportType),
-						"reportID", fmt.Sprintf("0x%02X", reportID),
-						"value", fmt.Sprintf("0x%04X", wValue),
-						"index", fmt.Sprintf("0x%04X", wIndex),
-						"summary", "feature report")
 					return b, true
 				}
 			}
@@ -819,13 +681,6 @@ func (d *DualSense) HandleControl(bmRequestType, bRequest uint8, wValue, wIndex,
 		}
 	case hidClassOUT:
 		if bRequest == hidSetReport {
-			recordTrafficBytes("host->device", "control-set-report",
-				data,
-				"request", "SET_REPORT",
-				"reportType", describeReportType(reportType),
-				"reportID", fmt.Sprintf("0x%02X", reportID),
-				"value", fmt.Sprintf("0x%04X", wValue),
-				"index", fmt.Sprintf("0x%04X", wIndex))
 			switch {
 			case reportType == reportTypeFeature && reportID == featureIDCommand && len(data) >= 3:
 				d.subcommand[0] = data[1]
@@ -857,63 +712,16 @@ func (d *DualSense) handleOutputReport(out []byte) bool {
 	if !ok {
 		return false
 	}
-	logRawOutputReport(report)
 	d.mtx.Lock()
 	outputFunc := d.outputFunc
 	if outputFunc != nil {
 		feedback := d.mergeOutputReport(report)
 		d.mtx.Unlock()
-		recordTrafficBytes("host->device", "parsed-output-report",
-			report,
-			"reportType", describeReportType(reportTypeOutput),
-			"reportID", fmt.Sprintf("0x%02X", report[0]),
-			"decodedOutput", describeOutputState(feedback))
 		outputFunc(feedback)
 	} else {
 		d.mtx.Unlock()
 	}
 	return true
-}
-
-func logRawOutputReport(report []byte) {
-	if !rawOutputLogEnabled {
-		return
-	}
-
-	attrs := []any{
-		"len", len(report),
-		"hex", hex.EncodeToString(report),
-	}
-	if len(report) > 0 {
-		attrs = append(attrs, "reportID", fmt.Sprintf("0x%02X", report[0]))
-	}
-	if len(report) > 4 {
-		attrs = append(attrs,
-			"flags0", fmt.Sprintf("0x%02X", report[1]),
-			"flags1", fmt.Sprintf("0x%02X", report[2]),
-			"rumbleSmall", report[3],
-			"rumbleLarge", report[4])
-	}
-	if len(report) > 31 {
-		attrs = append(attrs,
-			"r2", hex.EncodeToString(report[11:21]),
-			"l2", hex.EncodeToString(report[22:32]))
-	}
-
-	slog.Info("DualSense raw host output report", attrs...)
-}
-
-func describeReportType(reportType uint8) string {
-	switch reportType {
-	case reportTypeInput:
-		return "input"
-	case reportTypeOutput:
-		return "output"
-	case reportTypeFeature:
-		return "feature"
-	default:
-		return fmt.Sprintf("0x%02X", reportType)
-	}
 }
 
 func normalizeOutputReport(out []byte) ([]byte, bool) {
@@ -946,7 +754,6 @@ var featureGetHandlers = map[byte]func(*DualSense) []byte{
 
 func (d *DualSense) mergeOutputReport(out []byte) OutputState {
 	feedback := d.outputState
-	clear(feedback.BluetoothHapticsOutputReport[:])
 	clear(feedback.BluetoothCombinedOutputReport[:])
 	if len(out) >= OutputReportSize {
 		copy(feedback.RawOutputReport[:], out[:OutputReportSize])
@@ -1111,9 +918,6 @@ func (d *DualSense) featureReportCommandResponse() []byte {
 
 func (d *DualSense) buildUSBInputReport(s *InputState, m *MetaState) []byte {
 	b := make([]byte, InputReportSize)
-	d.usbInputReportCount++
-	reportCount := d.usbInputReportCount
-
 	b[0] = ReportIDInput
 
 	b[1] = uint8(int16(s.LX) + 128)
@@ -1188,15 +992,8 @@ func (d *DualSense) buildUSBInputReport(s *InputState, m *MetaState) []byte {
 				"count", count,
 				"reason", corruptReason)
 		}
-		recordTrafficBytes("device->host", "usb-input-report-before-reset",
-			b,
-			"summary", describeUSBInputReport(b, reportCount, corruptReason))
 		resetUSBInputReportToNeutral(b, d.seqCounter, ts, battery)
 	}
-
-	recordTrafficBytes("device->host", "usb-input-report",
-		b,
-		"summary", describeUSBInputReport(b, reportCount, corruptReason))
 
 	return b
 }
@@ -1207,67 +1004,6 @@ func inputStateControlsInvalid(s *InputState) bool {
 	}
 	return s.Buttons&^validDualSenseInputButtons != 0 ||
 		s.DPad&^validDualSenseInputDPad != 0
-}
-
-func describeUSBInputReport(b []byte, count uint64, resetReason string) string {
-	if len(b) < 54 {
-		return fmt.Sprintf("count=%d len=%d resetReason=%s", count, len(b), resetReason)
-	}
-
-	ts := binary.LittleEndian.Uint32(b[28:32])
-	return fmt.Sprintf(
-		"count=%d reportId=0x%02X seq=%d lx=%d ly=%d rx=%d ry=%d l2=%d r2=%d raw8=0x%02X raw9=0x%02X raw10=0x%02X dpadUsb=0x%X touch1=0x%02X touch2=0x%02X ts=%d battery=0x%02X fullMagic=%t markerFrag=%t micLeak=%t resetReason=%s",
-		count,
-		b[0],
-		b[7],
-		b[1],
-		b[2],
-		b[3],
-		b[4],
-		b[5],
-		b[6],
-		b[8],
-		b[9],
-		b[10],
-		b[8]&DPadMask,
-		b[33],
-		b[37],
-		ts,
-		b[53],
-		containsStreamMagic(b),
-		containsStreamMarkerFragment(b, len(b)),
-		containsMicTransportLeakPattern(b[16:41]),
-		resetReason)
-}
-
-func describeMicrophonePCMFrame(frame []byte) string {
-	const sampleWidth = 2
-	if len(frame) < sampleWidth {
-		return fmt.Sprintf("len=%d", len(frame))
-	}
-
-	var sumAbs uint64
-	var peak uint16
-	sampleCount := 0
-	for i := 0; i+1 < len(frame); i += sampleWidth {
-		raw := binary.LittleEndian.Uint16(frame[i : i+2])
-		sample := int32(int16(raw))
-		if sample < 0 {
-			sample = -sample
-		}
-		if uint16(sample) > peak {
-			peak = uint16(sample)
-		}
-		sumAbs += uint64(sample)
-		sampleCount++
-	}
-
-	avg := uint64(0)
-	if sampleCount > 0 {
-		avg = sumAbs / uint64(sampleCount)
-	}
-
-	return fmt.Sprintf("pcmLen=%d samples=%d peak=%d avgAbs=%d", len(frame), sampleCount, peak, avg)
 }
 
 func resetUSBInputReportToNeutral(b []byte, seq uint8, timestamp uint32, battery byte) {
