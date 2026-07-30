@@ -23,8 +23,10 @@ func init() {
 	api.RegisterDevice("dualsensecombinedmicv2", &dshandler{combinedBluetoothFeedback: true, microphoneInput: true, streamFrameVersion: StreamFrameVersionV2})
 	api.RegisterDevice("dualsensecombinedaudioduplexv3", &dshandler{combinedBluetoothFeedback: true, microphoneInput: true, speakerOutput: true, streamFrameVersion: StreamFrameVersionV3})
 	api.RegisterDevice("dualsensecombinedaudioduplexv4", &dshandler{combinedBluetoothFeedback: true, microphoneInput: true, speakerOutput: true, streamFrameVersion: StreamFrameVersionV4})
+	api.RegisterDevice("dualsensecombinedaudioduplexv5", &dshandler{combinedBluetoothFeedback: true, microphoneInput: true, speakerOutput: true, streamFrameVersion: StreamFrameVersionV5})
 	api.RegisterDevice("dualsenseaudioonlyduplexv3", &dshandler{combinedBluetoothFeedback: true, microphoneInput: true, speakerOutput: true, audioOnly: true, streamFrameVersion: StreamFrameVersionV3})
 	api.RegisterDevice("dualsenseaudioonlyduplexv4", &dshandler{combinedBluetoothFeedback: true, microphoneInput: true, speakerOutput: true, audioOnly: true, streamFrameVersion: StreamFrameVersionV4})
+	api.RegisterDevice("dualsenseaudioonlyduplexv5", &dshandler{combinedBluetoothFeedback: true, microphoneInput: true, speakerOutput: true, audioOnly: true, streamFrameVersion: StreamFrameVersionV5})
 }
 
 type dshandler struct {
@@ -167,9 +169,10 @@ func (h *dshandler) StreamHandler() api.StreamHandlerFunc {
 
 		if speakerOutput {
 			if streamFrameVersion != StreamFrameVersionV3 &&
-				streamFrameVersion != StreamFrameVersionV4 {
-				return fmt.Errorf("DualSense speaker output requires framed stream version 0x%02X or 0x%02X",
-					StreamFrameVersionV3, StreamFrameVersionV4)
+				streamFrameVersion != StreamFrameVersionV4 &&
+				streamFrameVersion != StreamFrameVersionV5 {
+				return fmt.Errorf("DualSense speaker output requires framed stream version 0x%02X, 0x%02X, or 0x%02X",
+					StreamFrameVersionV3, StreamFrameVersionV4, StreamFrameVersionV5)
 			}
 
 			writer := newDualSenseOutputWriter(conn, streamFrameVersion,
@@ -183,7 +186,8 @@ func (h *dshandler) StreamHandler() api.StreamHandlerFunc {
 				}
 				writer.EnqueueControl(StreamFrameOutputState, data)
 			})
-			if streamFrameVersion == StreamFrameVersionV4 {
+			if streamFrameVersion == StreamFrameVersionV4 ||
+				streamFrameVersion == StreamFrameVersionV5 {
 				dse.SetAtomicAudioHapticsCallback(func(feedback OutputState, speakerPCM []byte) {
 					data, err := marshalFeedback(feedback)
 					if err != nil {
@@ -248,7 +252,8 @@ func readDualSenseInputStreamVersion(conn net.Conn, dse *DualSense, logger *slog
 	if frameVersion != StreamFrameVersion &&
 		frameVersion != StreamFrameVersionV2 &&
 		frameVersion != StreamFrameVersionV3 &&
-		frameVersion != StreamFrameVersionV4 {
+		frameVersion != StreamFrameVersionV4 &&
+		frameVersion != StreamFrameVersionV5 {
 		return fmt.Errorf("unsupported DualSense framed stream version 0x%02X",
 			frameVersion)
 	}
@@ -256,7 +261,8 @@ func readDualSenseInputStreamVersion(conn net.Conn, dse *DualSense, logger *slog
 	headerSize := StreamFrameHeaderSize
 	if frameVersion == StreamFrameVersionV2 ||
 		frameVersion == StreamFrameVersionV3 ||
-		frameVersion == StreamFrameVersionV4 {
+		frameVersion == StreamFrameVersionV4 ||
+		frameVersion == StreamFrameVersionV5 {
 		headerSize = StreamFrameV2HeaderSize
 	}
 	header := make([]byte, headerSize)
@@ -309,7 +315,8 @@ func readDualSenseInputStreamVersion(conn net.Conn, dse *DualSense, logger *slog
 
 		if frameVersion == StreamFrameVersionV2 ||
 			frameVersion == StreamFrameVersionV3 ||
-			frameVersion == StreamFrameVersionV4 {
+			frameVersion == StreamFrameVersionV4 ||
+			frameVersion == StreamFrameVersionV5 {
 			sequence := binary.LittleEndian.Uint32(header[8:12])
 			if sequenceInitialized && sequence != expectedSequence {
 				return fmt.Errorf("DualSense framed stream sequence mismatch: got %d expected %d", sequence, expectedSequence)

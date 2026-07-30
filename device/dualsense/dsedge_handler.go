@@ -20,6 +20,7 @@ func init() {
 	api.RegisterDevice("dualsenseedgecombinedmicv2", &dsedgehandler{combinedBluetoothFeedback: true, microphoneInput: true, streamFrameVersion: StreamFrameVersionV2})
 	api.RegisterDevice("dualsenseedgecombinedaudioduplexv3", &dsedgehandler{combinedBluetoothFeedback: true, microphoneInput: true, speakerOutput: true, streamFrameVersion: StreamFrameVersionV3})
 	api.RegisterDevice("dualsenseedgecombinedaudioduplexv4", &dsedgehandler{combinedBluetoothFeedback: true, microphoneInput: true, speakerOutput: true, streamFrameVersion: StreamFrameVersionV4})
+	api.RegisterDevice("dualsenseedgecombinedaudioduplexv5", &dsedgehandler{combinedBluetoothFeedback: true, microphoneInput: true, speakerOutput: true, streamFrameVersion: StreamFrameVersionV5})
 }
 
 type dsedgehandler struct {
@@ -158,9 +159,10 @@ func (h *dsedgehandler) StreamHandler() api.StreamHandlerFunc {
 
 		if speakerOutput {
 			if streamFrameVersion != StreamFrameVersionV3 &&
-				streamFrameVersion != StreamFrameVersionV4 {
-				return fmt.Errorf("DualSense Edge speaker output requires framed stream version 0x%02X or 0x%02X",
-					StreamFrameVersionV3, StreamFrameVersionV4)
+				streamFrameVersion != StreamFrameVersionV4 &&
+				streamFrameVersion != StreamFrameVersionV5 {
+				return fmt.Errorf("DualSense Edge speaker output requires framed stream version 0x%02X, 0x%02X, or 0x%02X",
+					StreamFrameVersionV3, StreamFrameVersionV4, StreamFrameVersionV5)
 			}
 
 			writer := newDualSenseOutputWriter(conn, streamFrameVersion,
@@ -174,7 +176,8 @@ func (h *dsedgehandler) StreamHandler() api.StreamHandlerFunc {
 				}
 				writer.EnqueueControl(StreamFrameOutputState, data)
 			})
-			if streamFrameVersion == StreamFrameVersionV4 {
+			if streamFrameVersion == StreamFrameVersionV4 ||
+				streamFrameVersion == StreamFrameVersionV5 {
 				dse.SetAtomicAudioHapticsCallback(func(feedback OutputState, speakerPCM []byte) {
 					data, err := marshalFeedback(feedback)
 					if err != nil {
