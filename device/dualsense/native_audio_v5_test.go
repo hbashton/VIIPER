@@ -50,7 +50,10 @@ func TestAppendDualSenseV5SpeakerPreservesRawFrontPair(t *testing.T) {
 }
 
 func TestDualSenseV5MaintainsIndependentGenerationsAcrossArbitraryUSBChunks(t *testing.T) {
-	const sourceFrames = 16*dualSenseV5SpeakerFrames + 137
+	// Seventeen speaker generations cross the second PadSense rear-lane
+	// shortage at generation 16. Stop one frame before the next 512 boundary so
+	// no completed rear sample remains queued after the final speaker report.
+	const sourceFrames = 17*dualSenseV5SpeakerFrames + 31
 	source := make([]byte, sourceFrames*USBHapticsAudioFrameSize)
 	for frame := 0; frame < sourceFrames; frame++ {
 		offset := frame * USBHapticsAudioFrameSize
@@ -114,33 +117,53 @@ func TestDualSenseV5MaintainsIndependentGenerationsAcrossArbitraryUSBChunks(t *t
 			t.Fatalf("generation %d was resampled or reordered", generation)
 		}
 
+		previousBoundary := generation * dualSenseV5SpeakerFrames
 		boundaryFrame := (generation + 1) * dualSenseV5SpeakerFrames
+		completedBefore := previousBoundary / 512
 		completedHaptics := boundaryFrame / 512
 		wantHaptics := make([]byte, BluetoothHapticsSampleSize)
-		if completedHaptics > 0 {
+		if completedHaptics > completedBefore {
 			hapticsStart := (completedHaptics - 1) * 512 * USBHapticsAudioFrameSize
 			copyUSBHapticsChannelsToBluetoothSample(wantHaptics,
 				source[hapticsStart:hapticsStart+512*USBHapticsAudioFrameSize])
 		}
 		gotHaptics := chunkedGeneration.feedback[BluetoothCombinedHapticsOffset : BluetoothCombinedHapticsOffset+BluetoothHapticsSampleSize]
 		if !bytes.Equal(gotHaptics, wantHaptics) {
-			t.Fatalf("generation %d did not carry latest completed rear feedback", generation)
+			t.Fatalf("generation %d did not consume exactly one completed rear sample or silence", generation)
 		}
-		if wantSequence := byte(max(0, completedHaptics-1)); chunkedGeneration.feedback[10] != wantSequence {
+		if wantSequence := byte(generation); chunkedGeneration.feedback[10] != wantSequence {
 			t.Fatalf("generation %d feedback sequence=%d want=%d",
 				generation, chunkedGeneration.feedback[10], wantSequence)
 		}
+		if wantTag := byte(generation&0x0f) << 4; chunkedGeneration.feedback[1] != wantTag {
+			t.Fatalf("generation %d feedback tag=%02x want=%02x",
+				generation, chunkedGeneration.feedback[1], wantTag)
+		}
+	}
+	firstShortage := (*chunked)[0].feedback[BluetoothCombinedHapticsOffset : BluetoothCombinedHapticsOffset+BluetoothHapticsSampleSize]
+	secondShortage := (*chunked)[16].feedback[BluetoothCombinedHapticsOffset : BluetoothCombinedHapticsOffset+BluetoothHapticsSampleSize]
+	previousRear := (*chunked)[15].feedback[BluetoothCombinedHapticsOffset : BluetoothCombinedHapticsOffset+BluetoothHapticsSampleSize]
+	if !bytes.Equal(firstShortage, make([]byte, BluetoothHapticsSampleSize)) ||
+		!bytes.Equal(secondShortage, make([]byte, BluetoothHapticsSampleSize)) {
+		t.Fatal("V5 replayed rear haptics when the 512-frame lane had no completed sample")
+	}
+	if bytes.Equal(previousRear, make([]byte, BluetoothHapticsSampleSize)) {
+		t.Fatal("V5 shortage test did not distinguish silence from the prior rear sample")
 	}
 
 	chunkedDevice.mtx.Lock()
 	hapticsRemaining := len(chunkedDevice.hapticsPCM)
 	speakerRemaining := len(chunkedDevice.v5SpeakerPCM)
+	hapticsQueued := len(chunkedDevice.v5HapticsQueue)
 	chunkedDevice.mtx.Unlock()
 	if want := sourceFrames % 512 * USBHapticsAudioFrameSize; hapticsRemaining != want {
 		t.Fatalf("V5 haptics assembler retained %d bytes, want %d", hapticsRemaining, want)
 	}
 	if want := sourceFrames % dualSenseV5SpeakerFrames * dualSenseV5SpeakerFrameSize; speakerRemaining != want {
 		t.Fatalf("V5 speaker assembler retained %d bytes, want %d", speakerRemaining, want)
+	}
+	if hapticsQueued != 0 {
+		t.Fatalf("V5 retained %d completed rear samples after presentation", hapticsQueued)
 	}
 }
 
@@ -197,7 +220,7 @@ func TestDualSenseV5EndpointResetIsHardBoundaryForBothMediaClocks(t *testing.T) 
 	}
 }
 
-func TestDualSenseV5SpeakerCarriesLatestCompleteFeedbackInSourceOrder(t *testing.T) {
+func TestDualSenseV5SpeakerCombinesFreshStateWithCompletedRearSample(t *testing.T) {
 	device, captured := newV5CaptureDevice(t)
 	setV5TestLightbar(t, device, 0x11)
 	pcm := makeV5USBPCM(0, 3*dualSenseV5SpeakerFrames, 15000)
@@ -205,14 +228,16 @@ func TestDualSenseV5SpeakerCarriesLatestCompleteFeedbackInSourceOrder(t *testing
 	// Speaker boundary 480 precedes the first haptics boundary 512.
 	device.HandleTransfer(context.Background(), EndpointHapticsAudioOut,
 		usbip.DirOut, pcm[:480*USBHapticsAudioFrameSize])
-	// Complete feedback A, then change live state to B before speaker boundary
-	// 960. That speaker must retain A because B has no complete rear interval.
+	// Complete rear sample A, then change live state to B before speaker boundary
+	// 960. PadSense combines that completed sample with state B at presentation;
+	// state is not frozen on the independent 512-frame rear clock.
 	device.HandleTransfer(context.Background(), EndpointHapticsAudioOut,
 		usbip.DirOut, pcm[480*USBHapticsAudioFrameSize:512*USBHapticsAudioFrameSize])
 	setV5TestLightbar(t, device, 0x77)
 	device.HandleTransfer(context.Background(), EndpointHapticsAudioOut,
 		usbip.DirOut, pcm[512*USBHapticsAudioFrameSize:960*USBHapticsAudioFrameSize])
-	// Boundary 1024 completes feedback B; boundary 1440 must carry B.
+	// Boundary 1024 completes the next rear sample; state B remains current at
+	// boundary 1440.
 	device.HandleTransfer(context.Background(), EndpointHapticsAudioOut,
 		usbip.DirOut, pcm[960*USBHapticsAudioFrameSize:])
 
@@ -223,15 +248,18 @@ func TestDualSenseV5SpeakerCarriesLatestCompleteFeedbackInSourceOrder(t *testing
 	if got := (*captured)[0].feedback[embeddedRedOffset]; got != 0x11 {
 		t.Fatalf("initial complete state red=%02x want=11", got)
 	}
-	if got := (*captured)[1].feedback[embeddedRedOffset]; got != 0x11 {
-		t.Fatalf("incomplete state update leaked into generation 1: red=%02x", got)
+	if got := (*captured)[1].feedback[embeddedRedOffset]; got != 0x77 {
+		t.Fatalf("generation 1 replayed stale state: red=%02x want=77", got)
 	}
 	if got := (*captured)[2].feedback[embeddedRedOffset]; got != 0x77 {
 		t.Fatalf("latest complete state missing from generation 2: red=%02x", got)
 	}
-	if (*captured)[1].feedback[10] != 0 || (*captured)[2].feedback[10] != 1 {
-		t.Fatalf("rear feedback order changed: sequences=%d/%d",
-			(*captured)[1].feedback[10], (*captured)[2].feedback[10])
+	if (*captured)[0].feedback[10] != 0 ||
+		(*captured)[1].feedback[10] != 1 ||
+		(*captured)[2].feedback[10] != 2 {
+		t.Fatalf("presentation counters did not advance per speaker report: sequences=%d/%d/%d",
+			(*captured)[0].feedback[10], (*captured)[1].feedback[10],
+			(*captured)[2].feedback[10])
 	}
 }
 
