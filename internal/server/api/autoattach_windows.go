@@ -5,7 +5,6 @@ package api
 import (
 	"context"
 	"fmt"
-	"hash/fnv"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -64,9 +63,6 @@ type attachIOCTL struct {
 	BusID      [32]byte
 	Service    [niMaxServ]byte
 	Host       [niMaxHost]byte
-	// usbip-win2 0.9.7.8 added SERIAL_BUFSZ to plugin_hardware.
-	// An empty serial preserves the descriptor supplied by VIIPER.
-	Serial [16]byte
 }
 
 const (
@@ -80,7 +76,7 @@ const (
 func attachLocalhostClientImpl(ctx context.Context, deviceExportMeta *usbip.ExportMeta, usbipServerPort uint16, useNativeIOCTL bool, logger *slog.Logger) (AutoAttachResult, error) {
 	if useNativeIOCTL {
 		// Never hide a native ABI mismatch behind usbip.exe. A mismatch means
-		// the 0.9.7.8 userspace and loaded driver are not a valid pair and must
+		// the pinned 0.9.7.7 userspace and loaded driver are not a valid pair and must
 		// be repaired/rebooted before VIIPER creates devices.
 		return attachViaIOCTL(ctx, deviceExportMeta, usbipServerPort, logger)
 	}
@@ -138,12 +134,10 @@ func attachViaIOCTL(_ context.Context, deviceExportMeta *usbip.ExportMeta, usbip
 	copy(ioctlData.BusID[:], busID)
 	copy(ioctlData.Service[:], service)
 	copy(ioctlData.Host[:], "localhost")
-	ownerSerial := buildDS4WindowsOwnerSerial(deviceExportMeta, usbipServerPort)
-	copy(ioctlData.Serial[:], ownerSerial)
 	port, bytesReturned, err := submitAttachIOCTL(handle,
 		unsafe.Pointer(&ioctlData), ioctlData.Size, &ioctlData.PortOutput)
 	if err != nil {
-		return AutoAttachResult{}, fmt.Errorf("IOControl: usbip-win2 0.9.7.8 native attach failed (repair or reboot USBIP; no legacy fallback was attempted): %w", err)
+		return AutoAttachResult{}, fmt.Errorf("IOControl: usbip-win2 0.9.7.7 native attach failed (repair or reboot USBIP; no command fallback was attempted): %w", err)
 	}
 
 	logger.Debug("IOCTL completed", "bytesReturned", bytesReturned, "portOutput", port)
@@ -158,20 +152,8 @@ func attachViaIOCTL(_ context.Context, deviceExportMeta *usbip.ExportMeta, usbip
 		"usbPort", port)
 
 	return AutoAttachResult{
-		USBIPPort:        port,
-		USBIPOwnerSerial: ownerSerial,
+		USBIPPort: port,
 	}, nil
-}
-
-func buildDS4WindowsOwnerSerial(deviceExportMeta *usbip.ExportMeta,
-	usbipServerPort uint16) string {
-	// usbip-win2 0.9.7.8 exposes at most 15 ASCII-alphanumeric bytes. A stable
-	// fork-owned prefix lets DS4Windows clean only its imports instead of
-	// racing PadSense or another localhost USBIP controller manager.
-	hash := fnv.New64a()
-	_, _ = fmt.Fprintf(hash, "%d:%d:%d", deviceExportMeta.BusID,
-		deviceExportMeta.DevID, usbipServerPort)
-	return fmt.Sprintf("DS4W%011X", hash.Sum64()&0xFFFFFFFFFFF)
 }
 
 func submitAttachIOCTL(handle windows.Handle, data unsafe.Pointer, size uint32,
@@ -222,8 +204,8 @@ func attachViaCommand(ctx context.Context, deviceExportMeta *usbip.ExportMeta, u
 func resolveUsbipExecutable() string {
 	// The usbip-win2 installer does not consistently add its directory to
 	// PATH for already-running services. Prefer the canonical installation so
-	// a stale copy elsewhere cannot pair 0.9.7.7 userspace with a 0.9.7.8
-	// driver (or vice versa).
+	// a stale copy elsewhere cannot pair a different userspace ABI with the
+	// pinned 0.9.7.7 driver.
 	seen := make(map[string]struct{})
 	for _, root := range []string{
 		os.Getenv("ProgramW6432"),
