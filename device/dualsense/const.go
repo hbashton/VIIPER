@@ -9,6 +9,12 @@ const (
 )
 
 const (
+	DeviceTypeCombinedAudioDuplexV5     = "dualsensecombinedaudioduplexv5"
+	DeviceTypeAudioOnlyDuplexV5         = "dualsenseaudioonlyduplexv5"
+	DeviceTypeEdgeCombinedAudioDuplexV5 = "dualsenseedgecombinedaudioduplexv5"
+)
+
+const (
 	DefaultMACAddressDSEdge   = "A5:FE:9C:CF:92:00" // Steam reads this as serial? // TODO: not detected by all apps
 	DefaultSerialNumberDSEdge = "E55E00GTD1190A500" // Byte 6 (00) is "color code" will be replaced by MetaState
 	DefaultBoardStringEdge    = "HMB-010"
@@ -50,28 +56,17 @@ const (
 	InputReportSize          = 64
 	OutputReportSize         = 48
 	InputStateSize           = 33
-	OutputStateSize          = 6
-	StreamFrameHeaderSize    = 8
-	StreamFrameV2HeaderSize  = 16
+	StreamFrameHeaderSize    = 16
 	StreamFrameMagic0        = 0x56
 	StreamFrameMagic1        = 0x50
 	StreamFrameMagic2        = 0x43
 	StreamFrameMagic3        = 0x4D
-	StreamFrameVersion       = 0x01
-	StreamFrameVersionV2     = 0x02
-	StreamFrameVersionV3     = 0x03
-	StreamFrameVersionV4     = 0x04
 	StreamFrameVersionV5     = 0x05
 	StreamFrameInputState    = 0x01
 	StreamFrameMicrophonePCM = 0x02
 	StreamFrameOutputState   = 0x81
-	StreamFrameSpeakerPCM    = 0x82
-	// V4 keeps the native feedback generated from one 512-frame USB audio
-	// generation beside the matching front-channel speaker PCM. The bridge can
-	// therefore publish one physical Bluetooth report without independently
-	// scheduled speaker and haptics lanes drifting at a load boundary.
-	//
-	// V5 retains atomic delivery, but separates the endpoint's two clocks. Its
+	// V5 follows the proven PadSense contract. It retains atomic delivery, but
+	// separates the endpoint's two clocks. Its
 	// speaker tail is exactly 480 raw front-stereo S16LE frames (10 ms at the
 	// native 48 kHz source clock). Rear channels independently produce one
 	// 64-byte 3 kHz haptics interval for every 512 source frames. Each V5 media
@@ -90,21 +85,10 @@ const (
 	USBMicrophoneClientFrameSize   = USBMicrophoneClientFrameFrames *
 		USBMicrophoneChannels * USBMicrophoneBytesPerSample
 
-	// OutputStateCompatExtSize is VIIPER's legacy compact server-to-client
-	// feedback packet: 6 base bytes plus two 11-byte DualSense trigger effect
-	// blocks. OutputStateExtSize appends the native USB output report and one
-	// optional Bluetooth haptics report so clients can forward DualSense
-	// haptics/control flags without reducing them to generic rumble.
-	OutputStateCompatExtSize          = 28
-	OutputStateRawReportOffset        = OutputStateCompatExtSize
-	OutputStateBluetoothHapticsOffset = OutputStateRawReportOffset + OutputReportSize
-	OutputStateExtSize                = OutputStateBluetoothHapticsOffset + BluetoothHapticsReportSize
-	// OutputStateCombinedExtSize is versioned independently from the legacy
-	// 0x32 haptics extension. New clients opt into it through the
-	// dualsensecombinedext device type, so older clients cannot lose stream
-	// framing when they connect to a newer VIIPER server.
+	OutputStateTriggerBlocksSize       = 28
+	OutputStateRawReportOffset         = OutputStateTriggerBlocksSize
 	OutputStateCombinedBluetoothOffset = OutputStateRawReportOffset + OutputReportSize
-	OutputStateCombinedExtSize         = OutputStateCombinedBluetoothOffset + BluetoothCombinedHapticsReportSize
+	OutputStateV5Size                  = OutputStateCombinedBluetoothOffset + BluetoothCombinedHapticsReportSize
 )
 
 const (

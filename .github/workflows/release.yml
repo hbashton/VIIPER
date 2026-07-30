@@ -229,7 +229,7 @@ jobs:
                       <summary><b>Windows (PowerShell)</b></summary>
 
                       ```powershell
-                      irm https://alia5.github.io/VIIPER/stable/install.ps1 | iex
+                      irm https://raw.githubusercontent.com/hbashton/VIIPER/main/scripts/install.ps1 | iex
                       ```
                       Installs / updates to `%LOCALAPPDATA%\VIIPER\viiper.exe`
                       </details>
@@ -238,12 +238,12 @@ jobs:
                       <summary><b>Linux</b></summary>
 
                       ```bash
-                      curl -fsSL https://alia5.github.io/VIIPER/stable/install.sh | sh
+                      curl -fsSL https://raw.githubusercontent.com/hbashton/VIIPER/main/scripts/install.sh | sh
                       ```
                       Installs / updates to `/usr/local/bin/viiper`
                       </details>
                   files: release_files/*
                   prerelease: false
-                  draft: true
+                  draft: false
               env:
                   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

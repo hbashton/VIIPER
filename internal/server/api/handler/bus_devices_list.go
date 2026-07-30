@@ -59,6 +59,11 @@ func inferDeviceType(dev any) string {
 	if dev == nil {
 		return ""
 	}
+	if typed, ok := dev.(interface{ VIIPERDeviceType() string }); ok {
+		if deviceType := strings.ToLower(typed.VIIPERDeviceType()); deviceType != "" {
+			return deviceType
+		}
+	}
 	t := reflect.TypeOf(dev)
 	if t.Kind() == reflect.Pointer {
 		t = t.Elem()

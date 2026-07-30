@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,6 +24,10 @@ const (
 	ActionViewGitHub  = 1
 	ActionUpdateNow   = 2
 	ActionDismiss     = 3
+
+	repositoryURL        = "https://github.com/hbashton/VIIPER"
+	releasesAPIURL       = "https://api.github.com/repos/hbashton/VIIPER/releases"
+	installScriptBaseURL = "https://raw.githubusercontent.com/hbashton/VIIPER/main/scripts/install"
 )
 
 var (
@@ -85,7 +90,6 @@ type release struct {
 	TagName    string `json:"tag_name"`
 	Name       string `json:"name"`
 	Prerelease bool   `json:"prerelease"`
-	HTMLURL    string `json:"html_url"`
 }
 
 func CheckUpdate(currentVersion string, notify config.UpdateNotify) {
@@ -97,7 +101,7 @@ func CheckUpdate(currentVersion string, notify config.UpdateNotify) {
 
 	var r release
 	if notify == config.UpdateNotifyPrerelease {
-		resp, err := client.Get("https://api.github.com/repos/Alia5/VIIPER/releases?per_page=1")
+		resp, err := client.Get(releasesAPIURL + "?per_page=1")
 		if err != nil {
 			slog.Error("failed to fetch releases", "error", err)
 			return
@@ -117,7 +121,7 @@ func CheckUpdate(currentVersion string, notify config.UpdateNotify) {
 		}
 		r = releases[0]
 	} else {
-		resp, err := client.Get("https://api.github.com/repos/Alia5/VIIPER/releases/latest")
+		resp, err := client.Get(releasesAPIURL + "/latest")
 		if err != nil {
 			slog.Error("failed to fetch latest release", "error", err)
 			return
@@ -160,11 +164,6 @@ func CheckUpdate(currentVersion string, notify config.UpdateNotify) {
 	}
 
 	slog.Info("update available", "current", currentVersion, "available", matched)
-	installChannel := "stable"
-	if notify == config.UpdateNotifyPrerelease {
-		installChannel = "main"
-	}
-
 	action := showMessageBox(
 		"VIIPER Update Available",
 		fmt.Sprintf("A new version of VIIPER is available: %s", matched),
@@ -174,13 +173,17 @@ func CheckUpdate(currentVersion string, notify config.UpdateNotify) {
 	case ActionRemindLater:
 		remindLaterVersion = matched
 	case ActionViewGitHub:
-		openBrowser(r.HTMLURL)
+		openBrowser(releaseURL(r.TagName))
 	case ActionUpdateNow:
 		writeDismissed(matched)
-		runInstallScript(installChannel)
+		runInstallScript()
 	case ActionDismiss:
 		writeDismissed(matched)
 	}
+}
+
+func releaseURL(tag string) string {
+	return repositoryURL + "/releases/tag/" + url.PathEscape(tag)
 }
 
 func openBrowser(url string) {
@@ -196,18 +199,17 @@ func openBrowser(url string) {
 	}
 }
 
-func runInstallScript(channel string) {
-	baseURL := "https://alia5.github.io/VIIPER/" + channel + "/install"
+func runInstallScript() {
 	switch runtime.GOOS {
 	case "windows":
-		url := baseURL + ".ps1"
+		url := installScriptBaseURL + ".ps1"
 		cmd := exec.Command("powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
 			"Start-Process powershell -ArgumentList '-NoExit -NoProfile -ExecutionPolicy Bypass -Command \"iwr -useb "+url+" | iex\"' -Verb RunAs")
 		if err := cmd.Run(); err != nil {
 			slog.Error("failed to run install script", "error", err)
 		}
 	case "linux":
-		cmd := exec.Command("sh", "-c", fmt.Sprintf("curl -fsSL '%s.sh' | sh", baseURL))
+		cmd := exec.Command("sh", "-c", fmt.Sprintf("curl -fsSL '%s.sh' | sh", installScriptBaseURL))
 		if err := cmd.Start(); err != nil {
 			slog.Error("failed to run install script", "error", err)
 		}

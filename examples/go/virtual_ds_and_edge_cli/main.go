@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"context"
 	"encoding"
+	"encoding/binary"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"os"
 	"os/signal"
@@ -82,9 +84,9 @@ func main() {
 		fmt.Printf("Using existing bus %d\n", busID)
 	}
 
-	deviceType := "dualsense"
+	deviceType := dualsense.DeviceTypeCombinedAudioDuplexV5
 	if edge {
-		deviceType = "dualsenseedge"
+		deviceType = dualsense.DeviceTypeEdgeCombinedAudioDuplexV5
 	}
 
 	stream, addResp, err := api.AddDeviceAndConnect(ctx, busID, deviceType, nil)
@@ -108,17 +110,12 @@ func main() {
 		}
 	}()
 
-	feedbackCh, errCh := stream.StartReading(ctx, 10, func(r *bufio.Reader) (encoding.BinaryUnmarshaler, error) {
-		var b [dualsense.OutputStateSize]byte
-		if _, err := io.ReadFull(r, b[:]); err != nil {
-			return nil, err
-		}
-		msg := new(dualsense.OutputState)
-		if err := msg.UnmarshalBinary(b[:]); err != nil {
-			return nil, err
-		}
-		return msg, nil
-	})
+	var feedbackSequence uint32
+	feedbackSequenceInitialized := false
+	feedbackCh, errCh := stream.StartReading(ctx, 10,
+		func(r *bufio.Reader) (encoding.BinaryUnmarshaler, error) {
+			return readV5Feedback(r, &feedbackSequence, &feedbackSequenceInitialized)
+		})
 
 	go func() {
 		for {
@@ -165,17 +162,23 @@ func main() {
 	defer sendTicker.Stop()
 
 	go func() {
+		var sequence uint32
 		for {
 			select {
 			case <-sendTicker.C:
 				box.mu.Lock()
 				st := box.state
 				box.mu.Unlock()
-				if err := stream.WriteBinary(&st); err != nil {
+				payload, err := st.MarshalBinary()
+				if err == nil {
+					err = writeAll(stream, makeV5Frame(dualsense.StreamFrameInputState, sequence, payload))
+				}
+				if err != nil {
 					fmt.Printf("Send error: %v\n", err)
 					cancel()
 					return
 				}
+				sequence++
 			case <-ctx.Done():
 				return
 			}
@@ -261,6 +264,97 @@ func main() {
 		}
 		box.mu.Unlock()
 	}
+}
+
+func makeV5Frame(frameType byte, sequence uint32, payload []byte) []byte {
+	header := make([]byte, dualsense.StreamFrameHeaderSize)
+	header[0] = dualsense.StreamFrameMagic0
+	header[1] = dualsense.StreamFrameMagic1
+	header[2] = dualsense.StreamFrameMagic2
+	header[3] = dualsense.StreamFrameMagic3
+	header[4] = dualsense.StreamFrameVersionV5
+	header[5] = frameType
+	binary.LittleEndian.PutUint16(header[6:8], uint16(len(payload)))
+	binary.LittleEndian.PutUint32(header[8:12], sequence)
+	binary.LittleEndian.PutUint32(header[12:16], v5CRC(header[4:12], payload))
+	return append(header, payload...)
+}
+
+func readV5Feedback(r *bufio.Reader, expectedSequence *uint32,
+	sequenceInitialized *bool) (*dualsense.OutputState, error) {
+	header := make([]byte, dualsense.StreamFrameHeaderSize)
+	if _, err := io.ReadFull(r, header); err != nil {
+		return nil, err
+	}
+	if header[0] != dualsense.StreamFrameMagic0 ||
+		header[1] != dualsense.StreamFrameMagic1 ||
+		header[2] != dualsense.StreamFrameMagic2 ||
+		header[3] != dualsense.StreamFrameMagic3 ||
+		header[4] != dualsense.StreamFrameVersionV5 {
+		return nil, fmt.Errorf("invalid DualSense V5 feedback header")
+	}
+
+	payloadLength := int(binary.LittleEndian.Uint16(header[6:8]))
+	const atomicPayloadLength = 2 + dualsense.OutputStateV5Size + 480*2*2
+	if payloadLength != dualsense.OutputStateV5Size && payloadLength != atomicPayloadLength {
+		return nil, fmt.Errorf("invalid DualSense V5 feedback payload length %d", payloadLength)
+	}
+	payload := make([]byte, payloadLength)
+	if _, err := io.ReadFull(r, payload); err != nil {
+		return nil, err
+	}
+	if got, want := binary.LittleEndian.Uint32(header[12:16]), v5CRC(header[4:12], payload); got != want {
+		return nil, fmt.Errorf("DualSense V5 feedback CRC mismatch: got %08X want %08X", got, want)
+	}
+	sequence := binary.LittleEndian.Uint32(header[8:12])
+	if *sequenceInitialized && sequence != *expectedSequence {
+		return nil, fmt.Errorf("DualSense V5 feedback sequence mismatch: got %d want %d", sequence, *expectedSequence)
+	}
+	*expectedSequence = sequence + 1
+	*sequenceInitialized = true
+
+	feedback := payload
+	switch header[5] {
+	case dualsense.StreamFrameOutputState:
+		if payloadLength != dualsense.OutputStateV5Size {
+			return nil, fmt.Errorf("invalid V5 control payload length %d", payloadLength)
+		}
+	case dualsense.StreamFrameAtomicAudioHaptics:
+		if payloadLength != atomicPayloadLength ||
+			int(binary.LittleEndian.Uint16(payload[:2])) != dualsense.OutputStateV5Size {
+			return nil, fmt.Errorf("invalid V5 atomic feedback envelope")
+		}
+		feedback = payload[2 : 2+dualsense.OutputStateV5Size]
+	default:
+		return nil, fmt.Errorf("unknown DualSense V5 feedback type 0x%02X", header[5])
+	}
+
+	state := new(dualsense.OutputState)
+	if err := state.UnmarshalV5Binary(feedback); err != nil {
+		return nil, err
+	}
+	return state, nil
+}
+
+func v5CRC(headerFields, payload []byte) uint32 {
+	hash := crc32.NewIEEE()
+	_, _ = hash.Write(headerFields)
+	_, _ = hash.Write(payload)
+	return hash.Sum32()
+}
+
+func writeAll(writer io.Writer, data []byte) error {
+	for len(data) > 0 {
+		written, err := writer.Write(data)
+		if err != nil {
+			return err
+		}
+		if written == 0 {
+			return io.ErrShortWrite
+		}
+		data = data[written:]
+	}
+	return nil
 }
 
 func printHelp() {

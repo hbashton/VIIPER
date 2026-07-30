@@ -14,7 +14,7 @@ import (
 	"github.com/Alia5/VIIPER/usbip"
 )
 
-func attachLocalhostClientImpl(ctx context.Context, deviceExportMeta *usbip.ExportMeta, usbipServerPort uint16, _ bool, logger *slog.Logger) error {
+func attachLocalhostClientImpl(ctx context.Context, deviceExportMeta *usbip.ExportMeta, usbipServerPort uint16, _ bool, logger *slog.Logger) (AutoAttachResult, error) {
 	logger.Info("Auto-attaching localhost client", "busID", deviceExportMeta.BusID, "deviceID", deviceExportMeta.DevID)
 
 	cmd := exec.CommandContext(
@@ -32,11 +32,11 @@ func attachLocalhostClientImpl(ctx context.Context, deviceExportMeta *usbip.Expo
 			"error", err,
 			"port", usbipServerPort,
 			"output", string(output))
-		return err
+		return AutoAttachResult{}, err
 	}
 	logger.Debug("usbip attach output", "output", string(output))
 
-	return nil
+	return AutoAttachResult{}, nil
 }
 
 // CheckAutoAttachPrerequisites checks if auto-attach prerequisites are met on Linux.
