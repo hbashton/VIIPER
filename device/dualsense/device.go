@@ -180,9 +180,10 @@ func (d *DualSense) SetSpeakerCallback(f func([]byte)) {
 	d.mtx.Unlock()
 }
 
-// SetAtomicAudioHapticsCallback installs the V4 transport consumer. Each
+// SetAtomicAudioHapticsCallback installs the V4/V5 transport consumer. Each
 // callback contains native feedback and the exact front-channel PCM generation
-// from which its Bluetooth haptics block was derived.
+// from which its Bluetooth haptics block was derived. V4 retains 512 native
+// speaker frames; V5 emits exactly 480 resampled speaker frames.
 func (d *DualSense) SetAtomicAudioHapticsCallback(f func(OutputState, []byte)) {
 	d.mtx.Lock()
 	d.atomicAudioHapticsFunc = f
@@ -573,9 +574,17 @@ func (d *DualSense) drainBluetoothHapticsReportsLocked(now time.Time) []pendingB
 		sample := make([]byte, BluetoothHapticsSampleSize)
 		generationPCM := d.hapticsPCM[:inputBytesPerReport]
 		copyUSBHapticsChannelsToBluetoothSample(sample, generationPCM)
-		speakerPCM := make([]byte, (inputBytesPerReport/USBHapticsAudioFrameSize)*
-			2*USBHapticsAudioBytesPerSample)
-		copyDualSenseSpeakerChannels(speakerPCM, generationPCM)
+		var speakerPCM []byte
+		if d.streamFrameVersion == StreamFrameVersionV5 {
+			speakerPCM = make([]byte, dualSenseV5SpeakerPayloadSize)
+			if resampleDualSenseV5Speaker(speakerPCM, generationPCM) == 0 {
+				speakerPCM = nil
+			}
+		} else {
+			speakerPCM = make([]byte, (inputBytesPerReport/USBHapticsAudioFrameSize)*
+				2*USBHapticsAudioBytesPerSample)
+			copyDualSenseSpeakerChannels(speakerPCM, generationPCM)
+		}
 
 		seq := d.hapticsSeq
 		interval := d.hapticsInterval

@@ -61,6 +61,7 @@ const (
 	StreamFrameVersionV2     = 0x02
 	StreamFrameVersionV3     = 0x03
 	StreamFrameVersionV4     = 0x04
+	StreamFrameVersionV5     = 0x05
 	StreamFrameInputState    = 0x01
 	StreamFrameMicrophonePCM = 0x02
 	StreamFrameOutputState   = 0x81
@@ -69,6 +70,11 @@ const (
 	// generation beside the matching front-channel speaker PCM. The bridge can
 	// therefore publish one physical Bluetooth report without independently
 	// scheduled speaker and haptics lanes drifting at a load boundary.
+	//
+	// V5 retains that atomic layout, but its speaker tail is exactly 480 stereo
+	// S16LE frames resampled from the same 512-frame native USB generation. This
+	// matches the 10 ms media frame consumed by the physical DualSense while the
+	// rear channels independently produce one 64-byte 3 kHz haptics interval.
 	StreamFrameAtomicAudioHaptics = 0x83
 	USBMicrophoneSampleRate       = 48000
 	USBMicrophoneChannels         = 2

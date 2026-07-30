@@ -18,8 +18,8 @@ const (
 	// 1,920-byte native stereo speaker block.
 	// A V4 frame carries one complete 512-source-frame generation: the
 	// marshalled native feedback plus its matching front-channel stereo PCM.
-	// Keep the fixed pool large enough for that indivisible payload; V3 uses
-	// the same pool and simply consumes the smaller PCM-only prefix.
+	// V5 carries the smaller 480-frame resampled generation. Keep the fixed pool
+	// large enough for V4; V3 and V5 consume smaller prefixes from the same pool.
 	dualSenseSpeakerPayloadCapacity = dualSenseAtomicFeedbackPrefix +
 		OutputStateCombinedExtSize +
 		(BluetoothHapticsSampleSize/2)*USBHapticsAudioDownsample*
@@ -127,6 +127,7 @@ type dualSenseOutputWriter struct {
 	done            chan struct{}
 	stopOnce        sync.Once
 	enqueueLock     sync.RWMutex
+	audioEnqueue    sync.Mutex
 	audioWrite      sync.Mutex
 	stopped         bool
 	streamViable    atomic.Bool
@@ -231,12 +232,16 @@ func (w *dualSenseOutputWriter) EnqueueSpeakerFromUSB(usbPCM []byte) {
 	}
 }
 
-// EnqueueAtomicAudioHaptics publishes one V4 generation. A little-endian
+// EnqueueAtomicAudioHaptics publishes one V4/V5 generation. A little-endian
 // feedback length prefixes the native extended feedback; the remaining bytes
-// are the matching 512-frame stereo PCM block.
+// are the matching stereo PCM block. V5 requires exactly 480 frames.
 func (w *dualSenseOutputWriter) EnqueueAtomicAudioHaptics(feedback, speakerPCM []byte) {
 	if len(feedback) == 0 || len(feedback) > int(^uint16(0)) ||
 		len(speakerPCM) == 0 {
+		return
+	}
+	if w.version == StreamFrameVersionV5 &&
+		len(speakerPCM) != dualSenseV5SpeakerPayloadSize {
 		return
 	}
 
@@ -245,13 +250,13 @@ func (w *dualSenseOutputWriter) EnqueueAtomicAudioHaptics(feedback, speakerPCM [
 	if w.stopped {
 		return
 	}
+	w.audioEnqueue.Lock()
+	defer w.audioEnqueue.Unlock()
 
 	w.telemetry.receivedPayloads.Add(1)
 	w.telemetry.receivedBytes.Add(uint64(len(speakerPCM)))
-	var buffer []byte
-	select {
-	case buffer = <-w.audioFree:
-	default:
+	buffer := w.acquireAtomicAudioBuffer()
+	if buffer == nil {
 		w.recordSpeakerDrop(len(speakerPCM))
 		return
 	}
@@ -279,6 +284,45 @@ func (w *dualSenseOutputWriter) EnqueueAtomicAudioHaptics(feedback, speakerPCM [
 		return
 	}
 	w.recordSpeakerEnqueue(len(speakerPCM))
+}
+
+// acquireAtomicAudioBuffer preserves the legacy V4 drop-new contract. V5 is
+// explicitly realtime: when TCP momentarily falls behind and every fixed pool
+// buffer is owned, evict the oldest queued (not in-flight) media generation so
+// the newest native USB generation can still be published without growing an
+// unbounded stale-audio reserve.
+func (w *dualSenseOutputWriter) acquireAtomicAudioBuffer() []byte {
+	select {
+	case buffer := <-w.audioFree:
+		return buffer
+	default:
+	}
+
+	if w.version != StreamFrameVersionV5 {
+		return nil
+	}
+	select {
+	case oldest := <-w.audio:
+		w.recordSpeakerDrop(atomicSpeakerPCMBytes(oldest.payload))
+		w.telemetry.queueDepth.Store(uint64(len(w.audio)))
+		return oldest.payload[:cap(oldest.payload)]
+	default:
+		// The sole remaining pool buffer can be owned by an in-flight write.
+		return nil
+	}
+}
+
+func atomicSpeakerPCMBytes(payload []byte) int {
+	if len(payload) < dualSenseAtomicFeedbackPrefix {
+		return len(payload)
+	}
+	feedbackLength := int(binary.LittleEndian.Uint16(
+		payload[:dualSenseAtomicFeedbackPrefix]))
+	speakerOffset := dualSenseAtomicFeedbackPrefix + feedbackLength
+	if speakerOffset > len(payload) {
+		return len(payload)
+	}
+	return len(payload) - speakerOffset
 }
 
 func (w *dualSenseOutputWriter) recordSpeakerEnqueue(length int) {
