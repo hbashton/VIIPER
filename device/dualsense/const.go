@@ -75,7 +75,8 @@ const (
 	// speaker tail is exactly 480 raw front-stereo S16LE frames (10 ms at the
 	// native 48 kHz source clock). Rear channels independently produce one
 	// 64-byte 3 kHz haptics interval for every 512 source frames. Each V5 media
-	// frame carries the latest fully assembled feedback generation.
+	// frame consumes one completed rear interval or zero-fills that lane, while
+	// state and report counters remain on the 480-frame presentation clock.
 	StreamFrameAtomicAudioHaptics = 0x83
 	USBMicrophoneSampleRate       = 48000
 	USBMicrophoneChannels         = 2

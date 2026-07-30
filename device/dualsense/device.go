@@ -46,23 +46,21 @@ type DualSense struct {
 
 	subcommand [2]byte
 
-	seqCounter                    uint8
-	hapticsSeq                    uint8
-	hapticsInterval               uint8
-	hapticsPCM                    []byte
-	v5SpeakerPCM                  []byte
-	v5LatestFeedback              OutputState
-	v5FeedbackReady               bool
-	v5LatestFeedbackAssemblyDelay time.Duration
-	microphoneBuffer              microphonebuffer.Buffer
-	microphoneSignal              chan struct{}
-	speakerAudioFeature           audioFeatureState
-	microphoneAudioFeature        audioFeatureState
-	speakerStreamTelemetry        *dualSenseSpeakerStreamTelemetry
-	speakerInterfaceActive        bool
-	microphoneInterfaceActive     bool
-	corruptUSBInputReports        int
-	usbInputReportCount           uint64
+	seqCounter                uint8
+	hapticsSeq                uint8
+	hapticsInterval           uint8
+	hapticsPCM                []byte
+	v5SpeakerPCM              []byte
+	v5HapticsQueue            []dualSenseV5HapticsGeneration
+	microphoneBuffer          microphonebuffer.Buffer
+	microphoneSignal          chan struct{}
+	speakerAudioFeature       audioFeatureState
+	microphoneAudioFeature    audioFeatureState
+	speakerStreamTelemetry    *dualSenseSpeakerStreamTelemetry
+	speakerInterfaceActive    bool
+	microphoneInterfaceActive bool
+	corruptUSBInputReports    int
+	usbInputReportCount       uint64
 	// hapticsPCMStartedAt identifies the oldest PCM frame waiting to make a
 	// complete 10.667 ms Bluetooth haptics sample. It is only used by the
 	// opt-in traffic capture to expose queueing delay without affecting timing.
@@ -185,9 +183,10 @@ func (d *DualSense) SetSpeakerCallback(f func([]byte)) {
 }
 
 // SetAtomicAudioHapticsCallback installs the V4/V5 transport consumer. Each
-// callback contains native feedback and the exact front-channel PCM generation
-// from which its Bluetooth haptics block was derived. V4 retains 512 native
-// speaker frames; V5 emits exactly 480 resampled speaker frames.
+// callback contains native feedback and one front-channel PCM generation. V4
+// retains 512 native speaker frames. V5 follows PadSense: it emits exactly 480
+// raw 48 kHz speaker frames and consumes one independently completed rear
+// haptics sample, or silence when that 512-frame lane has not completed yet.
 func (d *DualSense) SetAtomicAudioHapticsCallback(f func(OutputState, []byte)) {
 	d.mtx.Lock()
 	d.atomicAudioHapticsFunc = f
@@ -339,9 +338,7 @@ func (d *DualSense) ResetEndpoint(endpoint uint8) {
 func (d *DualSense) resetSpeakerAudioLocked() {
 	d.hapticsPCM = nil
 	d.v5SpeakerPCM = nil
-	d.v5LatestFeedback = OutputState{}
-	d.v5FeedbackReady = false
-	d.v5LatestFeedbackAssemblyDelay = 0
+	d.v5HapticsQueue = nil
 	d.hapticsPCMStartedAt = time.Time{}
 	d.speakerAudioFeature.resetStreamGain()
 }
@@ -581,11 +578,18 @@ type pendingBluetoothHapticsReport struct {
 	hasFeedback   bool
 }
 
+type dualSenseV5HapticsGeneration struct {
+	sample        [BluetoothHapticsSampleSize]byte
+	assemblyDelay time.Duration
+}
+
 // consumeDualSenseV5AudioLocked advances the native USB stream in source
 // order while keeping its two media clocks independent. Front stereo is
 // published every 480 frames. Rear haptics completes every 512 frames and is
-// cached; each speaker generation atomically carries the most recent complete
-// feedback rather than a partially assembled rear-channel interval.
+// queued independently. At each speaker boundary, exactly one completed rear
+// sample is consumed; if none is ready, PadSense sends silence rather than
+// replaying the previous sample. State and report counters are rebuilt at that
+// same 480-frame boundary so every emitted report is current and sequential.
 func (d *DualSense) consumeDualSenseV5AudioLocked(src []byte,
 	now time.Time) []pendingBluetoothHapticsReport {
 	const hapticsFrames = (BluetoothHapticsSampleSize / 2) *
@@ -621,16 +625,19 @@ func (d *DualSense) consumeDualSenseV5AudioLocked(src []byte,
 		// At the 7,680-frame common boundary, complete rear feedback first so
 		// the simultaneous speaker generation carries that exact update.
 		if len(d.hapticsPCM) == hapticsFrames*USBHapticsAudioFrameSize {
-			d.completeDualSenseV5FeedbackLocked(now)
+			d.completeDualSenseV5HapticsLocked(now)
 		}
 		if len(d.v5SpeakerPCM) == dualSenseV5SpeakerPayloadSize {
-			d.ensureDualSenseV5FeedbackLocked()
-			reports = append(reports, pendingBluetoothHapticsReport{
-				speakerPCM:    d.v5SpeakerPCM,
-				assemblyDelay: d.v5LatestFeedbackAssemblyDelay,
-				feedback:      d.v5LatestFeedback,
-				hasFeedback:   true,
-			})
+			feedback, assemblyDelay, ok :=
+				d.buildDualSenseV5FeedbackLocked()
+			if ok {
+				reports = append(reports, pendingBluetoothHapticsReport{
+					speakerPCM:    d.v5SpeakerPCM,
+					assemblyDelay: assemblyDelay,
+					feedback:      feedback,
+					hasFeedback:   true,
+				})
+			}
 			d.v5SpeakerPCM = nil
 		}
 	}
@@ -638,50 +645,46 @@ func (d *DualSense) consumeDualSenseV5AudioLocked(src []byte,
 	return reports
 }
 
-func (d *DualSense) completeDualSenseV5FeedbackLocked(now time.Time) {
-	sample := make([]byte, BluetoothHapticsSampleSize)
-	copyUSBHapticsChannelsToBluetoothSample(sample, d.hapticsPCM)
-	report, err := BuildBluetoothCombinedHapticsReport(
-		d.hapticsSeq, d.hapticsInterval, sample, d.outputState.RawOutputReport[:])
-	if err != nil {
-		slog.Warn("failed to build DualSense Bluetooth haptics report", "error", err)
-	} else {
-		feedback := d.outputState
-		copy(feedback.BluetoothCombinedOutputReport[:], report)
-		d.v5LatestFeedback = feedback
-		d.v5FeedbackReady = true
-		d.v5LatestFeedbackAssemblyDelay = now.Sub(d.hapticsPCMStartedAt)
-		if d.hapticsPCMStartedAt.IsZero() || d.v5LatestFeedbackAssemblyDelay < 0 {
-			d.v5LatestFeedbackAssemblyDelay = 0
-		}
+func (d *DualSense) completeDualSenseV5HapticsLocked(now time.Time) {
+	generation := dualSenseV5HapticsGeneration{}
+	copyUSBHapticsChannelsToBluetoothSample(generation.sample[:], d.hapticsPCM)
+	generation.assemblyDelay = now.Sub(d.hapticsPCMStartedAt)
+	if d.hapticsPCMStartedAt.IsZero() || generation.assemblyDelay < 0 {
+		generation.assemblyDelay = 0
 	}
-
-	d.hapticsSeq++
-	d.hapticsInterval++
+	d.v5HapticsQueue = append(d.v5HapticsQueue, generation)
 	d.hapticsPCM = d.hapticsPCM[:0]
 	d.hapticsPCMStartedAt = time.Time{}
 }
 
-func (d *DualSense) ensureDualSenseV5FeedbackLocked() {
-	if d.v5FeedbackReady {
-		return
+func (d *DualSense) buildDualSenseV5FeedbackLocked() (OutputState,
+	time.Duration, bool) {
+	var sample [BluetoothHapticsSampleSize]byte
+	var assemblyDelay time.Duration
+	if len(d.v5HapticsQueue) != 0 {
+		generation := d.v5HapticsQueue[0]
+		sample = generation.sample
+		assemblyDelay = generation.assemblyDelay
+		copy(d.v5HapticsQueue, d.v5HapticsQueue[1:])
+		last := len(d.v5HapticsQueue) - 1
+		d.v5HapticsQueue[last] = dualSenseV5HapticsGeneration{}
+		d.v5HapticsQueue = d.v5HapticsQueue[:last]
 	}
 
-	// The first 480-frame speaker generation precedes the first 512-frame
-	// rear-channel interval by 32 samples. Seed it with a fully valid silent
-	// haptics report and current state; do not advance either haptics counter.
-	silent := make([]byte, BluetoothHapticsSampleSize)
+	sequence := d.hapticsSeq
+	interval := d.hapticsInterval
+	d.hapticsSeq++
+	d.hapticsInterval++
+
 	report, err := BuildBluetoothCombinedHapticsReport(
-		d.hapticsSeq, d.hapticsInterval, silent, d.outputState.RawOutputReport[:])
+		sequence, interval, sample[:], d.outputState.RawOutputReport[:])
 	if err != nil {
-		slog.Warn("failed to build initial DualSense Bluetooth haptics report", "error", err)
-		return
+		slog.Warn("failed to build DualSense V5 Bluetooth haptics report", "error", err)
+		return OutputState{}, 0, false
 	}
 	feedback := d.outputState
 	copy(feedback.BluetoothCombinedOutputReport[:], report)
-	d.v5LatestFeedback = feedback
-	d.v5FeedbackReady = true
-	d.v5LatestFeedbackAssemblyDelay = 0
+	return feedback, assemblyDelay, true
 }
 
 func (d *DualSense) drainBluetoothHapticsReportsLocked(now time.Time) []pendingBluetoothHapticsReport {
