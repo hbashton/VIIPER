@@ -171,7 +171,7 @@ try {
         $actualVersion = $null
         try { $actualVersion = [Version](Get-Item -LiteralPath $usbipPath).VersionInfo.FileVersion }
         catch { }
-        if (-not $actualVersion -or $actualVersion -lt $expectedVersion) {
+        if (-not $actualVersion -or $actualVersion -ne $expectedVersion) {
             return [pscustomobject]@{
                 Healthy = $false
                 Reason = "version"
@@ -208,8 +208,84 @@ try {
         return [pscustomobject]@{
             Healthy = $true
             Reason = "ready"
-            Detail = "0.9.7.8 ABI probe passed"
+            Detail = "0.9.7.7 ABI probe passed"
         }
+    }
+
+    function Disconnect-UsbipImports([string]$usbipPath) {
+        if (-not $usbipPath -or
+                -not (Test-Path -LiteralPath $usbipPath -PathType Leaf)) {
+            return
+        }
+
+        $previousErrorActionPreference = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try { $portOutput = @(& $usbipPath port 2>&1) }
+        finally { $ErrorActionPreference = $previousErrorActionPreference }
+        $portText = ($portOutput | ForEach-Object { [string]$_ }) -join `
+            [Environment]::NewLine
+        foreach ($match in [regex]::Matches($portText,
+                '(?im)^\s*Port\s+(\d+):')) {
+            $port = [int]$match.Groups[1].Value
+            Write-Host "Detaching stopped USBIP import on port $port..." `
+                -ForegroundColor Yellow
+            $previousErrorActionPreference = $ErrorActionPreference
+            $ErrorActionPreference = "Continue"
+            try { & $usbipPath detach -p $port 2>&1 | Out-Null }
+            finally { $ErrorActionPreference = $previousErrorActionPreference }
+        }
+    }
+
+    function Remove-MismatchedUsbipPackage($entry,
+            [Version]$installedVersion, [Version]$targetVersion) {
+        if (-not $entry -or -not $installedVersion -or
+                $installedVersion -eq $targetVersion) {
+            return $false
+        }
+
+        $uninstallCommand = $entry.QuietUninstallString -as [string]
+        if (-not $uninstallCommand) {
+            $uninstallCommand = $entry.UninstallString -as [string]
+        }
+        if (-not $uninstallCommand) {
+            throw "USBIP $installedVersion must be replaced with " +
+                "$targetVersion, but its uninstall command is unavailable."
+        }
+
+        $match = [regex]::Match($uninstallCommand,
+            '^\s*(?:"(?<exe>[^"]+)"|(?<exe>\S+))(?:\s+(?<args>.*))?$')
+        if (-not $match.Success) {
+            throw "Could not parse the installed USBIP uninstall command."
+        }
+        $uninstaller = $match.Groups['exe'].Value
+        if (-not (Test-Path -LiteralPath $uninstaller -PathType Leaf)) {
+            throw "The installed USBIP uninstaller is missing: $uninstaller"
+        }
+
+        Write-Host (
+            "Removing unsupported USBIP $installedVersion before " +
+            "installing pinned safe $targetVersion..."
+        ) -ForegroundColor Yellow
+        $uninstall = Start-Process -FilePath $uninstaller `
+            -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART" `
+            -Verb RunAs -PassThru
+        if (-not $uninstall.WaitForExit(30000)) {
+            try {
+                Start-Process taskkill.exe -Verb RunAs `
+                    -ArgumentList "/PID $($uninstall.Id) /T /F" `
+                    -WindowStyle Hidden -Wait | Out-Null
+            }
+            catch { }
+            throw "USBIP could not unload its active kernel driver within " +
+                "30 seconds. Restart Windows, then run setup again; it will " +
+                "resume with pinned $targetVersion."
+        }
+        $uninstall.Refresh()
+        if ($uninstall.ExitCode -notin @(0, 1641, 3010)) {
+            throw "USBIP uninstall failed with code $($uninstall.ExitCode)."
+        }
+
+        return $true
     }
 
     function Invoke-ViiperInstallRegistration([string]$path) {
@@ -286,7 +362,7 @@ try {
     Write-Host ""
     Write-Host "Checking USBIP drivers..." -ForegroundColor Cyan
 
-    $usbipTargetVersion = [Version]"0.9.7.8"
+    $usbipTargetVersion = [Version]"0.9.7.7"
     $usbipInstalledVersion = $null
 
     $usbipEntry = Get-ItemProperty "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*" -ErrorAction SilentlyContinue |
@@ -319,13 +395,13 @@ try {
     if (-not $needsUsbipInstall) {
         if ($usbipRuntimeBefore.Healthy) {
             Write-Host (
-                "USBIP 0.9.7.8 userspace/driver ABI is ready at the canonical " +
+                "USBIP 0.9.7.7 userspace/driver ABI is ready at the canonical " +
                 "Program Files path."
             ) -ForegroundColor Green
         }
         else {
             Write-Host (
-                "USBIP 0.9.7.8 is already installed. Skipping a redundant " +
+                "USBIP 0.9.7.7 is already installed. Skipping a redundant " +
                 "reinstall; restart Windows to load its matching driver."
             ) -ForegroundColor Yellow
         }
@@ -340,13 +416,13 @@ try {
     elseif ($usbipInstalledVersion) {
         Write-Host (
             "USBIP reports version $usbipInstalledVersion, but its canonical " +
-            "0.9.7.8 runtime is not usable ($($usbipRuntimeBefore.Detail)). " +
-            "Repairing the exact 0.9.7.8 package..."
+            "0.9.7.7 runtime is not usable ($($usbipRuntimeBefore.Detail)). " +
+            "Repairing the exact 0.9.7.7 package..."
         ) -ForegroundColor Yellow
     }
     else {
         Write-Host (
-            "USBIP 0.9.7.8 is missing or unusable " +
+            "USBIP 0.9.7.7 is missing or unusable " +
             "($($usbipRuntimeBefore.Detail)). Installing the exact package..."
         ) -ForegroundColor Yellow
     }
@@ -357,24 +433,28 @@ try {
         Assert-PadSenseNotRunning
         Stop-ControllerBackends
 
-        $usbipInstallerUrl = "https://github.com/vadimgrn/usbip-win2/releases/download/v.0.9.7.8/USBip-0.9.7.8-x64.exe"
+        $usbipInstallerUrl = "https://github.com/vadimgrn/usbip-win2/releases/download/v.0.9.7.7/USBip-0.9.7.7-x64.exe"
         $usbipInstaller = Join-Path $tempDir "USBip-setup.exe"
 
         try {
             Write-Host "  Downloading usbip-win2 installer..." -ForegroundColor Cyan
             Invoke-WebRequest -Uri $usbipInstallerUrl -OutFile $usbipInstaller -ErrorAction Stop
             $usbipInstallerHash = (Get-FileHash -LiteralPath $usbipInstaller -Algorithm SHA256).Hash.ToLowerInvariant()
-            if ($usbipInstallerHash -ne "44451fe06f4186125c2a5ecd25b099c5560a61a60b1e56f5a0758e77a60afa44") {
+            if ($usbipInstallerHash -ne "51620fa5f9f8be5932bc9d786deee557ce06d5407a99cab490dcfac71f185fea") {
                 throw "USBIP installer integrity check failed."
             }
             Assert-PadSenseNotRunning
+            Disconnect-UsbipImports (Get-CanonicalUsbipPath)
+            $removedMismatchedPackage = Remove-MismatchedUsbipPackage `
+                $usbipEntry $usbipInstalledVersion $usbipTargetVersion
             Write-Host "Installing USBIP drivers (UAC prompt will appear)..." -ForegroundColor Yellow
             $installerProcess = Start-Process -FilePath $usbipInstaller -ArgumentList "/S" -Verb RunAs -Wait -PassThru
             if ($installerProcess.ExitCode -notin @(0, 1641, 3010)) {
                 throw "USBIP installer exited with code $($installerProcess.ExitCode)."
             }
             Write-Host "USBIP drivers installed/updated successfully" -ForegroundColor Green
-            $needsReboot = $installerProcess.ExitCode -in @(1641, 3010)
+            $needsReboot = $removedMismatchedPackage -or
+                $installerProcess.ExitCode -in @(1641, 3010)
         }
         catch {
             throw "Failed to install USBIP drivers: $($_.Exception.Message)"
@@ -384,7 +464,7 @@ try {
     $usbipRuntime = Test-UsbipRuntime $usbipTargetVersion
     if (-not $usbipRuntime.Healthy) {
         $needsReboot = $true
-        Write-Host "USBIP 0.9.7.8 is installed but not active yet: $($usbipRuntime.Detail)" -ForegroundColor Yellow
+        Write-Host "USBIP 0.9.7.7 is installed but not active yet: $($usbipRuntime.Detail)" -ForegroundColor Yellow
     }
 
     if (-not $needsReboot) {
@@ -415,7 +495,7 @@ try {
 
     if ($needsReboot) {
         Write-Host ""
-        Write-Host "USBIP 0.9.7.8 requires a restart before VIIPER can run safely." -ForegroundColor Yellow
+        Write-Host "USBIP 0.9.7.7 requires a restart before VIIPER can run safely." -ForegroundColor Yellow
         Write-Host "VIIPER was intentionally left stopped; restart Windows, then launch DS4Windows." -ForegroundColor Yellow
     }
     else {
