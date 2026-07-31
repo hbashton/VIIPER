@@ -302,36 +302,6 @@ try {
         $tempViiper = $tempDownload
     }
 
-    function Get-RunningPadSenseProcesses {
-        try {
-            return @(Get-CimInstance Win32_Process -ErrorAction Stop |
-                Where-Object { $_.Name -match "^PadSense.*\.exe$" })
-        }
-        catch {
-            return @(Get-Process -ErrorAction SilentlyContinue |
-                Where-Object { $_.ProcessName -match "^PadSense" } |
-                ForEach-Object {
-                    [pscustomobject]@{
-                        Name = "$($_.ProcessName).exe"
-                        ProcessId = $_.Id
-                    }
-                })
-        }
-    }
-
-    function Assert-PadSenseNotRunning {
-        $processes = @(Get-RunningPadSenseProcesses)
-        if ($processes.Count -eq 0) { return }
-
-        $owners = ($processes | ForEach-Object {
-            "$($_.Name) PID=$($_.ProcessId)"
-        }) -join ", "
-        throw "PadSense is running ($owners) and may own active USBIP " +
-            "imports. Close PadSense completely, including its " +
-            "tray/background process, then run setup again. The usbip-win2 " +
-            "driver transition was not started."
-    }
-
     function Stop-ControllerBackends {
         $targets = @(Get-Process -Name "DS4Windows", "viiper" `
             -ErrorAction SilentlyContinue)
@@ -1147,7 +1117,6 @@ exit 32
         Write-Host "This requires administrator privileges." -ForegroundColor Yellow
 
         Disable-ViiperStartup
-        Assert-PadSenseNotRunning
         Stop-ControllerBackends
 
         try {
@@ -1156,7 +1125,6 @@ exit 32
                 throw "An existing USBIP installation has no canonical " +
                     "usbip.exe, so active imports cannot be inspected safely."
             }
-            Assert-PadSenseNotRunning
             Disconnect-UsbipImports (Get-CanonicalUsbipPath)
 
             if ($usbipInstalledVersion -and
