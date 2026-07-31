@@ -79,122 +79,6 @@ jobs:
                   done
                   ls -la release_files/
 
-            - name: Set up Node.js (for npm publish)
-              uses: actions/setup-node@v6
-              with:
-                  node-version: "24"
-                  registry-url: "https://registry.npmjs.org/"
-
-            - name: Set up .NET SDK (for NuGet publish)
-              uses: actions/setup-dotnet@v5
-              with:
-                  dotnet-version: "8.0.x"
-
-            # Acquire short-lived NuGet API key via OIDC Trusted Publishing
-            - name: NuGet login (OIDC → temp API key)
-              id: login
-              uses: NuGet/login@v1.2.0
-              with:
-                  user: ${{ secrets.NUGET_USER }}
-
-            # Publish client libraries to npm and NuGet using OIDC trusted publishing
-            - name: Publish TypeScript client library to npm
-              working-directory: release_files
-              shell: bash
-              run: |
-                  set -euo pipefail
-                  TS_TARBALL="viiper-typescript-client-library.tgz"
-                  if [ ! -f "$TS_TARBALL" ]; then
-                    echo "ERROR: Missing TypeScript client library tarball: $TS_TARBALL" >&2
-                    ls -la
-                    exit 1
-                  fi
-                  echo "Extracting version from package.json inside tarball..."
-                  PKG_VERSION=$(tar -xOzf "$TS_TARBALL" package/package.json | grep '"version"' | head -1 | sed -E 's/.*"version" *: *"([^"]+)".*/\1/')
-                  PKG_NAME=$(tar -xOzf "$TS_TARBALL" package/package.json | grep '"name"' | head -1 | sed -E 's/.*"name" *: *"([^"]+)".*/\1/')
-                  if [ -z "$PKG_VERSION" ]; then
-                    echo "ERROR: Failed to extract version from TypeScript client library tarball" >&2
-                    exit 1
-                  fi
-                  if [ -z "$PKG_NAME" ]; then
-                    echo "ERROR: Failed to extract package name from TypeScript client library tarball" >&2
-                    exit 1
-                  fi
-                  echo "Package version: $PKG_VERSION"
-                  echo "Package name: $PKG_NAME"
-                  echo "Checking if $PKG_NAME@$PKG_VERSION already exists on npm..."
-                  if npm view "$PKG_NAME@$PKG_VERSION" version >/dev/null 2>&1; then
-                    echo "npm package $PKG_NAME@$PKG_VERSION already exists. Skipping npm publish (idempotent re-run)."
-                    exit 0
-                  fi
-                  # Determine npm dist-tag
-                  if [[ "$PKG_VERSION" == *-* ]]; then
-                    NPM_TAG="dev"
-                  else
-                    NPM_TAG="latest"
-                  fi
-                  echo "Using npm dist-tag: $NPM_TAG"
-                  # Remove deprecated always-auth config if present
-                  npm config delete always-auth || true
-                  npm publish "$TS_TARBALL" --provenance --access public --tag "$NPM_TAG"
-
-            - name: Publish C# client library to NuGet
-              working-directory: release_files
-              shell: bash
-              run: |
-                  set -euo pipefail
-                  NUPKG="viiper-csharp-client-library-nupkg.nupkg"
-                  if [ ! -f "$NUPKG" ]; then
-                    echo "ERROR: Missing C# client library package: $NUPKG" >&2
-                    ls -la
-                    exit 1
-                  fi
-                  echo "Publishing NuGet package: $NUPKG"
-                  dotnet nuget push "$NUPKG" --api-key "${{ steps.login.outputs.NUGET_API_KEY }}" --source https://api.nuget.org/v3/index.json --skip-duplicate
-
-            - name: Set up Rust (for crates.io publish)
-              uses: dtolnay/rust-toolchain@stable
-
-            - name: Authenticate with crates.io (OIDC)
-              id: crates_io_auth
-              uses: rust-lang/crates-io-auth-action@v1.0.4
-
-            - name: Publish Rust client library to crates.io
-              working-directory: release_files
-              shell: bash
-              env:
-                  CARGO_REGISTRY_TOKEN: ${{ steps.crates_io_auth.outputs.token }}
-              run: |
-                  set -euo pipefail
-                  CRATE="viiper-rust-client-library.crate"
-                  if [ ! -f "$CRATE" ]; then
-                    echo "ERROR: Missing Rust client library crate: $CRATE" >&2
-                    ls -la
-                    exit 1
-                  fi
-                  echo "Extracting crate to publish..."
-                  mkdir -p ../rust-publish
-                  tar -xzf "$CRATE" -C ../rust-publish
-                  CRATE_DIR=$(ls -d ../rust-publish/viiper-client-*)
-                  cd "$CRATE_DIR"
-                  echo "Removing reserved backup files (if any)..."
-                  find . -name 'Cargo.toml.orig' -print -delete || true
-                  CRATE_VERSION=$(grep '^version' Cargo.toml | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
-                  CRATE_NAME="viiper-client"
-                  if [ -z "$CRATE_VERSION" ]; then
-                    echo "ERROR: Failed to extract version from Cargo.toml" >&2
-                    exit 1
-                  fi
-                  echo "Crate version: $CRATE_VERSION"
-                  echo "Crate name: $CRATE_NAME"
-                  echo "Checking if $CRATE_NAME@$CRATE_VERSION already exists on crates.io..."
-                  if cargo search "$CRATE_NAME" 2>/dev/null | grep -q "^$CRATE_NAME = \"$CRATE_VERSION\""; then
-                    echo "Crate $CRATE_NAME@$CRATE_VERSION already exists. Skipping cargo publish (idempotent re-run)."
-                    exit 0
-                  fi
-                  echo "Publishing crate with OIDC trusted publishing..."
-                  cargo publish --allow-dirty
-
             - name: Extract build info
               id: build_info
               shell: bash
@@ -247,3 +131,189 @@ jobs:
                   draft: false
               env:
                   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    publish-client-registries:
+        name: Publish client libraries (best effort)
+        needs: create-release
+        runs-on: ubuntu-latest
+        continue-on-error: true
+        permissions:
+            contents: read
+            id-token: write
+        steps:
+            - name: Download all artifacts
+              uses: actions/download-artifact@v8
+              with:
+                  path: artifacts
+
+            - name: Organize client library artifacts
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  mkdir -p release_files
+                  for dir in artifacts/*; do
+                    if [ -d "$dir" ]; then
+                      base="$(basename "$dir")"
+                      name_no_suffix="${base%-Release}"
+                      for file in "$dir"/*; do
+                        if [ -f "$file" ]; then
+                          filename="$(basename "$file")"
+                          if [[ "$filename" == *.tar.gz ]]; then
+                            ext="tar.gz"
+                          else
+                            ext="${filename##*.}"
+                          fi
+                          fname="viiper-${name_no_suffix#VIIPER-}"
+                          if [[ "$filename" == *.* ]]; then
+                            cp "$file" "release_files/${fname}.${ext}"
+                          else
+                            cp "$file" "release_files/${fname}"
+                          fi
+                        fi
+                      done
+                    fi
+                  done
+                  ls -la release_files/
+
+            - name: Set up Node.js (for npm publish)
+              id: setup_node
+              continue-on-error: true
+              uses: actions/setup-node@v6
+              with:
+                  node-version: "24"
+                  registry-url: "https://registry.npmjs.org/"
+
+            - name: Publish TypeScript client library to npm
+              id: publish_npm
+              if: ${{ steps.setup_node.outcome == 'success' }}
+              continue-on-error: true
+              working-directory: release_files
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  TS_TARBALL="viiper-typescript-client-library.tgz"
+                  if [ ! -f "$TS_TARBALL" ]; then
+                    echo "::notice::Skipping npm publish: missing $TS_TARBALL"
+                    exit 0
+                  fi
+                  PKG_VERSION=$(tar -xOzf "$TS_TARBALL" package/package.json | grep '"version"' | head -1 | sed -E 's/.*"version" *: *"([^"]+)".*/\1/')
+                  PKG_NAME=$(tar -xOzf "$TS_TARBALL" package/package.json | grep '"name"' | head -1 | sed -E 's/.*"name" *: *"([^"]+)".*/\1/')
+                  if [ -z "$PKG_VERSION" ] || [ -z "$PKG_NAME" ]; then
+                    echo "::warning::Skipping npm publish: package metadata could not be read"
+                    exit 0
+                  fi
+                  if npm view "$PKG_NAME@$PKG_VERSION" version >/dev/null 2>&1; then
+                    echo "npm package $PKG_NAME@$PKG_VERSION already exists; skipping."
+                    exit 0
+                  fi
+                  if [[ "$PKG_VERSION" == *-* ]]; then
+                    NPM_TAG="dev"
+                  else
+                    NPM_TAG="latest"
+                  fi
+                  npm config delete always-auth || true
+                  npm publish "$TS_TARBALL" --provenance --access public --tag "$NPM_TAG"
+
+            - name: Check NuGet publishing configuration
+              id: nuget_config
+              shell: bash
+              env:
+                  NUGET_USER: ${{ secrets.NUGET_USER }}
+              run: |
+                  if [ -z "$NUGET_USER" ]; then
+                    echo "enabled=false" >> "$GITHUB_OUTPUT"
+                    echo "::notice::Skipping NuGet publish: NUGET_USER is not configured"
+                  else
+                    echo "enabled=true" >> "$GITHUB_OUTPUT"
+                  fi
+
+            - name: Set up .NET SDK (for NuGet publish)
+              id: setup_dotnet
+              if: ${{ steps.nuget_config.outputs.enabled == 'true' }}
+              continue-on-error: true
+              uses: actions/setup-dotnet@v5
+              with:
+                  dotnet-version: "8.0.x"
+
+            - name: NuGet login (OIDC to temporary API key)
+              id: nuget_login
+              if: ${{ steps.nuget_config.outputs.enabled == 'true' && steps.setup_dotnet.outcome == 'success' }}
+              continue-on-error: true
+              uses: NuGet/login@v1.2.0
+              with:
+                  user: ${{ secrets.NUGET_USER }}
+
+            - name: Publish C# client library to NuGet
+              id: publish_nuget
+              if: ${{ steps.nuget_login.outcome == 'success' }}
+              continue-on-error: true
+              working-directory: release_files
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  NUPKG="viiper-csharp-client-library-nupkg.nupkg"
+                  if [ ! -f "$NUPKG" ]; then
+                    echo "::notice::Skipping NuGet publish: missing $NUPKG"
+                    exit 0
+                  fi
+                  dotnet nuget push "$NUPKG" --api-key "${{ steps.nuget_login.outputs.NUGET_API_KEY }}" --source https://api.nuget.org/v3/index.json --skip-duplicate
+
+            - name: Set up Rust (for crates.io publish)
+              id: setup_rust
+              continue-on-error: true
+              uses: dtolnay/rust-toolchain@stable
+
+            - name: Authenticate with crates.io (OIDC)
+              id: crates_io_auth
+              if: ${{ steps.setup_rust.outcome == 'success' }}
+              continue-on-error: true
+              uses: rust-lang/crates-io-auth-action@v1.0.4
+
+            - name: Publish Rust client library to crates.io
+              id: publish_crates
+              if: ${{ steps.crates_io_auth.outcome == 'success' }}
+              continue-on-error: true
+              working-directory: release_files
+              shell: bash
+              env:
+                  CARGO_REGISTRY_TOKEN: ${{ steps.crates_io_auth.outputs.token }}
+              run: |
+                  set -euo pipefail
+                  CRATE="viiper-rust-client-library.crate"
+                  if [ ! -f "$CRATE" ]; then
+                    echo "::notice::Skipping crates.io publish: missing $CRATE"
+                    exit 0
+                  fi
+                  mkdir -p ../rust-publish
+                  tar -xzf "$CRATE" -C ../rust-publish
+                  CRATE_DIR=$(ls -d ../rust-publish/viiper-client-*)
+                  cd "$CRATE_DIR"
+                  find . -name 'Cargo.toml.orig' -print -delete || true
+                  CRATE_VERSION=$(grep '^version' Cargo.toml | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
+                  CRATE_NAME="viiper-client"
+                  if [ -z "$CRATE_VERSION" ]; then
+                    echo "::warning::Skipping crates.io publish: package metadata could not be read"
+                    exit 0
+                  fi
+                  if cargo search "$CRATE_NAME" 2>/dev/null | grep -q "^$CRATE_NAME = \"$CRATE_VERSION\""; then
+                    echo "Crate $CRATE_NAME@$CRATE_VERSION already exists; skipping."
+                    exit 0
+                  fi
+                  cargo publish --allow-dirty
+
+            - name: Summarize optional registry publishing
+              if: ${{ always() }}
+              shell: bash
+              run: |
+                  {
+                    echo "### Optional registry publishing"
+                    echo ""
+                    echo "The GitHub release and binary assets were created before these best-effort steps."
+                    echo ""
+                    echo "- npm: ${{ steps.publish_npm.outcome }}"
+                    echo "- NuGet configured: ${{ steps.nuget_config.outputs.enabled }}"
+                    echo "- NuGet login: ${{ steps.nuget_login.outcome }}"
+                    echo "- NuGet publish: ${{ steps.publish_nuget.outcome }}"
+                    echo "- crates.io authentication: ${{ steps.crates_io_auth.outcome }}"
+                    echo "- crates.io publish: ${{ steps.publish_crates.outcome }}"
+                  } >> "$GITHUB_STEP_SUMMARY"
