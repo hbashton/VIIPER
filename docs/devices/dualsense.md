@@ -1,281 +1,101 @@
 # DualSense Controller
 
-The DualSense virtual gamepad emulates a complete PlayStation 5 DualSense
-controller connected via USB.
-The DualSense Edge variant is also supported and uses the same wire/state model.
+VIIPER emulates complete USB-connected DualSense and DualSense Edge devices,
+including controls, touch, motion, adaptive triggers, lightbar, speaker,
+advanced haptics, and microphone endpoints.
 
-It supports sticks, triggers, D-pad, face/shoulder buttons, PS button,
-touchpad click, back paddles/function buttons (Edge variant), mic mute button,
-IMU (gyro + accelerometer), and touchpad finger coordinates.
+## Supported device types
 
-=== "TCP API"
+VIIPER 0.0.6 exposes only the production PadSense-derived V5 contracts:
 
-    Use `dualsense` as the default device type when adding a device via the API
-    or client libraries.
+| Device type | USB functions |
+| --- | --- |
+| `dualsensecombinedaudioduplexv5` | DualSense HID, speaker/haptics OUT, microphone IN |
+| `dualsenseaudioonlyduplexv5` | DualSense speaker/haptics OUT and microphone IN sidecar |
+| `dualsenseedgecombinedaudioduplexv5` | DualSense Edge HID, speaker/haptics OUT, microphone IN |
 
-    Use `dualsenseedge` when you want the Edge variant.
+The old raw, extended, V1, V2, V3, and V4 names are intentionally not
+registered. Clients must use V5; VIIPER does not silently negotiate an older
+header or split audio/state transport.
 
-    ## Client Library Support
+## V5 stream contract
 
-    The wire protocol is abstracted by client libraries.
-    The **Go client** includes built-in types (`/device/dualsense`),
-    and **generated client libraries** provide equivalent structures
-    with proper packing.
+Every packet uses a 16-byte header followed by its payload:
 
-    You don't need to manually construct packets, just use the provided types
-    and send/receive them via the device control and feedback stream.
+| Offset | Size | Field |
+| --- | --- | --- |
+| 0 | 4 | ASCII `VPCM` |
+| 4 | 1 | Version `0x05` |
+| 5 | 1 | Frame type |
+| 6 | 2 | Payload length, little endian |
+| 8 | 4 | Monotonic sequence, little endian |
+| 12 | 4 | IEEE CRC32, little endian |
 
-    See: [API Reference](../api/overview.md)
+The CRC covers header bytes 4 through 11 followed by the payload. Sequence
+numbers are shared by every frame type in one direction. A version mismatch,
+sequence gap, CRC mismatch, invalid payload length, or unknown frame type
+closes the stream instead of changing protocols.
 
-    ## (RAW) Streaming protocol
+| Direction | Type | Payload |
+| --- | --- | --- |
+| Client to VIIPER | `0x01` | 33-byte controller input state |
+| Client to VIIPER | `0x02` | 1,920-byte microphone PCM block: stereo S16LE, 48 kHz, 10 ms |
+| VIIPER to client | `0x81` | 474-byte current combined controller feedback |
+| VIIPER to client | `0x83` | Atomic feedback plus the matching 1,920-byte speaker PCM generation |
 
-    The device stream is a bidirectional, raw TCP connection with fixed-size
-    packets.
+An atomic `0x83` payload begins with a little-endian 16-bit feedback length,
+then the 474-byte feedback object, then exactly 480 stereo S16LE speaker
+frames. The four-channel virtual USB source is preserved at 48 kHz: front
+left/right become the speaker generation, while rear left/right independently
+complete the 512-frame advanced-haptics clock. At each 480-frame presentation
+boundary VIIPER consumes one completed rear sample or emits silence for that
+lane, matching the proven PadSense cadence without replaying stale haptics.
 
-    ### Input State
+Controller state, adaptive triggers, lightbar, rumble, haptics, and speaker
+data are serialized by one V5 writer. Media backpressure is bounded and
+newest-wins; interface resets form a hard generation boundary so stale audio
+cannot cross a stop/reconnect.
 
-    - 33-byte packets, little-endian layout:
-        - Sticks: StickLX, StickLY, StickRX, StickRY: int8 each (4 bytes)
-          -128 to 127 per axis (-128=min, 0=center, 127=max)
-        - Buttons: uint32 (4 bytes, bitfield)
-        - DPad: uint8 (1 byte, bitfield)
-        - Triggers: TriggerL2, TriggerR2: uint8, uint8 (2 bytes)
-          0-255 (0=not pressed, 255=fully pressed)
-        - Touch1: Touch1X, Touch1Y: uint16 each, Touch1Active: status byte (5 bytes)
-        - Touch2: Touch2X, Touch2Y: uint16 each, Touch2Active: status byte (5 bytes)
-        - Gyroscope: GyroX, GyroY, GyroZ: int16 each (6 bytes, raw report
-          values)
-        - Accelerometer: AccelX, AccelY, AccelZ: int16 each
-          (6 bytes, raw report values)
+## Input state
 
-    See `/device/dualsense/state.go` for details.
+The 33-byte input payload is little endian:
 
-    ### Feedback (Rumble & LED)
+- Sticks: LX, LY, RX, RY as signed 8-bit values.
+- Buttons: 32-bit bitfield.
+- D-pad: 8-bit bitfield.
+- L2 and R2: unsigned 8-bit values.
+- Two touch contacts: X/Y, active flag, and tracking ID.
+- Gyroscope and accelerometer: three signed 16-bit axes each.
 
-    - Base `dualsense` / `dualsenseedge` streams send 6-byte packets:
-        - RumbleSmall: uint8, RumbleLarge: uint8 (2 bytes), 0-255 intensity
-          values
-        - LED Color: LedRed, LedGreen, LedBlue: uint8 each (3 bytes), 0-255 per
-          channel
-        - PlayerLeds: uint8 (1 byte), host-controlled player indicator LED mask
-    - Extended `dualsenseext` / `dualsenseedgeext` streams send 217-byte
-      VIIPER feedback packets. Bytes 0..27 preserve the legacy compact
-      feedback layout: base rumble/LED bytes plus native-spaced trigger
-      blocks. Bytes 28..75 contain the native USB HID output report `0x02`
-      exactly as sent by the host, allowing clients to forward DualSense
-      haptics/control flags instead of reducing them to generic rumble. Bytes
-      76..216 contain one optional Bluetooth HID haptics report `0x32` built
-      from the experimental 3 kHz stereo haptics/audio OUT endpoint. A zero
-      report ID means no haptics frame is present for that feedback packet.
-      Bytes 0..5 preserve the original rumble/LED layout above. Bytes 6..16
-      contain the R2 adaptive-trigger effect block copied from USB output
-      report 0x02 with the same reserved gaps used by the native report.
-      Bytes 17..27 contain the L2 adaptive-trigger effect block with the same
-      layout. Each trigger block is 11 bytes:
-        - Mode
-        - StartResistance
-        - EffectForce
-        - RangeForce
-        - NearReleaseStrength
-        - NearMiddleStrength
-        - PressedStrength
-        - Reserved
-        - Reserved
-        - Frequency
-        - Reserved
+Button bits:
 
-    Native USB HID output report `0x02` is advertised as 47 payload bytes by
-    the captured DualSense USB descriptor, so hosts see 48 bytes including the
-    report ID. The extended VIIPER feedback stream includes that native report
-    so DS4Windows can pass through host haptics/control semantics to physical
-    DualSense hardware when available.
+| Control | Value |
+| --- | --- |
+| Square | `0x00000010` |
+| Cross | `0x00000020` |
+| Circle | `0x00000040` |
+| Triangle | `0x00000080` |
+| L1 / R1 | `0x00000100` / `0x00000200` |
+| L2 / R2 | `0x00000400` / `0x00000800` |
+| Create / Options | `0x00001000` / `0x00002000` |
+| L3 / R3 | `0x00004000` / `0x00008000` |
+| PS | `0x00010000` |
+| Touchpad click | `0x00020000` |
+| Mic mute | `0x00040000` |
+| Edge LFn / RFn | `0x00100000` / `0x00200000` |
+| Edge L4 / R4 | `0x00400000` / `0x00800000` |
 
-    See `/device/dualsense/state.go` for the `OutputState` wire definition.
+D-pad bits are Up `0x01`, Down `0x02`, Left `0x04`, and Right `0x08`.
 
-    ### Full-duplex audio stream (V3)
+## Feedback state
 
-    `dualsensecombinedaudioduplexv3` and
-    `dualsenseedgecombinedaudioduplexv3` are opt-in variants for clients that
-    transport microphone input and native speaker output on the controller
-    stream. The older device names and their wire formats remain unchanged, so
-    a client can fall back to `dualsensecombinedmicv2` or the legacy raw stream.
+The 474-byte V5 feedback object contains:
 
-    Every V3 packet has a 16-byte header followed by its payload:
+- Bytes 0 through 5: compatible rumble, lightbar RGB, and player LEDs.
+- Bytes 6 through 27: native-spaced R2 and L2 adaptive-trigger blocks.
+- Bytes 28 through 75: the native 48-byte USB output report `0x02`.
+- Bytes 76 through 473: the current 398-byte combined Bluetooth carrier.
 
-    | Offset | Size | Field |
-    | --- | --- | --- |
-    | 0 | 4 | ASCII `VPCM` |
-    | 4 | 1 | Version `0x03` |
-    | 5 | 1 | Frame type |
-    | 6 | 2 | Payload length, little endian |
-    | 8 | 4 | Sequence, little endian |
-    | 12 | 4 | IEEE CRC32, little endian |
-
-    The CRC covers header bytes 4..11 followed by the payload. Sequence
-    numbers increase independently in each direction and are shared by all
-    frame types in that direction.
-
-    | Direction | Type | Payload |
-    | --- | --- | --- |
-    | Client to VIIPER | `0x01` | 33-byte controller input state |
-    | Client to VIIPER | `0x02` | 1,920-byte microphone block: signed 16-bit little-endian, 48 kHz, stereo, 10 ms |
-    | VIIPER to client | `0x81` | 474-byte combined extended feedback state |
-    | VIIPER to client | `0x82` | Native speaker PCM: signed 16-bit little-endian, 48 kHz, stereo |
-
-    Windows exposes the virtual playback endpoint as four channels. V3 speaker
-    frames contain only channels 1 and 2 (front left/right); channels 3 and 4
-    remain reserved for advanced haptics. A normal ten-packet USB/IP audio URB
-    therefore produces a 1,920-byte, 10 ms speaker frame, although clients must
-    honor the payload length rather than assume a fixed block size.
-
-    ## Reference
-
-    ### Button Constants
-
-    | Button | Hex Value |
-    | -------- | ----------- |
-    | Square button | 0x00000010 |
-    | Cross (X) button | 0x00000020 |
-    | Circle button | 0x00000040 |
-    | Triangle button | 0x00000080 |
-    | L1 (Left bumper) | 0x00000100 |
-    | R1 (Right bumper) | 0x00000200 |
-    | L2 button | 0x00000400 |
-    | R2 button | 0x00000800 |
-    | Create button | 0x00001000 |
-    | Options button | 0x00002000 |
-    | L3 (Left stick button) | 0x00004000 |
-    | R3 (Right stick button) | 0x00008000 |
-    | PS button | 0x00010000 |
-    | Touchpad click | 0x00020000 |
-    | Mic mute button | 0x00040000 |
-    | Edge Variant only | --- |
-    | RFn button | 0x00200000 |
-    | LFn button | 0x00100000 |
-    | R4 back paddle | 0x00800000 |
-    | L4 back paddle | 0x00400000 |
-
-    ### D-Pad Constants
-
-    | D-Pad Direction | Hex Value |
-    | --------------- | ----------- |
-    | Up | 0x01 |
-    | Down | 0x02 |
-    | Left | 0x04 |
-    | Right | 0x08 |
-
-    ### Touchpad Coordinates
-
-    Touch coordinates are sent as `Touch{1,2}X: uint16` and `Touch{1,2}Y: uint16`
-    plus a touch status byte. Legacy clients may send `0` for inactive and `1`
-    for active. New clients should send the raw DualSense tracking byte instead:
-    bit 7 set means inactive, and the low 7 bits are the contact tracking ID.
-    If a client marks a touch active without a tracking ID, VIIPER emits `1` as
-    a safe active fallback rather than `0`.
-
-    VIIPER clamps touch coordinates to the DualSense range:
-
-    - X: **0..1920**
-    - Y: **0..1080**
-
-    See `/device/dualsense/const.go`.
-
-    ### IMU (Gyro + Accelerometer)
-
-    VIIPER exposes DualSense IMU values as raw report-space `int16` values,
-    while helper conversions use fixed scale factors.
-
-    Constants (see `/device/dualsense/const.go`):
-
-    - `GyroCountsPerDps = 16.384`
-    - `AccelCountsPerMS2 = 835.07`
-
-    Gyro (degrees/second):
-
-        raw_gyro = round(gyro_dps * GyroCountsPerDps)
-        gyro_dps = raw_gyro / GyroCountsPerDps
-
-    Accelerometer (m/s2):
-
-        raw_accel = round(accel_ms2 * AccelCountsPerMS2)
-        accel_ms2 = raw_accel / AccelCountsPerMS2
-
-    On device creation, VIIPER initializes the accelerometer to a controller
-    lying flat with gravity downwards (`AccelZ = -8192`, i.e. roughly -1g).
-
-    Helpers are in `/device/dualsense/helpers.go`.
-
-=== "libVIIPER"
-
-    ## API
-
-    | Function | Description |
-    | --- | --- |
-    | `CreateDualSenseDevice(...)` | Create a virtual DualSense device |
-    | `CreateDualSenseEdgeDevice(...)` | Create a virtual DualSense Edge |
-    | `SetDualSenseDeviceState(handle, state)` | Push input state |
-    | `SetDualSenseOutputCallback(handle, cb)` | Register output callback |
-    | `RemoveDualSenseDevice(handle)` | Remove the device |
-
-    ## Input state
-
-    ```c
-    typedef struct {
-        int8_t   LX;
-        int8_t   LY;
-        int8_t   RX;
-        int8_t   RY;
-        uint32_t Buttons;
-        uint8_t  DPad;
-        uint8_t  L2;
-        uint8_t  R2;
-        uint16_t Touch1X;
-        uint16_t Touch1Y;
-        uint8_t  Touch1Active;
-        uint16_t Touch2X;
-        uint16_t Touch2Y;
-        uint8_t  Touch2Active;
-        int16_t  GyroX;
-        int16_t  GyroY;
-        int16_t  GyroZ;
-        int16_t  AccelX;
-        int16_t  AccelY;
-        int16_t  AccelZ;
-    } DSDeviceState;
-    ```
-
-    ## Meta state
-
-    Optional metadata can be provided during `CreateDualSenseDevice`
-    and `CreateDualSenseEdgeDevice`.
-
-    ```c
-    typedef struct {
-        const char* SerialNumber;       // NULL = use default
-        const char* MACAddress;         // NULL = use default
-        const char* Board;              // NULL = use default
-        uint8_t     BatteryStatus;      // 0 = use default
-        double      TemperatureCelsius; // 0 = use default
-        double      BatteryVoltage;     // 0 = use default
-        const char* ShellColor;         // NULL = use default (e.g. "00", "Z1")
-    } DSMetaState;
-    ```
-
-    ## Output callback
-
-    Called when the host sends rumble or LED commands to the device.
-
-    ```c
-    typedef void (*DSOutputCallback)(
-        DSDeviceHandle handle,
-        uint8_t rumbleSmall,
-        uint8_t rumbleLarge,
-        uint8_t ledRed,
-        uint8_t ledGreen,
-        uint8_t ledBlue,
-        uint8_t playerLeds
-    );
-    ```
-
-    Pass `NULL` to `SetDualSenseOutputCallback` to clear
-    a previously registered callback.
+The combined carrier keeps state and media on one presentation clock. The
+physical-controller bridge supplies the encoded speaker lane and forwards it
+using its PadSense-derived transport.

@@ -4,7 +4,7 @@ set -e
 
 VIIPER_VERSION="dev-snapshot"
 
-REPO="Alia5/VIIPER"
+REPO="hbashton/VIIPER"
 API_URL="https://api.github.com/repos/${REPO}/releases/tags/${VIIPER_VERSION}"
 
 echo "Fetching VIIPER release: $VIIPER_VERSION..."
@@ -174,7 +174,7 @@ else
 			;;
 		*)
 			echo "Warning: Could not detect package manager. Please install USBIP manually."
-			echo "See: https://alia5.github.io/VIIPER/stable/getting-started/installation/"
+			echo "See: https://github.com/hbashton/VIIPER#installation"
 			;;
 	esac
 fi

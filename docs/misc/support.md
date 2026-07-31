@@ -12,7 +12,7 @@ Feel free to joind the Discord server to ask for help, or a general chat and han
 
 ## GitHub Discussions
 
-The repository has [Discussions](https://github.com/Alia5/VIIPER/discussions) enabled, browse existing topics and open your own
+The repository has [Discussions](https://github.com/hbashton/VIIPER/discussions) enabled; browse existing topics or open your own.
 if your search didn't bring up satisfying results
 
 ## GitHub Issues

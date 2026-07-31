@@ -31,7 +31,7 @@ The simplest and recommended path is through a VIIPER-capable DS4Windows build:
 2. Open **DS4Windows > Settings**.
 3. Under **VIIPER Virtual Controller Support**, click **Install / Repair VIIPER**.
 4. Accept the administrator prompt and restart Windows if `usbip-win2` was installed or updated.
-5. In a profile, choose a VIIPER output such as **DualSense (VIIPER)**.
+5. In a profile, choose an output such as **DualSense**.
 
 DS4Windows installs VIIPER to `%LOCALAPPDATA%\VIIPER\viiper.exe`, installs the
 required Windows USBIP driver when necessary, registers startup, and checks that
@@ -47,11 +47,13 @@ irm https://raw.githubusercontent.com/hbashton/VIIPER/main/scripts/install.ps1 |
 
 The script:
 
-1. Downloads the latest release from `hbashton/VIIPER`.
+1. Downloads the pinned `v0.0.6` release from `hbashton/VIIPER` and verifies
+   the release asset SHA-256 digest.
 2. Accepts either the packaged Windows ZIP or the `viiper.exe` asset used by current releases.
 3. Installs VIIPER to `%LOCALAPPDATA%\VIIPER\viiper.exe`.
-4. Installs or updates `usbip-win2` when required.
-5. Registers VIIPER for startup and starts the local server.
+4. Asks for confirmation, then verifies or installs the pinned signed
+   `usbip-win2` 0.9.7.7 package.
+5. Registers and starts VIIPER only after the live USBIP ABI probe passes.
 
 You can also download `viiper.exe` manually from the
 [latest hbashton release](https://github.com/hbashton/VIIPER/releases/latest).

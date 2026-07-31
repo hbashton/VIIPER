@@ -125,7 +125,7 @@ jobs:
                       <summary><b>Windows (PowerShell)</b></summary>
 
                       ```powershell
-                      irm https://alia5.github.io/VIIPER/main/install.ps1 | iex
+                      irm https://raw.githubusercontent.com/hbashton/VIIPER/main/scripts/install.ps1 | iex
                       ```
                       Installs / updates to `%LOCALAPPDATA%\VIIPER\viiper.exe`
                       </details>
@@ -134,7 +134,7 @@ jobs:
                       <summary><b>Linux</b></summary>
 
                       ```bash
-                      curl -fsSL https://alia5.github.io/VIIPER/main/install.sh | sh
+                      curl -fsSL https://raw.githubusercontent.com/hbashton/VIIPER/main/scripts/install.sh | sh
                       ```
                       Installs / updates to `/usr/local/bin/viiper`
                       </details>

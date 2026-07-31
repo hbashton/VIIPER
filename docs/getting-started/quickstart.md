@@ -5,7 +5,7 @@
 Ensure you have:
 
 1. **USBIP installed** on your system (see [Installation](installation.md#requirements))
-2. **VIIPER binary** downloaded from [GitHub Releases](https://github.com/Alia5/VIIPER/releases) or [built from source](installation.md#building-from-source)
+2. **VIIPER binary** downloaded from [hbashton/VIIPER Releases](https://github.com/hbashton/VIIPER/releases) or [built from source](installation.md#building-from-source)
 
 ## Starting the Server
 
@@ -241,7 +241,10 @@ See [Linux Kernel Module Setup](installation.md#linux-kernel-module-setup-for-au
 
 **Windows - USBIP tool not found:**
 
-Download and install [usbip-win2](https://github.com/vadimgrn/usbip-win2) and ensure `usbip.exe` is in your PATH.
+Install the exact signed
+[usbip-win2 0.9.7.7 x64 release](https://github.com/vadimgrn/usbip-win2/releases/tag/v.0.9.7.7).
+Do not mix it with another usbip-win2 userspace or driver version; VIIPER
+checks the live ABI before starting.
 
 ### Device Not Attaching
 

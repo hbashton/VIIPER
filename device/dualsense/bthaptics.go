@@ -6,15 +6,11 @@ import (
 )
 
 const (
-	BluetoothHapticsReportID   = 0x32
-	BluetoothHapticsReportSize = 141
 	BluetoothHapticsSampleSize = 64
 	BluetoothHapticsSampleRate = 3000
 
-	// BluetoothCombinedHapticsReportID is the transport used by vDS for
-	// controller audio/haptics. Unlike the legacy 0x32 packet, it carries the
-	// current output state and haptics sample in one HID transaction. The fixed
-	// 398-byte size is part of the DualSense Bluetooth framing.
+	// BluetoothCombinedHapticsReportID carries the current output state and
+	// haptics sample in one HID transaction. V5 uses only this atomic carrier.
 	BluetoothCombinedHapticsReportID   = 0x36
 	BluetoothCombinedHapticsReportSize = 398
 	BluetoothCombinedStateSize         = 63
@@ -57,35 +53,7 @@ var defaultBluetoothCombinedState = [BluetoothCombinedStateSize]byte{
 	0x00, 0x0a, 0x07, 0x00, 0x00, 0x02, 0x01, 0x00, 0xff, 0xd7, 0x00,
 }
 
-// BuildBluetoothHapticsReport builds the DualSense Bluetooth HID report used by
-// SAxense to stream 3 kHz stereo 8-bit haptics PCM to a paired controller.
-func BuildBluetoothHapticsReport(sequence uint8, intervalIndex uint8, sample []byte) ([]byte, error) {
-	if len(sample) != BluetoothHapticsSampleSize {
-		return nil, ErrInvalidBluetoothHapticsSample
-	}
-
-	report := make([]byte, BluetoothHapticsReportSize)
-	report[0] = BluetoothHapticsReportID
-	report[1] = (sequence & 0x0F) << 4
-
-	// Packet 0x11: haptics stream control. The last byte is incremented for
-	// each 64-byte PCM interval by SAxense.
-	report[2] = 0x91
-	report[3] = 0x07
-	report[4] = 0xFE
-	report[9] = 0xFF
-	report[10] = intervalIndex
-
-	// Packet 0x12: 64 bytes of signed 8-bit stereo PCM.
-	report[11] = 0x92
-	report[12] = BluetoothHapticsSampleSize
-	copy(report[13:13+BluetoothHapticsSampleSize], sample)
-
-	binary.LittleEndian.PutUint32(report[BluetoothHapticsReportSize-4:], dualSenseBluetoothCRC32(report[:BluetoothHapticsReportSize-4]))
-	return report, nil
-}
-
-// BuildBluetoothCombinedHapticsReport builds the vDS-compatible 0x36 report.
+// BuildBluetoothCombinedHapticsReport builds the V5 combined carrier.
 //
 // Real DualSense Bluetooth traffic combines state, haptics, and speaker data
 // into this report. VIIPER owns the virtual USB haptics stream, while

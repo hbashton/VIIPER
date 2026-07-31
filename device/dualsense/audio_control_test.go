@@ -292,35 +292,35 @@ func TestDualSenseAudioLifecycleDropsInactiveAndStalePCM(t *testing.T) {
 	const bytesPerHapticsReport = (BluetoothHapticsSampleSize / 2) *
 		USBHapticsAudioDownsample * USBHapticsAudioFrameSize
 	half := make([]byte, bytesPerHapticsReport/2)
-	speakerCallbacks := 0
 	speakerResets := 0
 	feedbackCallbacks := 0
-	dev.SetSpeakerCallback(func([]byte) { speakerCallbacks++ })
 	dev.SetSpeakerResetCallback(func() { speakerResets++ })
 	dev.SetOutputCallback(func(OutputState) { feedbackCallbacks++ })
 
 	dev.HandleTransfer(context.Background(), EndpointHapticsAudioOut, usbip.DirOut, half)
-	if speakerCallbacks != 0 || len(dev.hapticsPCM) != 0 {
+	if len(dev.hapticsPCM) != 0 || len(dev.v5SpeakerPCM) != 0 {
 		t.Fatal("inactive render endpoint accepted PCM")
 	}
 
 	dev.SetInterfaceAltSetting(InterfaceHapticsAudio, 1)
 	dev.HandleTransfer(context.Background(), EndpointHapticsAudioOut, usbip.DirOut, half)
-	if speakerCallbacks != 1 || len(dev.hapticsPCM) != len(half) {
+	if len(dev.hapticsPCM) != len(half) ||
+		len(dev.v5SpeakerPCM) != len(half)/USBHapticsAudioFrameSize*dualSenseV5SpeakerFrameSize {
 		t.Fatal("active render endpoint did not retain its partial current generation")
 	}
 
 	dev.SetInterfaceAltSetting(InterfaceHapticsAudio, 0)
 	dev.SetInterfaceAltSetting(InterfaceHapticsAudio, 1)
 	dev.HandleTransfer(context.Background(), EndpointHapticsAudioOut, usbip.DirOut, half)
-	if feedbackCallbacks != 0 || len(dev.hapticsPCM) != len(half) {
+	if feedbackCallbacks != 0 || len(dev.hapticsPCM) != len(half) ||
+		len(dev.v5SpeakerPCM) != len(half)/USBHapticsAudioFrameSize*dualSenseV5SpeakerFrameSize {
 		t.Fatal("stale haptics PCM crossed an interface close/reopen boundary")
 	}
 
 	dev.ResetEndpoint(EndpointHapticsAudioOut)
-	if len(dev.hapticsPCM) != 0 || speakerResets != 4 {
-		t.Fatalf("speaker endpoint reset did not clear transport state: buffered=%d resets=%d",
-			len(dev.hapticsPCM), speakerResets)
+	if len(dev.hapticsPCM) != 0 || len(dev.v5SpeakerPCM) != 0 || speakerResets != 4 {
+		t.Fatalf("speaker endpoint reset did not clear transport state: haptics=%d speaker=%d resets=%d",
+			len(dev.hapticsPCM), len(dev.v5SpeakerPCM), speakerResets)
 	}
 
 	dev.SetInterfaceAltSetting(InterfaceMicrophone, 1)

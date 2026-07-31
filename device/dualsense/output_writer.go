@@ -12,18 +12,10 @@ import (
 const (
 	dualSenseOutputControlQueueCapacity = 32
 	dualSenseOutputAudioQueueCapacity   = 64
-	// Windows submits the virtual DualSense audio endpoint in ten-packet
-	// USB/IP URBs. Reserve the captured maximum packet size for every packet;
-	// the normal 48 kHz four-channel payload is 3,840 bytes and becomes a
-	// 1,920-byte native stereo speaker block.
-	// A V4 frame carries one complete 512-source-frame generation: the
-	// marshalled native feedback plus its matching front-channel stereo PCM.
-	// V5 carries the smaller 480-frame resampled generation. Keep the fixed pool
-	// large enough for V4; V3 and V5 consume smaller prefixes from the same pool.
+	// V5 carries one 480-frame PadSense generation: the combined feedback and
+	// its matching front-channel stereo PCM.
 	dualSenseSpeakerPayloadCapacity = dualSenseAtomicFeedbackPrefix +
-		OutputStateCombinedExtSize +
-		(BluetoothHapticsSampleSize/2)*USBHapticsAudioDownsample*
-			2*USBHapticsAudioBytesPerSample
+		OutputStateV5Size + dualSenseV5SpeakerPayloadSize
 	dualSenseSpeakerTraceInterval = 10 * time.Second
 	dualSenseSpeakerResetTimeout  = 250 * time.Millisecond
 	dualSenseAtomicFeedbackPrefix = 2
@@ -117,7 +109,6 @@ type dualSenseOutputFrame struct {
 // backpressure, so speaker extraction uses a fixed pool and a bounded queue.
 type dualSenseOutputWriter struct {
 	conn            net.Conn
-	version         byte
 	logger          *slog.Logger
 	telemetry       *dualSenseSpeakerStreamTelemetry
 	control         chan dualSenseOutputFrame
@@ -137,7 +128,7 @@ type dualSenseOutputWriter struct {
 	lastTrace       time.Time
 }
 
-func newDualSenseOutputWriter(conn net.Conn, version byte,
+func newDualSenseOutputWriter(conn net.Conn,
 	telemetry *dualSenseSpeakerStreamTelemetry, logger *slog.Logger) *dualSenseOutputWriter {
 	if telemetry == nil {
 		telemetry = &dualSenseSpeakerStreamTelemetry{}
@@ -148,7 +139,6 @@ func newDualSenseOutputWriter(conn net.Conn, version byte,
 	telemetry.active.Store(true)
 	w := &dualSenseOutputWriter{
 		conn:      conn,
-		version:   version,
 		logger:    logger,
 		telemetry: telemetry,
 		control:   make(chan dualSenseOutputFrame, dualSenseOutputControlQueueCapacity),
@@ -156,7 +146,7 @@ func newDualSenseOutputWriter(conn net.Conn, version byte,
 		audioFree: make(chan []byte, dualSenseOutputAudioQueueCapacity),
 		stop:      make(chan struct{}),
 		done:      make(chan struct{}),
-		packet:    make([]byte, 0, StreamFrameV2HeaderSize+dualSenseSpeakerPayloadCapacity),
+		packet:    make([]byte, 0, StreamFrameHeaderSize+dualSenseSpeakerPayloadCapacity),
 		lastTrace: time.Now(),
 	}
 	w.streamViable.Store(conn != nil)
@@ -181,67 +171,15 @@ func (w *dualSenseOutputWriter) EnqueueControl(frameType byte, payload []byte) {
 	})
 }
 
-// EnqueueSpeakerFromUSB extracts front-left/front-right from the native
-// DualSense 48 kHz, four-channel S16LE endpoint. Rear-left/rear-right remain
-// exclusively on the advanced-haptics lane. The extraction itself performs no
-// allocation after writer construction.
-func (w *dualSenseOutputWriter) EnqueueSpeakerFromUSB(usbPCM []byte) {
-	const usbFrameSize = USBHapticsAudioFrameSize
-	const speakerFrameSize = 2 * USBHapticsAudioBytesPerSample
-
-	w.enqueueLock.RLock()
-	defer w.enqueueLock.RUnlock()
-	if w.stopped {
-		return
-	}
-
-	framesRemaining := len(usbPCM) / usbFrameSize
-	if framesRemaining == 0 {
-		return
-	}
-	w.telemetry.receivedPayloads.Add(1)
-	w.telemetry.receivedBytes.Add(uint64(framesRemaining * speakerFrameSize))
-	sourceOffset := 0
-	for framesRemaining > 0 {
-		var buffer []byte
-		select {
-		case buffer = <-w.audioFree:
-		default:
-			w.recordSpeakerDrop(framesRemaining * speakerFrameSize)
-			return
-		}
-
-		frames := min(framesRemaining, cap(buffer)/speakerFrameSize)
-		length := copyDualSenseSpeakerChannels(buffer,
-			usbPCM[sourceOffset:sourceOffset+frames*usbFrameSize])
-		frame := dualSenseOutputFrame{
-			frameType:  StreamFrameSpeakerPCM,
-			payload:    buffer[:length],
-			audio:      true,
-			generation: w.audioGeneration.Load(),
-		}
-		if !w.enqueueFrameLocked(w.audio, frame) {
-			w.audioFree <- buffer[:cap(buffer)]
-			w.recordSpeakerDrop(framesRemaining * speakerFrameSize)
-			return
-		}
-		w.recordSpeakerEnqueue(length)
-
-		framesRemaining -= frames
-		sourceOffset += frames * usbFrameSize
-	}
-}
-
-// EnqueueAtomicAudioHaptics publishes one V4/V5 generation. A little-endian
-// feedback length prefixes the native extended feedback; the remaining bytes
-// are the matching stereo PCM block. V5 requires exactly 480 frames.
+// EnqueueAtomicAudioHaptics publishes one V5 generation. A little-endian
+// feedback length prefixes the native combined feedback; the remaining bytes
+// are exactly 480 matching stereo PCM frames.
 func (w *dualSenseOutputWriter) EnqueueAtomicAudioHaptics(feedback, speakerPCM []byte) {
 	if len(feedback) == 0 || len(feedback) > int(^uint16(0)) ||
 		len(speakerPCM) == 0 {
 		return
 	}
-	if w.version == StreamFrameVersionV5 &&
-		len(speakerPCM) != dualSenseV5SpeakerPayloadSize {
+	if len(speakerPCM) != dualSenseV5SpeakerPayloadSize {
 		return
 	}
 
@@ -286,8 +224,8 @@ func (w *dualSenseOutputWriter) EnqueueAtomicAudioHaptics(feedback, speakerPCM [
 	w.recordSpeakerEnqueue(len(speakerPCM))
 }
 
-// acquireAtomicAudioBuffer preserves the legacy V4 drop-new contract. V5 is
-// explicitly realtime: when TCP momentarily falls behind and every fixed pool
+// acquireAtomicAudioBuffer keeps V5 realtime: when TCP momentarily falls
+// behind and every fixed pool
 // buffer is owned, evict the oldest queued (not in-flight) media generation so
 // the newest native USB generation can still be published without growing an
 // unbounded stale-audio reserve.
@@ -298,9 +236,6 @@ func (w *dualSenseOutputWriter) acquireAtomicAudioBuffer() []byte {
 	default:
 	}
 
-	if w.version != StreamFrameVersionV5 {
-		return nil
-	}
 	select {
 	case oldest := <-w.audio:
 		w.recordSpeakerDrop(atomicSpeakerPCMBytes(oldest.payload))
@@ -354,22 +289,6 @@ func (w *dualSenseOutputWriter) recordSpeakerWrite(length int) {
 	if previous > 0 && now > previous {
 		recordMaximumInt64(&w.telemetry.maxWriteGapNS, now-previous)
 	}
-}
-
-// copyDualSenseSpeakerChannels copies the first stereo pair from interleaved
-// four-channel S16LE PCM into dst and returns the number of bytes written.
-func copyDualSenseSpeakerChannels(dst, src []byte) int {
-	const usbFrameSize = USBHapticsAudioFrameSize
-	const speakerFrameSize = 2 * USBHapticsAudioBytesPerSample
-
-	frames := min(len(src)/usbFrameSize, len(dst)/speakerFrameSize)
-	for frame := 0; frame < frames; frame++ {
-		source := frame * usbFrameSize
-		destination := frame * speakerFrameSize
-		copy(dst[destination:destination+speakerFrameSize],
-			src[source:source+speakerFrameSize])
-	}
-	return frames * speakerFrameSize
 }
 
 // enqueueFrameLocked requires enqueueLock to be held for reading. Shutdown
@@ -540,25 +459,25 @@ func (w *dualSenseOutputWriter) write(frame dualSenseOutputFrame) bool {
 	if len(frame.payload) > int(^uint16(0)) {
 		return true
 	}
-	packetLength := StreamFrameV2HeaderSize + len(frame.payload)
+	packetLength := StreamFrameHeaderSize + len(frame.payload)
 	if cap(w.packet) < packetLength {
 		w.packet = make([]byte, packetLength)
 	} else {
 		w.packet = w.packet[:packetLength]
 	}
-	header := w.packet[:StreamFrameV2HeaderSize]
+	header := w.packet[:StreamFrameHeaderSize]
 	header[0] = StreamFrameMagic0
 	header[1] = StreamFrameMagic1
 	header[2] = StreamFrameMagic2
 	header[3] = StreamFrameMagic3
-	header[4] = w.version
+	header[4] = StreamFrameVersionV5
 	header[5] = frame.frameType
 	binary.LittleEndian.PutUint16(header[6:8], uint16(len(frame.payload)))
 	binary.LittleEndian.PutUint32(header[8:12], w.sequence)
 	w.sequence++
 	binary.LittleEndian.PutUint32(header[12:16],
 		framedStreamCRC(header[4:12], frame.payload))
-	copy(w.packet[StreamFrameV2HeaderSize:], frame.payload)
+	copy(w.packet[StreamFrameHeaderSize:], frame.payload)
 
 	remaining := w.packet
 	for len(remaining) > 0 {
