@@ -153,12 +153,6 @@ func (c *deadlineTrackingConn) Close() error {
 	return err
 }
 
-func (c *deadlineTrackingConn) writeDeadlines() []time.Time {
-	c.deadlineLock.Lock()
-	defer c.deadlineLock.Unlock()
-	return append([]time.Time(nil), c.deadlines...)
-}
-
 func TestDualSenseV5WriterWriteFailureCannotRaceFinalDrain(t *testing.T) {
 	server, client := net.Pipe()
 	conn := &writeStartedConn{Conn: server, started: make(chan struct{})}
