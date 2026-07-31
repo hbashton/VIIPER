@@ -50,7 +50,7 @@ func TestAppendDualSenseV5SpeakerPreservesRawFrontPair(t *testing.T) {
 }
 
 func TestDualSenseV5MaintainsIndependentGenerationsAcrossArbitraryUSBChunks(t *testing.T) {
-	// Seventeen speaker generations cross the second PadSense rear-lane
+	// Seventeen speaker generations cross the second V5 rear-lane
 	// shortage at generation 16. Stop one frame before the next 512 boundary so
 	// no completed rear sample remains queued after the final speaker report.
 	const sourceFrames = 17*dualSenseV5SpeakerFrames + 31
@@ -229,7 +229,7 @@ func TestDualSenseV5SpeakerCombinesFreshStateWithCompletedRearSample(t *testing.
 	device.HandleTransfer(context.Background(), EndpointHapticsAudioOut,
 		usbip.DirOut, pcm[:480*USBHapticsAudioFrameSize])
 	// Complete rear sample A, then change live state to B before speaker boundary
-	// 960. PadSense combines that completed sample with state B at presentation;
+	// 960. V5 combines that completed sample with state B at presentation;
 	// state is not frozen on the independent 512-frame rear clock.
 	device.HandleTransfer(context.Background(), EndpointHapticsAudioOut,
 		usbip.DirOut, pcm[480*USBHapticsAudioFrameSize:512*USBHapticsAudioFrameSize])

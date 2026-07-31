@@ -19,9 +19,6 @@ import (
 
 func init() {
 	api.RegisterDevice("dualshock4", &handler{})
-	api.RegisterDevice("dualshock4micv2", &handler{
-		microphoneInput: true, streamFrameVersion: StreamFrameVersionV2,
-	})
 	api.RegisterDevice("dualshock4audioduplexv3", &handler{
 		microphoneInput: true, speakerOutput: true,
 		streamFrameVersion: StreamFrameVersionV3,
@@ -381,13 +378,13 @@ func (w *dualShock4OutputWriter) write(frame dualShock4OutputFrame) bool {
 	if len(frame.payload) > int(^uint16(0)) {
 		return true
 	}
-	packetLength := StreamFrameV2HeaderSize + len(frame.payload)
+	packetLength := StreamFrameHeaderSize + len(frame.payload)
 	if cap(w.packet) < packetLength {
 		w.packet = make([]byte, packetLength)
 	} else {
 		w.packet = w.packet[:packetLength]
 	}
-	header := w.packet[:StreamFrameV2HeaderSize]
+	header := w.packet[:StreamFrameHeaderSize]
 	header[0] = StreamFrameMagic0
 	header[1] = StreamFrameMagic1
 	header[2] = StreamFrameMagic2
@@ -399,7 +396,7 @@ func (w *dualShock4OutputWriter) write(frame dualShock4OutputFrame) bool {
 	w.sequence++
 	binary.LittleEndian.PutUint32(header[12:16],
 		dualShock4FramedStreamCRC(header[4:12], frame.payload))
-	copy(w.packet[StreamFrameV2HeaderSize:], frame.payload)
+	copy(w.packet[StreamFrameHeaderSize:], frame.payload)
 	remaining := w.packet
 	for len(remaining) > 0 {
 		n, err := w.conn.Write(remaining)
@@ -469,13 +466,12 @@ func readDualShock4InputStream(conn net.Conn, ds4 *DualShock4,
 		}
 	}
 
-	if frameVersion != StreamFrameVersionV2 &&
-		frameVersion != StreamFrameVersionV3 {
+	if frameVersion != StreamFrameVersionV3 {
 		return fmt.Errorf("unsupported DualShock 4 framed stream version 0x%02X",
 			frameVersion)
 	}
 
-	header := make([]byte, StreamFrameV2HeaderSize)
+	header := make([]byte, StreamFrameHeaderSize)
 	input := make([]byte, InputStateSize)
 	microphonePCM := make([]byte, USBMicrophoneClientFrameSize)
 	var expectedSequence uint32

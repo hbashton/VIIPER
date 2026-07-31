@@ -258,7 +258,7 @@ func TestDualSenseV5WriterResetBoundsBlockedWrite(t *testing.T) {
 	_ = client.Close()
 }
 
-func TestDualSenseAndEdgeV5HandlersUseAtomicPadSenseContract(t *testing.T) {
+func TestDualSenseAndEdgeV5HandlersUseAtomicV5Contract(t *testing.T) {
 	for _, edge := range []bool{false, true} {
 		name := "DualSense"
 		var dev usb.Device

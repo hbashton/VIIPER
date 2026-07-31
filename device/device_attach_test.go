@@ -18,7 +18,7 @@ import (
 	_ "github.com/Alia5/VIIPER/internal/registry" // Register devices
 )
 
-func TestDualSenseRegistryOnlyExposesPadSenseV5(t *testing.T) {
+func TestDualSenseRegistryOnlyExposesV5Contract(t *testing.T) {
 	var got []string
 	for _, deviceType := range api.ListDeviceTypes() {
 		if strings.HasPrefix(deviceType, "dualsense") {

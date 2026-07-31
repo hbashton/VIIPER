@@ -318,7 +318,7 @@ func TestDualSenseOutputReportFromEndpoint(t *testing.T) {
 	}
 }
 
-func TestDualSenseHapticsAudioOutBuildsPadSenseV5Carrier(t *testing.T) {
+func TestDualSenseHapticsAudioOutBuildsV5Carrier(t *testing.T) {
 	dev, err := New(nil)
 	if err != nil {
 		t.Fatalf("New returned error: %v", err)

@@ -128,7 +128,7 @@ type OutputState struct {
 	BluetoothCombinedOutputReport [BluetoothCombinedHapticsReportSize]byte
 }
 
-// MarshalV5Binary emits the single PadSense transport feedback contract:
+// MarshalV5Binary emits the single V5 transport feedback contract:
 // compact state, native USB output report, and combined Bluetooth carrier.
 func (f *OutputState) MarshalV5Binary() ([]byte, error) {
 	b := make([]byte, OutputStateV5Size)
@@ -161,7 +161,7 @@ func (f *OutputState) MarshalV5Binary() ([]byte, error) {
 	return b, nil
 }
 
-// UnmarshalV5Binary accepts only the production PadSense feedback payload.
+// UnmarshalV5Binary accepts only the production V5 feedback payload.
 // Legacy compact and partially extended payloads are deliberately rejected.
 func (f *OutputState) UnmarshalV5Binary(data []byte) error {
 	if len(data) != OutputStateV5Size {

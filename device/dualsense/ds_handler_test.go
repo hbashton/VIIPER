@@ -96,7 +96,7 @@ func TestReadDualSenseV5InputStreamRejectsLegacyVersion(t *testing.T) {
 	}
 	_ = client.Close()
 	err := <-errCh
-	if err == nil || !strings.Contains(err.Error(), "requires PadSense V5") {
+	if err == nil || !strings.Contains(err.Error(), "requires V5 stream") {
 		t.Fatalf("unexpected legacy version result: %v", err)
 	}
 }

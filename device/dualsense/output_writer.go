@@ -12,7 +12,7 @@ import (
 const (
 	dualSenseOutputControlQueueCapacity = 32
 	dualSenseOutputAudioQueueCapacity   = 64
-	// V5 carries one 480-frame PadSense generation: the combined feedback and
+	// V5 carries one 480-frame V5 generation: the combined feedback and
 	// its matching front-channel stereo PCM.
 	dualSenseSpeakerPayloadCapacity = dualSenseAtomicFeedbackPrefix +
 		OutputStateV5Size + dualSenseV5SpeakerPayloadSize

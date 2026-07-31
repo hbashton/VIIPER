@@ -51,7 +51,7 @@ func TestAPIServer_DeviceStreamCloseFirstReconnectKeepsDS4MicrophoneQueue(t *tes
 	require.NoError(t, usbServer.AddBus(bus))
 
 	client := viiperclient.New(apiServer.Addr())
-	created, err := client.DeviceAdd(busID, "dualshock4micv2", nil)
+	created, err := client.DeviceAdd(busID, "dualshock4audioduplexv3", nil)
 	require.NoError(t, err)
 	require.NotNil(t, created)
 
@@ -120,7 +120,7 @@ func makeDS4StreamFrame(sequence uint32, payload []byte) []byte {
 	const headerSize = 16
 	header := make([]byte, headerSize)
 	copy(header[0:4], []byte{'V', 'P', 'C', 'M'})
-	header[4] = dualshock4.StreamFrameVersionV2
+	header[4] = dualshock4.StreamFrameVersionV3
 	header[5] = dualshock4.StreamFrameMicrophonePCM
 	binary.LittleEndian.PutUint16(header[6:8], uint16(len(payload)))
 	binary.LittleEndian.PutUint32(header[8:12], sequence)

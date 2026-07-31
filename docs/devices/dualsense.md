@@ -6,7 +6,7 @@ advanced haptics, and microphone endpoints.
 
 ## Supported device types
 
-VIIPER 0.0.6 exposes only the production PadSense-derived V5 contracts:
+VIIPER 0.0.6 exposes only the production V5 contracts:
 
 | Device type | USB functions |
 | --- | --- |
@@ -49,7 +49,7 @@ frames. The four-channel virtual USB source is preserved at 48 kHz: front
 left/right become the speaker generation, while rear left/right independently
 complete the 512-frame advanced-haptics clock. At each 480-frame presentation
 boundary VIIPER consumes one completed rear sample or emits silence for that
-lane, matching the proven PadSense cadence without replaying stale haptics.
+lane, matching the proven V5 cadence without replaying stale haptics.
 
 Controller state, adaptive triggers, lightbar, rumble, haptics, and speaker
 data are serialized by one V5 writer. Media backpressure is bounded and
@@ -98,4 +98,4 @@ The 474-byte V5 feedback object contains:
 
 The combined carrier keeps state and media on one presentation clock. The
 physical-controller bridge supplies the encoded speaker lane and forwards it
-using its PadSense-derived transport.
+using its V5 transport.

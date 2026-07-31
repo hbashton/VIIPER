@@ -51,12 +51,11 @@ const (
 
 const (
 	InputStateSize           = 31
-	StreamFrameV2HeaderSize  = 16
+	StreamFrameHeaderSize    = 16
 	StreamFrameMagic0        = 0x56
 	StreamFrameMagic1        = 0x50
 	StreamFrameMagic2        = 0x43
 	StreamFrameMagic3        = 0x4D
-	StreamFrameVersionV2     = 0x02
 	StreamFrameVersionV3     = 0x03
 	StreamFrameInputState    = 0x01
 	StreamFrameMicrophonePCM = 0x02

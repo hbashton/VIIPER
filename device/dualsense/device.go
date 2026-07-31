@@ -176,7 +176,7 @@ func (d *DualSense) SetOutputCallback(f func(OutputState)) {
 
 // SetAtomicAudioHapticsCallback installs the V5 transport consumer. Each
 // callback contains native feedback and one front-channel PCM generation.
-// The PadSense contract emits exactly 480
+// The V5 contract emits exactly 480
 // raw 48 kHz speaker frames and consumes one independently completed rear
 // haptics sample, or silence when that 512-frame lane has not completed yet.
 func (d *DualSense) SetAtomicAudioHapticsCallback(f func(OutputState, []byte)) {
@@ -519,7 +519,7 @@ type dualSenseV5HapticsGeneration struct {
 // order while keeping its two media clocks independent. Front stereo is
 // published every 480 frames. Rear haptics completes every 512 frames and is
 // queued independently. At each speaker boundary, exactly one completed rear
-// sample is consumed; if none is ready, PadSense sends silence rather than
+// sample is consumed; if none is ready, V5 sends silence rather than
 // replaying the previous sample. State and report counters are rebuilt at that
 // same 480-frame boundary so every emitted report is current and sequential.
 func (d *DualSense) consumeDualSenseV5AudioLocked(src []byte,

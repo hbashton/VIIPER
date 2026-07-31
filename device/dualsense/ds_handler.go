@@ -109,7 +109,7 @@ func dualSenseV5StreamHandler(deviceName string) api.StreamHandlerFunc {
 			return fmt.Errorf("%w: expected %s", device.ErrWrongDeviceType, deviceName)
 		}
 
-		logger.Info(deviceName+" PadSense V5 stream configured",
+		logger.Info(deviceName+" V5 stream configured",
 			"microphoneInput", true,
 			"speakerOutput", true,
 			"frameVersion", StreamFrameVersionV5)
@@ -188,7 +188,7 @@ func readDualSenseV5InputStream(conn net.Conn, dse *DualSense, logger *slog.Logg
 				header[0], header[1], header[2], header[3])
 		}
 		if header[4] != StreamFrameVersionV5 {
-			return fmt.Errorf("DualSense requires PadSense V5 stream version 0x%02X; got 0x%02X",
+			return fmt.Errorf("DualSense requires V5 stream version 0x%02X; got 0x%02X",
 				StreamFrameVersionV5, header[4])
 		}
 

@@ -65,7 +65,7 @@ const (
 	StreamFrameInputState    = 0x01
 	StreamFrameMicrophonePCM = 0x02
 	StreamFrameOutputState   = 0x81
-	// V5 follows the proven PadSense contract. It retains atomic delivery, but
+	// V5 follows the proven V5 contract. It retains atomic delivery, but
 	// separates the endpoint's two clocks. Its
 	// speaker tail is exactly 480 raw front-stereo S16LE frames (10 ms at the
 	// native 48 kHz source clock). Rear channels independently produce one

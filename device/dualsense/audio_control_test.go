@@ -9,7 +9,7 @@ import (
 	"github.com/Alia5/VIIPER/usbip"
 )
 
-func TestDualSenseAudioFeatureControlsMatchDS5Bridge(t *testing.T) {
+func TestDualSenseAudioFeatureControlsMatchProductionReference(t *testing.T) {
 	constructors := map[string]func(*testing.T) *DualSense{
 		"DualSense": func(t *testing.T) *DualSense {
 			dev, err := New(nil)

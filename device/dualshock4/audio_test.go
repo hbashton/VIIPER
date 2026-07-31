@@ -148,7 +148,7 @@ func TestDuplexWriterFramesSpeakerPCM(t *testing.T) {
 
 	pcm := []byte{0x00, 0x01, 0xFE, 0xFF}
 	writer.EnqueueAudio(StreamFrameSpeakerPCM, pcm)
-	header := make([]byte, StreamFrameV2HeaderSize)
+	header := make([]byte, StreamFrameHeaderSize)
 	_, err := io.ReadFull(client, header)
 	require.NoError(t, err)
 	payload := make([]byte, binary.LittleEndian.Uint16(header[6:8]))
@@ -399,8 +399,8 @@ func TestSpeakerResetBoundsBlockedWriteAndDropsQueuedGeneration(t *testing.T) {
 	writes, deadlines, closeCount := conn.snapshot()
 	require.Len(t, writes, 1,
 		"queued old-generation speaker PCM was replayed after reset")
-	require.GreaterOrEqual(t, len(writes[0]), StreamFrameV2HeaderSize+1)
-	assert.Equal(t, byte(0x11), writes[0][StreamFrameV2HeaderSize])
+	require.GreaterOrEqual(t, len(writes[0]), StreamFrameHeaderSize+1)
+	assert.Equal(t, byte(0x11), writes[0][StreamFrameHeaderSize])
 	require.Len(t, deadlines, 1,
 		"timed-out stream must not clear its reset deadline")
 	assert.False(t, deadlines[0].IsZero())
@@ -418,7 +418,7 @@ func TestSpeakerResetBoundsBlockedWriteAndDropsQueuedGeneration(t *testing.T) {
 
 func readDualShock4OutputPayload(t *testing.T, reader io.Reader) []byte {
 	t.Helper()
-	header := make([]byte, StreamFrameV2HeaderSize)
+	header := make([]byte, StreamFrameHeaderSize)
 	_, err := io.ReadFull(reader, header)
 	require.NoError(t, err)
 	require.Equal(t, byte(StreamFrameSpeakerPCM), header[5])
@@ -438,7 +438,7 @@ func TestFramedStreamQueuesDS4MicrophonePCM(t *testing.T) {
 	go func() {
 		done <- readDualShock4InputStream(server, dev,
 			slog.New(slog.NewTextHandler(io.Discard, nil)), true,
-			StreamFrameVersionV2)
+			StreamFrameVersionV3)
 	}()
 
 	input, err := NewInputState().MarshalBinary()
@@ -516,12 +516,12 @@ func TestDS4MicrophoneQueuePrimesAndExposesRecoveryTelemetry(t *testing.T) {
 
 func makeDualShock4StreamFrame(frameType byte, sequence uint32,
 	payload []byte) []byte {
-	header := make([]byte, StreamFrameV2HeaderSize)
+	header := make([]byte, StreamFrameHeaderSize)
 	header[0] = StreamFrameMagic0
 	header[1] = StreamFrameMagic1
 	header[2] = StreamFrameMagic2
 	header[3] = StreamFrameMagic3
-	header[4] = StreamFrameVersionV2
+	header[4] = StreamFrameVersionV3
 	header[5] = frameType
 	binary.LittleEndian.PutUint16(header[6:8], uint16(len(payload)))
 	binary.LittleEndian.PutUint32(header[8:12], sequence)

@@ -134,7 +134,7 @@ func (s *audioFeatureState) resetStreamGain() {
 // hardware ADC gain. Windows initializes that control to 0 dB even when its
 // endpoint slider reads 100%; applying it again to already captured client PCM
 // attenuates the virtual microphone by exactly 48 dB. Match the physical device
-// and DS5 Bridge boundary: retain and round-trip that host control, but leave
+// and the production reference boundary: retain and round-trip that host control, but leave
 // client-provided capture PCM at unity. Mute remains effective for both paths.
 func (s *audioFeatureState) targetGain() float64 {
 	if s.mute {

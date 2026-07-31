@@ -16,7 +16,7 @@ const (
 	BluetoothCombinedStateSize         = 63
 	BluetoothCombinedHapticsOffset     = 78
 	BluetoothCombinedSpeakerOffset     = 142
-	// DS5Dongle exposes the five packet-0x11 buffer fields as a 16-127
+	// CombinedReportReference exposes the five packet-0x11 buffer fields as a 16-127
 	// setting. Its default is 64, which retains a noticeably delayed haptics
 	// queue when the virtual USB stream is already paced in realtime. Keep the
 	// stream clock unchanged, but request the smallest documented queue from
