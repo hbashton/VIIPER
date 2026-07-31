@@ -471,7 +471,6 @@ func (d *DualSense) handleHapticsAudioOut(out []byte) {
 	}
 
 	processed, release := d.speakerAudioFeature.applyPCM(out, USBHapticsAudioChannels)
-	atomicAudioHapticsFunc := d.atomicAudioHapticsFunc
 	reports := d.consumeDualSenseV5AudioLocked(processed, receivedAt)
 	// The callback is deliberately completed under the device lock. This makes
 	// an alternate-setting or endpoint reset a hard generation barrier: once the
@@ -490,7 +489,7 @@ func (d *DualSense) handleHapticsAudioOut(out []byte) {
 
 		d.mtx.Lock()
 		outputFunc := d.outputFunc
-		atomicAudioHapticsFunc = d.atomicAudioHapticsFunc
+		atomicAudioHapticsFunc := d.atomicAudioHapticsFunc
 		if outputFunc != nil || atomicAudioHapticsFunc != nil {
 			feedback := pending.feedback
 			d.mtx.Unlock()
