@@ -37,6 +37,11 @@ func (s *Server) Run(logger *slog.Logger, rawLogger log.RawLogger) error {
 }
 
 func (s *Server) StartServer(ctx context.Context, logger *slog.Logger, rawLogger log.RawLogger) error {
+	if err := requireUSBIPRuntime(); err != nil {
+		logger.Error("Refusing to start VIIPER with an incompatible USB/IP runtime", "error", err)
+		return err
+	}
+
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	tray.Run(ctx, cancel)

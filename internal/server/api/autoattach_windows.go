@@ -317,9 +317,8 @@ func CheckAutoAttachPrerequisites(useNativeIOCTL bool, logger *slog.Logger) bool
 		if err != nil {
 			logger.Warn("Native IOCTL auto-attach prerequisites not met", "error", err)
 			logger.Warn("Native IOCTL auto-attach is unavailable until discovery succeeds")
-			logger.Info("If usbip-win2 is not installed, download and install:")
-			logger.Info("  https://github.com/vadimgrn/usbip-win2")
-			logger.Info("  https://github.com/OSSign/vadimgrn--usbip-win2")
+			logger.Info("Install the exact signed usbip-win2 0.9.7.7 x64 package:")
+			logger.Info("  https://github.com/vadimgrn/usbip-win2/releases/tag/v.0.9.7.7")
 			return false
 		}
 		logger.Debug("usbip-win2 driver found")
