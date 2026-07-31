@@ -11,7 +11,9 @@ const (
 const (
 	DeviceTypeCombinedAudioDuplexV5     = "dualsensecombinedaudioduplexv5"
 	DeviceTypeAudioOnlyDuplexV5         = "dualsenseaudioonlyduplexv5"
+	DeviceTypeGamepadOnlyV5             = "dualsensegamepadv5"
 	DeviceTypeEdgeCombinedAudioDuplexV5 = "dualsenseedgecombinedaudioduplexv5"
+	DeviceTypeEdgeGamepadOnlyV5         = "dualsenseedgegamepadv5"
 )
 
 const (

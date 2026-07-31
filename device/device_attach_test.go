@@ -30,6 +30,8 @@ func TestDualSenseRegistryOnlyExposesV5Contract(t *testing.T) {
 		"dualsenseaudioonlyduplexv5",
 		"dualsensecombinedaudioduplexv5",
 		"dualsenseedgecombinedaudioduplexv5",
+		"dualsenseedgegamepadv5",
+		"dualsensegamepadv5",
 	}, got)
 }
 

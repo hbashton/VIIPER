@@ -18,10 +18,12 @@ import (
 func init() {
 	api.RegisterDevice(DeviceTypeCombinedAudioDuplexV5, &dshandler{})
 	api.RegisterDevice(DeviceTypeAudioOnlyDuplexV5, &dshandler{audioOnly: true})
+	api.RegisterDevice(DeviceTypeGamepadOnlyV5, &dshandler{gamepadOnly: true})
 }
 
 type dshandler struct {
-	audioOnly bool
+	audioOnly   bool
+	gamepadOnly bool
 }
 
 func (h *dshandler) CreateDevice(o *device.CreateOptions) (usb.Device, error) {
@@ -90,6 +92,9 @@ func (h *dshandler) CreateDevice(o *device.CreateOptions) (usb.Device, error) {
 	if h.audioOnly {
 		dse.descriptor = makeAudioOnlyDescriptor(false)
 		dse.deviceType = DeviceTypeAudioOnlyDuplexV5
+	} else if h.gamepadOnly {
+		dse.descriptor = makeGamepadOnlyDescriptor(false)
+		dse.deviceType = DeviceTypeGamepadOnlyV5
 	}
 	return dse, nil
 }

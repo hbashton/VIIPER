@@ -39,6 +39,28 @@ func TestAudioOnlyDescriptorKeepsAudioAndRemovesHID(t *testing.T) {
 	}
 }
 
+func TestGamepadOnlyDescriptorKeepsHIDAndRemovesAudio(t *testing.T) {
+	for _, edge := range []bool{false, true} {
+		desc := makeGamepadOnlyDescriptor(edge)
+		if got := desc.NumInterfaces(); got != 1 {
+			t.Fatalf("edge=%t gamepad-only descriptor exposes %d interfaces; want 1",
+				edge, got)
+		}
+
+		iface := desc.Interfaces[0]
+		if iface.HID == nil || iface.Descriptor.BInterfaceClass != 0x03 {
+			t.Fatalf("edge=%t gamepad-only descriptor did not retain HID", edge)
+		}
+		for _, endpoint := range iface.Endpoints {
+			if endpoint.BEndpointAddress == EndpointHapticsAudioOut ||
+				endpoint.BEndpointAddress == EndpointMicrophoneIn {
+				t.Fatalf("edge=%t gamepad-only descriptor retained audio endpoint 0x%02X",
+					edge, endpoint.BEndpointAddress)
+			}
+		}
+	}
+}
+
 func TestDualSenseUSBOutputReportDescriptorMatchesCapture(t *testing.T) {
 	dev, err := New(nil)
 	if err != nil {

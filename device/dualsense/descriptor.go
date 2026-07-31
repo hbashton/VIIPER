@@ -372,6 +372,22 @@ func makeAudioOnlyDescriptor(edge bool) usb.Descriptor {
 	return desc
 }
 
+// makeGamepadOnlyDescriptor is the complement of the audio-only sidecar.
+// Keeping the HID controller and its UAC interfaces on separate USB devices
+// lets clients replace the game-visible controller without tearing down the
+// stable Windows playback and recording endpoints owned by the sidecar.
+func makeGamepadOnlyDescriptor(edge bool) usb.Descriptor {
+	desc := makeDescriptor(edge)
+	interfaces := make([]usb.InterfaceConfig, 0, 1)
+	for _, iface := range desc.Interfaces {
+		if iface.HID != nil || iface.Descriptor.BInterfaceClass == 0x03 {
+			interfaces = append(interfaces, iface)
+		}
+	}
+	desc.Interfaces = interfaces
+	return desc
+}
+
 func withoutEdgeFeatureReports(items []hid.Item) []hid.Item {
 	filtered := make([]hid.Item, 0, len(items))
 	for i := 0; i < len(items); i++ {
