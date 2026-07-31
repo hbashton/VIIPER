@@ -14,7 +14,7 @@ This is an automatically generated client library for [VIIPER](https://github.co
 ## Documentation
 
 - **Project Repository**: https://github.com/Alia5/VIIPER
-- **Documentation**: https://alia5.github.io/VIIPER/
+- **Documentation**: https://github.com/hbashton/VIIPER
 
 ## About VIIPER
 

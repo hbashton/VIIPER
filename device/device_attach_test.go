@@ -2,6 +2,8 @@ package device_test
 
 import (
 	"context"
+	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,6 +17,21 @@ import (
 
 	_ "github.com/Alia5/VIIPER/internal/registry" // Register devices
 )
+
+func TestDualSenseRegistryOnlyExposesPadSenseV5(t *testing.T) {
+	var got []string
+	for _, deviceType := range api.ListDeviceTypes() {
+		if strings.HasPrefix(deviceType, "dualsense") {
+			got = append(got, deviceType)
+		}
+	}
+	sort.Strings(got)
+	assert.Equal(t, []string{
+		"dualsenseaudioonlyduplexv5",
+		"dualsensecombinedaudioduplexv5",
+		"dualsenseedgecombinedaudioduplexv5",
+	}, got)
+}
 
 func TestDeviceAttach(t *testing.T) {
 

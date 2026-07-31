@@ -18,17 +18,23 @@ You must have a USBIP-Client implementation available on your system to use VIIP
 
 === "Windows"
 
-    [usbip-win2](https://github.com/vadimgrn/usbip-win2) is by far the most complete implementation of USBIP for Windows (comes with a **SIGNED** kernel mode driver).
+    VIIPER for DS4Windows requires the signed
+    [usbip-win2 0.9.7.7 x64 release](https://github.com/vadimgrn/usbip-win2/releases/tag/v.0.9.7.7).
+    Use the DS4Windows **Install / Repair VIIPER** action whenever possible; its
+    package contains this exact verified installer.
 
-    **Install and done 😉**
+    !!! danger "Do not substitute another USBIP build"
+        This release is ABI-pinned to **0.9.7.7**. Version 0.9.7.8 reproduced
+        kernel pool corruption during controller attachment and is explicitly
+        rejected. The installer verifies the version and live ABI before
+        allowing VIIPER to start.
 
-    !!! warning "USBIP-Win2 security issue"
-        The releases of usbip-win2 **currently** (at the time of writing) install the publicly available test signing CA as a _trusted root CA_ on your system.
-        You can safely remove this CA after installation using `certmgr.msc` (run as admin) and removing the "USBIP" from the "Trusted Root Certification Authorities" -> "Certificates" list.
-
-        **Alternatively**, you can download and install the **latest pre-release** driver manually from the
-        [OSSign repository](https://github.com/OSSign/vadimgrn--usbip-win2/releases), which has this issue fixed already.
-        _Note_ that the installer does not work, only the driver `.cat,.inf,.sys` files.
+    !!! warning "USBIP-Win2 signing certificate"
+        The upstream 0.9.7.7 installer may add the publicly available USBIP
+        test-signing CA to **Trusted Root Certification Authorities**. After
+        installation, you may remove the certificate named **USBIP** with
+        `certlm.msc` (run as administrator). Do not replace 0.9.7.7 with a
+        newer or OSSign build: VIIPER validates this exact userspace/driver ABI.
 
 === "Linux"
 
@@ -107,7 +113,7 @@ You must have a USBIP-Client implementation available on your system to use VIIP
 
     ### Pre-built Binaries
 
-    Download the latest release from the [GitHub Releases](https://github.com/Alia5/VIIPER/releases) page. Pre-built binaries are available for:
+    Download the latest release from the [hbashton/VIIPER Releases](https://github.com/hbashton/VIIPER/releases) page. Pre-built binaries are available for:
 
     - Windows (x64, ARM64)
     - Linux (x64, ARM64)
@@ -135,7 +141,7 @@ You must have a USBIP-Client implementation available on your system to use VIIP
     === "Windows"
 
         ```powershell
-        irm https://alia5.github.io/VIIPER/stable/install.ps1 | iex
+        irm https://raw.githubusercontent.com/hbashton/VIIPER/main/scripts/install.ps1 | iex
         ```
 
         Installs to: `%LOCALAPPDATA%\VIIPER\viiper.exe`
@@ -151,7 +157,7 @@ You must have a USBIP-Client implementation available on your system to use VIIP
     === "Linux"
 
         ```bash
-        curl -fsSL https://alia5.github.io/VIIPER/stable/install.sh | sh
+        curl -fsSL https://raw.githubusercontent.com/hbashton/VIIPER/main/scripts/install.sh | sh
         ```
 
         Installs to: `/usr/local/bin/viiper`
@@ -174,7 +180,7 @@ You must have a USBIP-Client implementation available on your system to use VIIP
 
     ## Pre-built Binaries
 
-    Download the latest `libVIIPER` release artifact from the [GitHub Releases](https://github.com/Alia5/VIIPER/releases) page.
+    Download the latest `libVIIPER` release artifact from the [hbashton/VIIPER Releases](https://github.com/hbashton/VIIPER/releases) page.
     The archive contains:
 
     - `libVIIPER.dll` / `libVIIPER.so`: the shared library
@@ -184,7 +190,7 @@ You must have a USBIP-Client implementation available on your system to use VIIP
     ## Building from Source
 
     ```bash
-    git clone https://github.com/Alia5/VIIPER.git
+    git clone https://github.com/hbashton/VIIPER.git
     cd VIIPER
     just build-libVIIPER
     ```

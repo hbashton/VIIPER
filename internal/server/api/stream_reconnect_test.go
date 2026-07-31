@@ -157,7 +157,7 @@ func TestAPIServer_DeviceStreamCloseFirstReconnectPreservesDualSenseMicrophoneQu
 	require.NoError(t, usbServer.AddBus(bus))
 
 	client := viiperclient.New(apiServer.Addr())
-	created, err := client.DeviceAdd(busID, "dualsensecombinedmicv2", nil)
+	created, err := client.DeviceAdd(busID, "dualsensecombinedaudioduplexv5", nil)
 	require.NoError(t, err)
 	require.NotNil(t, created)
 
@@ -219,7 +219,7 @@ func makeDualSenseStreamFrame(sequence uint32, payload []byte) []byte {
 	const headerSize = 16
 	header := make([]byte, headerSize)
 	copy(header[0:4], []byte{'V', 'P', 'C', 'M'})
-	header[4] = dualsense.StreamFrameVersionV2
+	header[4] = dualsense.StreamFrameVersionV5
 	header[5] = dualsense.StreamFrameMicrophonePCM
 	binary.LittleEndian.PutUint16(header[6:8], uint16(len(payload)))
 	binary.LittleEndian.PutUint32(header[8:12], sequence)

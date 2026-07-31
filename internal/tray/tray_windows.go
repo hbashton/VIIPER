@@ -13,6 +13,7 @@ import (
 	"runtime/debug"
 
 	"fyne.io/systray"
+	"github.com/Alia5/VIIPER/internal/codegen/common"
 	"golang.org/x/sys/windows/registry"
 )
 
@@ -67,6 +68,14 @@ func Run(ctx context.Context, shutdown func()) {
 }
 
 func readVersion() string {
+	// Release builds inject this value explicitly. debug.ReadBuildInfo reports
+	// "(devel)" for a binary built directly from a checkout, even when the
+	// release linker metadata is present, which previously made the tray show
+	// "VIIPER - dev" for packaged 0.0.6 builds.
+	if version, err := common.GetVersion(); err == nil &&
+		version != "0.0.1-dev" {
+		return version
+	}
 	if info, ok := debug.ReadBuildInfo(); ok {
 		v := info.Main.Version
 		if v != "" && v != "(devel)" {

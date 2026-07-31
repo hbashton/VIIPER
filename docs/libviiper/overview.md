@@ -39,7 +39,7 @@ Handles (`USBServerHandle`, `Xbox360DeviceHandle`, …) are opaque `uintptr_t` v
 
 ## Examples
 
-Full working examples are in [`examples/libVIIPER/`](https://github.com/Alia5/VIIPER/tree/main/examples/libVIIPER).
+Full working examples are in [`examples/libVIIPER/`](https://github.com/hbashton/VIIPER/tree/main/examples/libVIIPER).
 
 === "C"
 
@@ -96,7 +96,7 @@ Full working examples are in [`examples/libVIIPER/`](https://github.com/Alia5/VI
     LibVIIPER.CloseUSBServer(serverHandle);
     ```
 
-    See [`examples/libVIIPER/C#/`](https://github.com/Alia5/VIIPER/tree/main/examples/libVIIPER/C%23) for the full project including P/Invoke declarations.
+    See [`examples/libVIIPER/C#/`](https://github.com/hbashton/VIIPER/tree/main/examples/libVIIPER/C%23) for the full project including P/Invoke declarations.
 
 ## Devices
 

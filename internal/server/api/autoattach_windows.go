@@ -73,54 +73,45 @@ const (
 	ioctlPluginHardware = (fileDeviceUnknown << 16) | ((fileReadData | fileWriteData) << 14) | (0x800 << 2) | methodBuffered
 )
 
-func attachLocalhostClientImpl(ctx context.Context, deviceExportMeta *usbip.ExportMeta, usbipServerPort uint16, useNativeIOCTL bool, logger *slog.Logger) error {
+func attachLocalhostClientImpl(ctx context.Context, deviceExportMeta *usbip.ExportMeta, usbipServerPort uint16, useNativeIOCTL bool, logger *slog.Logger) (AutoAttachResult, error) {
 	if useNativeIOCTL {
-		err := attachViaIOCTL(ctx, deviceExportMeta, usbipServerPort, logger)
-		if err != nil {
-			slog.Error("Native IOCTL auto-attach failed, falling back to command execution", "error", err)
-			slog.Info("Trying fallback via usbip executable")
-		} else {
-			return nil
-		}
+		// Never hide a native ABI mismatch behind usbip.exe. A mismatch means
+		// the pinned 0.9.7.7 userspace and loaded driver are not a valid pair and must
+		// be repaired/rebooted before VIIPER creates devices.
+		return attachViaIOCTL(ctx, deviceExportMeta, usbipServerPort, logger)
 	}
 	return attachViaCommand(ctx, deviceExportMeta, usbipServerPort, logger)
 }
 
-func attachViaIOCTL(_ context.Context, deviceExportMeta *usbip.ExportMeta, usbipServerPort uint16, logger *slog.Logger) error {
+func attachViaIOCTL(_ context.Context, deviceExportMeta *usbip.ExportMeta, usbipServerPort uint16, logger *slog.Logger) (AutoAttachResult, error) {
 	logger.Info("Auto-attaching localhost client via native IOCTL",
 		"busID", deviceExportMeta.BusID,
 		"deviceID", deviceExportMeta.DevID)
 
 	if usbipServerPort == 0 {
-		return fmt.Errorf("argumentValidation: invalid TCP port number (0)")
+		return AutoAttachResult{}, fmt.Errorf("argumentValidation: invalid TCP port number (0)")
 	}
 
 	devicePath, err := getDeviceInterfacePath(&deviceGUID)
 	if err != nil {
-		return fmt.Errorf("discovery: %w", err)
+		return AutoAttachResult{}, fmt.Errorf("discovery: %w", err)
 	}
 
 	logger.Debug("Found usbip-win2 device", "path", devicePath)
 
-	var ioctlData attachIOCTL
-	ioctlData.Size = uint32(unsafe.Sizeof(ioctlData))
-
 	busID := fmt.Sprintf("%d-%d", deviceExportMeta.BusID, deviceExportMeta.DevID)
-	if len(busID) >= len(ioctlData.BusID) {
-		return fmt.Errorf("argumentValidation: bus ID too long: %s", busID)
+	if len(busID) >= len(attachIOCTL{}.BusID) {
+		return AutoAttachResult{}, fmt.Errorf("argumentValidation: bus ID too long: %s", busID)
 	}
-	copy(ioctlData.BusID[:], busID)
 
 	service := fmt.Sprintf("%d", usbipServerPort)
-	if len(service) >= len(ioctlData.Service) {
-		return fmt.Errorf("argumentValidation: service string too long: %s", service)
+	if len(service) >= len(attachIOCTL{}.Service) {
+		return AutoAttachResult{}, fmt.Errorf("argumentValidation: service string too long: %s", service)
 	}
-	copy(ioctlData.Service[:], service)
-	copy(ioctlData.Host[:], "localhost")
 
 	devicePathUTF16, err := windows.UTF16PtrFromString(devicePath)
 	if err != nil {
-		return fmt.Errorf("open: failed to convert device path: %w", err)
+		return AutoAttachResult{}, fmt.Errorf("open: failed to convert device path: %w", err)
 	}
 
 	handle, err := windows.CreateFile(
@@ -133,42 +124,59 @@ func attachViaIOCTL(_ context.Context, deviceExportMeta *usbip.ExportMeta, usbip
 		0,
 	)
 	if err != nil {
-		return fmt.Errorf("open: failed to open usbip-win2 device: %w", err)
+		return AutoAttachResult{}, fmt.Errorf("open: failed to open usbip-win2 device: %w", err)
 	}
 	defer windows.CloseHandle(handle) // nolint
 
 	logger.Debug("Opened device handle")
 
-	var bytesReturned uint32
-	err = windows.DeviceIoControl(
-		handle,
-		ioctlPluginHardware,
-		(*byte)(unsafe.Pointer(&ioctlData)),
-		uint32(unsafe.Sizeof(ioctlData)),
-		(*byte)(unsafe.Pointer(&ioctlData)),
-		uint32(unsafe.Sizeof(ioctlData)),
-		&bytesReturned,
-		nil,
-	)
+	ioctlData := attachIOCTL{Size: uint32(unsafe.Sizeof(attachIOCTL{}))}
+	copy(ioctlData.BusID[:], busID)
+	copy(ioctlData.Service[:], service)
+	copy(ioctlData.Host[:], "localhost")
+	port, bytesReturned, err := submitAttachIOCTL(handle,
+		unsafe.Pointer(&ioctlData), ioctlData.Size, &ioctlData.PortOutput)
 	if err != nil {
-		return fmt.Errorf("IOControl: DeviceIoControl failed: %w", err)
+		return AutoAttachResult{}, fmt.Errorf("IOControl: usbip-win2 0.9.7.7 native attach failed (repair or reboot USBIP; no command fallback was attempted): %w", err)
 	}
 
-	logger.Debug("IOCTL completed", "bytesReturned", bytesReturned, "portOutput", ioctlData.PortOutput)
+	logger.Debug("IOCTL completed", "bytesReturned", bytesReturned, "portOutput", port)
 
-	if ioctlData.PortOutput <= 0 {
-		return fmt.Errorf("ResponseValidation: invalid USB port returned: %d", ioctlData.PortOutput)
+	if port <= 0 {
+		return AutoAttachResult{}, fmt.Errorf("ResponseValidation: invalid USB port returned: %d", port)
 	}
 
 	logger.Info("Successfully attached device via IOCTL",
 		"busID", deviceExportMeta.BusID,
 		"deviceID", deviceExportMeta.DevID,
-		"usbPort", ioctlData.PortOutput)
+		"usbPort", port)
 
-	return nil
+	return AutoAttachResult{
+		USBIPPort: port,
+	}, nil
 }
 
-func attachViaCommand(ctx context.Context, deviceExportMeta *usbip.ExportMeta, usbipServerPort uint16, logger *slog.Logger) error {
+func submitAttachIOCTL(handle windows.Handle, data unsafe.Pointer, size uint32,
+	portOutput *int32) (int32, uint32, error) {
+	var bytesReturned uint32
+	err := windows.DeviceIoControl(
+		handle,
+		ioctlPluginHardware,
+		(*byte)(data),
+		size,
+		(*byte)(data),
+		8, // usbip-win2 returns only base.size + location.port.
+		&bytesReturned,
+		nil,
+	)
+	if err == nil && bytesReturned != 8 {
+		return 0, bytesReturned, fmt.Errorf(
+			"usbip-win2 returned %d attach bytes; expected 8", bytesReturned)
+	}
+	return *portOutput, bytesReturned, err
+}
+
+func attachViaCommand(ctx context.Context, deviceExportMeta *usbip.ExportMeta, usbipServerPort uint16, logger *slog.Logger) (AutoAttachResult, error) {
 	logger.Info("Auto-attaching localhost client", "busID", deviceExportMeta.BusID, "deviceID", deviceExportMeta.DevID)
 
 	cmd := exec.CommandContext(
@@ -186,21 +194,18 @@ func attachViaCommand(ctx context.Context, deviceExportMeta *usbip.ExportMeta, u
 			"error", err,
 			"port", usbipServerPort,
 			"output", string(output))
-		return err
+		return AutoAttachResult{}, err
 	}
 	logger.Debug("usbip attach output", "output", string(output))
 
-	return nil
+	return AutoAttachResult{}, nil
 }
 
 func resolveUsbipExecutable() string {
-	if path, err := exec.LookPath("usbip"); err == nil {
-		return path
-	}
-
 	// The usbip-win2 installer does not consistently add its directory to
-	// PATH for already-running services. Prefer the standard install location
-	// before returning the bare command and its useful original error.
+	// PATH for already-running services. Prefer the canonical installation so
+	// a stale copy elsewhere cannot pair a different userspace ABI with the
+	// pinned 0.9.7.7 driver.
 	seen := make(map[string]struct{})
 	for _, root := range []string{
 		os.Getenv("ProgramW6432"),
@@ -221,6 +226,10 @@ func resolveUsbipExecutable() string {
 		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
 			return candidate
 		}
+	}
+
+	if path, err := exec.LookPath("usbip"); err == nil {
+		return path
 	}
 
 	return "usbip"
@@ -308,9 +317,8 @@ func CheckAutoAttachPrerequisites(useNativeIOCTL bool, logger *slog.Logger) bool
 		if err != nil {
 			logger.Warn("Native IOCTL auto-attach prerequisites not met", "error", err)
 			logger.Warn("Native IOCTL auto-attach is unavailable until discovery succeeds")
-			logger.Info("If usbip-win2 is not installed, download and install:")
-			logger.Info("  https://github.com/vadimgrn/usbip-win2")
-			logger.Info("  https://github.com/OSSign/vadimgrn--usbip-win2")
+			logger.Info("Install the exact signed usbip-win2 0.9.7.7 x64 package:")
+			logger.Info("  https://github.com/vadimgrn/usbip-win2/releases/tag/v.0.9.7.7")
 			return false
 		}
 		logger.Debug("usbip-win2 driver found")

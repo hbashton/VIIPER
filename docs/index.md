@@ -14,7 +14,7 @@ that are indistinguishable from real hardware to the operating system and applic
     - [CLI Reference](cli/overview.md)
     - [API Reference](api/overview.md)
 - [libVIIPER](libviiper/overview.md)
-- [GitHub Repository](https://github.com/Alia5/VIIPER)
+- [GitHub Repository](https://github.com/hbashton/VIIPER)
 
 ## What is VIIPER?
 

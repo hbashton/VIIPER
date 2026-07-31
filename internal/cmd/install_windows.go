@@ -19,11 +19,28 @@ import (
 )
 
 const (
-	runKeyPath  = `Software\Microsoft\Windows\CurrentVersion\Run`
-	runValueKey = "VIIPER"
+	runKeyPath       = `Software\Microsoft\Windows\CurrentVersion\Run`
+	runValueKey      = "VIIPER"
+	runScheduledTask = "RunVIIPER"
 )
 
 func install(logger *slog.Logger) error {
+	if err := requireUSBIPRuntime(); err != nil {
+		return err
+	}
+	scheduledExe, err := currentScheduledTaskExe()
+	if err != nil {
+		return fmt.Errorf("failed to inspect legacy %s scheduled task: %w", runScheduledTask, err)
+	}
+	if err := removeScheduledTask(); err != nil {
+		return fmt.Errorf("failed to remove legacy %s scheduled task: %w", runScheduledTask, err)
+	}
+	if scheduledExe != "" {
+		if err := killProcessesByExe(scheduledExe, logger); err != nil {
+			return fmt.Errorf("failed to stop legacy scheduled VIIPER instance: %w", err)
+		}
+	}
+
 	exePath, err := currentExecutable()
 	if err != nil {
 		return err
@@ -73,6 +90,18 @@ func uninstall(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	scheduledExe, err := currentScheduledTaskExe()
+	if err != nil {
+		return fmt.Errorf("failed to inspect %s scheduled task: %w", runScheduledTask, err)
+	}
+	if err := removeScheduledTask(); err != nil {
+		return fmt.Errorf("failed to remove %s scheduled task; run uninstall as administrator: %w", runScheduledTask, err)
+	}
+	if scheduledExe != "" {
+		if err := killProcessesByExe(scheduledExe, logger); err != nil {
+			return fmt.Errorf("failed to stop scheduled VIIPER instance: %w", err)
+		}
+	}
 
 	key, err := registry.OpenKey(registry.CURRENT_USER, runKeyPath, registry.SET_VALUE)
 	if err != nil {
@@ -95,7 +124,51 @@ func uninstall(logger *slog.Logger) error {
 		}
 	}
 
-	logger.Info("VIIPER autorun entry removed")
+	currentExe, currentErr := currentExecutable()
+	if currentErr == nil && !strings.EqualFold(currentExe, autorunExe) {
+		if err := killProcessesByExe(currentExe, logger); err != nil {
+			return fmt.Errorf("failed to stop installed VIIPER instance: %w", err)
+		}
+	}
+
+	logger.Info("VIIPER startup entries removed and server stopped")
+	return nil
+}
+
+func currentScheduledTaskExe() (string, error) {
+	script := fmt.Sprintf(
+		"$ErrorActionPreference='Stop';$t=Get-ScheduledTask -TaskName '%s' -ErrorAction SilentlyContinue;if($null -eq $t){exit 0};$a=@($t.Actions);if($a.Count -ne 1){throw 'scheduled task must contain exactly one action'};$a[0].Execute",
+		runScheduledTask,
+	)
+	output, err := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", script).CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("scheduled task query failed: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	path := strings.Trim(strings.TrimSpace(string(output)), `"`)
+	if path == "" {
+		return "", nil
+	}
+	path = filepath.Clean(path)
+	if !strings.EqualFold(filepath.Base(path), "viiper.exe") {
+		return "", fmt.Errorf("%s action is not a VIIPER executable: %s", runScheduledTask, path)
+	}
+	return path, nil
+}
+
+func removeScheduledTask() error {
+	// Get-ScheduledTask makes absence distinguishable from an access-denied
+	// deletion. Never report uninstall success while a highest-privilege task
+	// can silently start VIIPER again at the next logon.
+	script := fmt.Sprintf(
+		"$ErrorActionPreference='Stop';$t=Get-ScheduledTask -TaskName '%s' -ErrorAction SilentlyContinue;if($null -eq $t){exit 0};Unregister-ScheduledTask -TaskName '%s' -Confirm:$false -ErrorAction Stop;if(Get-ScheduledTask -TaskName '%s' -ErrorAction SilentlyContinue){throw 'scheduled task still exists'}",
+		runScheduledTask,
+		runScheduledTask,
+		runScheduledTask,
+	)
+	output, err := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", script).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("scheduled task removal failed: %w: %s", err, strings.TrimSpace(string(output)))
+	}
 	return nil
 }
 
