@@ -15,7 +15,8 @@ import (
 
 type Xbox360 struct {
 	tick             uint64
-	inputCh          chan InputState
+	inputMu          sync.RWMutex
+	inputState       InputState
 	rumbleDispatchMu sync.Mutex
 	rumbleMu         sync.Mutex
 	rumbleFunc       func(XRumbleState)
@@ -51,8 +52,7 @@ func New(o *device.CreateOptions) (*Xbox360, error) {
 			}
 		}
 	}
-	d.inputCh = make(chan InputState, 1)
-	d.inputCh <- *NewInputState()
+	d.inputState = *NewInputState()
 	return d, nil
 }
 
@@ -74,11 +74,9 @@ func (x *Xbox360) SetRumbleCallback(f func(XRumbleState)) {
 
 // UpdateInputState updates the device's current input state (thread-safe).
 func (x *Xbox360) UpdateInputState(state InputState) {
-	select {
-	case <-x.inputCh:
-	default:
-	}
-	x.inputCh <- state
+	x.inputMu.Lock()
+	x.inputState = state
+	x.inputMu.Unlock()
 }
 
 // HandleTransfer implements interrupt IN/OUT for Xbox360.
@@ -90,9 +88,18 @@ func (x *Xbox360) HandleTransfer(ctx context.Context, ep uint32, dir uint32, out
 			select {
 			case <-ctx.Done():
 				return nil
-			case st := <-x.inputCh:
-				return st.BuildReport()
+			default:
 			}
+
+			// A physical XUSB pad returns its current state at every host
+			// interrupt-IN opportunity. Treat feeder writes as updates to a
+			// persistent snapshot; consuming them as one-shot events makes a
+			// Windows poll block whenever the feeder and USB clocks do not land
+			// in the same interval, which presents as input and rumble jitter.
+			x.inputMu.RLock()
+			st := x.inputState
+			x.inputMu.RUnlock()
+			return st.BuildReport()
 		default:
 			return nil
 		}

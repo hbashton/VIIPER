@@ -65,7 +65,7 @@ func (x *InputState) BuildReport() []byte {
 	binary.LittleEndian.PutUint16(b[8:10], uint16(x.LY))
 	binary.LittleEndian.PutUint16(b[10:12], uint16(x.RX))
 	binary.LittleEndian.PutUint16(b[12:14], uint16(x.RY))
-	copy(b[14:19], x.Reserved[:])
+	copy(b[14:20], x.Reserved[:])
 	return b
 }
 
@@ -79,7 +79,7 @@ func (x *InputState) MarshalBinary() ([]byte, error) {
 	binary.LittleEndian.PutUint16(b[8:10], uint16(x.LY))
 	binary.LittleEndian.PutUint16(b[10:12], uint16(x.RX))
 	binary.LittleEndian.PutUint16(b[12:14], uint16(x.RY))
-	copy(b[14:19], x.Reserved[:])
+	copy(b[14:20], x.Reserved[:])
 	return b, nil
 }
 

@@ -516,3 +516,32 @@ func TestRumbleCallbackDoesNotInventInitialFeedback(t *testing.T) {
 	default:
 	}
 }
+
+func TestInputSnapshotRepeatsWithoutAnotherFeederWrite(t *testing.T) {
+	dev, err := xbox360.New(nil)
+	require.NoError(t, err)
+
+	state := xbox360.InputState{
+		Buttons: xbox360.ButtonA | xbox360.ButtonDPadRight,
+		LT:      41,
+		LX:      -12345,
+	}
+	dev.UpdateInputState(state)
+
+	first := dev.HandleTransfer(context.Background(), 1, usbip.DirIn, nil)
+	second := dev.HandleTransfer(context.Background(), 1, usbip.DirIn, nil)
+	require.Equal(t, state.BuildReport(), first)
+	require.Equal(t, first, second)
+}
+
+func TestAllReservedInputBytesReachUsbReport(t *testing.T) {
+	state := xbox360.InputState{
+		Reserved: [6]byte{1, 2, 3, 4, 5, 6},
+	}
+
+	require.Equal(t, []byte{1, 2, 3, 4, 5, 6},
+		state.BuildReport()[14:20])
+	encoded, err := state.MarshalBinary()
+	require.NoError(t, err)
+	require.Equal(t, []byte{1, 2, 3, 4, 5, 6}, encoded[14:20])
+}
