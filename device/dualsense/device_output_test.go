@@ -429,8 +429,11 @@ func TestDualSenseHapticsSelectDoesNotUpdateCompatibleRumble(t *testing.T) {
 	if got.RumbleSmall != 0x22 || got.RumbleLarge != 0x88 {
 		t.Fatalf("haptics-select-only report changed compatible rumble: small=%#x large=%#x", got.RumbleSmall, got.RumbleLarge)
 	}
-	if !bytes.Equal(got.RawOutputReport[:], hapticsSelectReport) {
-		t.Fatalf("haptics-select raw report was not preserved:\n got: % x\nwant: % x", got.RawOutputReport, hapticsSelectReport)
+	if got.RawOutputReport[1] != 0x02 ||
+		got.RawOutputReport[3] != 0x22 ||
+		got.RawOutputReport[4] != 0x88 {
+		t.Fatalf("haptics-select update corrupted the persistent rumble snapshot: % x",
+			got.RawOutputReport)
 	}
 }
 
@@ -500,6 +503,77 @@ func TestDualSenseOutputFlagsPreserveUnchangedTriggers(t *testing.T) {
 	if got.TriggerR2Mode != 0x21 || got.TriggerR2StartResistance != 0xFC ||
 		got.TriggerR2EffectForce != 0x03 || got.TriggerR2Frequency != 0x44 {
 		t.Fatalf("rumble-only report cleared R2 trigger feedback: %#v", got)
+	}
+	if got.RawOutputReport[1]&outputFlag0RightTrigger == 0 ||
+		!bytes.Equal(got.RawOutputReport[outputRightTriggerOffset:outputRightTriggerOffset+outputTriggerLength],
+			triggerReport[outputRightTriggerOffset:outputRightTriggerOffset+outputTriggerLength]) {
+		t.Fatalf("rumble-only report cleared the trigger state repeated by V5: % x",
+			got.RawOutputReport)
+	}
+}
+
+func TestDualSenseOutputSnapshotKeepsIndependentGameFieldsAtomic(t *testing.T) {
+	dev, err := New(nil)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	var got OutputState
+	dev.SetOutputCallback(func(out OutputState) { got = out })
+
+	rightTrigger := make([]byte, OutputReportSize)
+	rightTrigger[0] = ReportIDOutput
+	rightTrigger[1] = outputFlag0RightTrigger
+	rightTrigger[11] = 0x21
+	rightTrigger[12] = 0xF0
+	rightTrigger[20] = 0x44
+	dev.HandleTransfer(context.Background(), EndpointOut, usbip.DirOut,
+		rightTrigger)
+
+	leds := make([]byte, OutputReportSize)
+	leds[0] = ReportIDOutput
+	leds[2] = outputFlag1PlayerLeds | outputFlag1Lightbar
+	leds[44] = 0x24
+	leds[45] = 0x11
+	leds[46] = 0x22
+	leds[47] = 0x33
+	dev.HandleTransfer(context.Background(), EndpointOut, usbip.DirOut, leds)
+
+	rumble := make([]byte, OutputReportSize)
+	rumble[0] = ReportIDOutput
+	rumble[1] = 0x03
+	rumble[3] = 0x55
+	rumble[4] = 0xAA
+	dev.HandleTransfer(context.Background(), EndpointOut, usbip.DirOut, rumble)
+
+	snapshot := got.RawOutputReport[:]
+	if snapshot[1]&outputFlag0RightTrigger == 0 ||
+		snapshot[11] != 0x21 || snapshot[12] != 0xF0 ||
+		snapshot[20] != 0x44 {
+		t.Fatalf("independent rumble write displaced the game trigger: % x", snapshot)
+	}
+	if snapshot[2]&(outputFlag1PlayerLeds|outputFlag1Lightbar) !=
+		outputFlag1PlayerLeds|outputFlag1Lightbar ||
+		snapshot[44] != 0x24 || snapshot[45] != 0x11 ||
+		snapshot[46] != 0x22 || snapshot[47] != 0x33 {
+		t.Fatalf("independent rumble write displaced game LEDs: % x", snapshot)
+	}
+	if snapshot[3] != 0x55 || snapshot[4] != 0xAA {
+		t.Fatalf("latest game rumble was not represented: % x", snapshot)
+	}
+
+	release := make([]byte, OutputReportSize)
+	release[0] = ReportIDOutput
+	release[2] = outputFlag1ReleaseLeds
+	dev.HandleTransfer(context.Background(), EndpointOut, usbip.DirOut,
+		release)
+	snapshot = got.RawOutputReport[:]
+	if snapshot[2]&outputFlag1ReleaseLeds == 0 ||
+		snapshot[2]&(outputFlag1PlayerLeds|outputFlag1Lightbar) != 0 ||
+		snapshot[44] != 0 || snapshot[45] != 0 || snapshot[46] != 0 ||
+		snapshot[47] != 0 {
+		t.Fatalf("explicit game LED release did not relinquish visual ownership: % x",
+			snapshot)
 	}
 }
 

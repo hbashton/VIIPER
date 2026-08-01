@@ -23,6 +23,41 @@ const (
 	microphoneMaximumClientFrames = 20 // 200 ms emergency ceiling for full-duplex BT bursts; steady state remains about 55 ms.
 )
 
+// A DualSense output report is a set of field updates, not a complete state
+// replacement. Games commonly send trigger, LED, rumble, and audio changes in
+// separate reports. The V5 media carrier repeats a complete state snapshot, so
+// copying the last partial report into every 0x36 frame makes those independent
+// updates erase one another. Keep one validity-aware snapshot instead.
+const (
+	outputFlag0Offset = 1
+	outputFlag1Offset = 2
+	outputFlag2Offset = 39
+
+	outputFlag0RumbleMask         = 0x03
+	outputFlag0RightTrigger       = 0x04
+	outputFlag0LeftTrigger        = 0x08
+	outputFlag0HeadphoneVolume    = 0x10
+	outputFlag0SpeakerVolume      = 0x20
+	outputFlag0MicrophoneVolume   = 0x40
+	outputFlag0AudioControl       = 0x80
+	outputFlag1MicrophoneLed      = 0x01
+	outputFlag1PowerSave          = 0x02
+	outputFlag1Lightbar           = 0x04
+	outputFlag1ReleaseLeds        = 0x08
+	outputFlag1PlayerLeds         = 0x10
+	outputFlag1HapticsLowPass     = 0x20
+	outputFlag1MotorPower         = 0x40
+	outputFlag1AudioControl2      = 0x80
+	outputFlag2LightbarBrightness = 0x01
+	outputFlag2LightbarSetup      = 0x02
+
+	outputRightTriggerOffset = 11
+	outputLeftTriggerOffset  = 22
+	outputTriggerLength      = 11
+	outputPlayerLedsOffset   = 44
+	outputLightbarOffset     = 45
+)
+
 type DualSense struct {
 	deviceType string
 	inputCh    chan InputState
@@ -755,7 +790,7 @@ func (d *DualSense) mergeOutputReport(out []byte) OutputState {
 	feedback := d.outputState
 	clear(feedback.BluetoothCombinedOutputReport[:])
 	if len(out) >= OutputReportSize {
-		copy(feedback.RawOutputReport[:], out[:OutputReportSize])
+		mergeRawOutputReport(&feedback.RawOutputReport, out)
 	}
 
 	if len(out) > 4 {
@@ -805,6 +840,89 @@ func (d *DualSense) mergeOutputReport(out []byte) OutputState {
 	}
 	d.outputState = feedback
 	return feedback
+}
+
+func mergeRawOutputReport(snapshot *[OutputReportSize]byte, update []byte) {
+	if snapshot == nil || len(update) < OutputReportSize ||
+		update[0] != ReportIDOutput {
+		return
+	}
+
+	if snapshot[0] != ReportIDOutput {
+		clear(snapshot[:])
+		snapshot[0] = ReportIDOutput
+	}
+
+	flag0 := update[outputFlag0Offset]
+	flag1 := update[outputFlag1Offset]
+	flag2 := update[outputFlag2Offset]
+
+	// Rumble selector bits form one contract. Replace that selector only when
+	// the host actually mentions it; a trigger-only report must not clear it.
+	if flag0&outputFlag0RumbleMask != 0 {
+		snapshot[outputFlag0Offset] =
+			(snapshot[outputFlag0Offset] &^ outputFlag0RumbleMask) |
+				(flag0 & outputFlag0RumbleMask)
+	}
+	if flag0&0x01 != 0 || flag2&0x04 != 0 {
+		snapshot[3] = update[3]
+		snapshot[4] = update[4]
+	}
+
+	mergeOutputField(snapshot, update, outputFlag0Offset, flag0, outputFlag0HeadphoneVolume, 5, 1)
+	mergeOutputField(snapshot, update, outputFlag0Offset, flag0, outputFlag0SpeakerVolume, 6, 1)
+	mergeOutputField(snapshot, update, outputFlag0Offset, flag0, outputFlag0MicrophoneVolume, 7, 1)
+	mergeOutputField(snapshot, update, outputFlag0Offset, flag0, outputFlag0AudioControl, 8, 1)
+	mergeOutputField(snapshot, update, outputFlag0Offset, flag0, outputFlag0RightTrigger,
+		outputRightTriggerOffset, outputTriggerLength)
+	mergeOutputField(snapshot, update, outputFlag0Offset, flag0, outputFlag0LeftTrigger,
+		outputLeftTriggerOffset, outputTriggerLength)
+
+	mergeOutputField(snapshot, update, outputFlag1Offset, flag1, outputFlag1MicrophoneLed, 9, 1)
+	mergeOutputField(snapshot, update, outputFlag1Offset, flag1, outputFlag1PowerSave, 10, 1)
+	mergeOutputField(snapshot, update, outputFlag1Offset, flag1, outputFlag1HapticsLowPass, 40, 1)
+	mergeOutputField(snapshot, update, outputFlag1Offset, flag1, outputFlag1MotorPower, 37, 1)
+	mergeOutputField(snapshot, update, outputFlag1Offset, flag1, outputFlag1AudioControl2, 38, 1)
+
+	if flag1&outputFlag1ReleaseLeds != 0 {
+		snapshot[outputFlag1Offset] =
+			(snapshot[outputFlag1Offset] &^
+				(outputFlag1Lightbar | outputFlag1PlayerLeds)) |
+				outputFlag1ReleaseLeds
+		snapshot[outputPlayerLedsOffset] = 0
+		clear(snapshot[outputLightbarOffset : outputLightbarOffset+3])
+	} else {
+		if flag1&(outputFlag1Lightbar|outputFlag1PlayerLeds) != 0 {
+			snapshot[outputFlag1Offset] &^= outputFlag1ReleaseLeds
+		}
+		mergeOutputField(snapshot, update, outputFlag1Offset, flag1, outputFlag1PlayerLeds,
+			outputPlayerLedsOffset, 1)
+		mergeOutputField(snapshot, update, outputFlag1Offset, flag1, outputFlag1Lightbar,
+			outputLightbarOffset, 3)
+	}
+
+	mergeOutputField(snapshot, update, outputFlag2Offset, flag2,
+		outputFlag2LightbarBrightness, 43, 1)
+	mergeOutputField(snapshot, update, outputFlag2Offset, flag2,
+		outputFlag2LightbarSetup, 42, 1)
+	// Preserve the two rumble-mode controls in flag2. They have no separate
+	// payload field but still belong to the persistent controller contract.
+	if flag2&0x0C != 0 {
+		snapshot[outputFlag2Offset] =
+			(snapshot[outputFlag2Offset] &^ 0x0C) | (flag2 & 0x0C)
+	}
+}
+
+func mergeOutputField(snapshot *[OutputReportSize]byte, update []byte,
+	flagOffset int, flags byte, mask byte, offset int, length int) {
+	if flags&mask == 0 || offset < 0 || length <= 0 ||
+		offset+length > len(update) || offset+length > len(snapshot) ||
+		flagOffset < 0 || flagOffset >= len(snapshot) {
+		return
+	}
+
+	snapshot[flagOffset] |= mask
+	copy(snapshot[offset:offset+length], update[offset:offset+length])
 }
 
 func (d *DualSense) featureReportCalibration() []byte {
