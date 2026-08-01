@@ -193,6 +193,24 @@ const (
 	errConnReset = -104 // -ECONNRESET
 )
 
+// claimPending removes seq from the in-flight table and reports whether this caller
+// was the one that removed it.
+//
+// Exactly one party may reply for a given seqnum. USBIP_CMD_UNLINK and the async IN
+// completion goroutines race for that right, and the winner is whoever removes the
+// entry: the loser must stay silent. Without this, an UNLINK arriving just before a
+// completion takes the lock produces both a RET_UNLINK(-ECONNRESET) and a RET_SUBMIT
+// for one request, leaving the client holding a completion for a URB it already
+// unlinked.
+func claimPending(mu *sync.Mutex, pending map[uint32]context.CancelFunc,
+	seq uint32) (context.CancelFunc, bool) {
+	mu.Lock()
+	defer mu.Unlock()
+	cancel, owned := pending[seq]
+	delete(pending, seq)
+	return cancel, owned
+}
+
 type Server struct {
 	config    *ServerConfig
 	logger    *slog.Logger
@@ -805,12 +823,7 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 		if cmd == usbip.CmdUnlinkCode {
 			unlinkSeq := binary.BigEndian.Uint32(hdr[urbHdrOffsetUnlink : urbHdrOffsetUnlink+4])
 			s.logger.Debug("USBIP_CMD_UNLINK", "seq", seq, "unlink", unlinkSeq)
-			pendingMu.Lock()
-			cancel, found := pending[unlinkSeq]
-			if found {
-				delete(pending, unlinkSeq)
-			}
-			pendingMu.Unlock()
+			cancel, found := claimPending(&pendingMu, pending, unlinkSeq)
 			// -ECONNRESET signals the URB was unlinked before completion;
 			// status 0 means it already completed normally.
 			status := int32(0)
@@ -964,9 +977,10 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 					// not stall or bunch the microphone sampling clock.
 					signalNext(isoServiceEnd)
 
-					pendingMu.Lock()
-					delete(pending, seq)
-					pendingMu.Unlock()
+					if _, owned := claimPending(&pendingMu, pending, seq); !owned {
+						s.logger.Debug("URB ISO-IN completion suppressed; already unlinked", "seq", seq)
+						return
+					}
 
 					if err := writeRet(seq, uint32(len(respData)), respData, completedPackets, iso, true); err != nil {
 						if isClientDisconnect(err) {
@@ -1010,9 +1024,10 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 					break
 				}
 
-				pendingMu.Lock()
-				delete(pending, seq)
-				pendingMu.Unlock()
+				if _, owned := claimPending(&pendingMu, pending, seq); !owned {
+					s.logger.Debug("URB completion suppressed; already unlinked", "seq", seq)
+					return
+				}
 
 				completedPackets = completeIsoPackets(submitted, uint32(len(respData)))
 				if err := writeRet(seq, uint32(len(respData)), respData, completedPackets, iso, true); err != nil {
