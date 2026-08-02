@@ -839,6 +839,13 @@ func (d *DualSense) mergeOutputReport(out []byte) OutputState {
 		}
 	}
 	d.outputState = feedback
+	// The persistent snapshot above feeds VIIPER's atomic audio/haptics
+	// assembler, where independently flagged USB fields must remain coherent.
+	// The ordinary output callback has a different contract: it represents the
+	// exact SET_REPORT update issued by the game. Returning the accumulated
+	// snapshot there replayed one-shot trigger and LED-release validity bits on
+	// later rumble/audio writes. Keep the two contracts separate.
+	copy(feedback.RawOutputReport[:], out[:OutputReportSize])
 	return feedback
 }
 

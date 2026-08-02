@@ -430,10 +430,15 @@ func TestDualSenseHapticsSelectDoesNotUpdateCompatibleRumble(t *testing.T) {
 		t.Fatalf("haptics-select-only report changed compatible rumble: small=%#x large=%#x", got.RumbleSmall, got.RumbleLarge)
 	}
 	if got.RawOutputReport[1] != 0x02 ||
-		got.RawOutputReport[3] != 0x22 ||
-		got.RawOutputReport[4] != 0x88 {
-		t.Fatalf("haptics-select update corrupted the persistent rumble snapshot: % x",
+		got.RawOutputReport[3] != 0xFF ||
+		got.RawOutputReport[4] != 0xFF {
+		t.Fatalf("output callback did not preserve the exact haptics-select update: % x",
 			got.RawOutputReport)
+	}
+	if dev.outputState.RawOutputReport[3] != 0x22 ||
+		dev.outputState.RawOutputReport[4] != 0x88 {
+		t.Fatalf("haptics-select update corrupted the persistent media snapshot: % x",
+			dev.outputState.RawOutputReport)
 	}
 }
 
@@ -504,11 +509,15 @@ func TestDualSenseOutputFlagsPreserveUnchangedTriggers(t *testing.T) {
 		got.TriggerR2EffectForce != 0x03 || got.TriggerR2Frequency != 0x44 {
 		t.Fatalf("rumble-only report cleared R2 trigger feedback: %#v", got)
 	}
-	if got.RawOutputReport[1]&outputFlag0RightTrigger == 0 ||
-		!bytes.Equal(got.RawOutputReport[outputRightTriggerOffset:outputRightTriggerOffset+outputTriggerLength],
-			triggerReport[outputRightTriggerOffset:outputRightTriggerOffset+outputTriggerLength]) {
-		t.Fatalf("rumble-only report cleared the trigger state repeated by V5: % x",
+	if !bytes.Equal(got.RawOutputReport[:], rumbleReport) {
+		t.Fatalf("output callback replayed persistent trigger state over an exact rumble update: % x",
 			got.RawOutputReport)
+	}
+	if dev.outputState.RawOutputReport[1]&outputFlag0RightTrigger == 0 ||
+		!bytes.Equal(dev.outputState.RawOutputReport[outputRightTriggerOffset:outputRightTriggerOffset+outputTriggerLength],
+			triggerReport[outputRightTriggerOffset:outputRightTriggerOffset+outputTriggerLength]) {
+		t.Fatalf("rumble-only report cleared the trigger state needed by atomic media: % x",
+			dev.outputState.RawOutputReport)
 	}
 }
 
@@ -546,7 +555,11 @@ func TestDualSenseOutputSnapshotKeepsIndependentGameFieldsAtomic(t *testing.T) {
 	rumble[4] = 0xAA
 	dev.HandleTransfer(context.Background(), EndpointOut, usbip.DirOut, rumble)
 
-	snapshot := got.RawOutputReport[:]
+	if !bytes.Equal(got.RawOutputReport[:], rumble) {
+		t.Fatalf("ordinary callback did not expose the exact latest game update: % x",
+			got.RawOutputReport)
+	}
+	snapshot := dev.outputState.RawOutputReport[:]
 	if snapshot[1]&outputFlag0RightTrigger == 0 ||
 		snapshot[11] != 0x21 || snapshot[12] != 0xF0 ||
 		snapshot[20] != 0x44 {
@@ -567,7 +580,11 @@ func TestDualSenseOutputSnapshotKeepsIndependentGameFieldsAtomic(t *testing.T) {
 	release[2] = outputFlag1ReleaseLeds
 	dev.HandleTransfer(context.Background(), EndpointOut, usbip.DirOut,
 		release)
-	snapshot = got.RawOutputReport[:]
+	if !bytes.Equal(got.RawOutputReport[:], release) {
+		t.Fatalf("release callback did not preserve the exact game report: % x",
+			got.RawOutputReport)
+	}
+	snapshot = dev.outputState.RawOutputReport[:]
 	if snapshot[2]&outputFlag1ReleaseLeds == 0 ||
 		snapshot[2]&(outputFlag1PlayerLeds|outputFlag1Lightbar) != 0 ||
 		snapshot[44] != 0 || snapshot[45] != 0 || snapshot[46] != 0 ||
