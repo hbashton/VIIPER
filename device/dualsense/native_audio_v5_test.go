@@ -86,6 +86,40 @@ func TestDualSenseV5PublishesCompletedHapticsBeforeNextSpeakerBoundary(t *testin
 	}
 }
 
+func TestDualSenseV5RealtimeHapticsCountersFollowRearClock(t *testing.T) {
+	device, err := New(nil)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	var realtime []OutputState
+	device.SetAtomicAudioHapticsCallback(func(OutputState, []byte) {})
+	device.SetRealtimeHapticsCallback(func(feedback OutputState) {
+		realtime = append(realtime, feedback)
+	})
+	device.SetInterfaceAltSetting(InterfaceHapticsAudio, 1)
+
+	// Cross the 7,680-frame common boundary and one more rear interval. The
+	// 480-frame speaker counter advances an extra time at that boundary; the
+	// realtime haptics counter must remain contiguous and independent.
+	const rearGenerations = 16
+	pcm := makeV5USBPCM(0, rearGenerations*512, 12000)
+	device.HandleTransfer(context.Background(), EndpointHapticsAudioOut,
+		usbip.DirOut, pcm)
+	if len(realtime) != rearGenerations {
+		t.Fatalf("realtime generations=%d want=%d",
+			len(realtime), rearGenerations)
+	}
+	for generation, feedback := range realtime {
+		report := feedback.BluetoothCombinedOutputReport
+		if got := report[10]; got != byte(generation) {
+			t.Fatalf("generation %d packet sequence=%d", generation, got)
+		}
+		if got := report[1]; got != byte(generation&0x0f)<<4 {
+			t.Fatalf("generation %d report tag=%02x", generation, got)
+		}
+	}
+}
+
 func TestDualSenseV5MaintainsIndependentGenerationsAcrossArbitraryUSBChunks(t *testing.T) {
 	// Seventeen speaker generations cross the second V5 rear-lane
 	// shortage at generation 16. Stop one frame before the next 512 boundary so

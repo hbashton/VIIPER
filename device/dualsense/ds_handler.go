@@ -146,7 +146,7 @@ func dualSenseV5StreamHandler(deviceName string) api.StreamHandlerFunc {
 				logger.Error("failed to marshal V5 realtime haptics feedback", "error", err)
 				return
 			}
-			writer.EnqueueControl(StreamFrameRealtimeHaptics, data)
+			writer.EnqueueRealtimeHaptics(data)
 		})
 		dse.SetSpeakerResetCallback(writer.ResetSpeaker)
 		defer func() {

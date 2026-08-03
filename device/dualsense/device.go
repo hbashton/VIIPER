@@ -76,6 +76,8 @@ type DualSense struct {
 	seqCounter                uint8
 	hapticsSeq                uint8
 	hapticsInterval           uint8
+	realtimeHapticsSeq        uint8
+	realtimeHapticsInterval   uint8
 	hapticsPCM                []byte
 	v5SpeakerPCM              []byte
 	v5HapticsQueue            []dualSenseV5HapticsGeneration
@@ -642,8 +644,12 @@ func (d *DualSense) consumeDualSenseV5AudioLocked(src []byte,
 
 func (d *DualSense) buildDualSenseV5RealtimeHapticsLocked(
 	sample []byte) (OutputState, bool) {
+	sequence := d.realtimeHapticsSeq
+	interval := d.realtimeHapticsInterval
+	d.realtimeHapticsSeq++
+	d.realtimeHapticsInterval++
 	report, err := BuildBluetoothCombinedHapticsReport(
-		d.hapticsSeq, d.hapticsInterval, sample,
+		sequence, interval, sample,
 		d.outputState.RawOutputReport[:])
 	if err != nil {
 		slog.Warn("failed to build realtime DualSense V5 haptics report",

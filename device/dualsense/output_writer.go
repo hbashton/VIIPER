@@ -112,6 +112,7 @@ type dualSenseOutputWriter struct {
 	logger          *slog.Logger
 	telemetry       *dualSenseSpeakerStreamTelemetry
 	control         chan dualSenseOutputFrame
+	realtimeHaptics chan dualSenseOutputFrame
 	audio           chan dualSenseOutputFrame
 	audioFree       chan []byte
 	stop            chan struct{}
@@ -142,6 +143,8 @@ func newDualSenseOutputWriter(conn net.Conn,
 		logger:    logger,
 		telemetry: telemetry,
 		control:   make(chan dualSenseOutputFrame, dualSenseOutputControlQueueCapacity),
+		realtimeHaptics: make(chan dualSenseOutputFrame,
+			dualSenseOutputControlQueueCapacity),
 		audio:     make(chan dualSenseOutputFrame, dualSenseOutputAudioQueueCapacity),
 		audioFree: make(chan []byte, dualSenseOutputAudioQueueCapacity),
 		stop:      make(chan struct{}),
@@ -154,6 +157,24 @@ func newDualSenseOutputWriter(conn net.Conn,
 		w.audioFree <- make([]byte, dualSenseSpeakerPayloadCapacity)
 	}
 	return w
+}
+
+// EnqueueRealtimeHaptics keeps time-bearing rear-channel generations out of
+// the ordinary state queue. Games can issue dense trigger/LED SET_REPORT
+// traffic; that traffic must never delay or evict the 93.75 Hz haptics clock.
+func (w *dualSenseOutputWriter) EnqueueRealtimeHaptics(payload []byte) {
+	if len(payload) == 0 {
+		return
+	}
+	w.enqueueLock.RLock()
+	defer w.enqueueLock.RUnlock()
+	if w.stopped {
+		return
+	}
+	w.enqueueFrameLocked(w.realtimeHaptics, dualSenseOutputFrame{
+		frameType: StreamFrameRealtimeHaptics,
+		payload:   append([]byte(nil), payload...),
+	})
 }
 
 func (w *dualSenseOutputWriter) EnqueueControl(frameType byte, payload []byte) {
@@ -316,6 +337,17 @@ func (w *dualSenseOutputWriter) Run() {
 	}()
 	preferAudio := false
 	for {
+		// A complete rear-channel generation has a hard media deadline. It is
+		// small and arrives slightly less often than speaker media, so servicing
+		// it first cannot starve the 100 Hz speaker lane.
+		select {
+		case frame := <-w.realtimeHaptics:
+			if !w.writeAndRelease(frame) {
+				return
+			}
+			continue
+		default:
+		}
 		// Alternate when both lanes are continuously ready. If the preferred
 		// lane is empty, immediately service whichever frame arrives next.
 		if preferAudio {
@@ -343,6 +375,10 @@ func (w *dualSenseOutputWriter) Run() {
 		select {
 		case <-w.stop:
 			return
+		case frame := <-w.realtimeHaptics:
+			if !w.writeAndRelease(frame) {
+				return
+			}
 		case frame := <-w.control:
 			if !w.writeAndRelease(frame) {
 				return

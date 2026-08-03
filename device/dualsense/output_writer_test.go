@@ -76,7 +76,7 @@ func TestDualSenseV5WriterPublishesRealtimeHapticsFrame(t *testing.T) {
 		BluetoothCombinedHapticsReportID
 	feedback[OutputStateCombinedBluetoothOffset+
 		BluetoothCombinedHapticsOffset] = 0x5A
-	writer.EnqueueControl(StreamFrameRealtimeHaptics, feedback)
+	writer.EnqueueRealtimeHaptics(feedback)
 
 	header, payload := readDualSenseOutputFrame(t, client)
 	if header[4] != StreamFrameVersionV5 ||
