@@ -65,6 +65,7 @@ type DualSense struct {
 	metaState  *MetaState
 
 	atomicAudioHapticsFunc func(OutputState, []byte)
+	realtimeHapticsFunc    func(OutputState)
 	speakerResetFunc       func()
 	outputFunc             func(OutputState)
 	outputState            OutputState
@@ -217,6 +218,15 @@ func (d *DualSense) SetOutputCallback(f func(OutputState)) {
 func (d *DualSense) SetAtomicAudioHapticsCallback(f func(OutputState, []byte)) {
 	d.mtx.Lock()
 	d.atomicAudioHapticsFunc = f
+	d.mtx.Unlock()
+}
+
+// SetRealtimeHapticsCallback installs the V5 rear-channel consumer. A
+// callback is issued as soon as one complete 512-frame haptics interval is
+// available, independently of the 480-frame speaker clock.
+func (d *DualSense) SetRealtimeHapticsCallback(f func(OutputState)) {
+	d.mtx.Lock()
+	d.realtimeHapticsFunc = f
 	d.mtx.Unlock()
 }
 
@@ -525,6 +535,15 @@ func (d *DualSense) handleHapticsAudioOut(out []byte) {
 		d.mtx.Lock()
 		outputFunc := d.outputFunc
 		atomicAudioHapticsFunc := d.atomicAudioHapticsFunc
+		realtimeHapticsFunc := d.realtimeHapticsFunc
+		if pending.hapticsOnly {
+			feedback := pending.feedback
+			d.mtx.Unlock()
+			if realtimeHapticsFunc != nil {
+				realtimeHapticsFunc(feedback)
+			}
+			continue
+		}
 		if outputFunc != nil || atomicAudioHapticsFunc != nil {
 			feedback := pending.feedback
 			d.mtx.Unlock()
@@ -543,6 +562,7 @@ type pendingBluetoothHapticsReport struct {
 	speakerPCM    []byte
 	assemblyDelay time.Duration
 	feedback      OutputState
+	hapticsOnly   bool
 }
 
 type dualSenseV5HapticsGeneration struct {
@@ -593,6 +613,15 @@ func (d *DualSense) consumeDualSenseV5AudioLocked(src []byte,
 		// the simultaneous speaker generation carries that exact update.
 		if len(d.hapticsPCM) == hapticsFrames*USBHapticsAudioFrameSize {
 			d.completeDualSenseV5HapticsLocked(now)
+			generation := d.v5HapticsQueue[len(d.v5HapticsQueue)-1]
+			if feedback, ok := d.buildDualSenseV5RealtimeHapticsLocked(
+				generation.sample[:]); ok {
+				reports = append(reports, pendingBluetoothHapticsReport{
+					assemblyDelay: generation.assemblyDelay,
+					feedback:      feedback,
+					hapticsOnly:   true,
+				})
+			}
 		}
 		if len(d.v5SpeakerPCM) == dualSenseV5SpeakerPayloadSize {
 			feedback, assemblyDelay, ok :=
@@ -609,6 +638,21 @@ func (d *DualSense) consumeDualSenseV5AudioLocked(src []byte,
 	}
 
 	return reports
+}
+
+func (d *DualSense) buildDualSenseV5RealtimeHapticsLocked(
+	sample []byte) (OutputState, bool) {
+	report, err := BuildBluetoothCombinedHapticsReport(
+		d.hapticsSeq, d.hapticsInterval, sample,
+		d.outputState.RawOutputReport[:])
+	if err != nil {
+		slog.Warn("failed to build realtime DualSense V5 haptics report",
+			"error", err)
+		return OutputState{}, false
+	}
+	feedback := d.outputState
+	copy(feedback.BluetoothCombinedOutputReport[:], report)
+	return feedback, true
 }
 
 func (d *DualSense) completeDualSenseV5HapticsLocked(now time.Time) {

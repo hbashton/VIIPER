@@ -75,11 +75,17 @@ const (
 	// frame consumes one completed rear interval or zero-fills that lane, while
 	// state and report counters remain on the 480-frame presentation clock.
 	StreamFrameAtomicAudioHaptics = 0x83
-	USBMicrophoneSampleRate       = 48000
-	USBMicrophoneChannels         = 2
-	USBMicrophoneBytesPerSample   = 2
-	USBMicrophonePacketFrames     = USBMicrophoneSampleRate / 1000
-	USBMicrophonePacketSize       = USBMicrophonePacketFrames *
+	// Completed rear-channel haptics are published immediately instead of
+	// waiting for the next independent 480-frame speaker boundary. The paired
+	// 0x83 media frame remains unchanged for compatibility, while V5 consumers
+	// that understand this lane can remove up to one speaker interval of host
+	// latency.
+	StreamFrameRealtimeHaptics  = 0x84
+	USBMicrophoneSampleRate     = 48000
+	USBMicrophoneChannels       = 2
+	USBMicrophoneBytesPerSample = 2
+	USBMicrophonePacketFrames   = USBMicrophoneSampleRate / 1000
+	USBMicrophonePacketSize     = USBMicrophonePacketFrames *
 		USBMicrophoneChannels * USBMicrophoneBytesPerSample
 	USBMicrophoneMaxPacketSize = USBMicrophonePacketSize +
 		USBMicrophoneChannels*USBMicrophoneBytesPerSample

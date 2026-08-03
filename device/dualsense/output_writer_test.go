@@ -1,6 +1,7 @@
 package dualsense
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"io"
@@ -63,6 +64,29 @@ func TestDualSenseV5WriterPublishesOnlyV5AtomicFrames(t *testing.T) {
 		state.DroppedPayloads != 0 || state.WriteFailures != 0 || state.Active {
 		t.Fatalf("unexpected V5 telemetry: %+v", state)
 	}
+}
+
+func TestDualSenseV5WriterPublishesRealtimeHapticsFrame(t *testing.T) {
+	server, client := net.Pipe()
+	writer := newDualSenseOutputWriter(server, nil, nil)
+	go writer.Run()
+
+	feedback := make([]byte, OutputStateV5Size)
+	feedback[OutputStateCombinedBluetoothOffset] =
+		BluetoothCombinedHapticsReportID
+	feedback[OutputStateCombinedBluetoothOffset+
+		BluetoothCombinedHapticsOffset] = 0x5A
+	writer.EnqueueControl(StreamFrameRealtimeHaptics, feedback)
+
+	header, payload := readDualSenseOutputFrame(t, client)
+	if header[4] != StreamFrameVersionV5 ||
+		header[5] != StreamFrameRealtimeHaptics ||
+		!bytes.Equal(payload, feedback) {
+		t.Fatalf("unexpected realtime haptics frame: header=% x", header)
+	}
+
+	_ = client.Close()
+	writer.Stop()
 }
 
 func TestDualSenseV5WriterAlternatesControlAndMedia(t *testing.T) {

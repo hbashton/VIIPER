@@ -49,6 +49,43 @@ func TestAppendDualSenseV5SpeakerPreservesRawFrontPair(t *testing.T) {
 	}
 }
 
+func TestDualSenseV5PublishesCompletedHapticsBeforeNextSpeakerBoundary(t *testing.T) {
+	device, err := New(nil)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	var speakerGenerations int
+	var realtimeGenerations []OutputState
+	device.SetAtomicAudioHapticsCallback(func(OutputState, []byte) {
+		speakerGenerations++
+	})
+	device.SetRealtimeHapticsCallback(func(feedback OutputState) {
+		realtimeGenerations = append(realtimeGenerations, feedback)
+	})
+	device.SetInterfaceAltSetting(InterfaceHapticsAudio, 1)
+
+	pcm := makeV5USBPCM(0, 512, 12000)
+	device.HandleTransfer(context.Background(), EndpointHapticsAudioOut,
+		usbip.DirOut, pcm[:480*USBHapticsAudioFrameSize])
+	if speakerGenerations != 1 || len(realtimeGenerations) != 0 {
+		t.Fatalf("480-frame boundary published speaker=%d haptics=%d, want 1/0",
+			speakerGenerations, len(realtimeGenerations))
+	}
+
+	device.HandleTransfer(context.Background(), EndpointHapticsAudioOut,
+		usbip.DirOut, pcm[480*USBHapticsAudioFrameSize:])
+	if speakerGenerations != 1 || len(realtimeGenerations) != 1 {
+		t.Fatalf("512-frame boundary published speaker=%d haptics=%d, want 1/1",
+			speakerGenerations, len(realtimeGenerations))
+	}
+	want := make([]byte, BluetoothHapticsSampleSize)
+	copyUSBHapticsChannelsToBluetoothSample(want, pcm)
+	got := realtimeGenerations[0].BluetoothCombinedOutputReport[BluetoothCombinedHapticsOffset : BluetoothCombinedHapticsOffset+BluetoothHapticsSampleSize]
+	if !bytes.Equal(got, want) {
+		t.Fatal("realtime callback changed the completed rear-channel generation")
+	}
+}
+
 func TestDualSenseV5MaintainsIndependentGenerationsAcrossArbitraryUSBChunks(t *testing.T) {
 	// Seventeen speaker generations cross the second V5 rear-lane
 	// shortage at generation 16. Stop one frame before the next 512 boundary so

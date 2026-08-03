@@ -140,10 +140,19 @@ func dualSenseV5StreamHandler(deviceName string) api.StreamHandlerFunc {
 			}
 			writer.EnqueueAtomicAudioHaptics(data, speakerPCM)
 		})
+		dse.SetRealtimeHapticsCallback(func(feedback OutputState) {
+			data, err := marshalFeedback(feedback)
+			if err != nil {
+				logger.Error("failed to marshal V5 realtime haptics feedback", "error", err)
+				return
+			}
+			writer.EnqueueControl(StreamFrameRealtimeHaptics, data)
+		})
 		dse.SetSpeakerResetCallback(writer.ResetSpeaker)
 		defer func() {
 			dse.SetOutputCallback(nil)
 			dse.SetAtomicAudioHapticsCallback(nil)
+			dse.SetRealtimeHapticsCallback(nil)
 			dse.SetSpeakerResetCallback(nil)
 			writer.Stop()
 		}()
