@@ -236,20 +236,6 @@ func TestEndpointIsIsochronousUsesDescriptorDirection(t *testing.T) {
 	assert.False(t, endpointIsIsochronous(desc, 0, usbip.DirIn))
 }
 
-func TestDescriptorHasIsochronousEndpoint(t *testing.T) {
-	assert.False(t, descriptorHasIsochronousEndpoint(nil))
-	assert.False(t, descriptorHasIsochronousEndpoint(&usbdesc.Descriptor{
-		Interfaces: []usbdesc.InterfaceConfig{{
-			Endpoints: []usbdesc.EndpointDescriptor{{BMAttributes: 0x03}},
-		}},
-	}))
-	assert.True(t, descriptorHasIsochronousEndpoint(&usbdesc.Descriptor{
-		Interfaces: []usbdesc.InterfaceConfig{{
-			Endpoints: []usbdesc.EndpointDescriptor{{BMAttributes: 0x05}},
-		}},
-	}))
-}
-
 func TestUrbStreamMalformedIsoInDoesNotConsumePCMAndResetsAlternateSettings(t *testing.T) {
 	for i, packetCount := range []int32{-1, 0} {
 		name := "non_iso_marker"

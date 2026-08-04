@@ -572,14 +572,6 @@ func (lc *logConn) Write(p []byte) (int, error) {
 }
 
 func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
-	if descriptorHasIsochronousEndpoint(dev.GetDescriptor()) {
-		releaseRealtimeThread, err := enterRealtimeMediaThread()
-		if err != nil {
-			s.logger.Warn("could not register USB media thread with MMCSS", "error", err)
-		}
-		defer releaseRealtimeThread()
-	}
-
 	_ = conn.SetDeadline(time.Time{})
 	// Alternate settings belong to this USB/IP attachment, not to the lifetime
 	// of the virtual device. Windows does not necessarily send SET_INTERFACE 0
@@ -1088,22 +1080,6 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 			return err
 		}
 	}
-}
-
-func descriptorHasIsochronousEndpoint(desc *usb.Descriptor) bool {
-	if desc == nil {
-		return false
-	}
-
-	for i := range desc.Interfaces {
-		for _, endpoint := range desc.Interfaces[i].Endpoints {
-			if endpoint.BMAttributes&0x03 == 0x01 {
-				return true
-			}
-		}
-	}
-
-	return false
 }
 
 func endpointInterval(desc *usb.Descriptor, ep uint32) time.Duration {
