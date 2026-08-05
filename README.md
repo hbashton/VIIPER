@@ -47,7 +47,7 @@ irm https://raw.githubusercontent.com/hbashton/VIIPER/main/scripts/install.ps1 |
 
 The script:
 
-1. Downloads the pinned `v0.0.7` release from `hbashton/VIIPER` and verifies
+1. Downloads the pinned `v0.0.8` release from `hbashton/VIIPER` and verifies
    the release asset SHA-256 digest.
 2. Accepts either the packaged Windows ZIP or the `viiper.exe` asset used by current releases.
 3. Installs VIIPER to `%LOCALAPPDATA%\VIIPER\viiper.exe`.

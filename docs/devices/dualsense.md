@@ -6,7 +6,7 @@ advanced haptics, and microphone endpoints.
 
 ## Supported device types
 
-VIIPER 0.0.7 exposes only the production V5 contracts:
+VIIPER 0.0.8 exposes only the production V5 contracts:
 
 | Device type | USB functions |
 | --- | --- |

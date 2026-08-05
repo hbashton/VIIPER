@@ -11,8 +11,8 @@ import (
 
 func TestReadVersionPrefersInjectedReleaseVersion(t *testing.T) {
 	original := common.Version
-	common.Version = "v0.0.7"
+	common.Version = "v0.0.8"
 	t.Cleanup(func() { common.Version = original })
 
-	require.Equal(t, "0.0.7", readVersion())
+	require.Equal(t, "0.0.8", readVersion())
 }

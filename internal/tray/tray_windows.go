@@ -110,7 +110,7 @@ func readVersion() string {
 	// Release builds inject this value explicitly. debug.ReadBuildInfo reports
 	// "(devel)" for a binary built directly from a checkout, even when the
 	// release linker metadata is present, which previously made the tray show
-	// "VIIPER - dev" for packaged 0.0.7 builds.
+	// "VIIPER - dev" for packaged release builds.
 	if version, err := common.GetVersion(); err == nil &&
 		version != "0.0.1-dev" {
 		return version
