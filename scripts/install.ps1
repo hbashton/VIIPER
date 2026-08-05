@@ -5,7 +5,7 @@ param(
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 
-$viiperVersion = "v0.0.6"
+$viiperVersion = "v0.0.7"
 $usbipTargetVersion = [Version]"0.9.7.7"
 $installDir = Join-Path $env:LOCALAPPDATA "VIIPER"
 $usbipReplacementStatePath = Join-Path $installDir `
