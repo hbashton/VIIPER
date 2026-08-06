@@ -67,6 +67,7 @@ VIIPER itself is portable, but virtual devices on Windows still require the
 VIIPER can expose the following virtual USB devices for DS4Windows:
 
 - Xbox 360 controller
+- Xbox Series X|S controller with four-motor feedback
 - DualShock 4
 - DualSense
 - DualSense Edge
@@ -196,6 +197,7 @@ See:
 - [DualSense protocol](docs/devices/dualsense.md)
 - [DualShock 4 protocol](docs/devices/dualshock4.md)
 - [Xbox 360 protocol](docs/devices/xbox360.md)
+- [Xbox Series X|S protocol](docs/devices/xboxseries.md)
 - [Switch 2 Pro protocol](docs/devices/ns2pro.md)
 - [libVIIPER overview](docs/libviiper/overview.md)
 

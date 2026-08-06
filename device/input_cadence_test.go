@@ -14,6 +14,7 @@ import (
 	"github.com/Alia5/VIIPER/device/mouse"
 	"github.com/Alia5/VIIPER/device/ns2pro"
 	"github.com/Alia5/VIIPER/device/xbox360"
+	"github.com/Alia5/VIIPER/device/xboxseries"
 	"github.com/Alia5/VIIPER/internal/server/api"
 	usbdesc "github.com/Alia5/VIIPER/usb"
 	"github.com/stretchr/testify/require"
@@ -34,6 +35,7 @@ func TestControllerInputDescriptorsAdvertiseOneMillisecondMaximum(t *testing.T) 
 		interval   uint8
 	}{
 		{name: "Xbox 360", descriptor: descriptorPtr(xbox360.MakeDescriptor()), address: 0x81, interval: 1},
+		{name: "Xbox Series X|S", descriptor: descriptorPtr(xboxseries.MakeDescriptor()), address: 0x81, interval: 4},
 		{name: "DualShock 4", descriptor: ds4.GetDescriptor(), address: dualshock4.EndpointIn, interval: 1},
 		// A high-speed interval of four is 2^(4-1) 125-us microframes = 1 ms.
 		{name: "DualSense", descriptor: ds5.GetDescriptor(), address: dualsense.EndpointIn, interval: 4},
@@ -62,6 +64,8 @@ func descriptorPtr(descriptor usbdesc.Descriptor) *usbdesc.Descriptor {
 func TestConcurrentInputPublishersNeverBlock(t *testing.T) {
 	xbox, err := xbox360.New(nil)
 	require.NoError(t, err)
+	series, err := xboxseries.New(nil)
+	require.NoError(t, err)
 	ds4, err := dualshock4.New(nil)
 	require.NoError(t, err)
 	ds5, err := dualsense.New(nil)
@@ -74,6 +78,7 @@ func TestConcurrentInputPublishersNeverBlock(t *testing.T) {
 	require.NoError(t, err)
 
 	xboxState := xbox360.InputState{}
+	seriesState := xboxseries.InputState{}
 	ds4State := dualshock4.InputState{}
 	ds5State := dualsense.InputState{}
 	switchState := ns2pro.InputState{}
@@ -84,6 +89,7 @@ func TestConcurrentInputPublishersNeverBlock(t *testing.T) {
 		update func()
 	}{
 		{name: "Xbox 360", update: func() { xbox.UpdateInputState(xboxState) }},
+		{name: "Xbox Series X|S", update: func() { series.UpdateInputState(seriesState) }},
 		{name: "DualShock 4", update: func() { ds4.UpdateInputState(&ds4State) }},
 		{name: "DualSense", update: func() { ds5.UpdateInputState(&ds5State) }},
 		{name: "Switch 2 Pro", update: func() { switchPro.UpdateInputState(switchState) }},

@@ -50,6 +50,8 @@ Beyond device emulation, VIIPER can proxy real USB devices for traffic inspectio
 ## Emulatable devices
 
 - Xbox 360 controller emulation; see [Devices › Xbox 360 Controller](devices/xbox360.md)
+- Native Xbox Series X|S GIP controller emulation with four-motor feedback;
+  see [Devices › Xbox Series X|S Controller](devices/xboxseries.md)
 - HID Keyboard with N-key rollover and LED feedback; see [Devices › Keyboard](devices/keyboard.md)
 - HID Mouse with 5 buttons and horizontal/vertical wheel; see [Devices › Mouse](devices/mouse.md)
 - PS4 controller emulation; see [Devices › DualShock 4 Controller](devices/dualshock4.md)

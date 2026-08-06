@@ -101,6 +101,7 @@ Full working examples are in [`examples/libVIIPER/`](https://github.com/hbashton
 ## Devices
 
 - [Xbox 360 Controller](../devices/xbox360.md)
+- [Xbox Series X|S Controller](../devices/xboxseries.md)
 - [DualShock 4](../devices/dualshock4.md)
 - [DualSense (and Edge)](../devices/dualsense.md)
 - [Switch 2 Pro Controller](../devices/ns2pro.md)
