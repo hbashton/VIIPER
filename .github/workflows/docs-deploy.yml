@@ -10,6 +10,13 @@ on:
 permissions:
     contents: write
 
+# Main and release-tag pushes commonly target the same commit and therefore
+# start together. Both jobs publish to the single gh-pages branch, so they must
+# acquire the same deployment lane before mike fetches and pushes that branch.
+concurrency:
+    group: viiper-gh-pages
+    cancel-in-progress: false
+
 jobs:
     deploy-docs:
         name: Deploy Documentation
