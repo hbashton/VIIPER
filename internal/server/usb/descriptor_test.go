@@ -29,6 +29,24 @@ type controlLifecycleTestDevice struct {
 	resetEndpoints []uint8
 }
 
+type immediateInterruptInTestDevice struct {
+	desc *usbdesc.Descriptor
+}
+
+func (d *immediateInterruptInTestDevice) HandleTransfer(
+	context.Context, uint32, uint32, []byte,
+) []byte {
+	return []byte{0x5a}
+}
+
+func (d *immediateInterruptInTestDevice) GetDescriptor() *usbdesc.Descriptor {
+	return d.desc
+}
+
+func (d *immediateInterruptInTestDevice) GetDeviceSpecificArgs() map[string]any {
+	return nil
+}
+
 func (d *controlLifecycleTestDevice) HandleControl(
 	uint8, uint8, uint16, uint16, uint16, []byte,
 ) ([]byte, bool) {
@@ -306,4 +324,62 @@ func TestUrbStreamMalformedIsoInDoesNotConsumePCMAndResetsAlternateSettings(t *t
 			assert.Equal(t, [][2]uint8{{2, 1}, {2, 0}}, dev.altEvents)
 		})
 	}
+}
+
+func TestUrbStreamPacesImmediatelyAvailableInterruptInput(t *testing.T) {
+	desc := &usbdesc.Descriptor{
+		Device: usbdesc.DeviceDescriptor{Speed: 2},
+		Interfaces: []usbdesc.InterfaceConfig{{
+			Endpoints: []usbdesc.EndpointDescriptor{{
+				BEndpointAddress: 0x81,
+				BMAttributes:     0x03,
+				WMaxPacketSize:   32,
+				BInterval:        1,
+			}},
+		}},
+	}
+	d := &immediateInterruptInTestDevice{desc: desc}
+	bus := virtualbus.New(250)
+	defer bus.Close() //nolint:errcheck
+	_, err := bus.Add(d)
+	require.NoError(t, err)
+
+	server := New(ServerConfig{}, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
+	require.NoError(t, server.AddBus(bus))
+	serverConn, clientConn := net.Pipe()
+	defer serverConn.Close() //nolint:errcheck
+	require.NoError(t, clientConn.SetDeadline(time.Now().Add(2*time.Second)))
+	errCh := make(chan error, 1)
+	go func() { errCh <- server.handleUrbStream(serverConn, d) }()
+
+	const completions = 8
+	completionTimes := make([]time.Time, 0, completions)
+	for i := 0; i < completions; i++ {
+		cmd := usbip.CmdSubmit{
+			Basic: usbip.HeaderBasic{
+				Command: usbip.CmdSubmitCode,
+				Seqnum:  uint32(i + 1),
+				Dir:     usbip.DirIn,
+				Ep:      1,
+			},
+			TransferBufferLen: 1,
+			NumberOfPackets:   -1,
+		}
+		require.NoError(t, cmd.Write(clientConn))
+		var response [retSubmitHeaderSize]byte
+		require.NoError(t, usbip.ReadExactly(clientConn, response[:]))
+		require.Equal(t, uint32(1), binary.BigEndian.Uint32(response[24:28]))
+		var payload [1]byte
+		require.NoError(t, usbip.ReadExactly(clientConn, payload[:]))
+		require.Equal(t, byte(0x5a), payload[0])
+		completionTimes = append(completionTimes, time.Now())
+	}
+
+	// Seven one-millisecond service gaps should not collapse into a loopback
+	// burst. Keep tolerance for timer granularity on loaded CI hosts.
+	elapsed := completionTimes[len(completionTimes)-1].Sub(completionTimes[0])
+	require.GreaterOrEqual(t, elapsed, 5*time.Millisecond)
+
+	require.NoError(t, clientConn.Close())
+	require.Error(t, <-errCh)
 }

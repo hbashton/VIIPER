@@ -529,9 +529,38 @@ func TestInputSnapshotRepeatsWithoutAnotherFeederWrite(t *testing.T) {
 	dev.UpdateInputState(state)
 
 	first := dev.HandleTransfer(context.Background(), 1, usbip.DirIn, nil)
-	second := dev.HandleTransfer(context.Background(), 1, usbip.DirIn, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	second := dev.HandleTransfer(ctx, 1, usbip.DirIn, nil)
 	require.Equal(t, state.BuildReport(), first)
 	require.Equal(t, first, second)
+	require.GreaterOrEqual(t, time.Since(started), 2*time.Millisecond,
+		"an idle XInput poll must wait for its bounded service-window fallback")
+}
+
+func TestFreshInputStateWakesPendingPoll(t *testing.T) {
+	dev, err := xbox360.New(nil)
+	require.NoError(t, err)
+	// Consume the initial snapshot notification so the next poll waits for a
+	// genuinely fresh feeder state.
+	require.NotNil(t, dev.HandleTransfer(context.Background(), 1, usbip.DirIn, nil))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	done := make(chan []byte, 1)
+	go func() {
+		done <- dev.HandleTransfer(ctx, 1, usbip.DirIn, nil)
+	}()
+
+	state := xbox360.InputState{Buttons: xbox360.ButtonA, LX: 1234}
+	dev.UpdateInputState(state)
+	select {
+	case report := <-done:
+		require.Equal(t, state.BuildReport(), report)
+	case <-time.After(25 * time.Millisecond):
+		t.Fatal("fresh Xbox input did not wake the pending host poll")
+	}
 }
 
 func TestAllReservedInputBytesReachUsbReport(t *testing.T) {

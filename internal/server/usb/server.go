@@ -664,6 +664,23 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 	var respMu sync.Mutex
 	lastInResp := map[uint32][]byte{}
 
+	// Windows normally keeps several interrupt-IN URBs outstanding. A real USB
+	// host controller completes those URBs only at the endpoint's bInterval
+	// service opportunities. USB/IP has no hardware scheduler, so returning an
+	// immediately available cached report here lets the Windows client resubmit
+	// as fast as the loopback socket can run. Keep a submission-ordered clock per
+	// endpoint to enforce the descriptor's maximum presentation rate without
+	// slowing the producer: DS4Windows can still publish a fresh state at any
+	// time, and the newest queued state is consumed at the next service window.
+	type interruptInSchedule struct {
+		tail      <-chan time.Time
+		nextStart time.Time
+	}
+	completedInterruptIn := make(chan time.Time, 1)
+	completedInterruptIn <- time.Time{}
+	close(completedInterruptIn)
+	interruptInSchedules := make(map[uint32]interruptInSchedule)
+
 	var outPayloadScratch []byte
 	// Windows keeps several ISO-IN URBs outstanding. Preserve submission order
 	// independently for each endpoint while still accepting unrelated URBs.
@@ -884,6 +901,28 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 			pendingMu.Unlock()
 			interval := endpointInterval(dev.GetDescriptor(), ep)
 
+			var previousInterruptIn <-chan time.Time
+			var interruptInDone chan time.Time
+			var interruptInServiceStart time.Time
+			if !isIso && interval > 0 {
+				schedule, found := interruptInSchedules[ep]
+				if !found {
+					schedule.tail = completedInterruptIn
+				}
+				previousInterruptIn = schedule.tail
+				interruptInDone = make(chan time.Time, 1)
+				now := time.Now()
+				interruptInServiceStart = schedule.nextStart
+				if interruptInServiceStart.IsZero() ||
+					now.Sub(interruptInServiceStart) > interval {
+					interruptInServiceStart = now
+				}
+				interruptInSchedules[ep] = interruptInSchedule{
+					tail:      interruptInDone,
+					nextStart: interruptInServiceStart.Add(interval),
+				}
+			}
+
 			var previousIsoIn <-chan time.Time
 			var isoInDone chan time.Time
 			var isoServiceStart time.Time
@@ -914,7 +953,11 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 			go func(seq, ep, dir uint32, submitted []usbip.IsoPacketDescriptor, iso bool,
 				previousIsoIn <-chan time.Time, isoInDone chan time.Time,
 				isoServiceStart time.Time,
-				isoTransferDuration, isoPacketDuration time.Duration) {
+				isoTransferDuration, isoPacketDuration time.Duration,
+				previousInterruptIn <-chan time.Time,
+				interruptInDone chan time.Time,
+				interruptInServiceStart time.Time,
+				interruptInterval time.Duration) {
 				defer urbCancel()
 				var respData []byte
 				var completedPackets []usbip.IsoPacketDescriptor
@@ -978,6 +1021,40 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 					return
 				}
 
+				if interruptInDone != nil {
+					var signalNextOnce sync.Once
+					signalNext := func(completedAt time.Time) {
+						signalNextOnce.Do(func() {
+							interruptInDone <- completedAt
+							close(interruptInDone)
+						})
+					}
+					// Cancellation must release the next submitted URB. Passing the
+					// actual completion time also prevents a late scheduler slice from
+					// being followed by a burst of expired service windows.
+					defer func() { signalNext(time.Now()) }()
+
+					var previousCompletion time.Time
+					select {
+					case <-urbCtx.Done():
+						pendingMu.Lock()
+						delete(pending, seq)
+						pendingMu.Unlock()
+						return
+					case previousCompletion = <-previousInterruptIn:
+					}
+
+					interruptInServiceStart = reanchorInterruptInServiceTime(
+						interruptInServiceStart, previousCompletion,
+						interruptInterval, time.Now())
+					if !waitUntilContext(urbCtx, interruptInServiceStart) {
+						pendingMu.Lock()
+						delete(pending, seq)
+						pendingMu.Unlock()
+						return
+					}
+				}
+
 				for {
 					attemptCtx, attemptCancel := urbCtx, context.CancelFunc(func() {})
 					if interval > 0 {
@@ -1023,7 +1100,9 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 					}
 				}
 			}(seq, ep, dir, isoPackets, isIso, previousIsoIn, isoInDone,
-				isoServiceStart, isoTransferDuration, isoPacketDuration)
+				isoServiceStart, isoTransferDuration, isoPacketDuration,
+				previousInterruptIn, interruptInDone,
+				interruptInServiceStart, interval)
 			continue
 		}
 
@@ -1246,6 +1325,29 @@ func waitUntilContext(ctx context.Context, deadline time.Time) bool {
 	case <-timer.C:
 		return true
 	}
+}
+
+// reanchorInterruptInServiceTime keeps interrupt-IN completions bounded by the
+// endpoint's advertised service interval. The previous completion is used as
+// the anchor deliberately: if Windows or the Go scheduler stalls a completion,
+// queued URBs resume from "now" instead of replaying expired slots in a CPU-
+// intensive burst.
+func reanchorInterruptInServiceTime(plannedStart, previousCompletion time.Time,
+	interval time.Duration, now time.Time) time.Time {
+	start := plannedStart
+	if start.IsZero() {
+		start = now
+	}
+	if !previousCompletion.IsZero() && interval > 0 {
+		earliest := previousCompletion.Add(interval)
+		if earliest.After(start) {
+			start = earliest
+		}
+	}
+	if start.Before(now) {
+		start = now
+	}
+	return start
 }
 
 func reanchorIsoServiceWindow(plannedStart, previousServiceEnd time.Time,

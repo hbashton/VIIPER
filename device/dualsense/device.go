@@ -59,10 +59,11 @@ const (
 )
 
 type DualSense struct {
-	deviceType string
-	inputCh    chan InputState
-	inputState InputState
-	metaState  *MetaState
+	deviceType     string
+	inputCh        chan InputState
+	inputState     InputState
+	inputPublishMu sync.Mutex
+	metaState      *MetaState
 
 	atomicAudioHapticsFunc func(OutputState, []byte)
 	realtimeHapticsFunc    func(OutputState)
@@ -253,6 +254,9 @@ func (d *DualSense) beginSpeakerStream() *dualSenseSpeakerStreamTelemetry {
 }
 
 func (d *DualSense) UpdateInputState(state *InputState) {
+	d.inputPublishMu.Lock()
+	defer d.inputPublishMu.Unlock()
+
 	next := *NewInputState()
 	if state != nil {
 		next = *state

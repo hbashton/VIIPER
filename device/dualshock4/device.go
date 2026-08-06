@@ -23,9 +23,10 @@ const (
 )
 
 type DualShock4 struct {
-	inputCh    chan *InputState
-	inputState *InputState
-	metaState  *MetaState
+	inputCh        chan *InputState
+	inputState     *InputState
+	inputPublishMu sync.Mutex
+	metaState      *MetaState
 
 	outputFunc       func(OutputState)
 	speakerFunc      func([]byte)
@@ -162,14 +163,23 @@ func (d *DualShock4) SetSpeakerResetCallback(f func()) {
 }
 
 func (d *DualShock4) UpdateInputState(state *InputState) {
+	d.inputPublishMu.Lock()
+	defer d.inputPublishMu.Unlock()
+
+	next := *NewInputState()
+	if state != nil {
+		next = *state
+	}
+	nextPtr := &next
+
 	d.mtx.Lock()
-	d.inputState = state
+	d.inputState = nextPtr
 	d.mtx.Unlock()
 	select {
 	case <-d.inputCh:
 	default:
 	}
-	d.inputCh <- state
+	d.inputCh <- nextPtr
 }
 
 func (d *DualShock4) GetDescriptor() *usb.Descriptor {

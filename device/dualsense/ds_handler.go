@@ -50,7 +50,11 @@ func (h *dshandler) CreateDevice(o *device.CreateOptions) (usb.Device, error) {
 			serial = serial[:4] + code[:2] + serial[6:]
 		}
 	}
+	identityMu.Lock()
 	if _, ok := serials[serial]; ok {
+		if len(serial) < 2 {
+			serial = DefaultSerialNumberDS
+		}
 		for i := 1; i < 16; i++ {
 			newSerial := fmt.Sprintf("%s%02X", serial[:len(serial)-2], i)
 			if _, exists := serials[newSerial]; !exists {
@@ -67,6 +71,9 @@ func (h *dshandler) CreateDevice(o *device.CreateOptions) (usb.Device, error) {
 		mac = DefaultMACAddressDS
 	}
 	if _, ok := macs[mac]; ok {
+		if len(mac) < 2 {
+			mac = DefaultMACAddressDS
+		}
 		prefix := mac[:len(mac)-2]
 		for i := 1; i <= 16; i++ {
 			candidate := fmt.Sprintf("%s%02X", prefix, i)
@@ -78,6 +85,7 @@ func (h *dshandler) CreateDevice(o *device.CreateOptions) (usb.Device, error) {
 	}
 	metaState.MACAddress = mac
 	macs[mac] = struct{}{}
+	identityMu.Unlock()
 
 	b, err := json.Marshal(metaState)
 	if err != nil {
@@ -87,6 +95,10 @@ func (h *dshandler) CreateDevice(o *device.CreateOptions) (usb.Device, error) {
 
 	dse, err := new(o, false)
 	if err != nil {
+		identityMu.Lock()
+		delete(serials, serial)
+		delete(macs, mac)
+		identityMu.Unlock()
 		return nil, err
 	}
 	if h.audioOnly {
@@ -174,8 +186,10 @@ func releaseDualSenseIdentity(devPtr *usb.Device, deviceName string) {
 	serial := dse.metaState.SerialNumber
 	mac := dse.metaState.MACAddress
 	dse.mtx.Unlock()
+	identityMu.Lock()
 	delete(serials, serial)
 	delete(macs, mac)
+	identityMu.Unlock()
 	slog.Debug(deviceName+" disconnected, serial/mac released", "serial", serial, "mac", mac)
 }
 

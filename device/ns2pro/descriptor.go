@@ -60,7 +60,7 @@ func MakeDescriptor() usb.Descriptor {
 					ReportDescriptor: reportDescriptor,
 				},
 				Endpoints: []usb.EndpointDescriptor{
-					{BEndpointAddress: EndpointHIDIn, BMAttributes: 0x03, WMaxPacketSize: 64, BInterval: 4},
+					{BEndpointAddress: EndpointHIDIn, BMAttributes: 0x03, WMaxPacketSize: 64, BInterval: 1},
 					{BEndpointAddress: EndpointHIDOut, BMAttributes: 0x03, WMaxPacketSize: 64, BInterval: 4},
 				},
 			},

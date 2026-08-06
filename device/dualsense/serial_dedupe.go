@@ -1,6 +1,9 @@
 package dualsense
 
+import "sync"
+
 var (
-	serials = map[string]struct{}{}
-	macs    = map[string]struct{}{}
+	identityMu sync.Mutex
+	serials    = map[string]struct{}{}
+	macs       = map[string]struct{}{}
 )

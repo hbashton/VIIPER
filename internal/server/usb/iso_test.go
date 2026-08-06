@@ -174,6 +174,28 @@ func TestUSBServiceIntervalUsesHighSpeedMicroframes(t *testing.T) {
 	}
 }
 
+func TestReanchorInterruptInServiceTimeDoesNotBurstAfterLateCompletion(t *testing.T) {
+	planned := time.Unix(100, 0)
+	previousCompletion := planned.Add(4 * time.Millisecond)
+	now := previousCompletion.Add(200 * time.Microsecond)
+	got := reanchorInterruptInServiceTime(
+		planned.Add(time.Millisecond), previousCompletion, time.Millisecond, now)
+	want := previousCompletion.Add(time.Millisecond)
+	if !got.Equal(want) {
+		t.Fatalf("interrupt service clock was not re-anchored: got %s want %s", got, want)
+	}
+}
+
+func TestReanchorInterruptInServiceTimeKeepsFutureSlot(t *testing.T) {
+	planned := time.Unix(100, 0)
+	now := planned.Add(-500 * time.Microsecond)
+	got := reanchorInterruptInServiceTime(
+		planned, time.Time{}, time.Millisecond, now)
+	if !got.Equal(planned) {
+		t.Fatalf("future interrupt service slot changed: got %s want %s", got, planned)
+	}
+}
+
 func TestReanchorIsoServiceWindowDoesNotReplayExpiredSlots(t *testing.T) {
 	planned := time.Unix(100, 0)
 	now := planned.Add(7 * time.Millisecond)

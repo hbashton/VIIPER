@@ -130,9 +130,13 @@ func TestDescriptor(t *testing.T) {
 }
 
 func TestCreateDeviceDeduplicatesSerial(t *testing.T) {
+	serialsMu.Lock()
 	serials = map[string]struct{}{}
+	serialsMu.Unlock()
 	t.Cleanup(func() {
+		serialsMu.Lock()
 		serials = map[string]struct{}{}
+		serialsMu.Unlock()
 	})
 
 	h := &handler{}

@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"sync"
 
 	"github.com/Alia5/VIIPER/device"
 	"github.com/Alia5/VIIPER/internal/server/api"
@@ -18,7 +19,10 @@ func init() {
 
 type handler struct{}
 
-var serials = map[string]struct{}{}
+var (
+	serialsMu sync.Mutex
+	serials   = map[string]struct{}{}
+)
 
 func (h *handler) CreateDevice(o *device.CreateOptions) (usb.Device, error) {
 	if o == nil {
@@ -36,6 +40,7 @@ func (h *handler) CreateDevice(o *device.CreateOptions) (usb.Device, error) {
 	if serial == "" {
 		serial = DefaultSerial
 	}
+	serialsMu.Lock()
 	if _, ok := serials[serial]; ok {
 		if len(serial) < 2 {
 			serial = DefaultSerial
@@ -51,6 +56,7 @@ func (h *handler) CreateDevice(o *device.CreateOptions) (usb.Device, error) {
 
 	metaState.SerialNumber = serial
 	serials[serial] = struct{}{}
+	serialsMu.Unlock()
 
 	b, err := json.Marshal(metaState)
 	if err != nil {
@@ -58,7 +64,13 @@ func (h *handler) CreateDevice(o *device.CreateOptions) (usb.Device, error) {
 	}
 	o.DeviceSpecific = string(b)
 
-	return New(o)
+	result, err := New(o)
+	if err != nil {
+		serialsMu.Lock()
+		delete(serials, serial)
+		serialsMu.Unlock()
+	}
+	return result, err
 }
 
 func (h *handler) StreamHandler() api.StreamHandlerFunc {
@@ -76,7 +88,9 @@ func (h *handler) StreamHandler() api.StreamHandlerFunc {
 			if serial == "" {
 				return
 			}
+			serialsMu.Lock()
 			delete(serials, serial)
+			serialsMu.Unlock()
 			slog.Debug("ns2pro disconnected, serial released", "serial", serial)
 		}()
 

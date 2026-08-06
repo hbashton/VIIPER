@@ -193,7 +193,10 @@ var defaultDescriptor = usb.Descriptor{
 					BEndpointAddress: EndpointIn,
 					BMAttributes:     0x03, // Interrupt
 					WMaxPacketSize:   64,
-					BInterval:        6,
+					// High-speed interrupt bInterval=4 is one millisecond
+					// (2^(4-1) microframes). This is the maximum presentation
+					// cadence; fresh physical state remains producer-driven.
+					BInterval: 4,
 				},
 				{
 					BEndpointAddress: EndpointOut,

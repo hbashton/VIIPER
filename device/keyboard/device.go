@@ -4,7 +4,6 @@ package keyboard
 import (
 	"context"
 	"sync"
-	"sync/atomic"
 
 	"github.com/Alia5/VIIPER/device"
 	"github.com/Alia5/VIIPER/usb"
@@ -14,13 +13,13 @@ import (
 
 // Keyboard implements the Device interface for a full HID keyboard with LED support.
 type Keyboard struct {
-	tick        uint64
-	inputCh     chan InputState
-	stateMu     sync.Mutex
-	ledState    uint8
-	ledSeen     bool
-	ledCallback func(LEDState)
-	descriptor  usb.Descriptor
+	inputCh        chan InputState
+	inputPublishMu sync.Mutex
+	stateMu        sync.Mutex
+	ledState       uint8
+	ledSeen        bool
+	ledCallback    func(LEDState)
+	descriptor     usb.Descriptor
 }
 
 // New returns a new Keyboard device.
@@ -74,6 +73,9 @@ func (k *Keyboard) GetLEDState() LEDState {
 
 // UpdateInputState updates the device's current input state (thread-safe).
 func (k *Keyboard) UpdateInputState(state InputState) {
+	k.inputPublishMu.Lock()
+	defer k.inputPublishMu.Unlock()
+
 	select {
 	case <-k.inputCh:
 	default:
@@ -86,7 +88,6 @@ func (k *Keyboard) HandleTransfer(ctx context.Context, ep uint32, dir uint32, ou
 	if dir == usbip.DirIn {
 		switch ep {
 		case 1: // 0x81 - keyboard input reports
-			atomic.AddUint64(&k.tick, 1)
 			select {
 			case <-ctx.Done():
 				return nil

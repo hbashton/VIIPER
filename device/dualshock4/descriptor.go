@@ -430,7 +430,7 @@ var defaultDescriptor = usb.Descriptor{
 					BEndpointAddress: EndpointIn,
 					BMAttributes:     0x03,
 					WMaxPacketSize:   64,
-					BInterval:        5,
+					BInterval:        1,
 				},
 				{
 					BEndpointAddress: EndpointOut,

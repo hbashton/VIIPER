@@ -3,7 +3,7 @@ package mouse
 
 import (
 	"context"
-	"sync/atomic"
+	"sync"
 
 	"github.com/Alia5/VIIPER/device"
 	"github.com/Alia5/VIIPER/usb"
@@ -14,9 +14,9 @@ import (
 // Mouse implements the minimal Device interface for a 5-button HID mouse
 // with vertical and horizontal wheels.
 type Mouse struct {
-	tick       uint64
-	inputCh    chan InputState
-	descriptor usb.Descriptor
+	inputCh        chan InputState
+	inputPublishMu sync.Mutex
+	descriptor     usb.Descriptor
 }
 
 // New returns a new Mouse device.
@@ -38,6 +38,9 @@ func New(o *device.CreateOptions) (*Mouse, error) {
 }
 
 func (m *Mouse) UpdateInputState(state InputState) {
+	m.inputPublishMu.Lock()
+	defer m.inputPublishMu.Unlock()
+
 	select {
 	case <-m.inputCh:
 	default:
@@ -49,7 +52,6 @@ func (m *Mouse) HandleTransfer(ctx context.Context, ep uint32, dir uint32, out [
 	if dir == usbip.DirIn {
 		switch ep {
 		case 1: // 0x81 - main input reports
-			atomic.AddUint64(&m.tick, 1)
 			select {
 			case <-ctx.Done():
 				return nil

@@ -4,9 +4,9 @@ package xbox360
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
-	"sync/atomic"
 
 	"github.com/Alia5/VIIPER/device"
 	"github.com/Alia5/VIIPER/usb"
@@ -14,9 +14,9 @@ import (
 )
 
 type Xbox360 struct {
-	tick             uint64
 	inputMu          sync.RWMutex
 	inputState       InputState
+	inputSignal      chan struct{}
 	rumbleDispatchMu sync.Mutex
 	rumbleMu         sync.Mutex
 	rumbleFunc       func(XRumbleState)
@@ -53,6 +53,8 @@ func New(o *device.CreateOptions) (*Xbox360, error) {
 		}
 	}
 	d.inputState = *NewInputState()
+	d.inputSignal = make(chan struct{}, 1)
+	d.inputSignal <- struct{}{}
 	return d, nil
 }
 
@@ -77,6 +79,10 @@ func (x *Xbox360) UpdateInputState(state InputState) {
 	x.inputMu.Lock()
 	x.inputState = state
 	x.inputMu.Unlock()
+	select {
+	case x.inputSignal <- struct{}{}:
+	default:
+	}
 }
 
 // HandleTransfer implements interrupt IN/OUT for Xbox360.
@@ -84,18 +90,18 @@ func (x *Xbox360) HandleTransfer(ctx context.Context, ep uint32, dir uint32, out
 	if dir == usbip.DirIn {
 		switch ep {
 		case 1: // 0x81 - main input reports
-			atomic.AddUint64(&x.tick, 1)
 			select {
 			case <-ctx.Done():
-				return nil
-			default:
+				if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+					return nil
+				}
+			case <-x.inputSignal:
 			}
 
-			// A physical XUSB pad returns its current state at every host
-			// interrupt-IN opportunity. Treat feeder writes as updates to a
-			// persistent snapshot; consuming them as one-shot events makes a
-			// Windows poll block whenever the feeder and USB clocks do not land
-			// in the same interval, which presents as input and rumble jitter.
+			// A fresh feeder state completes the current host poll immediately.
+			// When the physical producer is idle, the bounded USB service-window
+			// timeout returns the persistent snapshot instead of spinning or
+			// stalling XInput. This keeps input adaptive with a 1000 Hz ceiling.
 			x.inputMu.RLock()
 			st := x.inputState
 			x.inputMu.RUnlock()
@@ -171,7 +177,10 @@ func MakeDescriptor() usb.Descriptor {
 					},
 				},
 				Endpoints: []usb.EndpointDescriptor{
-					{BEndpointAddress: 0x81, BMAttributes: 0x03, WMaxPacketSize: 0x0020, BInterval: 0x04},
+					// Full-speed interrupt bInterval=1 advertises a 1 ms maximum
+					// input service cadence. The USB/IP scheduler still presents only
+					// the newest feeder state, so idle pads do not create a busy loop.
+					{BEndpointAddress: 0x81, BMAttributes: 0x03, WMaxPacketSize: 0x0020, BInterval: 0x01},
 					{BEndpointAddress: 0x01, BMAttributes: 0x03, WMaxPacketSize: 0x0020, BInterval: 0x08},
 				},
 			},
