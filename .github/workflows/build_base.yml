@@ -44,6 +44,32 @@ jobs:
             - name: Show Go version
               run: go version
 
+            - name: Validate Windows installer first-run contract
+              shell: pwsh
+              run: |
+                  $tokens = $null
+                  $errors = $null
+                  [Management.Automation.Language.Parser]::ParseFile(
+                      (Resolve-Path "scripts/install.ps1"),
+                      [ref]$tokens, [ref]$errors) | Out-Null
+                  if ($errors.Count -ne 0) {
+                      $errors | Format-List
+                      throw "scripts/install.ps1 has PowerShell parser errors."
+                  }
+                  $source = Get-Content "scripts/install.ps1" -Raw
+                  if ($source -match '(?m)^\s*\$runValue\s*=\s*Get-ItemPropertyValue') {
+                      throw "VIIPER Run-value reads must tolerate a missing first-run property."
+                  }
+                  if ([regex]::Matches($source,
+                          '(?m)^\s*\$runValue\s*=\s*Get-ViiperRunValue\s*$').Count -ne 2 -or
+                      $source -notmatch 'RegistryValueOptions\]::DoNotExpandEnvironmentNames') {
+                      throw "Both VIIPER startup verification paths must use the safe registry helper."
+                  }
+                  if ($source -notmatch 'function Get-OptionalRegistryValue' -or
+                      $source -notmatch '\$null -eq \$key\) \{ return \$null \}') {
+                      throw "The optional registry helper must treat a missing key as clean first-run state."
+                  }
+
             - name: Lint
               uses: golangci/golangci-lint-action@v9.2.0
               with:
@@ -77,6 +103,11 @@ jobs:
               uses: actions/checkout@v6
               with:
                   fetch-depth: 0
+
+            - name: Exercise Windows installer first-run registry states
+              if: ${{ matrix.target.goos == 'windows' && matrix.target.goarch == 'amd64' }}
+              shell: pwsh
+              run: ./scripts/test-install-first-run.ps1
 
             - name: Set up Go
               uses: actions/setup-go@v6.4.0
