@@ -33,27 +33,23 @@ The simplest and recommended path is through a VIIPER-capable DS4Windows build:
 4. Accept the administrator prompt and restart Windows if `usbip-win2` was installed or updated.
 5. In a profile, choose an output such as **DualSense**.
 
-DS4Windows installs VIIPER to `%LOCALAPPDATA%\VIIPER\viiper.exe`, installs the
-required Windows USBIP driver when necessary, registers startup, and checks that
-the local VIIPER API responds.
+DS4Windows installs the exact bundled VIIPER build to
+`%ProgramFiles%\DS4Windows\VIIPER\viiper.exe`, installs or safely replaces the
+pinned USB-IP package when necessary, registers startup, and verifies the
+binary hash, driver files, USB-IP ABI, and local VIIPER API before reporting
+Ready. Portable DS4Windows uses this same protected backend.
 
-## Install VIIPER directly on Windows
+## Standalone Windows setup is developer-only
 
-Windows x64 users can run the hbashton installer from PowerShell:
+The former PowerShell installer created a separate LocalAppData/HKCU owner that
+could disagree with DS4Windows about VIIPER, USB-IP, startup, and reboot state.
+It is therefore fail-closed by default. End users should use the signed
+DS4Windows installer or its built-in **Install / Repair VIIPER** action.
 
-```powershell
-irm https://raw.githubusercontent.com/hbashton/VIIPER/main/scripts/install.ps1 | iex
-```
-
-The script:
-
-1. Downloads the pinned `v0.0.9` release from `hbashton/VIIPER` and verifies
-   the release asset SHA-256 digest.
-2. Accepts either the packaged Windows ZIP or the `viiper.exe` asset used by current releases.
-3. Installs VIIPER to `%LOCALAPPDATA%\VIIPER\viiper.exe`.
-4. Asks for confirmation, then verifies or installs the pinned signed
-   `usbip-win2` 0.9.7.7 package.
-5. Registers and starts VIIPER only after the live USBIP ABI probe passes.
+Developers deliberately testing VIIPER outside the managed DS4Windows contract
+must download the repository, inspect the script, set
+`VIIPER_DEVELOPER_STANDALONE=1`, and pass `-DeveloperStandalone`. That mode is
+not a supported DS4Windows installation path.
 
 You can also download `viiper.exe` manually from the
 [latest hbashton release](https://github.com/hbashton/VIIPER/releases/latest).

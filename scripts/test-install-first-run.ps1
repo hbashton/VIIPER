@@ -10,6 +10,12 @@ if ($parseErrors.Count -ne 0) {
     throw "scripts/install.ps1 has PowerShell parser errors."
 }
 
+$installerSource = Get-Content -LiteralPath $installerPath -Raw
+if ($installerSource -notmatch 'VIIPER_DEVELOPER_STANDALONE' -or
+        $installerSource -notmatch 'Global\\DS4Windows-VIIPER-Setup') {
+    throw "Standalone Windows setup is not fail-closed behind the managed transaction contract."
+}
+
 $helper = $ast.Find({
     param($node)
     $node -is [Management.Automation.Language.FunctionDefinitionAst] -and

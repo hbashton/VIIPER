@@ -110,12 +110,12 @@ jobs:
                       ## Install / Update
 
                       <details>
-                      <summary><b>Windows (PowerShell)</b></summary>
+                      <summary><b>Windows (DS4Windows)</b></summary>
 
-                      ```powershell
-                      irm https://raw.githubusercontent.com/hbashton/VIIPER/main/scripts/install.ps1 | iex
-                      ```
-                      Installs / updates to `%LOCALAPPDATA%\VIIPER\viiper.exe`
+                      Install with the signed DS4Windows all-in-one installer,
+                      or use **Settings > VIIPER Virtual Controller Support >
+                      Install / Repair**. The standalone Windows script is
+                      developer-only so it cannot create a competing backend.
                       </details>
 
                       <details>
