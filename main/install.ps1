@@ -861,6 +861,36 @@ exit 32
         return $true
     }
 
+    function Get-OptionalRegistryValue(
+            [Microsoft.Win32.RegistryKey]$root,
+            [string]$subKeyPath, [string]$valueName) {
+        # Get-ItemPropertyValue emits a PSArgumentException when the Run key
+        # exists but a clean machine has never created the VIIPER value. Read
+        # through Microsoft.Win32.Registry instead so both a missing key and a
+        # missing value are the expected `$null` first-run state.
+        $key = $null
+        try {
+            if ($null -eq $root -or
+                    [string]::IsNullOrWhiteSpace($subKeyPath) -or
+                    [string]::IsNullOrWhiteSpace($valueName)) {
+                return $null
+            }
+            $key = $root.OpenSubKey($subKeyPath, $false)
+            if ($null -eq $key) { return $null }
+            return $key.GetValue($valueName, $null,
+                [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+        }
+        finally {
+            if ($null -ne $key) { $key.Dispose() }
+        }
+    }
+
+    function Get-ViiperRunValue {
+        return Get-OptionalRegistryValue `
+            ([Microsoft.Win32.Registry]::CurrentUser) `
+            "Software\Microsoft\Windows\CurrentVersion\Run" "VIIPER"
+    }
+
     function Disable-ViiperStartup {
         $task = Get-ScheduledTask -TaskName "RunVIIPER" `
             -ErrorAction SilentlyContinue
@@ -892,9 +922,7 @@ exit 32
             throw "RunVIIPER startup remains enabled. No USBIP driver " +
                 "transition was started."
         }
-        $runValue = Get-ItemPropertyValue `
-            -LiteralPath "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" `
-            -Name "VIIPER" -ErrorAction SilentlyContinue
+        $runValue = Get-ViiperRunValue
         if ($null -ne $runValue) {
             throw "The VIIPER Run entry remains enabled. No USBIP driver " +
                 "transition was started."
@@ -926,9 +954,7 @@ exit 32
                 -ErrorAction SilentlyContinue) {
             throw "RunVIIPER was recreated alongside the VIIPER Run entry. Refusing duplicate startup ownership."
         }
-        $runValue = Get-ItemPropertyValue `
-            -LiteralPath "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" `
-            -Name "VIIPER" -ErrorAction SilentlyContinue
+        $runValue = Get-ViiperRunValue
         $expectedPrefix = '"' + [IO.Path]::GetFullPath($path) + '" server '
         if ([string]::IsNullOrWhiteSpace($runValue) -or
                 -not ([string]$runValue).StartsWith($expectedPrefix,
