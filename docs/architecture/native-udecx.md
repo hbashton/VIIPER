@@ -1,0 +1,162 @@
+# Native VIIPER UdeCx bus
+
+## Objective
+
+Replace VIIPER's localhost USB/IP attachment path on Windows with a native
+KMDF/UdeCx bus while retaining the existing, tested Go controller engines.
+The native bus must expose the same HID, audio, microphone, isochronous, state,
+and feedback contracts without a TCP loopback or an external USB/IP driver.
+
+The first correctness target is feature parity. Performance work follows only
+after transfer ordering, cancellation, teardown, and recovery are proven.
+
+## Evidence and reference points
+
+- Microsoft's UdeCx contract owns USB device creation, endpoint queues, reset,
+  start, purge, and power lifecycle. Purge is asynchronous: pending work must be
+  cancelled before `UdecxUsbEndpointPurgeComplete` is called.
+- The local usbip-win2 0.9.7.8 reference proves that UdeCx can expose VIIPER's
+  bidirectional isochronous PlayStation audio topology on Windows.
+- ViGEmBus provides the lifecycle north star: explicit protocol negotiation,
+  handle-scoped ownership, bounded manual queues, cancel-safe requests,
+  generation-aware target teardown, and synchronization per target rather than
+  one global lock.
+
+Reference code is used for architecture and documented protocol behavior. New
+VIIPER code is independently named and implemented. See
+`native/udecx/THIRD_PARTY_NOTICES.md`.
+
+## Architecture
+
+```text
+DS4Windows
+    | existing VIIPER API
+VIIPER Go service
+    | usb.Device controller engines (unchanged)
+native UDE broker
+    | versioned IOCTL ABI, overlapped inverted calls
+VIIPER UdeCx KMDF driver
+    | UDE endpoint queues and lifecycle
+Windows USB/HID/Audio stacks
+```
+
+The Go service remains the controller model. It already owns descriptors,
+control requests, HID reports, audio media, alternate settings, endpoint reset,
+and the state rules learned while stabilizing DualSense and DualShock 4.
+The kernel driver owns only Windows USB presentation and transfer lifecycle.
+
+## Non-negotiable invariants
+
+1. Every device is owned by exactly one open broker handle.
+2. Every device identity includes a monotonically increasing generation.
+3. Every operation token completes exactly once or is cancelled exactly once.
+4. A completion from an old generation is rejected without touching a new
+   device that reused the numeric identifier.
+5. Purge stops admission, cancels queued and in-flight work, waits for ownership
+   to settle, then acknowledges UdeCx.
+6. Driver unload and file cleanup leave no UDE device, request, or worker alive.
+7. Endpoint queues are bounded. Saturation is observable and never overwrites
+   live media or state silently.
+8. Shared report state is snapshotted atomically before encoding. Media and
+   state never share mutable buffers.
+9. No raw user pointer crosses the ABI.
+10. The ABI is size- and version-negotiated before any mutating operation.
+
+## Kernel/user transport
+
+The first implementation uses a cancel-safe inverted-call model. VIIPER posts
+multiple `DEQUEUE_OPERATION` requests. When UdeCx delivers an endpoint request,
+the driver pairs it with a waiting user request and returns an immutable
+operation record. VIIPER processes it through the existing `usb.Device`
+interface and submits `COMPLETE_OPERATION`.
+
+This deliberately removes TCP, WSK, USB/IP framing, and attach bookkeeping
+before introducing a shared-memory optimization. Once correctness gates pass,
+high-rate media payloads may move to a preallocated ring while keeping the same
+token/generation lifecycle. Control and lifecycle operations remain IOCTL based.
+
+### Operation identity
+
+Every operation carries:
+
+- device ID and generation;
+- a globally unique token for that generation;
+- endpoint address and transfer direction;
+- operation kind and URB function;
+- transfer flags, setup packet, and start frame where applicable;
+- ordered isochronous packet metadata;
+- a bounded payload.
+
+### Device creation
+
+VIIPER serializes the exact descriptor set returned by the controller engine:
+device, configuration, BOS, language/string records, and device-speed policy.
+The driver validates all offsets and lengths before constructing a UDE device.
+Descriptor normalization required by UdeCx is a named policy, not an implicit
+mutation: high-speed bulk packets are 512 bytes and interval conversion is
+covered by descriptor tests.
+
+## Lifecycle
+
+```text
+Absent -> Creating -> Enumerating -> Active
+                              |       |
+                              v       v
+                           Failed <- Purging -> Removed
+```
+
+- **Creating:** validate ABI, descriptors, limits, and owner handle.
+- **Enumerating:** create UDE device/endpoints and plug it into UdeCx.
+- **Active:** accept transfers and endpoint lifecycle notifications.
+- **Purging:** close admission, cancel all tokens, drain queues, acknowledge
+  endpoint purge, and invalidate the generation.
+- **Removed:** delete the UDE object and release all references.
+
+Power loss, owner process exit, DS4Windows restart, VIIPER restart, and explicit
+unplug all converge on the same idempotent purge path.
+
+## Synchronization model
+
+- A controller-level lock protects the device table and owner registration.
+- Each device has a short-held state lock and independent endpoint queues.
+- Media callbacks do not take the controller lock.
+- UDE callbacks never wait on user mode while holding a WDF lock.
+- Blocking work is represented by cancelable WDF requests, not sleeping kernel
+  threads.
+- Completion lookup is keyed by `(device ID, generation, token)`.
+
+This follows the useful ViGEmBus pattern of per-target ownership and manual
+request queues while accounting for UdeCx's endpoint-specific purge contract.
+
+## Delivery checkpoints
+
+1. Versioned ABI, independent C/Go layout tests, architecture notes.
+2. Installable root-enumerated KMDF/UdeCx controller with negotiation, owner
+   cleanup, diagnostics, and no virtual child.
+3. Dynamic HID-only child, control endpoint, interrupt IN/OUT, reset and purge.
+4. VIIPER Go broker implementing the existing controller interface.
+5. Xbox, DualShock 4, and DualSense HID/state parity.
+6. Bidirectional isochronous audio and microphone parity, alternate settings,
+   haptics, lightbar, triggers, and reconnect recovery.
+7. Fault injection, soak, latency, CPU, install/update/rollback, and signing.
+
+## Release gates
+
+- No verifier findings under KMDF/USB/UdeCx stress.
+- Repeated create/remove, service kill, process crash, sleep/resume, and device
+  reconnect leave zero stale children and zero stuck requests.
+- Descriptor and protocol fuzzing rejects malformed inputs without a bugcheck.
+- HID report ordering has no duplication or regression across generations.
+- DualSense and DualShock 4 media survive concurrent state and feedback traffic.
+- Native latency and CPU are measured against the current USB/IP path and
+  ViGEmBus-style virtual input under the same workload.
+- Installation is signed, reversible, version-gated, and never replaces a live
+  kernel driver across an unsafe reboot boundary.
+
+## Primary documentation
+
+- Microsoft, *Write a UDE client driver*
+- Microsoft, `EVT_UDECX_USB_ENDPOINT_PURGE`
+- Microsoft, *Install the WDK using NuGet*
+- Microsoft Windows Driver Samples CI guidance
+

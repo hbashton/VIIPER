@@ -1,0 +1,363 @@
+// Package udecx defines the user-mode half of the native VIIPER UdeCx ABI.
+// It intentionally has no Windows dependency so layout and fuzz tests run on
+// every supported development host.
+package udecx
+
+import (
+	"encoding/binary"
+	"errors"
+	"fmt"
+	"math"
+)
+
+const (
+	Magic    uint32 = 0x45445556
+	ABIMajor uint16 = 1
+	ABIMinor uint16 = 0
+
+	HeaderSize            = 16
+	NegotiateRequestSize  = 32
+	NegotiateResponseSize = 56
+	DescriptorRecordSize  = 16
+	CreateDeviceSize      = 56
+	DeviceIdentitySize    = 32
+	IsoPacketSize         = 16
+	OperationSize         = 88
+	CompletionSize        = 72
+	StatsSize             = 112
+
+	MaxDevices           = 32
+	MaxDescriptorBytes   = 256 * 1024
+	MaxTransferBytes     = 1024 * 1024
+	MaxIsoPackets        = 1024
+	MaxPendingOperations = 4096
+)
+
+var (
+	ErrShortMessage      = errors.New("native UDE message is shorter than its fixed header")
+	ErrBadMagic          = errors.New("native UDE message has an invalid magic value")
+	ErrIncompatibleMajor = errors.New("native UDE ABI major version is incompatible")
+	ErrInvalidSize       = errors.New("native UDE message size is invalid")
+	ErrInvalidRange      = errors.New("native UDE message contains an invalid range")
+	ErrLimitExceeded     = errors.New("native UDE message exceeds a negotiated limit")
+)
+
+type Capabilities uint32
+
+const (
+	CapabilityIsochronous Capabilities = 1 << iota
+	CapabilityStreams
+	CapabilityDeviceLifecycle
+)
+
+type Header struct {
+	Magic uint32
+	Major uint16
+	Minor uint16
+	Size  uint32
+	Flags uint32
+}
+
+func NewHeader(size int) (Header, error) {
+	if size < HeaderSize || uint64(size) > math.MaxUint32 {
+		return Header{}, ErrInvalidSize
+	}
+	return Header{Magic: Magic, Major: ABIMajor, Minor: ABIMinor, Size: uint32(size)}, nil
+}
+
+func ParseHeader(src []byte) (Header, error) {
+	if len(src) < HeaderSize {
+		return Header{}, ErrShortMessage
+	}
+	h := Header{
+		Magic: binary.LittleEndian.Uint32(src[0:4]),
+		Major: binary.LittleEndian.Uint16(src[4:6]),
+		Minor: binary.LittleEndian.Uint16(src[6:8]),
+		Size:  binary.LittleEndian.Uint32(src[8:12]),
+		Flags: binary.LittleEndian.Uint32(src[12:16]),
+	}
+	if h.Magic != Magic {
+		return Header{}, ErrBadMagic
+	}
+	if h.Major != ABIMajor {
+		return Header{}, fmt.Errorf("%w: driver=%d client=%d", ErrIncompatibleMajor, h.Major, ABIMajor)
+	}
+	if h.Size < HeaderSize || uint64(h.Size) > uint64(len(src)) {
+		return Header{}, ErrInvalidSize
+	}
+	return h, nil
+}
+
+func putHeader(dst []byte, h Header) {
+	binary.LittleEndian.PutUint32(dst[0:4], h.Magic)
+	binary.LittleEndian.PutUint16(dst[4:6], h.Major)
+	binary.LittleEndian.PutUint16(dst[6:8], h.Minor)
+	binary.LittleEndian.PutUint32(dst[8:12], h.Size)
+	binary.LittleEndian.PutUint32(dst[12:16], h.Flags)
+}
+
+type NegotiateRequest struct {
+	ClientNonce           uint64
+	RequestedCapabilities Capabilities
+}
+
+func (m NegotiateRequest) MarshalBinary() ([]byte, error) {
+	h, err := NewHeader(NegotiateRequestSize)
+	if err != nil {
+		return nil, err
+	}
+	dst := make([]byte, NegotiateRequestSize)
+	putHeader(dst, h)
+	binary.LittleEndian.PutUint64(dst[16:24], m.ClientNonce)
+	binary.LittleEndian.PutUint32(dst[24:28], uint32(m.RequestedCapabilities))
+	return dst, nil
+}
+
+type NegotiateResponse struct {
+	ClientNonce          uint64
+	DriverNonce          uint64
+	Capabilities         Capabilities
+	MaxDevices           uint32
+	MaxDescriptorBytes   uint32
+	MaxTransferBytes     uint32
+	MaxIsoPackets        uint32
+	MaxPendingOperations uint32
+}
+
+func ParseNegotiateResponse(src []byte) (NegotiateResponse, error) {
+	h, err := ParseHeader(src)
+	if err != nil {
+		return NegotiateResponse{}, err
+	}
+	if h.Size != NegotiateResponseSize {
+		return NegotiateResponse{}, ErrInvalidSize
+	}
+	return NegotiateResponse{
+		ClientNonce:          binary.LittleEndian.Uint64(src[16:24]),
+		DriverNonce:          binary.LittleEndian.Uint64(src[24:32]),
+		Capabilities:         Capabilities(binary.LittleEndian.Uint32(src[32:36])),
+		MaxDevices:           binary.LittleEndian.Uint32(src[36:40]),
+		MaxDescriptorBytes:   binary.LittleEndian.Uint32(src[40:44]),
+		MaxTransferBytes:     binary.LittleEndian.Uint32(src[44:48]),
+		MaxIsoPackets:        binary.LittleEndian.Uint32(src[48:52]),
+		MaxPendingOperations: binary.LittleEndian.Uint32(src[52:56]),
+	}, nil
+}
+
+type DescriptorKind uint16
+
+const (
+	DescriptorDevice DescriptorKind = iota + 1
+	DescriptorConfiguration
+	DescriptorBOS
+	DescriptorString
+)
+
+type DescriptorRecord struct {
+	Kind       DescriptorKind
+	Index      uint16
+	LanguageID uint16
+	Offset     uint32
+	Length     uint32
+}
+
+type DeviceSpeed uint32
+
+const (
+	DeviceSpeedLow DeviceSpeed = iota + 1
+	DeviceSpeedFull
+	DeviceSpeedHigh
+	DeviceSpeedSuper
+)
+
+type CreateDevice struct {
+	DeviceID             uint64
+	Generation           uint32
+	Speed                DeviceSpeed
+	MaxPendingOperations uint32
+	Descriptors          []DescriptorRecord
+	DescriptorData       []byte
+}
+
+func (m CreateDevice) MarshalBinary() ([]byte, error) {
+	if m.DeviceID == 0 || m.Generation == 0 {
+		return nil, fmt.Errorf("%w: zero device identity", ErrInvalidRange)
+	}
+	if len(m.Descriptors) == 0 || len(m.DescriptorData) == 0 {
+		return nil, fmt.Errorf("%w: empty descriptor set", ErrInvalidRange)
+	}
+	if len(m.DescriptorData) > MaxDescriptorBytes || len(m.Descriptors) > MaxDescriptorBytes/DescriptorRecordSize {
+		return nil, ErrLimitExceeded
+	}
+	recordBytes := len(m.Descriptors) * DescriptorRecordSize
+	total := CreateDeviceSize + recordBytes + len(m.DescriptorData)
+	if uint64(total) > math.MaxUint32 {
+		return nil, ErrLimitExceeded
+	}
+	h, err := NewHeader(total)
+	if err != nil {
+		return nil, err
+	}
+	dst := make([]byte, total)
+	putHeader(dst, h)
+	binary.LittleEndian.PutUint64(dst[16:24], m.DeviceID)
+	binary.LittleEndian.PutUint32(dst[24:28], m.Generation)
+	binary.LittleEndian.PutUint32(dst[28:32], uint32(m.Speed))
+	binary.LittleEndian.PutUint32(dst[32:36], uint32(len(m.Descriptors)))
+	binary.LittleEndian.PutUint32(dst[36:40], CreateDeviceSize)
+	binary.LittleEndian.PutUint32(dst[40:44], uint32(CreateDeviceSize+recordBytes))
+	binary.LittleEndian.PutUint32(dst[44:48], uint32(len(m.DescriptorData)))
+	binary.LittleEndian.PutUint32(dst[48:52], m.MaxPendingOperations)
+
+	for i, record := range m.Descriptors {
+		if !validRange(record.Offset, record.Length, uint32(len(m.DescriptorData))) {
+			return nil, fmt.Errorf("%w: descriptor %d", ErrInvalidRange, i)
+		}
+		off := CreateDeviceSize + i*DescriptorRecordSize
+		binary.LittleEndian.PutUint16(dst[off:off+2], uint16(record.Kind))
+		binary.LittleEndian.PutUint16(dst[off+2:off+4], record.Index)
+		binary.LittleEndian.PutUint16(dst[off+4:off+6], record.LanguageID)
+		binary.LittleEndian.PutUint32(dst[off+8:off+12], record.Offset)
+		binary.LittleEndian.PutUint32(dst[off+12:off+16], record.Length)
+	}
+	copy(dst[CreateDeviceSize+recordBytes:], m.DescriptorData)
+	return dst, nil
+}
+
+type OperationKind uint32
+
+const (
+	OperationControl OperationKind = iota + 1
+	OperationTransfer
+	OperationEndpointStart
+	OperationEndpointPurge
+	OperationEndpointReset
+	OperationDeviceReset
+	OperationSetInterface
+	OperationDeviceD0Entry
+	OperationDeviceD0Exit
+)
+
+type IsoPacket struct {
+	Offset uint32
+	Length uint32
+	Status int32
+}
+
+type Operation struct {
+	Token           uint64
+	DeviceID        uint64
+	Generation      uint32
+	Kind            OperationKind
+	EndpointAddress uint8
+	Direction       uint8
+	URBFunction     uint32
+	TransferFlags   uint32
+	StartFrame      uint32
+	TransferLength  uint32
+	SetupPacket     [8]byte
+	IsoPackets      []IsoPacket
+	Payload         []byte
+}
+
+func ParseOperation(src []byte) (Operation, error) {
+	h, err := ParseHeader(src)
+	if err != nil {
+		return Operation{}, err
+	}
+	if h.Size < OperationSize || h.Size > MaxTransferBytes+OperationSize+MaxIsoPackets*IsoPacketSize {
+		return Operation{}, ErrInvalidSize
+	}
+	src = src[:h.Size]
+	packetCount := binary.LittleEndian.Uint32(src[56:60])
+	transferLength := binary.LittleEndian.Uint32(src[60:64])
+	payloadOffset := binary.LittleEndian.Uint32(src[64:68])
+	payloadLength := binary.LittleEndian.Uint32(src[68:72])
+	isoOffset := binary.LittleEndian.Uint32(src[72:76])
+	if packetCount > MaxIsoPackets || transferLength > MaxTransferBytes || payloadLength > MaxTransferBytes {
+		return Operation{}, ErrLimitExceeded
+	}
+	if !validRange(payloadOffset, payloadLength, h.Size) || !validArrayRange(isoOffset, packetCount, IsoPacketSize, h.Size) {
+		return Operation{}, ErrInvalidRange
+	}
+	op := Operation{
+		Token:           binary.LittleEndian.Uint64(src[16:24]),
+		DeviceID:        binary.LittleEndian.Uint64(src[24:32]),
+		Generation:      binary.LittleEndian.Uint32(src[32:36]),
+		Kind:            OperationKind(binary.LittleEndian.Uint32(src[36:40])),
+		EndpointAddress: src[40],
+		Direction:       src[41],
+		URBFunction:     binary.LittleEndian.Uint32(src[44:48]),
+		TransferFlags:   binary.LittleEndian.Uint32(src[48:52]),
+		StartFrame:      binary.LittleEndian.Uint32(src[52:56]),
+		TransferLength:  transferLength,
+		IsoPackets:      make([]IsoPacket, int(packetCount)),
+		Payload:         append([]byte(nil), src[payloadOffset:payloadOffset+payloadLength]...),
+	}
+	copy(op.SetupPacket[:], src[76:84])
+	for i := range op.IsoPackets {
+		off := int(isoOffset) + i*IsoPacketSize
+		op.IsoPackets[i] = IsoPacket{
+			Offset: binary.LittleEndian.Uint32(src[off : off+4]),
+			Length: binary.LittleEndian.Uint32(src[off+4 : off+8]),
+			Status: int32(binary.LittleEndian.Uint32(src[off+8 : off+12])),
+		}
+	}
+	return op, nil
+}
+
+type Completion struct {
+	Token      uint64
+	DeviceID   uint64
+	Generation uint32
+	Status     int32
+	USBDStatus uint32
+	IsoPackets []IsoPacket
+	Payload    []byte
+}
+
+func (m Completion) MarshalBinary() ([]byte, error) {
+	if m.Token == 0 || m.DeviceID == 0 || m.Generation == 0 {
+		return nil, fmt.Errorf("%w: zero completion identity", ErrInvalidRange)
+	}
+	if len(m.Payload) > MaxTransferBytes || len(m.IsoPackets) > MaxIsoPackets {
+		return nil, ErrLimitExceeded
+	}
+	isoBytes := len(m.IsoPackets) * IsoPacketSize
+	total := CompletionSize + isoBytes + len(m.Payload)
+	h, err := NewHeader(total)
+	if err != nil {
+		return nil, err
+	}
+	dst := make([]byte, total)
+	putHeader(dst, h)
+	binary.LittleEndian.PutUint64(dst[16:24], m.Token)
+	binary.LittleEndian.PutUint64(dst[24:32], m.DeviceID)
+	binary.LittleEndian.PutUint32(dst[32:36], m.Generation)
+	binary.LittleEndian.PutUint32(dst[36:40], uint32(m.Status))
+	binary.LittleEndian.PutUint32(dst[40:44], m.USBDStatus)
+	binary.LittleEndian.PutUint32(dst[44:48], uint32(len(m.Payload)))
+	binary.LittleEndian.PutUint32(dst[48:52], uint32(len(m.IsoPackets)))
+	binary.LittleEndian.PutUint32(dst[52:56], uint32(CompletionSize+isoBytes))
+	binary.LittleEndian.PutUint32(dst[56:60], uint32(len(m.Payload)))
+	binary.LittleEndian.PutUint32(dst[60:64], CompletionSize)
+	for i, packet := range m.IsoPackets {
+		off := CompletionSize + i*IsoPacketSize
+		binary.LittleEndian.PutUint32(dst[off:off+4], packet.Offset)
+		binary.LittleEndian.PutUint32(dst[off+4:off+8], packet.Length)
+		binary.LittleEndian.PutUint32(dst[off+8:off+12], uint32(packet.Status))
+	}
+	copy(dst[CompletionSize+isoBytes:], m.Payload)
+	return dst, nil
+}
+
+func validRange(offset, length, total uint32) bool {
+	return offset <= total && length <= total-offset
+}
+
+func validArrayRange(offset, count uint32, elementSize uint32, total uint32) bool {
+	if count != 0 && elementSize > math.MaxUint32/count {
+		return false
+	}
+	return validRange(offset, count*elementSize, total)
+}
