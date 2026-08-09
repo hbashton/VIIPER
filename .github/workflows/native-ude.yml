@@ -36,6 +36,13 @@ jobs:
       - uses: NuGet/setup-nuget@v2
       - name: Restore WDK packages
         run: nuget restore native/udecx/ViiperUde.sln -PackagesDirectory native/udecx/packages -NonInteractive
+      - name: Expose WDK tools
+        shell: pwsh
+        run: |
+          $tools = Get-ChildItem native/udecx/packages -Recurse -File -Filter *.exe
+          $stampInf = $tools | Where-Object Name -ieq stampinf.exe | Select-Object -First 1
+          if (-not $stampInf) { throw "Restored WDK package did not contain stampinf.exe" }
+          $tools.DirectoryName | Sort-Object -Unique | Out-File $env:GITHUB_PATH -Append -Encoding utf8
       - name: Build x64 driver
         run: msbuild native/udecx/ViiperUde.sln /m /p:Configuration=Release /p:Platform=x64 /p:SignMode=TestSign /p:InfVerif_AdditionalOptions="/w"
       - uses: actions/upload-artifact@v4
@@ -45,4 +52,3 @@ jobs:
             native/udecx/driver/x64/Release/**
             native/udecx/package/x64/Release/**
           if-no-files-found: error
-
