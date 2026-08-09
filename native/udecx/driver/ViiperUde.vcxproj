@@ -1,0 +1,96 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="Current" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\packages\Microsoft.Windows.WDK.x64.10.0.28000.1839\build\native\Microsoft.Windows.WDK.x64.props" Condition="Exists('..\packages\Microsoft.Windows.WDK.x64.10.0.28000.1839\build\native\Microsoft.Windows.WDK.x64.props')" />
+  <Import Project="..\packages\Microsoft.Windows.SDK.CPP.x64.10.0.28000.1839\build\native\Microsoft.Windows.SDK.cpp.x64.props" Condition="Exists('..\packages\Microsoft.Windows.SDK.CPP.x64.10.0.28000.1839\build\native\Microsoft.Windows.SDK.cpp.x64.props')" />
+  <Import Project="..\packages\Microsoft.Windows.SDK.CPP.10.0.28000.1839\build\native\Microsoft.Windows.SDK.cpp.props" Condition="Exists('..\packages\Microsoft.Windows.SDK.CPP.10.0.28000.1839\build\native\Microsoft.Windows.SDK.cpp.props')" />
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64"><Configuration>Debug</Configuration><Platform>x64</Platform></ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64"><Configuration>Release</Configuration><Platform>x64</Platform></ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{74754772-2AA1-4CE6-B251-0A3DD40A46E1}</ProjectGuid>
+    <RootNamespace>ViiperUde</RootNamespace>
+    <ProjectName>ViiperUde</ProjectName>
+    <MinimumVisualStudioVersion>17.0</MinimumVisualStudioVersion>
+    <Platform Condition="'$(Platform)' == ''">x64</Platform>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>Driver</ConfigurationType>
+    <DriverType>KMDF</DriverType>
+    <DriverTargetPlatform>Universal</DriverTargetPlatform>
+    <PlatformToolset>WindowsKernelModeDriver10.0</PlatformToolset>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <TargetVersion>Windows10</TargetVersion>
+    <UdeDriver>true</UdeDriver>
+    <UDE_VERSION_MAJOR>1</UDE_VERSION_MAJOR>
+    <UDE_VERSION_MINOR>1</UDE_VERSION_MINOR>
+    <KMDF_VERSION_MAJOR>1</KMDF_VERSION_MAJOR>
+    <KMDF_VERSION_MINOR>33</KMDF_VERSION_MINOR>
+    <Driver_SpectreMitigation>Spectre</Driver_SpectreMitigation>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>Driver</ConfigurationType>
+    <DriverType>KMDF</DriverType>
+    <DriverTargetPlatform>Universal</DriverTargetPlatform>
+    <PlatformToolset>WindowsKernelModeDriver10.0</PlatformToolset>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <TargetVersion>Windows10</TargetVersion>
+    <UdeDriver>true</UdeDriver>
+    <UDE_VERSION_MAJOR>1</UDE_VERSION_MAJOR>
+    <UDE_VERSION_MINOR>1</UDE_VERSION_MINOR>
+    <KMDF_VERSION_MAJOR>1</KMDF_VERSION_MAJOR>
+    <KMDF_VERSION_MINOR>33</KMDF_VERSION_MINOR>
+    <Driver_SpectreMitigation>Spectre</Driver_SpectreMitigation>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings" />
+  <ImportGroup Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard_C>stdc17</LanguageStandard_C>
+      <AdditionalIncludeDirectories>..\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>_KERNEL_MODE;POOL_ZERO_DOWN_LEVEL_SUPPORT;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <SDLCheck>true</SDLCheck>
+    </ClCompile>
+    <Link>
+      <AdditionalDependencies>%(AdditionalDependencies);usbd.lib</AdditionalDependencies>
+      <AdditionalOptions>/PDBALTPATH:%_PDB% %(AdditionalOptions)</AdditionalOptions>
+    </Link>
+    <DriverSign>
+      <FileDigestAlgorithm>certHash</FileDigestAlgorithm>
+    </DriverSign>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="Controller.c" />
+    <ClCompile Include="Driver.c" />
+    <ClCompile Include="Ioctl.c" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="ViiperUde.h" />
+    <ClInclude Include="..\include\ViiperUdeProtocol.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <Inf Include="..\package\ViiperUde.inf" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="..\packages.config" />
+  </ItemGroup>
+  <ItemGroup>
+    <FilesToPackage Include="$(TargetPath)" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets">
+    <Import Project="..\packages\Microsoft.Windows.SDK.CPP.10.0.28000.1839\build\native\Microsoft.Windows.SDK.cpp.targets" Condition="Exists('..\packages\Microsoft.Windows.SDK.CPP.10.0.28000.1839\build\native\Microsoft.Windows.SDK.cpp.targets')" />
+  </ImportGroup>
+  <Target Name="EnsureNuGetPackageBuildImports" BeforeTargets="PrepareForBuild">
+    <Error Condition="!Exists('..\packages\Microsoft.Windows.WDK.x64.10.0.28000.1839\build\native\Microsoft.Windows.WDK.x64.props')" Text="Restore native/udecx/packages.config before building." />
+    <Error Condition="!Exists('..\packages\Microsoft.Windows.SDK.CPP.x64.10.0.28000.1839\build\native\Microsoft.Windows.SDK.cpp.x64.props')" Text="Restore native/udecx/packages.config before building." />
+    <Error Condition="!Exists('..\packages\Microsoft.Windows.SDK.CPP.10.0.28000.1839\build\native\Microsoft.Windows.SDK.cpp.targets')" Text="Restore native/udecx/packages.config before building." />
+  </Target>
+</Project>
+

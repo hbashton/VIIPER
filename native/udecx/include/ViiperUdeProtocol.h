@@ -2,7 +2,9 @@
 
 #include <stdint.h>
 
-#if defined(_WIN32)
+#if defined(_KERNEL_MODE)
+#include <devioctl.h>
+#elif defined(_WIN32)
 #include <winioctl.h>
 #endif
 
@@ -181,5 +183,15 @@ static_assert(sizeof(VIIPER_UDE_ISO_PACKET) == 16, "VIIPER_UDE_ISO_PACKET ABI dr
 static_assert(sizeof(VIIPER_UDE_OPERATION) == 88, "VIIPER_UDE_OPERATION ABI drift");
 static_assert(sizeof(VIIPER_UDE_COMPLETION) == 72, "VIIPER_UDE_COMPLETION ABI drift");
 static_assert(sizeof(VIIPER_UDE_STATS) == 112, "VIIPER_UDE_STATS ABI drift");
+#elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+_Static_assert(sizeof(VIIPER_UDE_HEADER) == 16, "VIIPER_UDE_HEADER ABI drift");
+_Static_assert(sizeof(VIIPER_UDE_NEGOTIATE_REQUEST) == 32, "VIIPER_UDE_NEGOTIATE_REQUEST ABI drift");
+_Static_assert(sizeof(VIIPER_UDE_NEGOTIATE_RESPONSE) == 56, "VIIPER_UDE_NEGOTIATE_RESPONSE ABI drift");
+_Static_assert(sizeof(VIIPER_UDE_DESCRIPTOR_RECORD) == 16, "VIIPER_UDE_DESCRIPTOR_RECORD ABI drift");
+_Static_assert(sizeof(VIIPER_UDE_CREATE_DEVICE) == 56, "VIIPER_UDE_CREATE_DEVICE ABI drift");
+_Static_assert(sizeof(VIIPER_UDE_DEVICE_IDENTITY) == 32, "VIIPER_UDE_DEVICE_IDENTITY ABI drift");
+_Static_assert(sizeof(VIIPER_UDE_ISO_PACKET) == 16, "VIIPER_UDE_ISO_PACKET ABI drift");
+_Static_assert(sizeof(VIIPER_UDE_OPERATION) == 88, "VIIPER_UDE_OPERATION ABI drift");
+_Static_assert(sizeof(VIIPER_UDE_COMPLETION) == 72, "VIIPER_UDE_COMPLETION ABI drift");
+_Static_assert(sizeof(VIIPER_UDE_STATS) == 112, "VIIPER_UDE_STATS ABI drift");
 #endif
-

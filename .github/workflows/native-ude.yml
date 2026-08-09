@@ -1,0 +1,48 @@
+name: Native UdeCx bus
+
+on:
+  push:
+    branches: [feature/native-udecx-bus]
+    paths:
+      - "native/udecx/**"
+      - "internal/transport/udecx/**"
+      - ".github/workflows/native-ude.yml"
+  pull_request:
+    paths:
+      - "native/udecx/**"
+      - "internal/transport/udecx/**"
+      - ".github/workflows/native-ude.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  protocol:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.5"
+          cache: true
+      - run: go test ./internal/transport/udecx
+
+  driver:
+    runs-on: windows-2025-vs2026
+    steps:
+      - uses: actions/checkout@v4
+      - uses: microsoft/setup-msbuild@v2
+      - uses: NuGet/setup-nuget@v2
+      - name: Restore WDK packages
+        run: nuget restore native/udecx/ViiperUde.sln -PackagesDirectory native/udecx/packages -NonInteractive
+      - name: Build x64 driver
+        run: msbuild native/udecx/ViiperUde.sln /m /p:Configuration=Release /p:Platform=x64 /p:SignMode=TestSign /p:InfVerif_AdditionalOptions="/w"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ViiperUde-x64-test-signed
+          path: |
+            native/udecx/driver/x64/Release/**
+            native/udecx/package/x64/Release/**
+          if-no-files-found: error
+
