@@ -78,7 +78,7 @@
     <Inf Include="..\package\ViiperUde.inf" />
   </ItemGroup>
   <ItemGroup>
-    <None Include="..\packages.config" />
+    <None Include="packages.config" />
   </ItemGroup>
   <ItemGroup>
     <FilesToPackage Include="$(TargetPath)" />
@@ -93,4 +93,3 @@
     <Error Condition="!Exists('..\packages\Microsoft.Windows.SDK.CPP.10.0.28000.1839\build\native\Microsoft.Windows.SDK.cpp.targets')" Text="Restore native/udecx/packages.config before building." />
   </Target>
 </Project>
-
