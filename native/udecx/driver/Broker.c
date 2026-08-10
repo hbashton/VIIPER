@@ -218,6 +218,7 @@ ViiperClearSlotLocked(
     )
 {
     VIIPER_UDE_PENDING_SLOT *pending = &ControllerContext->PendingSlots[Slot];
+    UDECXUSBENDPOINT endpoint = pending->Endpoint;
 
     pending->Request = WDF_NO_HANDLE;
     pending->Endpoint = WDF_NO_HANDLE;
@@ -234,6 +235,35 @@ ViiperClearSlotLocked(
     pending->CompletionUsbdStatus = USBD_STATUS_SUCCESS;
     pending->CompleteWithNtStatus = FALSE;
     InterlockedDecrement(&ControllerContext->PendingOperations);
+    if (endpoint != WDF_NO_HANDLE) {
+        ViiperEndpointOperationCompleted(endpoint);
+    }
+}
+
+VOID
+ViiperEndpointOperationStarted(
+    _In_ UDECXUSBENDPOINT Endpoint
+    )
+{
+    VIIPER_UDE_ENDPOINT_CONTEXT *endpointContext = ViiperGetEndpointContext(Endpoint);
+    // Callers serialize admission for one endpoint. Clear before publishing
+    // the increment so a concurrent purge worker can never observe the old
+    // signaled state between a 0 -> 1 transition and KeClearEvent.
+    KeClearEvent(&endpointContext->OperationsDrained);
+    (VOID)InterlockedIncrement(&endpointContext->ActiveOperations);
+}
+
+VOID
+ViiperEndpointOperationCompleted(
+    _In_ UDECXUSBENDPOINT Endpoint
+    )
+{
+    VIIPER_UDE_ENDPOINT_CONTEXT *endpointContext = ViiperGetEndpointContext(Endpoint);
+    LONG remaining = InterlockedDecrement(&endpointContext->ActiveOperations);
+    NT_ASSERT(remaining >= 0);
+    if (remaining == 0) {
+        KeSetEvent(&endpointContext->OperationsDrained, IO_NO_INCREMENT, FALSE);
+    }
 }
 
 static
@@ -526,7 +556,12 @@ ViiperAllocatePendingSlot(
     NTSTATUS status = STATUS_INSUFFICIENT_RESOURCES;
 
     WdfSpinLockAcquire(ControllerContext->BrokerLock);
-    for (offset = 0; offset < VIIPER_UDE_MAX_PENDING_OPERATIONS; ++offset) {
+    if (InterlockedCompareExchange(&endpointContext->Purging, 0, 0) != 0 ||
+        InterlockedCompareExchange(&deviceContext->Purging, 0, 0) != 0) {
+        status = STATUS_DEVICE_NOT_READY;
+    }
+    for (offset = 0; status == STATUS_INSUFFICIENT_RESOURCES &&
+            offset < VIIPER_UDE_MAX_PENDING_OPERATIONS; ++offset) {
         ULONG index = (ControllerContext->NextPendingSlot + offset) %
             VIIPER_UDE_MAX_PENDING_OPERATIONS;
         VIIPER_UDE_PENDING_SLOT *pending = &ControllerContext->PendingSlots[index];
@@ -553,6 +588,7 @@ ViiperAllocatePendingSlot(
         pending->EndpointAddress = endpointContext->Descriptor.bEndpointAddress;
         pending->AbortStatus = STATUS_SUCCESS;
         ControllerContext->NextPendingSlot = (index + 1) % VIIPER_UDE_MAX_PENDING_OPERATIONS;
+        ViiperEndpointOperationStarted(Endpoint);
         InterlockedIncrement(&ControllerContext->PendingOperations);
         *Slot = index;
         *Token = pending->Token;
@@ -561,7 +597,7 @@ ViiperAllocatePendingSlot(
     }
     WdfSpinLockRelease(ControllerContext->BrokerLock);
 
-    if (!NT_SUCCESS(status)) {
+    if (status == STATUS_INSUFFICIENT_RESOURCES) {
         InterlockedIncrement64(&ControllerContext->QueueExhaustions);
     }
     return status;

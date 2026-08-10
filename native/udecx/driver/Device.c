@@ -748,6 +748,7 @@ ViiperEvtEndpointAdd(
 {
     USB_ENDPOINT_DESCRIPTOR descriptor;
     UDECX_USB_ENDPOINT_CALLBACKS callbacks;
+    WDF_WORKITEM_CONFIG workItemConfig;
     WDF_OBJECT_ATTRIBUTES attributes;
     UDECXUSBENDPOINT endpoint;
     VIIPER_UDE_ENDPOINT_CONTEXT *endpointContext;
@@ -782,6 +783,15 @@ ViiperEvtEndpointAdd(
     RtlZeroMemory(endpointContext, sizeof(*endpointContext));
     endpointContext->Device = Device;
     endpointContext->Descriptor = descriptor;
+    KeInitializeEvent(&endpointContext->OperationsDrained, NotificationEvent, TRUE);
+    WDF_WORKITEM_CONFIG_INIT(&workItemConfig, ViiperEvtEndpointPurgeWorkItem);
+    WDF_OBJECT_ATTRIBUTES_INIT(&attributes);
+    attributes.ParentObject = endpoint;
+    status = WdfWorkItemCreate(
+        &workItemConfig, &attributes, &endpointContext->PurgeWorkItem);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
     if (descriptor.bEndpointAddress == 0) {
         ViiperGetDeviceContext(Device)->DefaultEndpoint = endpoint;
         dispatchType = WdfIoQueueDispatchSequential;
@@ -957,7 +967,9 @@ ViiperSubmitInputReport(
     // another. Serialize only this endpoint, preserving report order even if
     // a faulty or hostile owner submits concurrent updates for the same pad.
     WdfWaitLockAcquire(endpointContext->InputLock, NULL);
+    ViiperEndpointOperationStarted(endpoint);
     if (InterlockedCompareExchange(&endpointContext->Purging, 0, 0) != 0) {
+        ViiperEndpointOperationCompleted(endpoint);
         WdfWaitLockRelease(endpointContext->InputLock);
         WdfObjectDereference(endpoint);
         // Endpoint purge and restart preserve the device generation. Do not
@@ -966,6 +978,7 @@ ViiperSubmitInputReport(
     }
     if (input->Sequence <= (ULONGLONG)InterlockedCompareExchange64(
             &endpointContext->LastInputSequence, 0, 0)) {
+        ViiperEndpointOperationCompleted(endpoint);
         WdfWaitLockRelease(endpointContext->InputLock);
         WdfObjectDereference(endpoint);
         return STATUS_INVALID_DEVICE_STATE;
@@ -976,6 +989,7 @@ ViiperSubmitInputReport(
     InterlockedIncrement64(&controllerContext->InputReportsSubmitted);
     status = WdfIoQueueRetrieveNextRequest(endpointContext->Queue, &urbRequest);
     if (!NT_SUCCESS(status)) {
+        ViiperEndpointOperationCompleted(endpoint);
         WdfWaitLockRelease(endpointContext->InputLock);
         WdfObjectDereference(endpoint);
         // A producer update is allowed to arrive before Windows posts its
@@ -989,6 +1003,7 @@ ViiperSubmitInputReport(
             urb->UrbHeader.Function != URB_FUNCTION_BULK_OR_INTERRUPT_TRANSFER_USING_CHAINED_MDL) ||
         (urb->UrbBulkOrInterruptTransfer.TransferFlags & USBD_TRANSFER_DIRECTION_IN) == 0) {
         ViiperCompleteRetrievedInputUrb(urbRequest, STATUS_INVALID_DEVICE_REQUEST);
+        ViiperEndpointOperationCompleted(endpoint);
         WdfWaitLockRelease(endpointContext->InputLock);
         WdfObjectDereference(endpoint);
         return STATUS_INVALID_DEVICE_REQUEST;
@@ -996,6 +1011,7 @@ ViiperSubmitInputReport(
     transferLength = urb->UrbBulkOrInterruptTransfer.TransferBufferLength;
     if (input->PayloadLength > transferLength) {
         ViiperCompleteRetrievedInputUrb(urbRequest, STATUS_BUFFER_TOO_SMALL);
+        ViiperEndpointOperationCompleted(endpoint);
         WdfWaitLockRelease(endpointContext->InputLock);
         WdfObjectDereference(endpoint);
         return STATUS_BUFFER_TOO_SMALL;
@@ -1004,6 +1020,7 @@ ViiperSubmitInputReport(
         urbRequest, urb, payload, input->PayloadLength, TRUE);
     if (!NT_SUCCESS(status)) {
         ViiperCompleteRetrievedInputUrb(urbRequest, status);
+        ViiperEndpointOperationCompleted(endpoint);
         WdfWaitLockRelease(endpointContext->InputLock);
         WdfObjectDereference(endpoint);
         return status;
@@ -1014,6 +1031,7 @@ ViiperSubmitInputReport(
     InterlockedAdd64(&controllerContext->BytesFromDevice, input->PayloadLength);
     InterlockedIncrement64(&controllerContext->InputReportsCompleted);
     ViiperCompleteRetrievedInputUrb(urbRequest, STATUS_SUCCESS);
+    ViiperEndpointOperationCompleted(endpoint);
     WdfWaitLockRelease(endpointContext->InputLock);
     WdfObjectDereference(endpoint);
     return STATUS_SUCCESS;
@@ -1040,7 +1058,29 @@ ViiperEvtEndpointQueuePurged(
     )
 {
     UDECXUSBENDPOINT endpoint = (UDECXUSBENDPOINT)Context;
+    VIIPER_UDE_ENDPOINT_CONTEXT *endpointContext = ViiperGetEndpointContext(endpoint);
     UNREFERENCED_PARAMETER(Queue);
+    WdfWorkItemEnqueue(endpointContext->PurgeWorkItem);
+}
+
+VOID
+ViiperEvtEndpointPurgeWorkItem(
+    _In_ WDFWORKITEM WorkItem
+    )
+{
+    UDECXUSBENDPOINT endpoint = (UDECXUSBENDPOINT)WdfWorkItemGetParentObject(WorkItem);
+    VIIPER_UDE_ENDPOINT_CONTEXT *endpointContext = ViiperGetEndpointContext(endpoint);
+
+    PAGED_CODE();
+    // UdeCx requires every request forwarded out of the endpoint queue to be
+    // completed before PurgeComplete. The broker DPC and the direct input path
+    // signal this event only after their last owned URB has been completed.
+    (VOID)KeWaitForSingleObject(
+        &endpointContext->OperationsDrained,
+        Executive,
+        KernelMode,
+        FALSE,
+        NULL);
     UdecxUsbEndpointPurgeComplete(endpoint);
 }
 

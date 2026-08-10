@@ -188,6 +188,12 @@ interface fields are only hints for alternates that contain no endpoints.
   object teardown completes. User mode can retry only failures returned before
   ownership reached UdeCx.
 - Each device has a short-held state lock and independent endpoint queues.
+- Each endpoint owns a drain event covering both broker-forwarded URBs and the
+  direct interrupt-IN fast path. UdeCx purge first closes admission, cancels
+  those owners, and purges the framework queue; a passive work item calls
+  `UdecxUsbEndpointPurgeComplete` only after the last forwarded URB has actually
+  completed. A pipe can therefore never restart or disappear across a live
+  request.
 - The controller's default KMDF queue only routes requests: interrupt-IN
   submissions run on an independent parallel queue, while mutation, broker,
   and lifecycle IOCTLs retain their serialized control queue. Large media

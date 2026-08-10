@@ -152,8 +152,11 @@ typedef struct VIIPER_UDE_ENDPOINT_CONTEXT {
     UDECXUSBDEVICE Device;
     WDFQUEUE Queue;
     WDFWAITLOCK InputLock;
+    WDFWORKITEM PurgeWorkItem;
+    KEVENT OperationsDrained;
     USB_ENDPOINT_DESCRIPTOR Descriptor;
     volatile LONG Purging;
+    volatile LONG ActiveOperations;
     volatile LONG64 LastInputSequence;
     volatile LONG64 NextIsoStartFrame;
     ULONGLONG NextAdmissionSequence;
@@ -186,6 +189,7 @@ EVT_UDECX_USB_ENDPOINT_PURGE ViiperEvtEndpointPurge;
 EVT_UDECX_USB_ENDPOINT_START ViiperEvtEndpointStart;
 EVT_WDF_IO_QUEUE_IO_INTERNAL_DEVICE_CONTROL ViiperEvtEndpointIoInternalControl;
 EVT_WDF_IO_QUEUE_STATE ViiperEvtEndpointQueuePurged;
+EVT_WDF_WORKITEM ViiperEvtEndpointPurgeWorkItem;
 EVT_WDF_DPC ViiperEvtCompletionDpc;
 EVT_WDF_OBJECT_CONTEXT_CLEANUP ViiperEvtVirtualDeviceCleanup;
 EVT_WDF_OBJECT_CONTEXT_CLEANUP ViiperEvtEndpointCleanup;
@@ -212,6 +216,8 @@ NTSTATUS ViiperCopyTransferBuffer(
     _In_ ULONG Length,
     _In_ BOOLEAN ToUrb);
 VOID ViiperPurgeEndpointOperations(_In_ UDECXUSBENDPOINT Endpoint, _In_ NTSTATUS Status);
+VOID ViiperEndpointOperationStarted(_In_ UDECXUSBENDPOINT Endpoint);
+VOID ViiperEndpointOperationCompleted(_In_ UDECXUSBENDPOINT Endpoint);
 VOID ViiperPurgeOwnerOperations(_In_ WDFDEVICE Controller, _In_ NTSTATUS Status);
 NTSTATUS ViiperQueueEndpointLifecycleEvent(
     _In_ UDECXUSBENDPOINT Endpoint,
