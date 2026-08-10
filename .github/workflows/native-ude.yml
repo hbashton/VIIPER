@@ -19,7 +19,10 @@ on:
       - "_testing/e2e/**"
       - "docs/testing/e2e_latency.md"
       - ".github/workflows/build_base.yml"
+      - ".github/workflows/**"
+      - ".github/scripts/Test-WorkflowSecurity.ps1"
       - ".github/workflows/native-ude.yml"
+      - ".github/workflows/native-package-transaction.yml"
       - ".github/workflows/release.yml"
   pull_request:
     paths:
@@ -38,7 +41,10 @@ on:
       - "_testing/e2e/**"
       - "docs/testing/e2e_latency.md"
       - ".github/workflows/build_base.yml"
+      - ".github/workflows/**"
+      - ".github/scripts/Test-WorkflowSecurity.ps1"
       - ".github/workflows/native-ude.yml"
+      - ".github/workflows/native-package-transaction.yml"
       - ".github/workflows/release.yml"
   workflow_call:
     inputs:
@@ -54,6 +60,10 @@ permissions:
   contents: read
   security-events: write
 
+env:
+  GOFLAGS: -mod=readonly
+  GOTOOLCHAIN: local
+
 # A driver artifact is meaningful only for the exact current branch head.
 # Cancel superseded WDK/CodeQL work instead of letting several incompatible
 # ABI revisions finish and present equally downloadable test packages.
@@ -68,8 +78,16 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: "1.26.5"
+          go-version-file: go.mod
           cache: true
+      - name: Verify workflow and native toolchain policy
+        shell: pwsh
+        run: |
+          ./.github/scripts/Test-WorkflowSecurity.ps1
+          $expected = ((Get-Content go.mod | Where-Object { $_ -match '^go\s+' } | Select-Object -First 1) -split '\s+')[1]
+          $actual = (go env GOVERSION).TrimStart('g', 'o')
+          if ($actual -cne $expected) { throw "Expected Go $expected; runner selected $actual." }
+          go mod verify
       - name: Test complete VIIPER tree
         run: go test ./...
       - name: Stress native Windows client cancellation, close, pump failure, and reconnect
@@ -92,7 +110,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: "1.26.5"
+          go-version-file: go.mod
           cache: true
       - name: Race-test native host, USB processor, and realtime controller encoders
         run: >-
@@ -119,6 +137,8 @@ jobs:
         with:
           msbuild-architecture: x64
       - uses: NuGet/setup-nuget@d105a947828025cd7a980103c35ba2bfae586d0f # v2
+        with:
+          nuget-version: "6.11.1"
       - name: Restore WDK packages
         run: nuget restore native/udecx/ViiperUde.sln -PackagesDirectory native/udecx/packages -NonInteractive
       - name: Validate Windows and KMDF target contract
@@ -213,7 +233,7 @@ jobs:
         with:
           category: /language:c-cpp
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        if: ${{ github.event_name != 'workflow_call' || inputs.upload_artifacts }}
+        if: ${{ inputs.upload_artifacts == true }}
         with:
           name: ViiperUde-x64-test-signed
           path: |
