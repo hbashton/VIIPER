@@ -132,6 +132,40 @@ func TestBufferFallsBackFromLongToNominalAndKeepsServoDebt(t *testing.T) {
 	}
 }
 
+func TestBufferHonorsNominalHostPacketCapacityWithoutDroppingPCM(t *testing.T) {
+	buffer := New(8, 2, 16, 3, 4)
+	for value := byte(1); value <= 3; value++ {
+		buffer.QueueFrame(bytes.Repeat([]byte{value}, 16))
+	}
+	buffer.servoAccumulator = servoPulseScale
+
+	nominal := make([]byte, 8)
+	actual, ok := buffer.ReadPacket(nominal)
+	if !ok || actual != len(nominal) {
+		t.Fatalf("nominal-capacity URB read len=%d ok=%t", actual, ok)
+	}
+	if !bytes.Equal(nominal, bytes.Repeat([]byte{1}, len(nominal))) {
+		t.Fatalf("nominal-capacity URB changed PCM: % x", nominal)
+	}
+	if state := buffer.State(); state.QueuedBytes != 40 || state.LongPackets != 0 {
+		t.Fatalf("nominal-capacity URB consumed a hidden long sample: %+v", state)
+	}
+	if buffer.servoAccumulator < servoPulseScale {
+		t.Fatalf("nominal-capacity URB discarded correction debt: %d",
+			buffer.servoAccumulator)
+	}
+
+	maximum := make([]byte, 10)
+	actual, ok = buffer.ReadPacket(maximum)
+	if !ok || actual != len(maximum) {
+		t.Fatalf("later max-capacity URB did not service correction: len=%d ok=%t",
+			actual, ok)
+	}
+	if state := buffer.State(); state.QueuedBytes != 30 || state.LongPackets != 1 {
+		t.Fatalf("max-capacity URB did not account for one long packet: %+v", state)
+	}
+}
+
 func TestBufferTrueUnderrunRetainsAlignedTail(t *testing.T) {
 	buffer := New(8, 2, 16, 3, 4)
 	residual := []byte{0xA1, 0xA2, 0xA3, 0xA4}

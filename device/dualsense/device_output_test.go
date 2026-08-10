@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/hex"
+	"io"
 	"testing"
 
 	"github.com/Alia5/VIIPER/usbip"
@@ -105,6 +106,35 @@ func TestMicrophoneInUsesUSBIPEndpointNumber(t *testing.T) {
 	}
 	if !bytes.Equal(packet, frame[:USBMicrophonePacketSize]) {
 		t.Fatal("USB/IP endpoint 2 did not return queued microphone PCM")
+	}
+}
+
+func TestNativeMicrophoneInWritesCallerBuffer(t *testing.T) {
+	dev, err := New(nil)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	dev.SetInterfaceAltSetting(InterfaceMicrophone, 1)
+	frame := make([]byte, USBMicrophoneClientFrameSize)
+	for index := range frame {
+		frame[index] = byte(index*17 + 5)
+	}
+	for range microphoneTargetClientFrames {
+		dev.QueueMicrophonePCMFrame(frame)
+	}
+
+	packet := make([]byte, USBMicrophonePacketSize)
+	actual, err := dev.ReadIsochronousInput(
+		context.Background(), uint32(EndpointMicrophoneIn), packet)
+	if err != nil || actual != len(packet) {
+		t.Fatalf("native microphone read len=%d err=%v", actual, err)
+	}
+	if !bytes.Equal(packet, frame[:len(packet)]) {
+		t.Fatal("native microphone read changed caller-buffer PCM")
+	}
+	if _, err = dev.ReadIsochronousInput(context.Background(),
+		uint32(EndpointMicrophoneIn), packet[:len(packet)-1]); err != io.ErrShortBuffer {
+		t.Fatalf("short native microphone buffer error=%v", err)
 	}
 }
 

@@ -28,6 +28,16 @@ type InterruptInputDevice interface {
 	ReadInterruptInput(ctx context.Context, ep uint32, dst []byte) (int, error)
 }
 
+// IsochronousInputDevice is the corresponding optional caller-buffer contract
+// for isochronous IN packets. The transport supplies exactly the packet region
+// owned by the current URB. The native scheduler invokes this at the packet's
+// service time, so implementations must not wait for source data: they return
+// a legal zero packet when capture has not arrived. Implementations may return
+// a shorter legal packet, must not retain dst, and must honor cancellation.
+type IsochronousInputDevice interface {
+	ReadIsochronousInput(ctx context.Context, ep uint32, dst []byte) (int, error)
+}
+
 // ControlDevice is an optional interface for devices that need to handle
 // control transfers on endpoint 0 (EP0).
 //

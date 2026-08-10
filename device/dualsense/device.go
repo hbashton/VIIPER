@@ -526,6 +526,35 @@ func (d *DualSense) handleMicrophoneIn(ctx context.Context) []byte {
 	}
 }
 
+// ReadIsochronousInput implements usb.IsochronousInputDevice. Native UDE owns
+// the packet service deadline and destination, so this path neither allocates a
+// packet nor creates a timer per USB packet.
+func (d *DualSense) ReadIsochronousInput(ctx context.Context, ep uint32, dst []byte) (int, error) {
+	if ep&0x0f != EndpointMicrophoneIn&0x0f {
+		return 0, fmt.Errorf("DualSense isochronous-IN endpoint %d is unsupported", ep)
+	}
+	if len(dst) < USBMicrophonePacketSize {
+		return 0, io.ErrShortBuffer
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	packet := dst[:min(len(dst), USBMicrophoneMaxPacketSize)]
+	clear(packet)
+	d.mtx.Lock()
+	defer d.mtx.Unlock()
+	if d.microphoneInterfaceActive {
+		if actualLength, ok := d.microphoneBuffer.ReadPacket(packet); ok {
+			d.microphoneAudioFeature.applyPCMInPlace(
+				packet[:actualLength], USBMicrophoneChannels,
+			)
+			return actualLength, nil
+		}
+	}
+	d.microphoneBuffer.RecordZeroPacket()
+	return USBMicrophonePacketSize, nil
+}
+
 func (d *DualSense) drainMicrophoneSignal() {
 	for {
 		select {

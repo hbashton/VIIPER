@@ -214,6 +214,66 @@ type isoOutRecordingDevice struct {
 	payload []byte
 }
 
+type directIsoInTestDevice struct {
+	desc          *usbdevice.Descriptor
+	calls         int
+	fallbackCalls int
+}
+
+func (d *directIsoInTestDevice) HandleTransfer(
+	context.Context, uint32, uint32, []byte,
+) []byte {
+	d.fallbackCalls++
+	return nil
+}
+
+func (d *directIsoInTestDevice) ReadIsochronousInput(
+	_ context.Context, _ uint32, dst []byte,
+) (int, error) {
+	d.calls++
+	actual := len(dst) - d.calls
+	for index := 0; index < actual; index++ {
+		dst[index] = byte(0x20*d.calls + index)
+	}
+	return actual, nil
+}
+
+func (d *directIsoInTestDevice) GetDescriptor() *usbdevice.Descriptor { return d.desc }
+func (*directIsoInTestDevice) GetDeviceSpecificArgs() map[string]any  { return nil }
+
+func TestNativeProcessorWritesIsoInDirectlyIntoURBPacketRegions(t *testing.T) {
+	desc := &usbdevice.Descriptor{
+		Device: usbdevice.DeviceDescriptor{Speed: uint32(udecx.DeviceSpeedHigh)},
+		Interfaces: []usbdevice.InterfaceConfig{{Endpoints: []usbdevice.EndpointDescriptor{{
+			BEndpointAddress: 0x82, BMAttributes: 0x05, WMaxPacketSize: 8, BInterval: 1,
+		}}}},
+	}
+	dev := &directIsoInTestDevice{desc: desc}
+	op := udecx.Operation{
+		Token: 8, DeviceID: 4, Generation: 2, Kind: udecx.OperationTransfer,
+		EndpointAddress: 0x82, Direction: 1, TransferLength: 24,
+		IsoPackets: []udecx.IsoPacket{{Offset: 0, Length: 8}, {Offset: 16, Length: 8}},
+	}
+	completion, err := nativeProcessorForTest(t).Process(context.Background(), dev, op)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dev.calls != 2 || dev.fallbackCalls != 0 {
+		t.Fatalf("direct calls=%d fallback calls=%d want 2/0", dev.calls, dev.fallbackCalls)
+	}
+	if completion.TransferLength != 13 || len(completion.Payload) != 24 ||
+		completion.IsoPackets[0].Length != 7 || completion.IsoPackets[1].Length != 6 {
+		t.Fatalf("unexpected direct ISO completion: %+v", completion)
+	}
+	wantFirst := []byte{0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26}
+	wantSecond := []byte{0x40, 0x41, 0x42, 0x43, 0x44, 0x45}
+	if !bytes.Equal(completion.Payload[:7], wantFirst) ||
+		!bytes.Equal(completion.Payload[16:22], wantSecond) ||
+		!bytes.Equal(completion.Payload[8:16], make([]byte, 8)) {
+		t.Fatalf("direct ISO packet regions were not preserved: % x", completion.Payload)
+	}
+}
+
 func (d *isoOutRecordingDevice) HandleTransfer(_ context.Context, _ uint32, _ uint32, out []byte) []byte {
 	d.payload = append(d.payload[:0], out...)
 	return nil

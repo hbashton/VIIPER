@@ -425,6 +425,33 @@ func (d *DualShock4) handleMicrophoneIn(ctx context.Context) []byte {
 	}
 }
 
+// ReadIsochronousInput implements usb.IsochronousInputDevice without changing
+// the USB/IP packet timeout and ownership contract. Native UDE calls at the
+// packet service point, so an empty capture queue becomes a legal zero packet
+// rather than a second timer in the real-time path.
+func (d *DualShock4) ReadIsochronousInput(ctx context.Context, ep uint32, dst []byte) (int, error) {
+	if ep&0x0f != EndpointMicrophoneIn&0x0f {
+		return 0, fmt.Errorf("DualShock 4 isochronous-IN endpoint %d is unsupported", ep)
+	}
+	if len(dst) < USBMicrophonePacketSize {
+		return 0, io.ErrShortBuffer
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	packet := dst[:min(len(dst), USBMicrophoneMaxPacketSize)]
+	clear(packet)
+	d.mtx.Lock()
+	defer d.mtx.Unlock()
+	if d.microphoneInterfaceActive {
+		if actualLength, ok := d.microphoneBuffer.ReadPacket(packet); ok {
+			return actualLength, nil
+		}
+	}
+	d.microphoneBuffer.RecordZeroPacket()
+	return USBMicrophonePacketSize, nil
+}
+
 func (d *DualShock4) drainMicrophoneSignal() {
 	for {
 		select {

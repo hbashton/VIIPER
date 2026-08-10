@@ -90,7 +90,14 @@ The transport is intentionally split by USB semantics:
   every lifecycle transition use the cancel-safe ordered inverted-call broker.
   VIIPER posts multiple `DEQUEUE_OPERATION` requests, processes each immutable
   operation through the existing `usb.Device` interface, then submits
-  `COMPLETE_OPERATION`.
+  `COMPLETE_OPERATION`. Native microphone engines encode directly into the
+  host URB's packet regions at each reserved USB service point. They neither
+  allocate a packet nor create a per-packet timer; an unavailable source frame
+  becomes the legal nominal zero packet immediately. The adaptive PCM buffer
+  also observes the actual capacity reserved for each URB. If Windows reserves
+  only nominal capacity, a pending long clock-correction packet remains owed
+  instead of being consumed and silently truncated. The USB/IP microphone path
+  retains its existing allocation and timeout ownership contract.
 
 The input counters intentionally measure opposite sides of that cache:
 `InputReportsSubmitted` counts accepted latest-state publications, while

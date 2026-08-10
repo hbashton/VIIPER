@@ -64,6 +64,11 @@ only after the overlapped IOCTL has completed and the kernel has copied the
 report. Allocation gates enforce zero heap allocations in those report
 encoders; USB/IP and third-party device engines retain their existing ownership
 contract through the optional interface.
+DualSense and DualShock 4 microphone engines use the same optional
+caller-buffer rule for native isochronous IN. The broker invokes them only at
+the endpoint's reserved service time, and they write directly into the current
+URB packet region without a second timer or packet allocation. Nominal-only URB
+capacity never causes an adaptive long packet to be consumed and truncated.
 `InputReportsSubmitted` counts accepted state publications and
 `InputReportsCompleted` counts host polls served from them. Multiple publications
 can coalesce into one latest state before Windows polls, but one publication can

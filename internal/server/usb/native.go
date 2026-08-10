@@ -414,6 +414,7 @@ func (p *NativeProcessor) processIsoIn(ctx context.Context, dev usbdevice.Device
 	packets := make([]udecx.IsoPacket, len(op.IsoPackets))
 	actualTotal := uint32(0)
 	serviceTime := serviceStart
+	reader, direct := dev.(usbdevice.IsochronousInputDevice)
 	for i, packet := range op.IsoPackets {
 		if packet.Offset > op.TransferLength || packet.Length > op.TransferLength-packet.Offset {
 			return udecx.Completion{}, fmt.Errorf("native ISO packet %d is outside transfer buffer", i)
@@ -422,17 +423,38 @@ func (p *NativeProcessor) processIsoIn(ctx context.Context, dev usbdevice.Device
 			return udecx.Completion{}, ctx.Err()
 		}
 		serviceTime = serviceTime.Add(interval)
-		attemptCtx, cancel := context.WithTimeout(ctx, interval)
-		packetData := p.server.processSubmit(attemptCtx, dev, ep, dir, nil, nil)
-		cancel()
+		var packetData []byte
+		if direct {
+			packetRegion := payload[packet.Offset : packet.Offset+packet.Length]
+			written, readErr := reader.ReadIsochronousInput(ctx, ep, packetRegion)
+			if readErr != nil {
+				return udecx.Completion{}, readErr
+			}
+			if written < 0 || uint32(written) > packet.Length {
+				return udecx.Completion{}, fmt.Errorf(
+					"native ISO packet %d encoded %d bytes into a %d-byte region",
+					i, written, packet.Length)
+			}
+			packetData = packetRegion[:written]
+		} else {
+			attemptCtx, cancel := context.WithTimeout(ctx, interval)
+			packetData = p.server.processSubmit(attemptCtx, dev, ep, dir, nil, nil)
+			cancel()
+		}
 		if ctx.Err() != nil {
 			return udecx.Completion{}, ctx.Err()
 		}
 		if len(packetData) == 0 {
-			packetData = make([]byte, packet.Length)
+			if direct {
+				packetData = payload[packet.Offset : packet.Offset+packet.Length]
+			} else {
+				packetData = make([]byte, packet.Length)
+			}
 		}
 		actual := min(packet.Length, uint32(len(packetData)))
-		copy(payload[packet.Offset:packet.Offset+actual], packetData[:actual])
+		if !direct {
+			copy(payload[packet.Offset:packet.Offset+actual], packetData[:actual])
+		}
 		packets[i] = udecx.IsoPacket{Offset: packet.Offset, Length: actual}
 		actualTotal += actual
 	}

@@ -118,6 +118,29 @@ func TestAudioInterfacesTrackAlternateSettings(t *testing.T) {
 	assert.Equal(t, make([]byte, USBMicrophonePacketSize), microphone)
 }
 
+func TestNativeMicrophoneInWritesCallerBuffer(t *testing.T) {
+	dev, err := New(nil)
+	require.NoError(t, err)
+	dev.SetInterfaceAltSetting(InterfaceMicrophone, 1)
+	frame := make([]byte, USBMicrophoneClientFrameSize)
+	for index := range frame {
+		frame[index] = byte(index*13 + 3)
+	}
+	for range microphoneTargetClientFrames {
+		dev.QueueMicrophonePCMFrame(frame)
+	}
+
+	packet := make([]byte, USBMicrophonePacketSize)
+	actual, err := dev.ReadIsochronousInput(
+		context.Background(), uint32(EndpointMicrophoneIn), packet)
+	require.NoError(t, err)
+	require.Equal(t, len(packet), actual)
+	assert.Equal(t, frame[:len(packet)], packet)
+	_, err = dev.ReadIsochronousInput(context.Background(),
+		uint32(EndpointMicrophoneIn), packet[:len(packet)-1])
+	assert.ErrorIs(t, err, io.ErrShortBuffer)
+}
+
 func TestSpeakerTransferIsForwardedWithoutLoopbackCapture(t *testing.T) {
 	dev, err := New(nil)
 	require.NoError(t, err)
