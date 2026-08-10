@@ -28,9 +28,14 @@ It groups repeated cycles when `-count > 1` and uses the single press E2E measur
 
 ## Scope / Methodology
 
-- All benchmarks included here are executed against a VIIPER server on the same host (localhost).  
-  They therefore measure in-process client emission plus local USBIP stack + emulated device processing only.  
-  Remote/network USBIP attachment will add network RTT and jitter which is intentionally excluded from these baseline figures.
+- All benchmarks included here are executed against a VIIPER server on the same host (localhost).
+  They therefore measure in-process client emission plus the selected local
+  transport and emulated-device processing. Remote/network USB/IP attachment
+  adds network RTT and jitter and is intentionally excluded from these
+  baseline figures.
+- The Windows observer waits on SDL gamepad transition events. It does not
+  busy-poll controller state, so the harness does not consume a synthetic CPU
+  core or add that contention to transport tail latency.
 - Benchmarks use a single emulated Xbox360 controller device.  
   Other devices might produce slightly different results depending on USB report size and VIIPER-InputState size.
 - Benchmarks use a single button press, which is enough as clients/VIIPER always produce a full report of the devices state.  
@@ -75,5 +80,6 @@ Use a larger `-count` if you want to increase the number of runs.
 - Memory statistics from Go benchmarks are intentionally omitted.
 - `% of Full` falls back to the largest ns/op if the baseline row is missing.
 - All benchmarking must run with parallelism 1 in underlying benches.
-- Benchmarks use a tight polling loop using SDL3 to detect input state changes on the emulated device.
+- Benchmarks use SDL3 gamepad transition events to detect input changes on the
+  emulated device without a measurement-side polling loop.
 - Benchmarks must be run without an already running VIIPER server instance.

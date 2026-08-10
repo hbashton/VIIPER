@@ -172,7 +172,7 @@ func Benchmark_Xbox360_Delay(b *testing.B) {
 	b.SetParallelism(1)
 
 	defer sdl.Quit()
-	if err := sdl.Init(sdl.InitFlagGamepad); err != nil {
+	if err := sdl.Init(sdl.InitFlagGamepad | sdl.InitFlagEvents); err != nil {
 		b.Fatalf("SDL init failed: %v", err)
 	}
 
@@ -256,25 +256,6 @@ func Benchmark_Xbox360_Delay(b *testing.B) {
 	if gamepad == nil {
 		b.Fatalf("No new gamepad found for testing (expected VIIPER virtual device)")
 	}
-	padChann := make(chan bool)
-	prevPadPressed := false
-	go func() {
-		defer close(padChann)
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-			}
-			sdl.UpdateGamepads()
-			pressed := gamepad.GetButton(sdl.GamepadButtonSouth)
-			if pressed != prevPadPressed {
-				padChann <- pressed
-				prevPadPressed = pressed
-			}
-		}
-	}()
-
 	for _, bench := range benches {
 		benchClient := viiperclient.New("localhost:3245")
 		if bench.useEncryption {
@@ -295,10 +276,8 @@ func Benchmark_Xbox360_Delay(b *testing.B) {
 				if err != nil {
 					b.Fatalf("WriteBinary failed: %v", err)
 				}
-				timeout := time.After(1 * time.Second)
-
 				bench.timeOn(TimeWhat_WaitInput, b)
-				if err = waitForInput(ctx, timeout, padChann, true); err != nil {
+				if err = waitForInput(ctx, gamepad, true); err != nil {
 					b.Fatalf("wait for pressed input over %s: %v", transport, err)
 				}
 
@@ -309,9 +288,8 @@ func Benchmark_Xbox360_Delay(b *testing.B) {
 				if err != nil {
 					b.Fatalf("WriteBinary failed: %v", err)
 				}
-				timeout = time.After(1 * time.Second)
 				bench.timeOn(TimeWhat_WaitRelease, b)
-				if err = waitForInput(ctx, timeout, padChann, false); err != nil {
+				if err = waitForInput(ctx, gamepad, false); err != nil {
 					b.Fatalf("wait for released input over %s: %v", transport, err)
 				}
 
@@ -324,20 +302,15 @@ func Benchmark_Xbox360_Delay(b *testing.B) {
 	}
 }
 
-func waitForInput(ctx context.Context, timeout <-chan time.Time, padChann <-chan bool, wantPressed bool) error {
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-timeout:
-			return context.DeadlineExceeded
-		case pressed, ok := <-padChann:
-			if !ok {
-				return context.Canceled
-			}
-			if pressed == wantPressed {
-				return nil
-			}
-		}
+func waitForInput(ctx context.Context, gamepad *sdl.Gamepad, wantPressed bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
 	}
+	if !gamepad.WaitButtonEvent(sdl.GamepadButtonSouth, wantPressed, 1000) {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return context.DeadlineExceeded
+	}
+	return nil
 }

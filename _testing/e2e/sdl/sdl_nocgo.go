@@ -11,7 +11,10 @@ import "errors"
 
 type InitFlags uint32
 
-const InitFlagGamepad InitFlags = 0x00002000
+const (
+	InitFlagGamepad InitFlags = 0x00002000
+	InitFlagEvents  InitFlags = 0x00004000
+)
 
 type GamepadID uint32
 
@@ -38,3 +41,5 @@ func OpenGamepad(GamepadID) (*Gamepad, error) {
 func (*Gamepad) Close() {}
 
 func (*Gamepad) GetButton(GamepadButton) bool { return false }
+
+func (*Gamepad) WaitButtonEvent(GamepadButton, bool, int32) bool { return false }
