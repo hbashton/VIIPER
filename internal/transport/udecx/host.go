@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Alia5/VIIPER/usb"
@@ -62,7 +63,7 @@ type registeredDevice struct {
 	publishers        map[uint8]*inputPublisher
 	activeInput       map[uint8]bool
 	resettingInput    map[uint8]bool
-	inputSequences    map[uint8]uint64
+	inputSequences    map[uint8]*atomic.Uint64
 	inD0              bool
 	resetting         bool
 	powerSequence     uint64
@@ -70,6 +71,7 @@ type registeredDevice struct {
 
 type inputPublisher struct {
 	endpoint uint8
+	sequence *atomic.Uint64
 	cancel   context.CancelFunc
 	done     chan struct{}
 }
@@ -221,7 +223,7 @@ func (h *Host) Register(ctx context.Context, deviceID uint64, dev usb.Device) (D
 		identity: identity, device: dev, ctx: deviceCtx, cancel: cancel,
 		fastInput: fastInputEndpoints(dev), publishers: make(map[uint8]*inputPublisher),
 		activeInput: make(map[uint8]bool), resettingInput: make(map[uint8]bool),
-		inputSequences: make(map[uint8]uint64), inD0: true,
+		inputSequences: make(map[uint8]*atomic.Uint64), inD0: true,
 	}
 	h.devices[deviceID] = entry
 	h.generations[deviceID] = generation
@@ -367,8 +369,15 @@ func (h *Host) startInputPublisher(entry *registeredDevice, endpoint uint8) {
 		h.mu.Unlock()
 		return
 	}
+	sequence := entry.inputSequences[endpoint]
+	if sequence == nil {
+		sequence = &atomic.Uint64{}
+		entry.inputSequences[endpoint] = sequence
+	}
 	ctx, cancel := context.WithCancel(entry.ctx)
-	publisher := &inputPublisher{endpoint: endpoint, cancel: cancel, done: make(chan struct{})}
+	publisher := &inputPublisher{
+		endpoint: endpoint, sequence: sequence, cancel: cancel, done: make(chan struct{}),
+	}
 	entry.publishers[endpoint] = publisher
 	h.mu.Unlock()
 
@@ -417,7 +426,6 @@ func (h *Host) activeInputEndpoints(entry *registeredDevice) []uint8 {
 
 func (h *Host) runInputPublisher(ctx context.Context, entry *registeredDevice, publisher *inputPublisher) {
 	defer close(publisher.done)
-	var sequence uint64
 	for {
 		payload := entry.device.HandleTransfer(
 			ctx, uint32(publisher.endpoint&0x0f), usbip.DirIn, nil)
@@ -430,13 +438,16 @@ func (h *Host) runInputPublisher(ctx context.Context, entry *registeredDevice, p
 				entry.identity.DeviceID, publisher.endpoint))
 			return
 		}
-		h.mu.Lock()
-		sequence = entry.inputSequences[publisher.endpoint] + 1
+		// The sequence is owned by this endpoint generation and survives only a
+		// purge/start publisher replacement. Keeping it in an atomic endpoint
+		// counter removes the controller-wide host mutex from the 1 kHz input
+		// path, so unrelated lifecycle/media work and other pads cannot add input
+		// tail latency. There is at most one publisher per endpoint, but atomic
+		// ownership also makes that invariant safe under restart transitions.
+		sequence := publisher.sequence.Add(1)
 		if sequence == 0 {
-			sequence = 1
+			sequence = publisher.sequence.Add(1)
 		}
-		entry.inputSequences[publisher.endpoint] = sequence
-		h.mu.Unlock()
 		if err := h.input.SubmitInputReport(ctx, InputReport{
 			DeviceID: entry.identity.DeviceID, Generation: entry.identity.Generation,
 			EndpointAddress: publisher.endpoint, Sequence: sequence, Payload: payload,

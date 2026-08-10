@@ -516,6 +516,77 @@ func TestHostPublishesInterruptInputDirectlyAfterEndpointStart(t *testing.T) {
 	}
 }
 
+func TestHostInputPublisherDoesNotWaitForGlobalRoutingLock(t *testing.T) {
+	driver := &fastInputDriver{fakeHostDriver: newFakeHostDriver(), reports: make(chan InputReport, 4)}
+	processor := &recordingProcessor{
+		processed: make(chan uint64, 1), lifecycle: make(chan uint64, 2),
+		resets: make(chan DeviceIdentity, 1),
+	}
+	host, err := NewHost(driver, processor, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	device := newInputPublisherTestDevice()
+	identity, err := host.Register(context.Background(), 441, device)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- host.Serve(ctx) }()
+	driver.operations <- Operation{
+		DeviceID: identity.DeviceID, Generation: identity.Generation,
+		EndpointAddress: 0x81, EndpointSequence: 1, Kind: OperationEndpointStart,
+	}
+	select {
+	case <-processor.lifecycle:
+	case <-time.After(time.Second):
+		t.Fatal("endpoint start was not processed")
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		host.mu.RLock()
+		entry := host.devices[identity.DeviceID]
+		publisherReady := entry != nil && entry.publishers[0x81] != nil
+		host.mu.RUnlock()
+		if publisherReady {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("direct input publisher did not start")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	// Hold the host-wide routing lock exactly while a fresh state is published.
+	// A per-endpoint input sequence must still reach the direct driver lane;
+	// otherwise unrelated lifecycle/media work can stall every controller.
+	host.mu.Lock()
+	device.reports <- []byte{9, 8, 7, 6}
+	select {
+	case report := <-driver.reports:
+		host.mu.Unlock()
+		if report.Sequence != 1 || string(report.Payload) != string([]byte{9, 8, 7, 6}) {
+			t.Fatalf("unexpected lock-independent input report: %+v", report)
+		}
+	case <-time.After(250 * time.Millisecond):
+		host.mu.Unlock()
+		t.Fatal("direct input waited for the global host routing lock")
+	}
+
+	cancel()
+	select {
+	case err = <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("host did not stop")
+	}
+}
+
 func TestHostRestoresInputPublisherAfterFailedTransactionalRemoval(t *testing.T) {
 	driver := &fastInputDriver{fakeHostDriver: newFakeHostDriver(), reports: make(chan InputReport, 4)}
 	processor := &recordingProcessor{

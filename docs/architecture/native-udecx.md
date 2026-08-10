@@ -94,6 +94,18 @@ completed count can legitimately exceed the submitted count. Live validation
 requires both forward publication and a completed Windows poll; it does not
 invent a one-to-one relationship that USB interrupt polling does not have.
 
+UDE URB completion deliberately keeps a separate DPC boundary. The individual
+`UdecxUrbComplete` API reference currently lists `PASSIVE_LEVEL`, but
+Microsoft's complete UDE client-driver guide is more specific: existing USB
+drivers require completion at `DISPATCH_LEVEL`, a synchronously processed URB
+must not be completed on its submitting thread, and cancellation must complete
+on a separate DPC. usbip-win2 0.9.7.8 independently follows that same contract.
+VIIPER therefore copies data and transfers ownership at PASSIVE level, then
+uses one preallocated controller DPC to finish bounded pending slots. Direct
+input also crosses that DPC-compatible completion boundary without allocating
+per report. This is not optional scheduler padding; removing it would violate
+the documented UDE compatibility contract.
+
 Input publishers start and stop from UdeCx endpoint lifecycle notifications,
 retain their sequence across a purge/start cycle, and are cancelled before
 device removal. Removal rejected before UdeCx takes the child restores the
@@ -374,6 +386,7 @@ validation contract is documented in
 ## Primary documentation
 
 - Microsoft, *Write a UDE client driver*
+  <https://learn.microsoft.com/windows-hardware/drivers/usbcon/writing-a-ude-client-driver>
 - Microsoft, `EVT_UDECX_USB_ENDPOINT_PURGE`
 - Microsoft, *KMDF Version History*
 - Microsoft, *Install the WDK using NuGet*
