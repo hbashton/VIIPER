@@ -33,8 +33,27 @@ func (e APIError) Error() string {
 // --
 
 type PingResponse struct {
-	Server  string `json:"server"`
-	Version string `json:"version"`
+	Server    string         `json:"server"`
+	Version   string         `json:"version"`
+	Transport string         `json:"transport,omitempty"`
+	Ready     *bool          `json:"ready,omitempty"`
+	NativeUDE *NativeUDEInfo `json:"nativeUde,omitempty"`
+}
+
+// NativeUDEInfo is the negotiated kernel contract for the active native
+// transport. It is additive to the historical ping response so older clients
+// continue to work while safety-conscious clients can fail closed unless the
+// exact ABI and capabilities they require are live.
+type NativeUDEInfo struct {
+	ABIMajor                     uint16 `json:"abiMajor"`
+	ABIMinor                     uint16 `json:"abiMinor"`
+	Capabilities                 uint32 `json:"capabilities"`
+	ExpectedDriverPackageVersion string `json:"expectedDriverPackageVersion"`
+	MaxDevices                   uint32 `json:"maxDevices"`
+	MaxDescriptorBytes           uint32 `json:"maxDescriptorBytes"`
+	MaxTransferBytes             uint32 `json:"maxTransferBytes"`
+	MaxIsoPackets                uint32 `json:"maxIsoPackets"`
+	MaxPendingOperations         uint32 `json:"maxPendingOperations"`
 }
 
 type BusListResponse struct {

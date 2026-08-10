@@ -7,6 +7,7 @@ import (
 
 	serverusb "github.com/Alia5/VIIPER/internal/server/usb"
 	"github.com/Alia5/VIIPER/internal/transport/udecx"
+	"github.com/Alia5/VIIPER/viipertypes"
 )
 
 func startNativeUDETransport(ctx context.Context, server *serverusb.Server) (nativeUDETransport, error) {
@@ -29,11 +30,23 @@ func startNativeUDETransport(ctx context.Context, server *serverusb.Server) (nat
 		return nil, err
 	}
 	sessionCtx, cancel := context.WithCancel(ctx)
+	limits := client.Limits()
 	session := &nativeUDETransportSession{
 		cancel: cancel, closeClient: client.Close, done: make(chan error, 1),
+		info: viipertypes.NativeUDEInfo{
+			ABIMajor: udecx.ABIMajor, ABIMinor: udecx.ABIMinor,
+			Capabilities:                 uint32(client.Capabilities()),
+			ExpectedDriverPackageVersion: udecx.DriverPackageVersion,
+			MaxDevices:                   limits.MaxDevices, MaxDescriptorBytes: limits.MaxDescriptorBytes,
+			MaxTransferBytes: limits.MaxTransferBytes, MaxIsoPackets: limits.MaxIsoPackets,
+			MaxPendingOperations: limits.MaxPendingOperations,
+		},
 	}
+	session.ready.Store(true)
 	go func() {
-		session.done <- host.Serve(sessionCtx)
+		err := host.Serve(sessionCtx)
+		session.ready.Store(false)
+		session.done <- err
 		close(session.done)
 	}()
 	return session, nil

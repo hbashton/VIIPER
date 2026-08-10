@@ -4,11 +4,15 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
+
+	"github.com/Alia5/VIIPER/viipertypes"
 )
 
 type nativeUDETransport interface {
 	Done() <-chan error
 	Close() error
+	Status() (bool, *viipertypes.NativeUDEInfo)
 }
 
 // nativeUDETransportSession owns the lifetime boundary between the Go host
@@ -20,14 +24,22 @@ type nativeUDETransportSession struct {
 	cancel      context.CancelFunc
 	closeClient func() error
 	done        chan error
+	ready       atomic.Bool
+	info        viipertypes.NativeUDEInfo
 	closeOnce   sync.Once
 	closeErr    error
 }
 
 func (s *nativeUDETransportSession) Done() <-chan error { return s.done }
 
+func (s *nativeUDETransportSession) Status() (bool, *viipertypes.NativeUDEInfo) {
+	info := s.info
+	return s.ready.Load(), &info
+}
+
 func (s *nativeUDETransportSession) Close() error {
 	s.closeOnce.Do(func() {
+		s.ready.Store(false)
 		s.cancel()
 		serveErr := <-s.done
 		s.closeErr = errors.Join(serveErr, s.closeClient())

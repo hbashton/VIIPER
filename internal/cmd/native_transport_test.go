@@ -25,6 +25,7 @@ func TestNativeUDETransportCloseWaitsForHostBeforeClosingClient(t *testing.T) {
 			return nil
 		},
 	}
+	session.ready.Store(true)
 	go func() {
 		<-ctx.Done()
 		hostStopped.Store(true)
@@ -47,6 +48,23 @@ func TestNativeUDETransportCloseWaitsForHostBeforeClosingClient(t *testing.T) {
 	}
 	if err := session.Close(); err != nil {
 		t.Fatalf("idempotent Close returned %v", err)
+	}
+}
+
+func TestNativeUDETransportStatusIsSnapshot(t *testing.T) {
+	session := &nativeUDETransportSession{}
+	session.info.ABIMajor = 1
+	session.info.ABIMinor = 8
+	session.ready.Store(true)
+
+	ready, first := session.Status()
+	if !ready || first.ABIMajor != 1 || first.ABIMinor != 8 {
+		t.Fatalf("unexpected native status: ready=%v info=%+v", ready, first)
+	}
+	first.ABIMinor = 99
+	_, second := session.Status()
+	if second.ABIMinor != 8 {
+		t.Fatal("Status exposed mutable session state")
 	}
 }
 

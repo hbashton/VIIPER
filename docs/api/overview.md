@@ -159,7 +159,33 @@ The exception to this are the device-control and feedback streams, which are raw
 ??? info "ping - Simple identity and version check"
     **Request:** `ping`
 
-    **Response:** `{ "server": "VIIPER", "version": "1.2.3[-dev-abcd]" }`
+    **Legacy response:** `{ "server": "VIIPER", "version": "1.2.3[-dev-abcd]" }`
+
+    The packaged server also reports its active transport and readiness. Native
+    UDE mode includes the exact negotiated ABI, capability mask, package
+    version expected by the service, and negotiated limits. Clients opting in
+    to the native backend should fail closed unless these fields match their
+    required contract:
+
+    ```json
+    {
+      "server": "VIIPER",
+      "version": "1.2.3",
+      "transport": "native-ude",
+      "ready": true,
+      "nativeUde": {
+        "abiMajor": 1,
+        "abiMinor": 8,
+        "capabilities": 13,
+        "expectedDriverPackageVersion": "0.1.0.0",
+        "maxDevices": 32,
+        "maxDescriptorBytes": 262144,
+        "maxTransferBytes": 1048576,
+        "maxIsoPackets": 1024,
+        "maxPendingOperations": 4096
+      }
+    }
+    ```
 
 #### `bus/list` {.toc-anchor}
 

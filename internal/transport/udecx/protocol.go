@@ -14,6 +14,11 @@ const (
 	Magic    uint32 = 0x45445556
 	ABIMajor uint16 = 1
 	ABIMinor uint16 = 8
+	// DriverPackageVersion is the native driver package version built and
+	// shipped with this service. Runtime negotiation proves the installed
+	// driver speaks the exact ABI below; package installation additionally
+	// verifies this release version and its signed catalog.
+	DriverPackageVersion = "0.1.0.0"
 
 	HeaderSize            = 16
 	NegotiateRequestSize  = 32

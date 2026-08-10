@@ -19,6 +19,7 @@ import (
 	"github.com/Alia5/VIIPER/internal/server/api/handler"
 	"github.com/Alia5/VIIPER/internal/server/usb"
 	"github.com/Alia5/VIIPER/internal/tray"
+	"github.com/Alia5/VIIPER/viipertypes"
 )
 
 const keyFileName = "viiper.key.txt"
@@ -118,7 +119,15 @@ func (s *Server) StartServer(ctx context.Context, logger *slog.Logger, rawLogger
 
 	apiSrv := api.New(usbSrv, s.APIServerConfig.Addr, s.APIServerConfig, logger)
 	r := apiSrv.Router()
-	r.Register("ping", handler.Ping())
+	r.Register("ping", handler.Ping(handler.PingOptions{
+		Transport: transport,
+		Status: func() (bool, *viipertypes.NativeUDEInfo) {
+			if nativeSession != nil {
+				return nativeSession.Status()
+			}
+			return true, nil
+		},
+	}))
 	r.Register("bus/list", handler.BusList(usbSrv))
 	r.Register("bus/create", handler.BusCreate(usbSrv))
 	r.Register("bus/remove", handler.BusRemove(usbSrv))
