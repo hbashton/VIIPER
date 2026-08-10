@@ -198,7 +198,6 @@ ViiperEvtFileCreate(
     } else {
         fileContext->BrokerOwner = TRUE;
         context->OwnerFile = FileObject;
-        WdfIoQueueStart(context->DefaultQueue);
         WdfIoQueueStart(context->WaitingDequeues);
     }
     WdfWaitLockRelease(context->OwnerLock);
@@ -234,9 +233,6 @@ ViiperEvtFileCleanup(
 
     if (ownsController) {
         ViiperPurgeOwnerOperations(device, STATUS_FILE_CLOSED);
-        if (context->DefaultQueue != WDF_NO_HANDLE) {
-            WdfIoQueuePurgeSynchronously(context->DefaultQueue);
-        }
         if (context->WaitingDequeues != WDF_NO_HANDLE) {
             WdfIoQueuePurgeSynchronously(context->WaitingDequeues);
             InterlockedExchange(&context->WaitingDequeueCount, 0);

@@ -75,6 +75,7 @@ typedef struct VIIPER_UDE_CONTROLLER_CONTEXT {
     WDFMEMORY PendingStorage;
     VIIPER_UDE_PENDING_SLOT *PendingSlots;
     ULONG NextPendingSlot;
+    ULONG NextCompletionSlot;
     WDFMEMORY NotificationStorage;
     VIIPER_UDE_NOTIFICATION *Notifications;
     WDFDPC CompletionDpc;

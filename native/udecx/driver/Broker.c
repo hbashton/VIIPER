@@ -321,17 +321,21 @@ ViiperEvtCompletionDpc(
 
         WdfSpinLockAcquire(controllerContext->BrokerLock);
         for (index = 0; index < VIIPER_UDE_MAX_PENDING_OPERATIONS; ++index) {
-            VIIPER_UDE_PENDING_SLOT *pending = &controllerContext->PendingSlots[index];
+            ULONG candidate = (controllerContext->NextCompletionSlot + index) %
+                VIIPER_UDE_MAX_PENDING_OPERATIONS;
+            VIIPER_UDE_PENDING_SLOT *pending = &controllerContext->PendingSlots[candidate];
             if (pending->State != ViiperUdePendingDpcCompletion) {
                 continue;
             }
             request = pending->Request;
             token = pending->Token;
-            slot = index;
+            slot = candidate;
             completionStatus = pending->CompletionStatus;
             usbdStatus = pending->CompletionUsbdStatus;
             completeWithNtStatus = pending->CompleteWithNtStatus;
             pending->State = ViiperUdePendingCompleting;
+            controllerContext->NextCompletionSlot = (candidate + 1) %
+                VIIPER_UDE_MAX_PENDING_OPERATIONS;
             WdfObjectReference(request);
             break;
         }
