@@ -17,13 +17,16 @@ const (
 	servicePath = "/etc/systemd/system/viiper.service"
 )
 
-func install(logger *slog.Logger) error {
+func install(logger *slog.Logger, transport string) error {
+	if transport != "usbip" {
+		return fmt.Errorf("transport %q is unavailable on Linux", transport)
+	}
 	exePath, err := currentExecutable()
 	if err != nil {
 		return err
 	}
 
-	unit := systemdUnitContent(exePath)
+	unit := systemdUnitContent(exePath, transport)
 	if err := os.WriteFile(servicePath, []byte(unit), 0o644); err != nil {
 		return err
 	}
@@ -40,7 +43,8 @@ func install(logger *slog.Logger) error {
 		}
 	}
 
-	logger.Info("VIIPER systemd service installed", "path", servicePath, "exe", exePath)
+	logger.Info("VIIPER systemd service installed", "path", servicePath, "exe", exePath,
+		"transport", transport)
 	return nil
 }
 
@@ -70,7 +74,7 @@ func uninstall(logger *slog.Logger) error {
 	return nil
 }
 
-func systemdUnitContent(exePath string) string {
+func systemdUnitContent(exePath, transport string) string {
 	workingDir := filepath.Dir(exePath)
 	return fmt.Sprintf(`[Unit]
 Description=VIIPER server
@@ -79,13 +83,13 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=%q server
+ExecStart=%q server --transport %s
 WorkingDirectory=%s
 Restart=on-failure
 
 [Install]
 WantedBy=multi-user.target
-`, exePath, workingDir)
+`, exePath, transport, workingDir)
 }
 
 func runSystemctl(args ...string) error {

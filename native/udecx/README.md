@@ -22,3 +22,16 @@ Directory contract:
 The design and release gates are in
 `docs/architecture/native-udecx.md`. The Microsoft signing boundary is in
 `docs/architecture/native-udecx-signing.md`.
+
+After a Microsoft-signed native driver package has been installed and verified,
+the developer-only standalone registration can persist the preview transport:
+
+```powershell
+$env:VIIPER_DEVELOPER_STANDALONE = '1'
+.\viiper.exe install --transport native-ude
+```
+
+This skips the USB/IP runtime prerequisite and records
+`server --transport native-ude` in the startup command. It does not install or
+trust an unsigned kernel driver. The default remains `usbip` until the signed
+live-driver gates in the architecture document pass.

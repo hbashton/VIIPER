@@ -11,7 +11,9 @@ import (
 )
 
 // Install sets up VIIPER to run automatically.
-type Install struct{}
+type Install struct {
+	Transport string `help:"Virtual USB transport to register: usbip or native-ude." default:"usbip"`
+}
 
 // Uninstall removes VIIPER startup configuration.
 type Uninstall struct {
@@ -28,7 +30,12 @@ func (c *Install) Run(logger *slog.Logger) error {
 		return errors.New("cannot install from 'go run'")
 	}
 
-	return install(logger)
+	transport := strings.ToLower(strings.TrimSpace(c.Transport))
+	if transport != "usbip" && transport != "native-ude" {
+		return fmt.Errorf("unsupported VIIPER transport %q (expected usbip or native-ude)", c.Transport)
+	}
+
+	return install(logger, transport)
 }
 
 func (c *Uninstall) Run(logger *slog.Logger) error {

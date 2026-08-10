@@ -5,6 +5,7 @@ package cmd
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -13,8 +14,10 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Alia5/VIIPER/internal/configpaths"
+	"github.com/Alia5/VIIPER/internal/transport/udecx"
 	"golang.org/x/sys/windows/registry"
 )
 
@@ -24,12 +27,14 @@ const (
 	runScheduledTask = "RunVIIPER"
 )
 
-func install(logger *slog.Logger) error {
+func install(logger *slog.Logger, transport string) error {
 	if os.Getenv("VIIPER_DEVELOPER_STANDALONE") != "1" {
 		return errors.New("standalone VIIPER startup registration is developer-only on Windows; use the signed DS4Windows installer or its built-in VIIPER repair so one verified owner manages VIIPER and USB-IP")
 	}
-	if err := requireUSBIPRuntime(); err != nil {
-		return err
+	if transport == "usbip" {
+		if err := requireUSBIPRuntime(); err != nil {
+			return err
+		}
 	}
 	scheduledExe, err := currentScheduledTaskExe()
 	if err != nil {
@@ -63,7 +68,18 @@ func install(logger *slog.Logger) error {
 		return fmt.Errorf("failed to create log directory %s: %w", cfgDir, err)
 	}
 
-	value := fmt.Sprintf("\"%s\" server --log.file \"%s\"", exePath, logFile)
+	if previousExe != "" {
+		if err := killProcessesByExe(previousExe, logger); err != nil {
+			return fmt.Errorf("failed to stop previous autorun instance: %w", err)
+		}
+	}
+	if transport == "native-ude" {
+		if err := requireNativeUDEBroker(); err != nil {
+			return err
+		}
+	}
+
+	value := windowsAutorunCommand(exePath, transport, logFile)
 	key, _, err := registry.CreateKey(registry.CURRENT_USER, runKeyPath, registry.ALL_ACCESS)
 	if err != nil {
 		return err
@@ -74,17 +90,34 @@ func install(logger *slog.Logger) error {
 		return err
 	}
 
-	if previousExe != "" {
-		if err := killProcessesByExe(previousExe, logger); err != nil {
-			return fmt.Errorf("failed to stop previous autorun instance: %w", err)
-		}
-	}
-
-	if err := exec.Command(exePath, "server", "--log.file", logFile).Start(); err != nil {
+	if err := exec.Command(exePath, serverArguments(transport, logFile)...).Start(); err != nil {
 		return fmt.Errorf("failed to start server: %w", err)
 	}
 
-	logger.Info("VIIPER install completed for Windows autorun", "exe", exePath, "logFile", logFile)
+	logger.Info("VIIPER install completed for Windows autorun", "exe", exePath,
+		"transport", transport, "logFile", logFile)
+	return nil
+}
+
+func serverArguments(transport, logFile string) []string {
+	return []string{"server", "--transport", transport, "--log.file", logFile}
+}
+
+func windowsAutorunCommand(exePath, transport, logFile string) string {
+	return fmt.Sprintf("\"%s\" server --transport %s --log.file \"%s\"",
+		exePath, transport, logFile)
+}
+
+func requireNativeUDEBroker() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	client, err := udecx.Open(ctx)
+	if err != nil {
+		return fmt.Errorf("native UDE driver preflight failed without changing autorun: %w", err)
+	}
+	if err := client.Close(); err != nil {
+		return fmt.Errorf("native UDE driver preflight close failed without changing autorun: %w", err)
+	}
 	return nil
 }
 
