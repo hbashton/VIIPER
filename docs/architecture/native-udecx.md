@@ -74,8 +74,12 @@ The transport is intentionally split by USB semantics:
 
 - interrupt-IN input reports use the ViGEm-style manual-queue fast path. The
   Windows poll stays parked in the endpoint queue; one versioned
-  `SUBMIT_INPUT_REPORT` call copies the already encoded report into that URB
-  and completes it without an allocation or broker round trip;
+  `SUBMIT_INPUT_REPORT` call atomically replaces the endpoint's preallocated
+  latest-state cache and completes a waiting URB without an allocation or
+  broker round trip. If the state arrives first, KMDF's manual-queue ready
+  notification completes the later poll from that cache. Input timing is
+  therefore host-poll-driven rather than dependent on a second physical
+  report arriving after the poll;
 - control, interrupt-OUT, isochronous speaker/microphone/haptics, feedback, and
   every lifecycle transition use the cancel-safe ordered inverted-call broker.
   VIIPER posts multiple `DEQUEUE_OPERATION` requests, processes each immutable
@@ -256,8 +260,13 @@ interface fields are only hints for alternates that contain no endpoints.
   `UdecxUrbRetrieveBuffer` is used only within its separately reported mapped
   span. Chained or short mappings fall through to a bounded MDL-chain walk;
   the driver never treats the URB length as permission to overrun one mapping.
-- Interrupt-IN queues are manual and completed from fresh input snapshots;
-  output and media endpoints retain independent ordered queues.
+- Interrupt-IN queues are manual and completed from a generation-owned,
+  sequence-checked latest-state cache. The queue-ready callback snapshots the
+  number of already-waiting polls before it completes any of them, preventing
+  a synchronously replenished Windows poll from turning into a kernel drain
+  loop. Endpoint purge/reset and device reset/D0 exit invalidate the cache
+  after closing admission, so no held button can cross a lifecycle boundary.
+  Output and media endpoints retain independent ordered queues.
 - A direct input report that was already submitted when D0 exit, device reset,
   unplug, or endpoint purge begins is acknowledged and discarded at that exact
   lifecycle boundary. The kernel closes admission in the UdeCx callback itself

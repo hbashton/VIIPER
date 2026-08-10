@@ -34,6 +34,14 @@ Directory contract:
 - ABI, lifecycle, descriptor, cancellation, and fault tests live beside the Go
   broker packages and in the native-driver CI gates.
 
+The interrupt-IN path follows ViGEmBus's useful pending-read principle without
+copying its target-specific implementation. Each endpoint owns a preallocated,
+sequence-checked latest-state cache. A report arriving before a Windows poll is
+retained and completed by KMDF's manual-queue ready notification; reset, purge,
+D0 exit, and device reset invalidate it behind the same admission barriers used
+by the direct producer. This removes the old lost-rendezvous window and never
+requires an extra feeder update to wake an already-posted host poll.
+
 The design and release gates are in
 `docs/architecture/native-udecx.md`. The Microsoft signing boundary is in
 `docs/architecture/native-udecx-signing.md`.

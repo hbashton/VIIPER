@@ -185,6 +185,9 @@ typedef struct VIIPER_UDE_ENDPOINT_CONTEXT {
     volatile LONG ActiveOperations;
     volatile LONG64 LastInputSequence;
     volatile LONG64 NextIsoStartFrame;
+    volatile LONG InputReportValid;
+    ULONG InputReportLength;
+    UCHAR InputReport[VIIPER_UDE_MAX_INPUT_REPORT_BYTES];
     ULONGLONG NextAdmissionSequence;
     BOOLEAN FastInput;
 } VIIPER_UDE_ENDPOINT_CONTEXT;
@@ -214,6 +217,7 @@ EVT_UDECX_USB_ENDPOINT_RESET ViiperEvtEndpointReset;
 EVT_UDECX_USB_ENDPOINT_PURGE ViiperEvtEndpointPurge;
 EVT_UDECX_USB_ENDPOINT_START ViiperEvtEndpointStart;
 EVT_WDF_IO_QUEUE_IO_INTERNAL_DEVICE_CONTROL ViiperEvtEndpointIoInternalControl;
+EVT_WDF_IO_QUEUE_STATE ViiperEvtFastInputQueueReady;
 EVT_WDF_WORKITEM ViiperEvtEndpointPurgeWorkItem;
 EVT_WDF_WORKITEM ViiperEvtEndpointResetWorkItem;
 EVT_WDF_DPC ViiperEvtCompletionDpc;
