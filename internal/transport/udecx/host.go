@@ -56,6 +56,7 @@ type operationLane struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	input  chan Operation
+	done   chan struct{}
 }
 
 type operationState struct {
@@ -174,15 +175,32 @@ func (h *Host) Unregister(ctx context.Context, identity DeviceIdentity) error {
 		return errors.New("native UDE device changed during serialized removal")
 	}
 	delete(h.devices, identity.DeviceID)
-	entry.cancel()
+	stoppingLanes := make([]*operationLane, 0, 4)
 	for key, lane := range h.lanes {
 		if key.deviceID == identity.DeviceID && key.generation == identity.Generation {
-			lane.cancel()
+			stoppingLanes = append(stoppingLanes, lane)
 			delete(h.lanes, key)
 		}
 	}
 	h.mu.Unlock()
+
+	// Mark operations cancelled before their processing contexts are stopped.
+	// This prevents a processor waking on lane cancellation and racing a
+	// completion through an intentionally cancelled driver handle.
 	h.cancelDeviceOperations(identity)
+	entry.cancel()
+	for _, lane := range stoppingLanes {
+		lane.cancel()
+	}
+	for _, lane := range stoppingLanes {
+		select {
+		case <-lane.done:
+		case <-ctx.Done():
+			h.reportFatal(fmt.Errorf("stop native UDE device %d generation %d lanes: %w",
+				identity.DeviceID, identity.Generation, ctx.Err()))
+			return ctx.Err()
+		}
+	}
 	h.processor.Reset(entry.device, identity)
 	return nil
 }
@@ -302,7 +320,10 @@ func (h *Host) dispatch(ctx context.Context, op Operation) error {
 	lane := h.lanes[key]
 	if lane == nil {
 		laneCtx, cancel := context.WithCancel(entry.ctx)
-		lane = &operationLane{key: key, ctx: laneCtx, cancel: cancel, input: make(chan Operation, laneQueueDepth)}
+		lane = &operationLane{
+			key: key, ctx: laneCtx, cancel: cancel,
+			input: make(chan Operation, laneQueueDepth), done: make(chan struct{}),
+		}
 		h.lanes[key] = lane
 		h.laneWG.Add(1)
 		go h.runLane(lane, entry)
@@ -321,6 +342,7 @@ func (h *Host) dispatch(ctx context.Context, op Operation) error {
 
 func (h *Host) runLane(lane *operationLane, entry *registeredDevice) {
 	defer h.laneWG.Done()
+	defer close(lane.done)
 	expected := uint64(1)
 	pending := make(map[uint64]Operation)
 	for {

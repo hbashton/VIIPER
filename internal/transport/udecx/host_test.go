@@ -93,6 +93,28 @@ func (p *cancellableProcessor) Process(ctx context.Context, _ usb.Device, _ Oper
 func (*cancellableProcessor) Reset(usb.Device, DeviceIdentity)                       {}
 func (*cancellableProcessor) Lifecycle(context.Context, usb.Device, Operation) error { return nil }
 
+type unregisterProcessor struct {
+	started   chan struct{}
+	cancelled chan struct{}
+	reset     chan bool
+}
+
+func (p *unregisterProcessor) Process(ctx context.Context, _ usb.Device, _ Operation) (Completion, error) {
+	close(p.started)
+	<-ctx.Done()
+	close(p.cancelled)
+	return Completion{}, ctx.Err()
+}
+func (p *unregisterProcessor) Reset(usb.Device, DeviceIdentity) {
+	select {
+	case <-p.cancelled:
+		p.reset <- true
+	default:
+		p.reset <- false
+	}
+}
+func (*unregisterProcessor) Lifecycle(context.Context, usb.Device, Operation) error { return nil }
+
 func hostTestDevice() usb.Device {
 	return &snapshotDevice{descriptor: usb.Descriptor{
 		Device: usb.DeviceDescriptor{
@@ -354,6 +376,57 @@ func TestHostCancelInterruptsActiveProcessor(t *testing.T) {
 	}
 	cancel()
 	<-done
+}
+
+func TestHostUnregisterCancelsAndJoinsLanesBeforeReset(t *testing.T) {
+	driver := newFakeHostDriver()
+	processor := &unregisterProcessor{
+		started: make(chan struct{}), cancelled: make(chan struct{}), reset: make(chan bool, 1),
+	}
+	host, _ := NewHost(driver, processor, 2)
+	identity, err := host.Register(context.Background(), 16, hostTestDevice())
+	if err != nil {
+		t.Fatal(err)
+	}
+	serveCtx, stopServe := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- host.Serve(serveCtx) }()
+	driver.operations <- Operation{
+		Token: 1, DeviceID: identity.DeviceID, Generation: identity.Generation,
+		EndpointAddress: 0x81, EndpointSequence: 1, Kind: OperationTransfer,
+	}
+	select {
+	case <-processor.started:
+	case <-time.After(time.Second):
+		t.Fatal("processor did not start")
+	}
+	unregisterCtx, cancelUnregister := context.WithTimeout(context.Background(), time.Second)
+	defer cancelUnregister()
+	if err := host.Unregister(unregisterCtx, identity); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case cancelledFirst := <-processor.reset:
+		if !cancelledFirst {
+			t.Fatal("device reset raced ahead of its active endpoint lane")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("device was not reset after unregister")
+	}
+	select {
+	case completion := <-driver.completions:
+		t.Fatalf("unregister completed an operation after cancellation: %+v", completion)
+	default:
+	}
+	stopServe()
+	select {
+	case err = <-done:
+		if err != nil {
+			t.Fatalf("ordinary unregister failed the host session: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("host did not stop")
+	}
 }
 
 func TestHostDuplicateTokenFailsSessionWithoutCompletingWrongOperation(t *testing.T) {
