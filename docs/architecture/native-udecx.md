@@ -73,7 +73,8 @@ The kernel driver owns only Windows USB presentation and transfer lifecycle.
     before that distinct status existed, so an upgrade cannot strand ABI 1.7.
 11. Every packed wire structure has a compiler-independent size guard. The
     72-byte completion header carries two explicit reserved words; its size
-    never depends on compiler tail padding.
+    never depends on compiler tail padding. Every field offset is guarded too,
+    so a same-size reorder cannot silently desynchronize the C and Go layouts.
 
 ## Kernel/user transport
 
