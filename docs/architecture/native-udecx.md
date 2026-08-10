@@ -131,6 +131,11 @@ unplug all converge on the same idempotent purge path.
 ## Synchronization model
 
 - A controller-level lock protects the device table and owner registration.
+- Removal atomically revokes the UDE handle from the device table before
+  `UdecxUsbDevicePlugOutAndDelete`; that slot remains reserved until the
+  asynchronous object cleanup runs. Once that API returns, success or failure,
+  no path dereferences or restores the invalidated UDE handle and the broker
+  owner cannot be released while its reserved removal slot remains.
 - Each device has a short-held state lock and independent endpoint queues.
 - The controller's default KMDF queue only routes requests: interrupt-IN
   submissions run on an independent parallel queue, while mutation, broker,

@@ -293,7 +293,8 @@ ViiperClaimDeviceSlot(
     for (index = 0; index < VIIPER_UDE_MAX_DEVICES; ++index) {
         UDECXUSBDEVICE current = ControllerContext->Devices[index];
         if (current == WDF_NO_HANDLE) {
-            if (freeSlot == VIIPER_UDE_MAX_DEVICES) {
+            if (!ControllerContext->RemovingSlots[index] &&
+                freeSlot == VIIPER_UDE_MAX_DEVICES) {
                 freeSlot = index;
             }
             continue;
@@ -325,8 +326,13 @@ ViiperReleaseDeviceSlot(
     )
 {
     WdfWaitLockAcquire(ControllerContext->DeviceLock, NULL);
-    if (Slot < VIIPER_UDE_MAX_DEVICES && ControllerContext->Devices[Slot] == Device) {
-        ControllerContext->Devices[Slot] = WDF_NO_HANDLE;
+    if (Slot < VIIPER_UDE_MAX_DEVICES) {
+        if (ControllerContext->Devices[Slot] == Device) {
+            ControllerContext->Devices[Slot] = WDF_NO_HANDLE;
+        }
+        if (ControllerContext->Devices[Slot] == WDF_NO_HANDLE) {
+            ControllerContext->RemovingSlots[Slot] = FALSE;
+        }
     }
     WdfWaitLockRelease(ControllerContext->DeviceLock);
 }
@@ -470,27 +476,14 @@ ViiperBeginRemoveDevice(
             continue;
         }
         InterlockedExchange(&deviceContext->Purging, TRUE);
+        ControllerContext->Devices[index] = WDF_NO_HANDLE;
+        ControllerContext->RemovingSlots[index] = TRUE;
         *Device = current;
         status = STATUS_SUCCESS;
         break;
     }
     WdfWaitLockRelease(ControllerContext->DeviceLock);
     return status;
-}
-
-static
-VOID
-ViiperCancelRemoveDevice(
-    _In_ VIIPER_UDE_CONTROLLER_CONTEXT *ControllerContext,
-    _In_ UDECXUSBDEVICE Device
-    )
-{
-    WdfWaitLockAcquire(ControllerContext->DeviceLock, NULL);
-    if (ViiperGetDeviceContext(Device)->Slot < VIIPER_UDE_MAX_DEVICES &&
-        ControllerContext->Devices[ViiperGetDeviceContext(Device)->Slot] == Device) {
-        InterlockedExchange(&ViiperGetDeviceContext(Device)->Purging, FALSE);
-    }
-    WdfWaitLockRelease(ControllerContext->DeviceLock);
 }
 
 NTSTATUS
@@ -532,9 +525,6 @@ ViiperDestroyVirtualDevice(
         return status;
     }
     status = UdecxUsbDevicePlugOutAndDelete(device);
-    if (!NT_SUCCESS(status)) {
-        ViiperCancelRemoveDevice(controllerContext, device);
-    }
     return status;
 }
 
@@ -551,6 +541,7 @@ ViiperDestroyOwnedDevices(
         UDECXUSBDEVICE device;
         VIIPER_UDE_DEVICE_CONTEXT *deviceContext;
         ULONGLONG deviceId = 0;
+        BOOLEAN removalPending = FALSE;
         ULONG index;
 
         WdfWaitLockAcquire(controllerContext->DeviceLock, NULL);
@@ -563,10 +554,13 @@ ViiperDestroyOwnedDevices(
                 deviceId = ViiperGetDeviceContext(device)->DeviceId;
                 break;
             }
+            if (controllerContext->RemovingSlots[index]) {
+                removalPending = TRUE;
+            }
         }
         WdfWaitLockRelease(controllerContext->DeviceLock);
         if (deviceId == 0) {
-            return TRUE;
+            return !removalPending;
         }
 
         if (!NT_SUCCESS(ViiperBeginRemoveDevice(
@@ -576,7 +570,6 @@ ViiperDestroyOwnedDevices(
         deviceContext = ViiperGetDeviceContext(device);
         if (deviceContext->Plugged) {
             if (!NT_SUCCESS(UdecxUsbDevicePlugOutAndDelete(device))) {
-                ViiperCancelRemoveDevice(controllerContext, device);
                 return FALSE;
             }
         } else {
