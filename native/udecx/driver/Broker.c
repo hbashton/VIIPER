@@ -246,6 +246,34 @@ ViiperClearManagementSlotLocked(
 
 static
 VOID
+ViiperSetDeviceResettingByIdentity(
+    _In_ VIIPER_UDE_CONTROLLER_CONTEXT *ControllerContext,
+    _In_ ULONGLONG DeviceId,
+    _In_ ULONG Generation,
+    _In_ LONG Value
+    )
+{
+    ULONG index;
+
+    WdfWaitLockAcquire(ControllerContext->DeviceLock, NULL);
+    for (index = 0; index < VIIPER_UDE_MAX_DEVICES; ++index) {
+        UDECXUSBDEVICE device = ControllerContext->Devices[index];
+        VIIPER_UDE_DEVICE_CONTEXT *deviceContext;
+        if (device == WDF_NO_HANDLE) {
+            continue;
+        }
+        deviceContext = ViiperGetDeviceContext(device);
+        if (deviceContext->DeviceId == DeviceId &&
+            deviceContext->Generation == Generation) {
+            InterlockedExchange(&deviceContext->Resetting, Value);
+            break;
+        }
+    }
+    WdfWaitLockRelease(ControllerContext->DeviceLock);
+}
+
+static
+VOID
 ViiperClearSlotLocked(
     _In_ VIIPER_UDE_CONTROLLER_CONTEXT *ControllerContext,
     _In_ ULONG Slot
@@ -753,6 +781,7 @@ ViiperAllocatePendingSlot(
 
     WdfSpinLockAcquire(ControllerContext->BrokerLock);
     if (InterlockedCompareExchange(&endpointContext->Purging, 0, 0) != 0 ||
+        InterlockedCompareExchange(&deviceContext->Resetting, 0, 0) != 0 ||
         InterlockedCompareExchange(&deviceContext->Purging, 0, 0) != 0) {
         status = STATUS_DEVICE_NOT_READY;
     } else if ((ULONG)InterlockedCompareExchange(
@@ -1577,6 +1606,7 @@ ViiperQueueUrb(
     NTSTATUS abortStatus = STATUS_CANCELLED;
 
     if (InterlockedCompareExchange(&controllerContext->BrokerFaulted, FALSE, FALSE) != FALSE ||
+        InterlockedCompareExchange(&deviceContext->Resetting, 0, 0) != 0 ||
         InterlockedCompareExchange(&deviceContext->Purging, 0, 0) != 0 ||
         InterlockedCompareExchange(&endpointContext->Purging, 0, 0) != 0) {
         return STATUS_DEVICE_NOT_READY;
@@ -1657,6 +1687,7 @@ ViiperCompleteManagementOperation(
     ULONG encodedSlot = (ULONG)Completion->Token;
     ULONG slot = (encodedSlot & ~VIIPER_UDE_MANAGEMENT_SLOT_FLAG) - 1;
     WDFREQUEST request = WDF_NO_HANDLE;
+    ULONG kind = 0;
 
     if ((encodedSlot & VIIPER_UDE_MANAGEMENT_SLOT_FLAG) == 0 ||
         slot >= VIIPER_UDE_MAX_PENDING_MANAGEMENT ||
@@ -1673,6 +1704,7 @@ ViiperCompleteManagementOperation(
         ControllerContext->ManagementSlots[slot].DeviceId == Completion->DeviceId &&
         ControllerContext->ManagementSlots[slot].DeviceGeneration == Completion->Generation) {
         request = ControllerContext->ManagementSlots[slot].Request;
+        kind = ControllerContext->ManagementSlots[slot].Kind;
         ControllerContext->ManagementSlots[slot].State = ViiperUdePendingCompleting;
         WdfObjectReference(request);
     }
@@ -1682,6 +1714,14 @@ ViiperCompleteManagementOperation(
         return STATUS_NOT_FOUND;
     }
 
+    if (kind == ViiperUdeOperationDeviceReset) {
+        // User mode has stopped every direct-input publisher before issuing
+        // this acknowledgement. Reopen kernel admission immediately before
+        // completing the UdeCx reset request so any synchronously resumed URB
+        // sees the post-reset state, while no direct report can cross early.
+        ViiperSetDeviceResettingByIdentity(
+            ControllerContext, Completion->DeviceId, Completion->Generation, FALSE);
+    }
     WdfRequestComplete(request, (NTSTATUS)Completion->Status);
     WdfSpinLockAcquire(ControllerContext->BrokerLock);
     if (ControllerContext->ManagementSlots[slot].Request == request &&

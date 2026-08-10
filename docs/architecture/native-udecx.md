@@ -204,6 +204,10 @@ interface fields are only hints for alternates that contain no endpoints.
   completion only after the Go controller engine has applied the reset or
   alternate-setting transition. Start, purge, and power notifications remain
   unacknowledged and cannot add a media round trip.
+- Device reset closes direct input admission in the kernel callback and pauses
+  every user-mode publisher before controller state is cleared. Admission and
+  the active publishers reopen only after the generation-bound reset request
+  has been acknowledged, so no HID snapshot can cross the reset boundary.
 - The controller's default KMDF queue only routes requests: interrupt-IN
   submissions run on an independent parallel queue, while mutation, broker,
   and lifecycle IOCTLs retain their serialized control queue. Large media
@@ -229,10 +233,10 @@ interface fields are only hints for alternates that contain no endpoints.
   the driver never treats the URB length as permission to overrun one mapping.
 - Interrupt-IN queues are manual and completed from fresh input snapshots;
   output and media endpoints retain independent ordered queues.
-- A direct input report that was already submitted when D0 exit, unplug, or
-  endpoint purge begins is acknowledged and discarded at that exact lifecycle
-  boundary. The kernel closes D0 admission in the UdeCx callback itself rather
-  than waiting for the advisory user-mode notification. Stale generations and
+- A direct input report that was already submitted when D0 exit, device reset,
+  unplug, or endpoint purge begins is acknowledged and discarded at that exact
+  lifecycle boundary. The kernel closes admission in the UdeCx callback itself
+  rather than waiting for the user-mode notification. Stale generations and
   replayed sequences remain hard failures, so normal teardown cannot fault the
   exclusive broker session.
 - UDE callbacks never wait on user mode while holding a WDF lock.

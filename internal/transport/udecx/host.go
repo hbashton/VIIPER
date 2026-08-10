@@ -62,6 +62,7 @@ type registeredDevice struct {
 	activeInput       map[uint8]bool
 	inputSequences    map[uint8]uint64
 	inD0              bool
+	resetting         bool
 	powerSequence     uint64
 }
 
@@ -284,7 +285,7 @@ func (h *Host) startInputPublisher(entry *registeredDevice, endpoint uint8) {
 		return
 	}
 	h.mu.Lock()
-	if !h.running || entry.stopping || entry.publisherStopping || !entry.inD0 ||
+	if !h.running || entry.stopping || entry.publisherStopping || !entry.inD0 || entry.resetting ||
 		h.devices[entry.identity.DeviceID] != entry {
 		h.mu.Unlock()
 		return
@@ -576,6 +577,7 @@ func (h *Host) runLane(lane *operationLane, entry *registeredDevice) {
 				delete(pending, expected)
 				if isLifecycleOperation(current.Kind) {
 					applyPowerTransition := false
+					applyDeviceReset := false
 					switch current.Kind {
 					case OperationEndpointPurge:
 						h.mu.Lock()
@@ -591,6 +593,16 @@ func (h *Host) runLane(lane *operationLane, entry *registeredDevice) {
 						}
 						h.mu.Unlock()
 						if applyPowerTransition {
+							h.stopAllInputPublishers(entry)
+						}
+					case OperationDeviceReset:
+						h.mu.Lock()
+						if !entry.resetting {
+							entry.resetting = true
+							applyDeviceReset = true
+						}
+						h.mu.Unlock()
+						if applyDeviceReset {
 							h.stopAllInputPublishers(entry)
 						}
 					}
@@ -626,6 +638,15 @@ func (h *Host) runLane(lane *operationLane, entry *registeredDevice) {
 						}
 						h.mu.Unlock()
 						if applyPowerTransition {
+							for _, endpoint := range h.activeInputEndpoints(entry) {
+								h.startInputPublisher(entry, endpoint)
+							}
+						}
+					case OperationDeviceReset:
+						if applyDeviceReset {
+							h.mu.Lock()
+							entry.resetting = false
+							h.mu.Unlock()
 							for _, endpoint := range h.activeInputEndpoints(entry) {
 								h.startInputPublisher(entry, endpoint)
 							}

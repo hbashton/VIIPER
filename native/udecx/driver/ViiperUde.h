@@ -156,6 +156,7 @@ typedef struct VIIPER_UDE_DEVICE_CONTEXT {
     UDECX_USB_DEVICE_SPEED Speed;
     BOOLEAN Plugged;
     volatile LONG InD0;
+    volatile LONG Resetting;
     volatile LONG Purging;
     volatile LONG ActiveCounted;
     volatile LONG OwnerReferenced;

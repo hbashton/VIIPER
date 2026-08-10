@@ -151,6 +151,28 @@ func (*noopProcessor) Process(context.Context, usb.Device, Operation) (Completio
 func (*noopProcessor) Lifecycle(context.Context, usb.Device, Operation) error { return nil }
 func (*noopProcessor) Reset(usb.Device, DeviceIdentity)                       {}
 
+type resetGateProcessor struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (*resetGateProcessor) Process(context.Context, usb.Device, Operation) (Completion, error) {
+	return Completion{}, nil
+}
+func (p *resetGateProcessor) Lifecycle(ctx context.Context, _ usb.Device, op Operation) error {
+	if op.Kind != OperationDeviceReset {
+		return nil
+	}
+	close(p.started)
+	select {
+	case <-p.release:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+func (*resetGateProcessor) Reset(usb.Device, DeviceIdentity) {}
+
 func hostTestDevice() usb.Device {
 	return &snapshotDevice{descriptor: usb.Descriptor{
 		Device: usb.DeviceDescriptor{
@@ -499,6 +521,81 @@ func TestHostDoesNotResurrectInputFromPreD0ExitEndpointStart(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("publisher did not resume after the ordered D0 entry")
+	}
+
+	cancel()
+	select {
+	case err = <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("host did not stop")
+	}
+}
+
+func TestHostPausesDirectInputAcrossAcknowledgedDeviceReset(t *testing.T) {
+	driver := &fastInputDriver{fakeHostDriver: newFakeHostDriver(), reports: make(chan InputReport, 4)}
+	processor := &resetGateProcessor{started: make(chan struct{}), release: make(chan struct{})}
+	host, _ := NewHost(driver, processor, 4)
+	device := newInputPublisherTestDevice()
+	identity, err := host.Register(context.Background(), 48, device)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- host.Serve(ctx) }()
+
+	driver.operations <- Operation{
+		DeviceID: identity.DeviceID, Generation: identity.Generation,
+		EndpointAddress: 0x81, EndpointSequence: 1, DeviceSequence: 1,
+		Kind: OperationEndpointStart,
+	}
+	device.reports <- []byte{1}
+	select {
+	case report := <-driver.reports:
+		if report.Sequence != 1 {
+			t.Fatalf("first sequence=%d want=1", report.Sequence)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("first input report was not submitted")
+	}
+
+	driver.operations <- Operation{
+		Token:    0x0000000180000001,
+		DeviceID: identity.DeviceID, Generation: identity.Generation,
+		EndpointAddress: 0, EndpointSequence: 1, DeviceSequence: 2,
+		Kind: OperationDeviceReset,
+	}
+	select {
+	case <-processor.started:
+	case <-time.After(time.Second):
+		t.Fatal("device reset did not reach processor")
+	}
+	device.reports <- []byte{2}
+	select {
+	case report := <-driver.reports:
+		t.Fatalf("input crossed an unacknowledged device reset: %+v", report)
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	close(processor.release)
+	select {
+	case completion := <-driver.completions:
+		if completion.Token != 0x0000000180000001 || completion.Status != 0 {
+			t.Fatalf("device reset acknowledgement=%+v", completion)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("device reset was not acknowledged")
+	}
+	select {
+	case report := <-driver.reports:
+		if report.Sequence != 2 || string(report.Payload) != string([]byte{2}) {
+			t.Fatalf("reset-restored publisher report=%+v", report)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("publisher did not resume after device reset acknowledgement")
 	}
 
 	cancel()

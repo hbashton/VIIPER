@@ -723,6 +723,7 @@ ViiperEvtUsbDeviceReset(
     _In_ BOOLEAN AllDevicesReset
     )
 {
+    VIIPER_UDE_DEVICE_CONTEXT *deviceContext = ViiperGetDeviceContext(Device);
     NTSTATUS status;
 
     UNREFERENCED_PARAMETER(Controller);
@@ -734,9 +735,14 @@ ViiperEvtUsbDeviceReset(
         return;
     }
 
+    // Direct interrupt-IN bypasses the ordinary endpoint broker. Close that
+    // admission path at the exact asynchronous UdeCx reset boundary instead
+    // of waiting for user mode to observe the lifecycle operation.
+    InterlockedExchange(&deviceContext->Resetting, TRUE);
     status = ViiperQueueAcknowledgedDeviceLifecycleEvent(
         Device, Request, ViiperUdeOperationDeviceReset);
     if (!NT_SUCCESS(status)) {
+        InterlockedExchange(&deviceContext->Resetting, FALSE);
         WdfRequestComplete(Request, status);
     }
 }
@@ -1000,6 +1006,7 @@ ViiperSubmitInputReport(
             continue;
         }
         if (InterlockedCompareExchange(&deviceContext->InD0, 0, 0) == 0 ||
+            InterlockedCompareExchange(&deviceContext->Resetting, 0, 0) != 0 ||
             InterlockedCompareExchange(&deviceContext->Purging, 0, 0) != 0) {
             lifecycleDrop = TRUE;
             break;
