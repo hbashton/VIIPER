@@ -110,7 +110,7 @@ ViiperEvtDeviceAdd(
     if (!NT_SUCCESS(status)) {
         return status;
     }
-    RtlInitUnicodeString(&hostControllerReference, USB_HOST_DEVINTERFACE_REF_STRING);
+    RtlInitUnicodeString(&hostControllerReference, VIIPER_UDE_HOST_REFERENCE_STRING);
     status = WdfDeviceCreateDeviceInterface(
         device,
         (LPGUID)&GUID_DEVINTERFACE_USB_HOST_CONTROLLER,
@@ -176,7 +176,7 @@ ViiperEvtFileCreate(
     RtlZeroMemory(fileContext, sizeof(*fileContext));
 
     fileName = WdfFileObjectGetFileName(FileObject);
-    RtlInitUnicodeString(&hostControllerReference, USB_HOST_DEVINTERFACE_REF_STRING);
+    RtlInitUnicodeString(&hostControllerReference, VIIPER_UDE_HOST_REFERENCE_STRING);
     if (fileName != NULL &&
         fileName->Length == hostControllerReference.Length + sizeof(WCHAR) &&
         fileName->Buffer[0] == L'\\' &&

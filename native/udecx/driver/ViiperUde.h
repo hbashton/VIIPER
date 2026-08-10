@@ -13,6 +13,11 @@
 
 EXTERN_C const GUID GUID_DEVINTERFACE_VIIPER_UDE;
 
+// Reference string used by Microsoft's documented UDE host-controller sample.
+// It lets the create callback distinguish standard HCD clients from the
+// exclusive VIIPER broker interface.
+#define VIIPER_UDE_HOST_REFERENCE_STRING L"GUID_DEVINTERFACE_USB_HOST_CONTROLLER"
+
 typedef enum VIIPER_UDE_PENDING_STATE {
     ViiperUdePendingEmpty = 0,
     ViiperUdePendingPreparing,
