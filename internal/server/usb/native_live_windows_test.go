@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -267,4 +268,137 @@ func TestNativeUDELiveProductionControllers(t *testing.T) {
 			})
 		}
 	}
+
+	t.Run("ConcurrentProductionSet", func(t *testing.T) {
+		type activeController struct {
+			name         string
+			identity     udecx.DeviceIdentity
+			publishInput func(uint64)
+			err          error
+		}
+		controllers := liveNativeControllers()
+		before, queryErr := client.QueryStats(testCtx)
+		if queryErr != nil {
+			t.Fatal(queryErr)
+		}
+
+		registered := make(chan activeController, len(controllers))
+		var registerWG sync.WaitGroup
+		for controllerIndex, controller := range controllers {
+			controllerIndex, controller := controllerIndex, controller
+			registerWG.Add(1)
+			go func() {
+				defer registerWG.Done()
+				dev, publishInput, createErr := controller.new()
+				if createErr != nil {
+					registered <- activeController{name: controller.name, err: createErr}
+					return
+				}
+				identity, registerErr := host.Register(
+					testCtx, deviceIDBase+uint64(controllerIndex+1), dev)
+				registered <- activeController{
+					name: controller.name, identity: identity,
+					publishInput: publishInput, err: registerErr,
+				}
+			}()
+		}
+		registerWG.Wait()
+		close(registered)
+		active := make([]activeController, 0, len(controllers))
+		var registerErrors []error
+		for result := range registered {
+			if result.err != nil {
+				registerErrors = append(registerErrors,
+					fmt.Errorf("register %s: %w", result.name, result.err))
+				continue
+			}
+			if result.identity.Generation != uint32(iterations+1) {
+				registerErrors = append(registerErrors, fmt.Errorf(
+					"%s concurrent generation=%d want %d", result.name,
+					result.identity.Generation, iterations+1))
+			}
+			active = append(active, result)
+		}
+		defer func() {
+			for _, controller := range active {
+				cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 20*time.Second)
+				_ = host.Unregister(cleanupCtx, controller.identity)
+				cleanupCancel()
+			}
+		}()
+		if len(registerErrors) != 0 {
+			t.Fatalf("concurrent registration errors: %v", registerErrors)
+		}
+
+		enumerateCtx, cancelEnumerate := context.WithTimeout(testCtx, 30*time.Second)
+		_, waitErr := waitForNativeStats(enumerateCtx, client,
+			"concurrent production enumeration", func(stats udecx.Stats) bool {
+				return stats.ActiveDevices == uint32(len(controllers))
+			})
+		cancelEnumerate()
+		if waitErr != nil {
+			t.Fatal(waitErr)
+		}
+
+		var publishWG sync.WaitGroup
+		for _, controller := range active {
+			controller := controller
+			publishWG.Add(1)
+			go func() {
+				defer publishWG.Done()
+				deadline := time.Now().Add(2 * time.Second)
+				for sequence := uint64(1); time.Now().Before(deadline); sequence++ {
+					controller.publishInput(sequence)
+					time.Sleep(time.Millisecond)
+				}
+			}()
+		}
+		publishWG.Wait()
+		inputCtx, cancelInput := context.WithTimeout(testCtx, 20*time.Second)
+		_, waitErr = waitForNativeStats(inputCtx, client,
+			"concurrent direct interrupt input", func(stats udecx.Stats) bool {
+				return stats.InputReportsCompleted >=
+					before.InputReportsCompleted+uint64(len(controllers))
+			})
+		cancelInput()
+		if waitErr != nil {
+			t.Fatal(waitErr)
+		}
+
+		unregistered := make(chan error, len(active))
+		var unregisterWG sync.WaitGroup
+		for _, controller := range active {
+			controller := controller
+			unregisterWG.Add(1)
+			go func() {
+				defer unregisterWG.Done()
+				unregisterCtx, cancelUnregister := context.WithTimeout(testCtx, 30*time.Second)
+				defer cancelUnregister()
+				unregistered <- host.Unregister(unregisterCtx, controller.identity)
+			}()
+		}
+		unregisterWG.Wait()
+		close(unregistered)
+		var unregisterErrors []error
+		for unregisterErr := range unregistered {
+			if unregisterErr != nil {
+				unregisterErrors = append(unregisterErrors, unregisterErr)
+			}
+		}
+		if len(unregisterErrors) != 0 {
+			t.Fatalf("concurrent unregister errors: %v", unregisterErrors)
+		}
+		active = nil
+
+		teardownCtx, cancelTeardown := context.WithTimeout(testCtx, 30*time.Second)
+		after, waitErr := waitForNativeStats(teardownCtx, client,
+			"concurrent production teardown", func(stats udecx.Stats) bool {
+				return stats.ActiveDevices == 0 && stats.PendingOperations == 0
+			})
+		cancelTeardown()
+		if waitErr != nil {
+			t.Fatal(waitErr)
+		}
+		assertCleanNativeStatsDelta(t, before, after)
+	})
 }

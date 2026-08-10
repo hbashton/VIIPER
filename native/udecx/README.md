@@ -53,4 +53,7 @@ Microsoft-signed package with:
 The command refuses an unsigned package, a package/service hash mismatch, a
 non-Microsoft root devnode, a dirty driver session, or any increase in invalid
 messages, queue exhaustion, notification overflow, late completion, or cleanup
-retry counters. Normal CI never opts into this live test.
+retry counters. After validating each controller and repeated generation
+rollover independently, it enumerates the complete production controller set,
+publishes input, and removes every child concurrently. Normal CI never opts
+into this live test.
