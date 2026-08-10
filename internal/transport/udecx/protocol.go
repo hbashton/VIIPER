@@ -466,7 +466,13 @@ func (m Completion) MarshalBinary() ([]byte, error) {
 		return nil, ErrLimitExceeded
 	}
 	transferLength := m.TransferLength
-	if transferLength == 0 && len(m.Payload) != 0 {
+	// Non-isochronous IN completions historically infer the completed byte
+	// count from their contiguous payload. Isochronous payloads are different:
+	// the buffer preserves the host packet offsets, including sparse gaps, while
+	// TransferLength is the sum of the packets' actual lengths. In particular,
+	// an all-zero ISO completion can legitimately carry a full sparse buffer and
+	// still complete zero bytes.
+	if transferLength == 0 && len(m.Payload) != 0 && len(m.IsoPackets) == 0 {
 		transferLength = uint32(len(m.Payload))
 	}
 	if transferLength > MaxTransferBytes {

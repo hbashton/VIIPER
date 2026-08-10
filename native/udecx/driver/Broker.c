@@ -1303,6 +1303,7 @@ ViiperCompleteOperation(
     ULONG isoBytes;
     ULONG expectedSize;
     ULONG packetTotal = 0;
+    ULONG isoErrorCount = 0;
     NTSTATUS status;
     BOOLEAN expectedLateAbort = FALSE;
     BOOLEAN queued;
@@ -1454,24 +1455,36 @@ ViiperCompleteOperation(
             ? completion->PayloadLength
             : requestContext->TransferLength;
         for (index = 0; index < completion->IsoPacketCount; ++index) {
+            ULONG originalOffset = urb->UrbIsochronousTransfer.IsoPacket[index].Offset;
+            ULONG nextOriginalOffset = index + 1 < completion->IsoPacketCount
+                ? urb->UrbIsochronousTransfer.IsoPacket[index + 1].Offset
+                : requestContext->TransferLength;
+
             if (packets[index].Reserved != 0 ||
+                originalOffset > nextOriginalOffset ||
+                nextOriginalOffset > requestContext->TransferLength ||
+                packets[index].Offset != originalOffset ||
                 packets[index].Offset > isoPayloadLimit ||
                 packets[index].Length > isoPayloadLimit - packets[index].Offset ||
+                packets[index].Length > nextOriginalOffset - originalOffset ||
                 packets[index].Length > MAXULONG - packetTotal) {
                 status = STATUS_INVALID_PARAMETER;
                 InterlockedIncrement64(&controllerContext->InvalidMessages);
                 goto CompleteWithNtStatus;
             }
             packetTotal += packets[index].Length;
-            urb->UrbIsochronousTransfer.IsoPacket[index].Offset = packets[index].Offset;
             urb->UrbIsochronousTransfer.IsoPacket[index].Length = packets[index].Length;
             urb->UrbIsochronousTransfer.IsoPacket[index].Status = packets[index].Status;
+            if ((USBD_STATUS)packets[index].Status != USBD_STATUS_SUCCESS) {
+                ++isoErrorCount;
+            }
         }
         if (packetTotal != completion->TransferLength) {
             status = STATUS_INVALID_PARAMETER;
             InterlockedIncrement64(&controllerContext->InvalidMessages);
             goto CompleteWithNtStatus;
         }
+        urb->UrbIsochronousTransfer.ErrorCount = isoErrorCount;
         InterlockedAdd64(&controllerContext->IsoPackets, completion->IsoPacketCount);
     }
 

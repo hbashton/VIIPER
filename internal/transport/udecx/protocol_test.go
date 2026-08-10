@@ -134,6 +134,27 @@ func TestCompletionMarshalling(t *testing.T) {
 	}
 }
 
+func TestCompletionMarshallingPreservesZeroLengthSparseISO(t *testing.T) {
+	payload := make([]byte, 64)
+	raw, err := (Completion{
+		Token:          3,
+		DeviceID:       9,
+		Generation:     4,
+		TransferLength: 0,
+		IsoPackets:     []IsoPacket{{Offset: 0, Length: 0}},
+		Payload:        payload,
+	}).MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := binary.LittleEndian.Uint32(raw[44:48]); got != 0 {
+		t.Fatalf("transfer length=%d want=0", got)
+	}
+	if got := binary.LittleEndian.Uint32(raw[56:60]); got != uint32(len(payload)) {
+		t.Fatalf("payload length=%d want=%d", got, len(payload))
+	}
+}
+
 func TestInputReportMarshalling(t *testing.T) {
 	raw, err := (InputReport{
 		DeviceID: 5, Generation: 7, EndpointAddress: 0x81,

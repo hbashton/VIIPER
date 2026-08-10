@@ -192,6 +192,10 @@ unplug all converge on the same idempotent purge path.
   Successful completions are canonical: OUT replies carry no payload, every
   ISO reserved field is zero, packet extents stay inside the transfer buffer,
   and the sum of actual packet lengths equals the reported completed bytes.
+  The host-owned packet offsets are immutable across the broker boundary;
+  user mode may return only each packet's actual length and status. Sparse IN
+  payload span is independent of the completed-byte total, and the kernel
+  derives the URB error count from the returned per-packet statuses.
 
 This follows the useful ViGEmBus pattern of per-target ownership and manual
 request queues while accounting for UdeCx's endpoint-specific purge contract.
