@@ -9,16 +9,21 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc"
 )
 
 func TestNativeServiceKeyFileUsesMachineData(t *testing.T) {
-	t.Setenv("ProgramData", `C:\ProgramData`)
+	t.Setenv("ProgramData", `C:\Users\attacker\redirected`)
 	got, err := nativeServiceKeyFilePath()
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := filepath.Join(`C:\ProgramData`, "VIIPER", keyFileName)
+	programData, err := windows.KnownFolderPath(windows.FOLDERID_ProgramData, windows.KF_FLAG_DEFAULT)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(programData, "VIIPER", keyFileName)
 	if got != want {
 		t.Fatalf("key path=%q want=%q", got, want)
 	}

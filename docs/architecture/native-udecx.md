@@ -221,6 +221,98 @@ first ISO URB is also authoritative activation, closing the cross-worker race
 where media reaches user mode before its start notification. Numeric UdeCx
 interface fields are only hints for alternates that contain no endpoints.
 
+### Broker service migration transaction
+
+Windows native mode is owned by the `VIIPERNativeBroker` Service Control
+Manager service, never by an HKCU Run entry or tray process. Installation and
+update use one machine-wide mutex and the following fail-closed transaction:
+
+1. Resolve Program Files and ProgramData through Windows Known Folder APIs.
+   Resolve one target interactive-user SID before the first mutation and use
+   that same identity for the credential ACL and every legacy HKU/task/process
+   operation. An elevated caller may supply the bootstrapper-origin SID;
+   otherwise VIIPER proves the shell or active-console token and fails closed
+   when no unambiguous interactive user exists.
+   Native installation is accepted only from the managed
+   `Program Files\VIIPER\viiper.exe` or
+   `Program Files\DS4Windows\VIIPER\viiper.exe` layout. Every component is
+   opened as a non-reparse point and retained without delete sharing through
+   authenticated startup. The executable and credential must each have one
+   hard link, and their retained file handles also deny write sharing. Every
+   managed directory and the PE executable must already carry the exact
+   protected, administrator-owned package ACL before the service command will
+   register the executable as LocalSystem code. The command validates and
+   retains those objects read-only; it never treats an in-place ACL rewrite as
+   proof because that cannot revoke handles opened under an older weak ACL.
+2. Provision a freshly rotated, nonempty credential under
+   `%ProgramData%\VIIPER` only after every prior broker owner is stopped. An
+   existing value is retained solely for rollback and is never trusted as the
+   new secret, preventing a standard user from pre-seeding a known key. The directory
+   is held open without delete sharing while the key is staged and published
+   with `MoveFileExW(REPLACE_EXISTING | WRITE_THROUGH)`. Its protected DACL
+   grants full control to SYSTEM and built-in administrators and read access
+   to the installing user's SID; no localized account name is parsed.
+3. Snapshot the prior service configuration, stable running state, failure
+   actions, SCM object owner/DACL, and legacy startup commands. The prior
+   service executable is parsed from the SCM command line, validated against
+   the already-protected managed-file ACL contract without mutating it, and
+   every path component remains locked against replacement until commit or
+   exact rollback. Before a LocalSystem command is installed, the service object is
+   required to already have a protected DACL granting control only to SYSTEM
+   and built-in administrators. The transaction rejects a permissive existing
+   service rather than relying on a DACL rewrite that cannot revoke previously
+   opened service handles; rollback restores and verifies the exact prior
+   descriptor before any prior service restart. Task Scheduler enumeration is
+   fail-closed and distinguishes a missing root task from provider/access
+   failure. Stop the old SCM instance and the exact snapshotted scheduled-task
+   instance before considering residual HKU Run processes. Only processes
+   whose full executable path and token-user SID match the target registration
+   are terminated. Process handles remain open from identity verification
+   through termination, preventing PID-reuse and cross-user mistakes.
+4. Negotiate the packaged native driver, then create or update an automatic,
+   own-process LocalSystem service with explicit `native-ude`, credential, and
+   log arguments. Arguments are escaped with Windows command-line rules rather
+   than passed through a shell. The few legacy Task Scheduler operations use
+   the absolute, non-reparse system PowerShell path rather than process `PATH`.
+5. Apply bounded recovery (two restart attempts followed by no action), start
+   the service, and require an authenticated ping proving `Ready=true`, exact
+   native transport, ABI, and negotiated capabilities. The broker's current
+   package-version field is compile-time metadata rather than installed-driver
+   attestation and is intentionally not treated as verification.
+6. Only after that proof, compare-and-remove the legacy HKCU registration. The
+   exact `HKU\<SID>` hive and existing Run key handles stay open for the entire
+   transaction, preventing logoff/unload from turning rollback into an orphan
+   registry subtree. Run ownership is compared as data plus `REG_SZ` versus
+   `REG_EXPAND_SZ`; both originally present and originally absent Run/task
+   states are CAS-checked immediately before commit. Task names are matched
+   with Task Scheduler's case-insensitive identity rules. The
+   exact legacy scheduled task stays registered but disabled: exported task XML
+   omits its registered ACL and cannot recreate Password-logon credentials, so
+   delete/re-register would not be an exact transaction. Disable, stop, wait,
+   and validation occur in one bounded provider operation; rollback re-enables
+   only the same retained task. Task XML is transported as explicit UTF-8
+   through an ASCII base64 envelope. Re-authenticate the broker after legacy
+   ownership is disabled, closing a restart race. The service command runs
+   without a tray in session 0.
+
+Any failure receives a fresh rollback deadline: a newly created service is
+stopped and deleted, or the previous configuration, recovery policy, and
+running state are restored and verified before the prior service can restart.
+The credential rollback uses the same atomic publication path. A legacy process
+is restarted only when it was actually running before migration: scheduled-task
+processes are restarted by Task Scheduler in their original security context,
+and HKCU processes use the interactive shell token rather than the elevated
+installer token. Full scheduled-task XML is restored after partial removal.
+Uninstall holds the same mutex across service, startup-registration, and process
+cleanup. It resolves and snapshots every target before mutation, stops the
+service and exact legacy owners, compare-removes HKU Run ownership while
+retaining any exact scheduled task disabled, and marks
+the service for deletion only as the final fallible operation. If anything
+before successful deletion fails, it restores registrations, the exact service
+configuration/recovery policy/stable state, and only the legacy owners that
+were previously running. Every Task Scheduler subprocess is context-bounded so
+a wedged provider cannot retain the installer mutex indefinitely.
+
 ## Synchronization model
 
 - Separate controller locks protect the device table and broker-owner
@@ -478,3 +570,19 @@ validation contract is documented in
   <https://learn.microsoft.com/en-us/windows-hardware/test/wpt/cpu-analysis>
 - Microsoft, `SetFileCompletionNotificationModes`
   <https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-setfilecompletionnotificationmodes>
+- Microsoft, `CreateService`
+  <https://learn.microsoft.com/en-us/windows/win32/api/winsvc/nf-winsvc-createservicew>
+- Microsoft, `ChangeServiceConfig`
+  <https://learn.microsoft.com/en-us/windows/win32/api/winsvc/nf-winsvc-changeserviceconfigw>
+- Microsoft, `ChangeServiceConfig2`
+  <https://learn.microsoft.com/en-us/windows/win32/api/winsvc/nf-winsvc-changeserviceconfig2w>
+- Microsoft, `SERVICE_FAILURE_ACTIONS`
+  <https://learn.microsoft.com/en-us/windows/win32/api/winsvc/ns-winsvc-service_failure_actionsw>
+- Microsoft, `DeleteService`
+  <https://learn.microsoft.com/en-us/windows/win32/api/winsvc/nf-winsvc-deleteservice>
+- Microsoft, `SetSecurityInfo`
+  <https://learn.microsoft.com/en-us/windows/win32/api/aclapi/nf-aclapi-setsecurityinfo>
+- Microsoft, `MoveFileExW`
+  <https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-movefileexw>
+- Microsoft, `CreateProcessAsUserW`
+  <https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessasuserw>

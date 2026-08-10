@@ -18,6 +18,7 @@ import (
 
 	"github.com/Alia5/VIIPER/internal/configpaths"
 	"github.com/Alia5/VIIPER/internal/transport/udecx"
+	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
 )
 
@@ -27,10 +28,21 @@ const (
 	runScheduledTask = "RunVIIPER"
 )
 
-func install(logger *slog.Logger, transport string) error {
+func install(logger *slog.Logger, transport, targetUserSID string) error {
+	if transport == "native-ude" {
+		return installNativeBroker(logger, targetUserSID)
+	}
+	if targetUserSID != "" {
+		return errors.New("--target-user-sid is valid only with --transport native-ude")
+	}
 	if os.Getenv("VIIPER_DEVELOPER_STANDALONE") != "1" {
 		return errors.New("standalone VIIPER startup registration is developer-only on Windows; use the signed DS4Windows installer or its built-in VIIPER repair so one verified owner manages VIIPER and USB-IP")
 	}
+	release, err := acquireNativeInstallMutex(nativeServiceInstallTimeout)
+	if err != nil {
+		return err
+	}
+	defer release()
 	if transport == "usbip" {
 		if err := requireUSBIPRuntime(); err != nil {
 			return err
@@ -73,12 +85,6 @@ func install(logger *slog.Logger, transport string) error {
 			return fmt.Errorf("failed to stop previous autorun instance: %w", err)
 		}
 	}
-	if transport == "native-ude" {
-		if err := requireNativeUDEBroker(); err != nil {
-			return err
-		}
-	}
-
 	value := windowsAutorunCommand(exePath, transport, logFile)
 	key, _, err := registry.CreateKey(registry.CURRENT_USER, runKeyPath, registry.ALL_ACCESS)
 	if err != nil {
@@ -121,63 +127,26 @@ func requireNativeUDEBroker() error {
 	return nil
 }
 
-func uninstall(logger *slog.Logger) error {
-	autorunExe, err := currentAutorunExe()
-	if err != nil {
-		return err
-	}
-	scheduledExe, err := currentScheduledTaskExe()
-	if err != nil {
-		return fmt.Errorf("failed to inspect %s scheduled task: %w", runScheduledTask, err)
-	}
-	if err := removeScheduledTask(); err != nil {
-		return fmt.Errorf("failed to remove %s scheduled task; run uninstall as administrator: %w", runScheduledTask, err)
-	}
-	if scheduledExe != "" {
-		if err := killProcessesByExe(scheduledExe, logger); err != nil {
-			return fmt.Errorf("failed to stop scheduled VIIPER instance: %w", err)
-		}
-	}
-
-	key, err := registry.OpenKey(registry.CURRENT_USER, runKeyPath, registry.SET_VALUE)
-	if err != nil {
-		if !errors.Is(err, registry.ErrNotExist) {
-			return err
-		}
-	} else {
-		defer key.Close() //nolint:errcheck
-
-		if err := key.DeleteValue(runValueKey); err != nil {
-			if !errors.Is(err, registry.ErrNotExist) {
-				return err
-			}
-		}
-	}
-
-	if autorunExe != "" {
-		if err := killProcessesByExe(autorunExe, logger); err != nil {
-			return fmt.Errorf("failed to stop autorun instance: %w", err)
-		}
-	}
-
-	currentExe, currentErr := currentExecutable()
-	if currentErr == nil && !strings.EqualFold(currentExe, autorunExe) {
-		if err := killProcessesByExe(currentExe, logger); err != nil {
-			return fmt.Errorf("failed to stop installed VIIPER instance: %w", err)
-		}
-	}
-
-	logger.Info("VIIPER startup entries removed and server stopped")
-	return nil
+func uninstall(logger *slog.Logger, targetUserSID string) error {
+	return uninstallNativeBroker(logger, targetUserSID)
 }
 
 func currentScheduledTaskExe() (string, error) {
-	script := fmt.Sprintf(
-		"$ErrorActionPreference='Stop';$t=Get-ScheduledTask -TaskName '%s' -ErrorAction SilentlyContinue;if($null -eq $t){exit 0};$a=@($t.Actions);if($a.Count -ne 1){throw 'scheduled task must contain exactly one action'};$a[0].Execute",
-		runScheduledTask,
-	)
-	output, err := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", script).CombinedOutput()
+	// Enumerate the exact root task and fail closed on provider errors. A
+	// targeted Get-ScheduledTask call with SilentlyContinue cannot distinguish
+	// "not found" from an unavailable or access-denied Task Scheduler provider.
+	script := `$ErrorActionPreference='Stop';$m=@(Get-ScheduledTask -ErrorAction Stop|Where-Object{$_.TaskPath -ceq '\' -and $_.TaskName -ieq 'RunVIIPER'});if($m.Count -eq 0){exit 0};if($m.Count -ne 1){throw 'expected zero or one root RunVIIPER task'};$a=@($m[0].Actions);if($a.Count -ne 1){throw 'scheduled task must contain exactly one action'};$a[0].Execute`
+	powershell, err := trustedSystemExecutable("WindowsPowerShell", "v1.0", "powershell.exe")
 	if err != nil {
+		return "", fmt.Errorf("resolve trusted PowerShell: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), nativeServiceInstallTimeout)
+	defer cancel()
+	output, err := exec.CommandContext(ctx, powershell, "-NoProfile", "-NonInteractive", "-Command", script).CombinedOutput()
+	if err != nil {
+		if ctx.Err() != nil {
+			return "", fmt.Errorf("scheduled task query timed out: %w", ctx.Err())
+		}
 		return "", fmt.Errorf("scheduled task query failed: %w: %s", err, strings.TrimSpace(string(output)))
 	}
 	path := strings.Trim(strings.TrimSpace(string(output)), `"`)
@@ -195,14 +164,18 @@ func removeScheduledTask() error {
 	// Get-ScheduledTask makes absence distinguishable from an access-denied
 	// deletion. Never report uninstall success while a highest-privilege task
 	// can silently start VIIPER again at the next logon.
-	script := fmt.Sprintf(
-		"$ErrorActionPreference='Stop';$t=Get-ScheduledTask -TaskName '%s' -ErrorAction SilentlyContinue;if($null -eq $t){exit 0};Unregister-ScheduledTask -TaskName '%s' -Confirm:$false -ErrorAction Stop;if(Get-ScheduledTask -TaskName '%s' -ErrorAction SilentlyContinue){throw 'scheduled task still exists'}",
-		runScheduledTask,
-		runScheduledTask,
-		runScheduledTask,
-	)
-	output, err := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", script).CombinedOutput()
+	script := `$ErrorActionPreference='Stop';$m=@(Get-ScheduledTask -ErrorAction Stop|Where-Object{$_.TaskPath -ceq '\' -and $_.TaskName -ieq 'RunVIIPER'});if($m.Count -eq 0){exit 0};if($m.Count -ne 1){throw 'expected exactly one root RunVIIPER task'};Unregister-ScheduledTask -TaskName $m[0].TaskName -TaskPath '\' -Confirm:$false -ErrorAction Stop;$after=@(Get-ScheduledTask -ErrorAction Stop|Where-Object{$_.TaskPath -ceq '\' -and $_.TaskName -ieq 'RunVIIPER'});if($after.Count -ne 0){throw 'scheduled task still exists'}`
+	powershell, err := trustedSystemExecutable("WindowsPowerShell", "v1.0", "powershell.exe")
 	if err != nil {
+		return fmt.Errorf("resolve trusted PowerShell: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), nativeServiceInstallTimeout)
+	defer cancel()
+	output, err := exec.CommandContext(ctx, powershell, "-NoProfile", "-NonInteractive", "-Command", script).CombinedOutput()
+	if err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("scheduled task removal timed out: %w", ctx.Err())
+		}
 		return fmt.Errorf("scheduled task removal failed: %w: %s", err, strings.TrimSpace(string(output)))
 	}
 	return nil
@@ -260,7 +233,11 @@ func killProcessesByExe(target string, logger *slog.Logger) error {
 		"$ErrorActionPreference='SilentlyContinue';$t='%s';Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -eq $t } | Select-Object -ExpandProperty ProcessId",
 		strings.ReplaceAll(target, "'", "''"),
 	)
-	cmd := exec.Command("powershell", "-NoProfile", "-Command", script)
+	powershell, err := trustedSystemExecutable("WindowsPowerShell", "v1.0", "powershell.exe")
+	if err != nil {
+		return fmt.Errorf("resolve trusted PowerShell: %w", err)
+	}
+	cmd := exec.Command(powershell, "-NoProfile", "-Command", script)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("process query failed: %w: %s", err, strings.TrimSpace(string(output)))
@@ -292,7 +269,11 @@ func killProcessesByExe(target string, logger *slog.Logger) error {
 		if pid == self {
 			continue
 		}
-		cmd := exec.Command("taskkill", "/PID", strconv.Itoa(pid), "/T", "/F")
+		taskkill, pathErr := trustedSystemExecutable("taskkill.exe")
+		if pathErr != nil {
+			return fmt.Errorf("resolve trusted taskkill: %w", pathErr)
+		}
+		cmd := exec.Command(taskkill, "/PID", strconv.Itoa(pid), "/T", "/F")
 		output, err := cmd.CombinedOutput()
 		if err != nil {
 			return fmt.Errorf("taskkill pid %d failed: %w: %s", pid, err, strings.TrimSpace(string(output)))
@@ -301,4 +282,35 @@ func killProcessesByExe(target string, logger *slog.Logger) error {
 	}
 
 	return nil
+}
+
+func trustedSystemExecutable(relativeParts ...string) (string, error) {
+	if len(relativeParts) == 0 {
+		return "", errors.New("trusted system executable path is empty")
+	}
+	for _, part := range relativeParts {
+		if part == "" || part == "." || part == ".." || filepath.Base(part) != part {
+			return "", fmt.Errorf("invalid trusted system path component %q", part)
+		}
+	}
+	systemDirectory, err := windows.GetSystemDirectory()
+	if err != nil {
+		return "", err
+	}
+	current := filepath.Clean(systemDirectory)
+	root, err := openNativePathWithoutReparse(current, windows.FILE_READ_ATTRIBUTES, true)
+	if err != nil {
+		return "", fmt.Errorf("open Windows system directory: %w", err)
+	}
+	windows.CloseHandle(root) //nolint:errcheck
+	for index, part := range relativeParts {
+		current = filepath.Join(current, part)
+		isDirectory := index < len(relativeParts)-1
+		handle, err := openNativePathWithoutReparse(current, windows.FILE_READ_ATTRIBUTES, isDirectory)
+		if err != nil {
+			return "", fmt.Errorf("open trusted system path %s: %w", current, err)
+		}
+		windows.CloseHandle(handle) //nolint:errcheck
+	}
+	return current, nil
 }

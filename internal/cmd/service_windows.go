@@ -7,13 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/Alia5/VIIPER/internal/log"
+	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc"
 )
 
@@ -52,12 +52,9 @@ func (c *ServiceCommand) Run(logger *slog.Logger, rawLogger log.RawLogger) error
 }
 
 func nativeServiceKeyFilePath() (string, error) {
-	programData := strings.TrimSpace(os.Getenv("ProgramData"))
-	if programData == "" {
-		return "", errors.New("ProgramData is not set; refusing to place a machine service credential in a user profile")
-	}
-	if !filepath.IsAbs(programData) {
-		return "", fmt.Errorf("ProgramData must be an absolute path: %s", programData)
+	programData, err := windows.KnownFolderPath(windows.FOLDERID_ProgramData, windows.KF_FLAG_DEFAULT)
+	if err != nil {
+		return "", fmt.Errorf("resolve ProgramData known folder: %w", err)
 	}
 	return filepath.Join(filepath.Clean(programData), "VIIPER", keyFileName), nil
 }

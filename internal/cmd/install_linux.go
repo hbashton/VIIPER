@@ -17,7 +17,10 @@ const (
 	servicePath = "/etc/systemd/system/viiper.service"
 )
 
-func install(logger *slog.Logger, transport string) error {
+func install(logger *slog.Logger, transport, targetUserSID string) error {
+	if targetUserSID != "" {
+		return errors.New("--target-user-sid is supported only by the Windows native broker installer")
+	}
 	if transport != "usbip" {
 		return fmt.Errorf("transport %q is unavailable on Linux", transport)
 	}
@@ -48,7 +51,10 @@ func install(logger *slog.Logger, transport string) error {
 	return nil
 }
 
-func uninstall(logger *slog.Logger) error {
+func uninstall(logger *slog.Logger, targetUserSID string) error {
+	if targetUserSID != "" {
+		return errors.New("--target-user-sid is supported only by the Windows native broker installer")
+	}
 	var errs []error
 
 	if err := runSystemctl("stop", serviceName); err != nil {
