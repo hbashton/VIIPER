@@ -254,3 +254,92 @@ func FuzzProtocolDecoders(f *testing.F) {
 		_, _ = ParseOperation(raw)
 	})
 }
+
+func dualSenseIsoOperationFixture(packetCount, packetLength int) []byte {
+	total := OperationSize + packetCount*IsoPacketSize + packetCount*packetLength
+	h, _ := NewHeader(total)
+	raw := make([]byte, total)
+	putHeader(raw, h)
+	binary.LittleEndian.PutUint64(raw[16:24], 1)
+	binary.LittleEndian.PutUint64(raw[24:32], 2)
+	binary.LittleEndian.PutUint32(raw[32:36], 3)
+	binary.LittleEndian.PutUint32(raw[36:40], uint32(OperationTransfer))
+	raw[40], raw[41], raw[84], raw[85] = 0x04, 0, 0x05, 4
+	binary.LittleEndian.PutUint16(raw[86:88], uint16(packetLength))
+	binary.LittleEndian.PutUint32(raw[56:60], uint32(packetCount))
+	binary.LittleEndian.PutUint32(raw[60:64], uint32(packetCount*packetLength))
+	binary.LittleEndian.PutUint32(raw[64:68], uint32(OperationSize+packetCount*IsoPacketSize))
+	binary.LittleEndian.PutUint32(raw[68:72], uint32(packetCount*packetLength))
+	binary.LittleEndian.PutUint32(raw[72:76], OperationSize)
+	binary.LittleEndian.PutUint64(raw[88:96], 1)
+	for index := 0; index < packetCount; index++ {
+		offset := OperationSize + index*IsoPacketSize
+		binary.LittleEndian.PutUint32(raw[offset:offset+4], uint32(index*packetLength))
+		binary.LittleEndian.PutUint32(raw[offset+4:offset+8], uint32(packetLength))
+	}
+	return raw
+}
+
+func BenchmarkParseDualSenseIsoOperation(b *testing.B) {
+	raw := dualSenseIsoOperationFixture(4, 196)
+	b.ReportAllocs()
+	b.SetBytes(int64(len(raw)))
+	b.ResetTimer()
+	for range b.N {
+		operation, err := ParseOperation(raw)
+		if err != nil || len(operation.Payload) != 4*196 || len(operation.IsoPackets) != 4 {
+			b.Fatalf("ParseOperation: operation=%+v err=%v", operation, err)
+		}
+	}
+}
+
+func BenchmarkMarshalDualSenseIsoCompletion(b *testing.B) {
+	completion := Completion{
+		Token: 1, DeviceID: 2, Generation: 3, TransferLength: 4 * 196,
+		IsoPackets: []IsoPacket{
+			{Offset: 0, Length: 196}, {Offset: 196, Length: 196},
+			{Offset: 392, Length: 196}, {Offset: 588, Length: 196},
+		},
+		Payload: make([]byte, 4*196),
+	}
+	b.ReportAllocs()
+	b.SetBytes(int64(CompletionSize + len(completion.IsoPackets)*IsoPacketSize + len(completion.Payload)))
+	b.ResetTimer()
+	for range b.N {
+		raw, err := completion.MarshalBinary()
+		if err != nil || len(raw) != CompletionSize+4*IsoPacketSize+4*196 {
+			b.Fatalf("MarshalBinary: bytes=%d err=%v", len(raw), err)
+		}
+	}
+}
+
+func TestDualSenseIsoProtocolAllocationBudget(t *testing.T) {
+	raw := dualSenseIsoOperationFixture(4, 196)
+	parseAllocations := testing.AllocsPerRun(1000, func() {
+		operation, err := ParseOperation(raw)
+		if err != nil || len(operation.Payload) != 4*196 {
+			panic("parse representative DualSense ISO operation")
+		}
+	})
+	if parseAllocations > 2 {
+		t.Fatalf("DualSense ISO parse allocated %.2f objects, budget is 2", parseAllocations)
+	}
+
+	completion := Completion{
+		Token: 1, DeviceID: 2, Generation: 3, TransferLength: 4 * 196,
+		IsoPackets: []IsoPacket{
+			{Offset: 0, Length: 196}, {Offset: 196, Length: 196},
+			{Offset: 392, Length: 196}, {Offset: 588, Length: 196},
+		},
+		Payload: make([]byte, 4*196),
+	}
+	marshalAllocations := testing.AllocsPerRun(1000, func() {
+		encoded, err := completion.MarshalBinary()
+		if err != nil || len(encoded) != CompletionSize+4*IsoPacketSize+4*196 {
+			panic("marshal representative DualSense ISO completion")
+		}
+	})
+	if marshalAllocations > 1 {
+		t.Fatalf("DualSense ISO completion allocated %.2f objects, budget is 1", marshalAllocations)
+	}
+}

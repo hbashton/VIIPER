@@ -11,8 +11,14 @@ Directory contract:
 - `package/` contains INF and installation metadata.
 - `tools/ViiperUdeCtl.cpp` installs, verifies, or removes the exact root
   controller without creating duplicates or leaving a failed devnode behind.
+- `tools/New-ViiperUdeAttestationPackage.ps1` creates and hash-verifies the
+  exact Hardware Dev Center CAB structure; it does not pretend that an
+  unsigned CI artifact is a production driver.
+- `tools/Test-ViiperUdeSignedPackage.ps1` validates the Microsoft-returned
+  driver and catalog against kernel signing policy.
 - ABI, lifecycle, descriptor, cancellation, and fault tests live beside the Go
   broker packages and in the native-driver CI gates.
 
 The design and release gates are in
-`docs/architecture/native-udecx.md`.
+`docs/architecture/native-udecx.md`. The Microsoft signing boundary is in
+`docs/architecture/native-udecx-signing.md`.

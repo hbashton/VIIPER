@@ -276,6 +276,10 @@ request queues while accounting for UdeCx's endpoint-specific purge contract.
 - Installation is signed, reversible, version-gated, and never replaces a live
   kernel driver across an unsafe reboot boundary.
 
+The exact attestation/HLK boundary, CAB construction, and Microsoft-signature
+validation contract is documented in
+[`native-udecx-signing.md`](native-udecx-signing.md).
+
 ## Primary documentation
 
 - Microsoft, *Write a UDE client driver*
