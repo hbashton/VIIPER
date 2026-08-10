@@ -66,7 +66,7 @@ func BusDeviceAdd(s *usbs.Server, apiSrv *api.Server) api.HandlerFunc {
 		if err != nil {
 			return apierror.ErrBadRequest(fmt.Sprintf("failed to create device: %v", err))
 		}
-		devCtx, err := b.Add(dev)
+		devCtx, err := s.AddDeviceToBus(req.Ctx, uint32(busID), dev)
 		if err != nil {
 			return apierror.ErrInternal(fmt.Sprintf("failed to add device to bus: %v", err))
 		}
@@ -80,7 +80,7 @@ func BusDeviceAdd(s *usbs.Server, apiSrv *api.Server) api.HandlerFunc {
 			fmt.Sprintf("%d", exportMeta.DevID), devCtx)
 
 		autoAttachResult := api.AutoAttachResult{}
-		if apiSrv.Config().AutoAttachLocalClient {
+		if apiSrv.Config().AutoAttachLocalClient && !s.NativeTransportEnabled() {
 			autoAttachResult, err = attachLocalhostClientWithResult(
 				req.Ctx,
 				exportMeta,

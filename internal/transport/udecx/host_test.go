@@ -17,6 +17,7 @@ type fakeHostDriver struct {
 	mu          sync.Mutex
 	created     []CreateDevice
 	destroyed   []DeviceIdentity
+	destroyErr  error
 }
 
 func newFakeHostDriver() *fakeHostDriver {
@@ -34,7 +35,7 @@ func (d *fakeHostDriver) DestroyDevice(_ context.Context, identity DeviceIdentit
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.destroyed = append(d.destroyed, identity)
-	return nil
+	return d.destroyErr
 }
 func (d *fakeHostDriver) Dequeue(ctx context.Context, _ []byte) (Operation, error) {
 	select {
@@ -218,6 +219,30 @@ func TestHostRegisterFailureRollsBackButAdvancesGeneration(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("processor was not reset during unregister")
+	}
+}
+
+func TestHostUnregisterFailureKeepsDeviceRetryable(t *testing.T) {
+	driver := newFakeHostDriver()
+	processor := &recordingProcessor{processed: make(chan uint64, 1), resets: make(chan DeviceIdentity, 1)}
+	host, _ := NewHost(driver, processor, 1)
+	identity, err := host.Register(context.Background(), 11, hostTestDevice())
+	if err != nil {
+		t.Fatal(err)
+	}
+	driver.destroyErr = errors.New("plug-out failed")
+	if err := host.Unregister(context.Background(), identity); err == nil {
+		t.Fatal("unregister unexpectedly succeeded")
+	}
+	host.mu.RLock()
+	entry := host.devices[identity.DeviceID]
+	host.mu.RUnlock()
+	if entry == nil || entry.identity != identity {
+		t.Fatal("failed unregister discarded the live device generation")
+	}
+	driver.destroyErr = nil
+	if err := host.Unregister(context.Background(), identity); err != nil {
+		t.Fatal(err)
 	}
 }
 

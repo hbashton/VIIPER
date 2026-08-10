@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -26,6 +27,7 @@ type Server struct {
 	USBServerConfig   usb.ServerConfig `embed:"" prefix:"usb."`
 	APIServerConfig   api.ServerConfig `embed:"" prefix:"api."`
 	ConnectionTimeout time.Duration    `help:"ConnectionTimeout operation timeout" default:"30s" env:"VIIPER_CONNECTION_TIMEOUT"`
+	Transport         string           `help:"Virtual USB transport: usbip or native-ude" default:"usbip" env:"VIIPER_TRANSPORT"`
 }
 
 // Run is called by Kong when the server command is executed.
@@ -36,9 +38,15 @@ func (s *Server) Run(logger *slog.Logger, rawLogger log.RawLogger) error {
 }
 
 func (s *Server) StartServer(ctx context.Context, logger *slog.Logger, rawLogger log.RawLogger) error {
-	if err := requireUSBIPRuntime(); err != nil {
-		logger.Error("Refusing to start VIIPER with an incompatible USB/IP runtime", "error", err)
-		return err
+	transport := strings.ToLower(strings.TrimSpace(s.Transport))
+	if transport != "usbip" && transport != "native-ude" {
+		return fmt.Errorf("unsupported VIIPER transport %q (expected usbip or native-ude)", s.Transport)
+	}
+	if transport == "usbip" {
+		if err := requireUSBIPRuntime(); err != nil {
+			logger.Error("Refusing to start VIIPER with an incompatible USB/IP runtime", "error", err)
+			return err
+		}
 	}
 
 	ctx, cancel := context.WithCancel(ctx)
@@ -84,15 +92,27 @@ func (s *Server) StartServer(ctx context.Context, logger *slog.Logger, rawLogger
 
 	usbSrv := usb.New(s.USBServerConfig, logger, rawLogger)
 
-	usbErrCh := make(chan error, 1)
-	go func() {
-		usbErrCh <- usbSrv.ListenAndServe()
-	}()
-
-	select {
-	case err := <-usbErrCh:
-		return err
-	case <-usbSrv.Ready():
+	var usbErrCh <-chan error
+	var nativeSession nativeUDETransport
+	if transport == "usbip" {
+		errors := make(chan error, 1)
+		usbErrCh = errors
+		go func() {
+			errors <- usbSrv.ListenAndServe()
+		}()
+		select {
+		case err := <-usbErrCh:
+			return err
+		case <-usbSrv.Ready():
+		}
+	} else {
+		var err error
+		nativeSession, err = startNativeUDETransport(ctx, usbSrv)
+		if err != nil {
+			return fmt.Errorf("start native UDE transport: %w", err)
+		}
+		defer nativeSession.Close()
+		logger.Info("Starting VIIPER native UDE transport")
 	}
 
 	if s.APIServerConfig.Addr == "" {
@@ -111,7 +131,7 @@ func (s *Server) StartServer(ctx context.Context, logger *slog.Logger, rawLogger
 	r.Register("bus/{id}/remove", handler.BusDeviceRemove(usbSrv))
 	r.RegisterStream("bus/{busId}/{deviceid}", api.DeviceStreamHandler(usbSrv))
 
-	if s.APIServerConfig.AutoAttachLocalClient {
+	if s.APIServerConfig.AutoAttachLocalClient && transport == "usbip" {
 		logger.Info("Auto-attach is enabled, checking prerequisites...")
 		if !api.CheckAutoAttachPrerequisites(s.APIServerConfig.AutoAttachWindowsNative, logger) {
 			logger.Warn("Auto-attach prerequisites not met")
@@ -132,13 +152,30 @@ func (s *Server) StartServer(ctx context.Context, logger *slog.Logger, rawLogger
 		if apiSrv != nil {
 			apiSrv.Close()
 		}
-		_ = usbSrv.Close()
-		_ = <-usbErrCh // nolint
+		if transport == "usbip" {
+			_ = usbSrv.Close()
+			_ = <-usbErrCh // nolint
+		}
 		return nil
 	case err := <-usbErrCh:
 		if apiSrv != nil {
 			apiSrv.Close()
 		}
 		return err
+	case err := <-nativeDone(nativeSession):
+		if apiSrv != nil {
+			apiSrv.Close()
+		}
+		if err == nil && ctx.Err() == nil {
+			return errors.New("native UDE transport stopped unexpectedly")
+		}
+		return err
 	}
+}
+
+func nativeDone(session nativeUDETransport) <-chan error {
+	if session == nil {
+		return nil
+	}
+	return session.Done()
 }

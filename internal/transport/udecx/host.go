@@ -151,12 +151,26 @@ func (h *Host) Unregister(ctx context.Context, identity DeviceIdentity) error {
 	h.lifecycleMu.Lock()
 	defer h.lifecycleMu.Unlock()
 
-	h.mu.Lock()
+	h.mu.RLock()
 	entry := h.devices[identity.DeviceID]
 	if entry == nil || entry.identity.Generation != identity.Generation {
-		h.mu.Unlock()
+		h.mu.RUnlock()
 		return fmt.Errorf("native UDE device %d generation %d is not registered",
 			identity.DeviceID, identity.Generation)
+	}
+	h.mu.RUnlock()
+
+	// Keep routing live until the driver has transactionally unplugged the
+	// child. If unplug fails, callers can retry without losing the generation,
+	// endpoint lanes, or the ability to complete already-issued Windows URBs.
+	if err := h.driver.DestroyDevice(ctx, identity); err != nil {
+		return err
+	}
+
+	h.mu.Lock()
+	if h.devices[identity.DeviceID] != entry {
+		h.mu.Unlock()
+		return errors.New("native UDE device changed during serialized removal")
 	}
 	delete(h.devices, identity.DeviceID)
 	entry.cancel()
@@ -169,7 +183,7 @@ func (h *Host) Unregister(ctx context.Context, identity DeviceIdentity) error {
 	h.mu.Unlock()
 	h.cancelDeviceOperations(identity)
 	h.processor.Reset(entry.device, identity)
-	return h.driver.DestroyDevice(ctx, identity)
+	return nil
 }
 
 type dequeueResult struct {

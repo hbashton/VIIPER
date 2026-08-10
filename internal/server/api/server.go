@@ -324,7 +324,7 @@ func (s *Server) handleConn(conn net.Conn) {
 						resetter.ResetMicrophonePCM()
 					}
 				}, func() {
-					if err := bus.RemoveDeviceByID(devIDStr); err != nil {
+					if err := s.usbs.RemoveDeviceByID(uint32(busID), devIDStr); err != nil {
 						connLogger.Error("disconnect timeout: failed to remove device",
 							"busID", busID, "deviceID", devIDStr, "error", err)
 					} else {
