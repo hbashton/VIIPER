@@ -208,6 +208,9 @@ interface fields are only hints for alternates that contain no endpoints.
   every user-mode publisher before controller state is cleared. Admission and
   the active publishers reopen only after the generation-bound reset request
   has been acknowledged, so no HID snapshot can cross the reset boundary.
+  Post-enumeration reset, device initialization, and configuration replacement
+  share this one-child-at-a-time gate; concurrent reset transactions are
+  rejected instead of interleaving two controller resets.
 - The controller's default KMDF queue only routes requests: interrupt-IN
   submissions run on an independent parallel queue, while mutation, broker,
   and lifecycle IOCTLs retain their serialized control queue. Large media

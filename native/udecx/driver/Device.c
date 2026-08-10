@@ -724,6 +724,32 @@ ViiperEvtUsbDeviceSetFunctionSuspendAndWake(
     return STATUS_SUCCESS;
 }
 
+static
+NTSTATUS
+ViiperBeginAcknowledgedDeviceReset(
+    _In_ UDECXUSBDEVICE Device,
+    _In_ WDFREQUEST Request
+    )
+{
+    VIIPER_UDE_DEVICE_CONTEXT *deviceContext = ViiperGetDeviceContext(Device);
+    NTSTATUS status;
+
+    // Post-enumeration reset and device-configuration replacement are both
+    // asynchronous UdeCx reset boundaries. Close every client-owned admission
+    // path synchronously and permit only one reset transaction for a child.
+    // User mode stops and joins the publishers before acknowledging the
+    // operation; completion then reopens this exact kernel gate.
+    if (InterlockedCompareExchange(&deviceContext->Resetting, TRUE, FALSE) != FALSE) {
+        return STATUS_DEVICE_BUSY;
+    }
+    status = ViiperQueueAcknowledgedDeviceLifecycleEvent(
+        Device, Request, ViiperUdeOperationDeviceReset);
+    if (!NT_SUCCESS(status)) {
+        InterlockedExchange(&deviceContext->Resetting, FALSE);
+    }
+    return status;
+}
+
 VOID
 ViiperEvtUsbDeviceReset(
     _In_ WDFDEVICE Controller,
@@ -732,7 +758,6 @@ ViiperEvtUsbDeviceReset(
     _In_ BOOLEAN AllDevicesReset
     )
 {
-    VIIPER_UDE_DEVICE_CONTEXT *deviceContext = ViiperGetDeviceContext(Device);
     NTSTATUS status;
 
     UNREFERENCED_PARAMETER(Controller);
@@ -744,14 +769,8 @@ ViiperEvtUsbDeviceReset(
         return;
     }
 
-    // Direct interrupt-IN bypasses the ordinary endpoint broker. Close that
-    // admission path at the exact asynchronous UdeCx reset boundary instead
-    // of waiting for user mode to observe the lifecycle operation.
-    InterlockedExchange(&deviceContext->Resetting, TRUE);
-    status = ViiperQueueAcknowledgedDeviceLifecycleEvent(
-        Device, Request, ViiperUdeOperationDeviceReset);
+    status = ViiperBeginAcknowledgedDeviceReset(Device, Request);
     if (!NT_SUCCESS(status)) {
-        InterlockedExchange(&deviceContext->Resetting, FALSE);
         WdfRequestComplete(Request, status);
     }
 }
@@ -1205,8 +1224,7 @@ ViiperEvtEndpointsConfigure(
     switch (ConfigureParams->ConfigureType) {
     case UdecxEndpointsConfigureTypeDeviceInitialize:
     case UdecxEndpointsConfigureTypeDeviceConfigurationChange:
-        status = ViiperQueueAcknowledgedDeviceLifecycleEvent(
-            Device, Request, ViiperUdeOperationDeviceReset);
+        status = ViiperBeginAcknowledgedDeviceReset(Device, Request);
         break;
     case UdecxEndpointsConfigureTypeInterfaceSettingChange:
         status = ViiperQueueAcknowledgedInterfaceLifecycleEvent(
