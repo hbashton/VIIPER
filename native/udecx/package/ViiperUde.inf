@@ -4,7 +4,7 @@ Class=USB
 ClassGuid={36FC9E60-C465-11CF-8056-444553540000}
 Provider=%ProviderName%
 CatalogFile=ViiperUde.cat
-DriverVer=08/09/2026,0.1.0.0
+DriverVer=08/10/2026,0.1.0.0
 PnpLockDown=1
 
 [DestinationDirs]
@@ -28,6 +28,9 @@ CopyFiles=@ViiperUde.sys
 [ViiperUde_Install.NT.Services]
 AddService=ViiperUde,0x00000002,ViiperUde_Service
 
+[ViiperUde_Install.NT.Wdf]
+KmdfService=ViiperUde,ViiperUde_Wdf
+
 [ViiperUde_Service]
 DisplayName=%ServiceName%
 ServiceType=1
@@ -36,9 +39,11 @@ ErrorControl=1
 ServiceBinary=%13%\ViiperUde.sys
 Dependencies=ucx01000,udecx
 
+[ViiperUde_Wdf]
+KmdfLibraryVersion=$KMDFVERSION$
+
 [Strings]
 ProviderName="VIIPER Project"
 DeviceName="VIIPER Native USB Emulation Controller"
 ServiceName="VIIPER Native UdeCx Bus"
 DiskName="VIIPER Native UdeCx Installation Media"
-

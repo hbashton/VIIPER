@@ -13,6 +13,8 @@
     <ProjectName>ViiperUde</ProjectName>
     <MinimumVisualStudioVersion>17.0</MinimumVisualStudioVersion>
     <Platform Condition="'$(Platform)' == ''">x64</Platform>
+    <ViiperUdeDriverDate>08/10/2026</ViiperUdeDriverDate>
+    <ViiperUdeDriverVersion>0.1.0.0</ViiperUdeDriverVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
@@ -77,7 +79,12 @@
     <ClInclude Include="..\include\ViiperUdeProtocol.h" />
   </ItemGroup>
   <ItemGroup>
-    <Inf Include="..\package\ViiperUde.inf" />
+    <Inf Include="..\package\ViiperUde.inf">
+      <SpecifyDriverVerDirectiveDate>true</SpecifyDriverVerDirectiveDate>
+      <DateStamp>$(ViiperUdeDriverDate)</DateStamp>
+      <SpecifyDriverVerDirectiveVersion>true</SpecifyDriverVerDirectiveVersion>
+      <TimeStamp>$(ViiperUdeDriverVersion)</TimeStamp>
+    </Inf>
   </ItemGroup>
   <ItemGroup>
     <None Include="packages.config" />

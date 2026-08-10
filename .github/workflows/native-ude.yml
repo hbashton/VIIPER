@@ -119,6 +119,13 @@ jobs:
           $tools.DirectoryName | Sort-Object -Unique | Out-File $env:GITHUB_PATH -Append -Encoding utf8
       - name: Build x64 driver
         run: msbuild native/udecx/ViiperUde.sln /m /p:Configuration=Release /p:Platform=x64 /p:SignMode=TestSign /p:InfVerif_AdditionalOptions="/w"
+      - name: Verify stamped KMDF and DriverVer contract
+        shell: pwsh
+        run: >-
+          ./native/udecx/tools/Test-ViiperUdeTargetCompatibility.ps1
+          -ProjectPath ./native/udecx/driver/ViiperUde.vcxproj
+          -InfPath ./native/udecx/x64/Release/ViiperUde.inf
+          -RequireStampedInf
       - name: Build transactional root-devnode and live-media helpers
         shell: pwsh
         run: |
