@@ -199,16 +199,21 @@ type Server struct {
 	config    *ServerConfig
 	logger    *slog.Logger
 	rawLogger log.RawLogger
-	busses    map[uint32]*virtualbus.VirtualBus
-	busesMu   sync.Mutex
-	alts      map[usb.Device]map[uint8]uint8
-	altsMu    sync.Mutex
-	ready     chan struct{}
-	readyOnce sync.Once
-	ln        net.Listener
-	nativeMu  sync.Mutex
-	native    *udecx.Host
-	nativeIDs map[nativeDeviceKey]udecx.DeviceIdentity
+	// lifecycleMu makes publication into the in-memory bus, native UdeCx
+	// driver, and native identity table one transaction. Device creation and
+	// removal are infrequent control-plane operations; serializing them avoids
+	// an orphaned child if removal races a driver plug-in or bus teardown.
+	lifecycleMu sync.Mutex
+	busses      map[uint32]*virtualbus.VirtualBus
+	busesMu     sync.Mutex
+	alts        map[usb.Device]map[uint8]uint8
+	altsMu      sync.Mutex
+	ready       chan struct{}
+	readyOnce   sync.Once
+	ln          net.Listener
+	nativeMu    sync.Mutex
+	native      *udecx.Host
+	nativeIDs   map[nativeDeviceKey]udecx.DeviceIdentity
 }
 
 type nativeDeviceKey struct {
@@ -234,6 +239,8 @@ func (s *Server) EnableNativeTransport(host *udecx.Host) error {
 	if host == nil {
 		return errors.New("native UDE host is nil")
 	}
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
 	s.nativeMu.Lock()
 	defer s.nativeMu.Unlock()
 	if s.native != nil {
@@ -256,6 +263,9 @@ func nativeDeviceID(busID, devID uint32) uint64 {
 // AddDeviceToBus publishes a device transactionally. A failed native plug-in
 // rolls the in-memory bus back before the device becomes visible to clients.
 func (s *Server) AddDeviceToBus(ctx context.Context, busID uint32, dev usb.Device) (context.Context, error) {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+
 	bus := s.GetBus(busID)
 	if bus == nil {
 		return nil, fmt.Errorf("bus %d not found", busID)
@@ -272,16 +282,16 @@ func (s *Server) AddDeviceToBus(ctx context.Context, busID uint32, dev usb.Devic
 
 	s.nativeMu.Lock()
 	host := s.native
-	s.nativeMu.Unlock()
 	if host == nil {
+		s.nativeMu.Unlock()
 		return deviceCtx, nil
 	}
 	identity, err := host.Register(ctx, nativeDeviceID(busID, meta.DevID), dev)
 	if err != nil {
+		s.nativeMu.Unlock()
 		_ = bus.Remove(dev)
 		return nil, fmt.Errorf("plug native UDE device: %w", err)
 	}
-	s.nativeMu.Lock()
 	s.nativeIDs[nativeDeviceKey{busID: busID, devID: meta.DevID}] = identity
 	s.nativeMu.Unlock()
 	return deviceCtx, nil
@@ -290,6 +300,8 @@ func (s *Server) AddDeviceToBus(ctx context.Context, busID uint32, dev usb.Devic
 // AddBus registers a bus with the server. If the bus number is already present,
 // an error is returned.
 func (s *Server) AddBus(bus *virtualbus.VirtualBus) error {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
 	s.busesMu.Lock()
 	defer s.busesMu.Unlock()
 	if bus == nil {
@@ -304,6 +316,12 @@ func (s *Server) AddBus(bus *virtualbus.VirtualBus) error {
 
 // RemoveBus unregisters a bus from the server.
 func (s *Server) RemoveBus(busID uint32) error {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	return s.removeBus(busID)
+}
+
+func (s *Server) removeBus(busID uint32) error {
 	s.busesMu.Lock()
 	bus, ok := s.busses[busID]
 	if !ok {
@@ -332,6 +350,9 @@ func (s *Server) RemoveBus(busID uint32) error {
 
 // RemoveDeviceByID removes a device by busId and cancels its connections.
 func (s *Server) RemoveDeviceByID(busID uint32, deviceID string) error {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+
 	s.busesMu.Lock()
 	bus, ok := s.busses[busID]
 	s.busesMu.Unlock()
@@ -368,7 +389,7 @@ func (s *Server) RemoveDeviceByID(busID uint32, deviceID string) error {
 	} else {
 		s.logger.Debug("No bus empty context; Cleaning bus immediately")
 		if b := s.GetBus(busID); b != nil && len(b.Devices()) == 0 {
-			if err := s.RemoveBus(busID); err != nil {
+			if err := s.removeBus(busID); err != nil {
 				s.logger.Error("timeout: failed to remove empty bus", "busID", busID, "error", err)
 			} else {
 				s.logger.Info("timeout: removed empty bus", "busID", busID)
@@ -394,7 +415,6 @@ func (s *Server) removeDevice(busID, deviceID uint32, requireBus bool) error {
 	s.nativeMu.Lock()
 	host := s.native
 	identity, registered := s.nativeIDs[key]
-	s.nativeMu.Unlock()
 	if host != nil && registered {
 		timeout := s.config.ConnectionTimeout
 		if timeout <= 0 {
@@ -404,12 +424,12 @@ func (s *Server) removeDevice(busID, deviceID uint32, requireBus bool) error {
 		err := host.Unregister(ctx, identity)
 		cancel()
 		if err != nil {
+			s.nativeMu.Unlock()
 			return fmt.Errorf("unplug native UDE device: %w", err)
 		}
-		s.nativeMu.Lock()
 		delete(s.nativeIDs, key)
-		s.nativeMu.Unlock()
 	}
+	s.nativeMu.Unlock()
 	return bus.RemoveDeviceByID(strconv.FormatUint(uint64(deviceID), 10))
 }
 

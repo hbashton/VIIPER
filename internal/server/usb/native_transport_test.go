@@ -18,6 +18,24 @@ type nativeTransportTestDriver struct {
 	destroyed []udecx.DeviceIdentity
 }
 
+type blockingNativeTransportTestDriver struct {
+	nativeTransportTestDriver
+	createStarted chan struct{}
+	allowCreate   chan struct{}
+}
+
+func (d *blockingNativeTransportTestDriver) CreateDevice(
+	ctx context.Context, device udecx.CreateDevice,
+) error {
+	close(d.createStarted)
+	select {
+	case <-d.allowCreate:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	return d.nativeTransportTestDriver.CreateDevice(ctx, device)
+}
+
 func (d *nativeTransportTestDriver) CreateDevice(_ context.Context, device udecx.CreateDevice) error {
 	d.created = append(d.created, device)
 	return d.createErr
@@ -113,5 +131,67 @@ func TestNativeTransportRollsBackVirtualBusWhenPlugInFails(t *testing.T) {
 	}
 	if len(bus.Devices()) != 0 {
 		t.Fatal("failed native plug-in leaked a virtual bus device")
+	}
+}
+
+func TestNativeTransportRemovalCannotRaceUncommittedPlugIn(t *testing.T) {
+	driver := &blockingNativeTransportTestDriver{
+		createStarted: make(chan struct{}),
+		allowCreate:   make(chan struct{}),
+	}
+	host, err := udecx.NewHost(driver, &nativeTransportTestProcessor{}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := New(ServerConfig{ConnectionTimeout: time.Second}, slog.Default(), nil)
+	if err = server.EnableNativeTransport(host); err != nil {
+		t.Fatal(err)
+	}
+	bus, err := virtualbus.NewWithBusID(98103)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bus.Close()
+	if err = server.AddBus(bus); err != nil {
+		t.Fatal(err)
+	}
+
+	addDone := make(chan error, 1)
+	go func() {
+		_, addErr := server.AddDeviceToBus(
+			context.Background(), bus.BusID(), newNativeTransportTestDevice())
+		addDone <- addErr
+	}()
+	<-driver.createStarted
+
+	removeStarted := make(chan struct{})
+	removeDone := make(chan error, 1)
+	go func() {
+		close(removeStarted)
+		removeDone <- server.RemoveDeviceByID(bus.BusID(), "1")
+	}()
+	<-removeStarted
+	select {
+	case err = <-removeDone:
+		t.Fatalf("remove crossed uncommitted native plug-in: %v", err)
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	close(driver.allowCreate)
+	if err = <-addDone; err != nil {
+		t.Fatal(err)
+	}
+	if err = <-removeDone; err != nil {
+		t.Fatal(err)
+	}
+	if len(driver.created) != 1 || len(driver.destroyed) != 1 || len(bus.Devices()) != 0 {
+		t.Fatalf("created=%d destroyed=%d bus devices=%d want 1/1/0",
+			len(driver.created), len(driver.destroyed), len(bus.Devices()))
+	}
+	server.nativeMu.Lock()
+	remaining := len(server.nativeIDs)
+	server.nativeMu.Unlock()
+	if remaining != 0 {
+		t.Fatalf("native identity table retained %d entries", remaining)
 	}
 }
