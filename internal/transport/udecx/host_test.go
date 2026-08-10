@@ -510,6 +510,49 @@ func TestHostPreservesEndpointSequenceAcrossDequeueWorkers(t *testing.T) {
 	}
 }
 
+func TestHostSessionCannotRestartAfterOperationsWereDequeued(t *testing.T) {
+	driver := newFakeHostDriver()
+	processor := &recordingProcessor{processed: make(chan uint64, 1), resets: make(chan DeviceIdentity, 1)}
+	host, err := NewHost(driver, processor, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := host.Register(context.Background(), 19, hostTestDevice())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- host.Serve(ctx) }()
+	driver.operations <- Operation{
+		Token: 1, DeviceID: identity.DeviceID, Generation: identity.Generation,
+		EndpointAddress: 0x81, EndpointSequence: 1, Kind: OperationTransfer,
+	}
+	select {
+	case <-processor.processed:
+	case <-time.After(time.Second):
+		t.Fatal("first host session did not process its operation")
+	}
+	cancel()
+	select {
+	case err = <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("first host session did not stop")
+	}
+
+	if err = host.Serve(context.Background()); err == nil || !strings.Contains(err.Error(), "one-shot") {
+		t.Fatalf("second Serve error=%v, want one-shot session rejection", err)
+	}
+	if _, err = host.Register(context.Background(), 20, hostTestDevice()); err == nil ||
+		!strings.Contains(err.Error(), "fresh driver session") {
+		t.Fatalf("Register after Serve error=%v, want terminal session rejection", err)
+	}
+}
+
 func TestHostOrdersLifecycleBeforeFollowingTransfer(t *testing.T) {
 	driver := newFakeHostDriver()
 	processor := &recordingProcessor{

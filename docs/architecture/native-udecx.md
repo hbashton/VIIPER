@@ -78,8 +78,17 @@ The transport is intentionally split by USB semantics:
 
 Input publishers start and stop from UdeCx endpoint lifecycle notifications,
 retain their sequence across a purge/start cycle, and are cancelled before
-device removal. Failed removal restores the active publishers so a retry does
-not strand the current generation.
+device removal. Removal rejected before UdeCx takes the child restores the
+active publishers, so a retry does not strand the current generation. Once
+ownership transfers, a terminal UdeCx removal fault restarts the controller
+and the removed generation remains closed.
+
+The broker owner session is deliberately one-shot. Stopping the user-mode host
+cancels endpoint lanes that may already own dequeued kernel requests; those
+requests cannot be reconstructed safely in a restarted goroutine. VIIPER must
+close that driver handle and negotiate a fresh `Client`/`Host` session, matching
+ViGEmBus's file-session ownership model, rather than guessing a new endpoint
+sequence baseline and risking an abandoned USB request.
 
 This deliberately removes TCP, WSK, USB/IP framing, and attach bookkeeping.
 The direct input lane removes the highest-frequency HID broker path without

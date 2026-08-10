@@ -109,6 +109,7 @@ type Host struct {
 	runCtx      context.Context
 	runCancel   context.CancelFunc
 	fatal       chan error
+	started     bool
 	running     bool
 	laneWG      sync.WaitGroup
 	operationMu sync.Mutex
@@ -160,6 +161,14 @@ func (h *Host) Register(ctx context.Context, deviceID uint64, dev usb.Device) (D
 	}
 
 	h.mu.Lock()
+	// One driver file owner is one native UDE host session. Once Serve has
+	// stopped, operations already dequeued into user mode cannot be replayed or
+	// reconstructed safely. A fresh Client/Host pair is therefore required
+	// instead of publishing a child into a terminal owner session.
+	if h.started && (!h.running || h.runCtx == nil || h.runCtx.Err() != nil) {
+		h.mu.Unlock()
+		return DeviceIdentity{}, errors.New("native UDE host session has stopped; open a fresh driver session")
+	}
 	if _, exists := h.devices[deviceID]; exists {
 		h.mu.Unlock()
 		return DeviceIdentity{}, fmt.Errorf("native UDE device %d is already registered", deviceID)
@@ -377,9 +386,13 @@ func (h *Host) Serve(ctx context.Context) error {
 		h.mu.Unlock()
 		return errors.New("native UDE host is already running")
 	}
+	if h.started {
+		h.mu.Unlock()
+		return errors.New("native UDE host sessions are one-shot; open a fresh driver session")
+	}
 	runCtx, cancel := context.WithCancel(ctx)
 	fatal := make(chan error, 1)
-	h.runCtx, h.runCancel, h.fatal, h.running = runCtx, cancel, fatal, true
+	h.runCtx, h.runCancel, h.fatal, h.started, h.running = runCtx, cancel, fatal, true, true
 	entries := make([]*registeredDevice, 0, len(h.devices))
 	for _, entry := range h.devices {
 		entries = append(entries, entry)
