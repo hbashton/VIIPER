@@ -10,6 +10,7 @@
 #include <windows.h>
 #include <cfgmgr32.h>
 #include <devguid.h>
+#include <devpkey.h>
 #include <newdev.h>
 #include <setupapi.h>
 
@@ -30,6 +31,7 @@ namespace {
 
 constexpr wchar_t kHardwareId[] = L"ROOT\\VIIPER\\UDE";
 constexpr wchar_t kEnumerator[] = L"ROOT";
+constexpr wchar_t kServiceName[] = L"ViiperUde";
 
 class DeviceInfoSet final {
 public:
@@ -136,40 +138,77 @@ bool HasExactHardwareId(HDEVINFO set, SP_DEVINFO_DATA& data) {
     return type == REG_MULTI_SZ && MultiSzContains(value, kHardwareId);
 }
 
+bool ReadDevicePresence(HDEVINFO set, SP_DEVINFO_DATA& data, bool* present) {
+    DEVPROPTYPE type = 0;
+    DEVPROP_BOOLEAN value = DEVPROP_FALSE;
+    DWORD required = 0;
+    if (!SetupDiGetDevicePropertyW(
+            set, &data, &DEVPKEY_Device_IsPresent, &type,
+            reinterpret_cast<PBYTE>(&value), sizeof(value), &required, 0)) {
+        return Fail(L"SetupDiGetDeviceProperty(IsPresent)");
+    }
+    if (type != DEVPROP_TYPE_BOOLEAN || required != sizeof(value)) {
+        SetLastError(ERROR_INVALID_DATA);
+        return Fail(L"validate DEVPKEY_Device_IsPresent");
+    }
+    *present = value == DEVPROP_TRUE;
+    return true;
+}
+
+bool HasExactService(HDEVINFO set, SP_DEVINFO_DATA& data) {
+    DWORD type = 0;
+    wchar_t value[128]{};
+    if (!SetupDiGetDeviceRegistryPropertyW(
+            set, &data, SPDRP_SERVICE, &type, reinterpret_cast<PBYTE>(value),
+            sizeof(value), nullptr)) {
+        return false;
+    }
+    return type == REG_SZ && _wcsicmp(value, kServiceName) == 0;
+}
+
 struct DeviceMatch {
     SP_DEVINFO_DATA data{sizeof(SP_DEVINFO_DATA)};
+    bool present = false;
     bool started = false;
+    bool exactService = false;
     ULONG problem = 0;
 };
 
-std::vector<DeviceMatch> FindDevices(HDEVINFO set) {
-    std::vector<DeviceMatch> matches;
+bool FindDevices(HDEVINFO set, std::vector<DeviceMatch>* matches) {
+    matches->clear();
     for (DWORD index = 0;; ++index) {
         SP_DEVINFO_DATA data{sizeof(SP_DEVINFO_DATA)};
         if (!SetupDiEnumDeviceInfo(set, index, &data)) {
             if (GetLastError() != ERROR_NO_MORE_ITEMS) {
                 Fail(L"SetupDiEnumDeviceInfo");
+                return false;
             }
             break;
         }
         if (!HasExactHardwareId(set, data)) {
             continue;
         }
+        bool present = false;
+        if (!ReadDevicePresence(set, data, &present)) {
+            return false;
+        }
         ULONG status = 0;
         ULONG problem = 0;
         const CONFIGRET result = CM_Get_DevNode_Status(&status, &problem, data.DevInst, 0);
-        matches.push_back(DeviceMatch{
+        matches->push_back(DeviceMatch{
             data,
-            result == CR_SUCCESS && (status & DN_STARTED) != 0 && problem == 0,
+            present,
+            present && result == CR_SUCCESS && (status & DN_STARTED) != 0 && problem == 0,
+            HasExactService(set, data),
             result == CR_SUCCESS ? problem : static_cast<ULONG>(result),
         });
     }
-    return matches;
+    return true;
 }
 
 DeviceInfoSet OpenRootDevices() {
     return DeviceInfoSet(SetupDiGetClassDevsW(
-        nullptr, kEnumerator, nullptr, DIGCF_ALLCLASSES | DIGCF_PRESENT));
+        nullptr, kEnumerator, nullptr, DIGCF_ALLCLASSES));
 }
 
 bool RemoveDevice(HDEVINFO set, SP_DEVINFO_DATA& data, bool* rebootRequired) {
@@ -238,8 +277,27 @@ bool Install(const wchar_t* rawInfPath) {
     if (!existing) {
         return Fail(L"SetupDiGetClassDevs(ROOT)");
     }
-    const auto matches = FindDevices(existing.get());
-    if (matches.size() > 1) {
+    std::vector<DeviceMatch> matches;
+    if (!FindDevices(existing.get(), &matches)) {
+        return false;
+    }
+
+    size_t presentCount = 0;
+    bool staleRemovalNeedsReboot = false;
+    for (auto& match : matches) {
+        if (match.present) {
+            ++presentCount;
+            continue;
+        }
+        if (!RemoveDevice(existing.get(), match.data, &staleRemovalNeedsReboot)) {
+            return false;
+        }
+    }
+    if (staleRemovalNeedsReboot) {
+        std::wcerr << L"error: removing a stale VIIPER UDE devnode requires a restart\n";
+        return false;
+    }
+    if (presentCount > 1) {
         SetLastError(ERROR_DUPLICATE_SERVICE_NAME);
         return Fail(L"validate unique VIIPER UDE controller");
     }
@@ -247,7 +305,7 @@ bool Install(const wchar_t* rawInfPath) {
     DeviceInfoSet created(INVALID_HANDLE_VALUE);
     SP_DEVINFO_DATA createdData{sizeof(SP_DEVINFO_DATA)};
     bool createdHere = false;
-    if (matches.empty()) {
+    if (presentCount == 0) {
         if (!RegisterRootDevice(classGuid, className, created, &createdData)) {
             return false;
         }
@@ -267,14 +325,39 @@ bool Install(const wchar_t* rawInfPath) {
 
     DeviceInfoSet verified = OpenRootDevices();
     if (!verified) {
+        if (createdHere) {
+            bool ignoredReboot = false;
+            RemoveDevice(created.get(), createdData, &ignoredReboot);
+        }
         return Fail(L"reopen VIIPER UDE controller");
     }
-    const auto installed = FindDevices(verified.get());
-    if (installed.size() != 1) {
-        SetLastError(installed.empty() ? ERROR_DEVICE_NOT_AVAILABLE : ERROR_DUPLICATE_SERVICE_NAME);
+    std::vector<DeviceMatch> installed;
+    if (!FindDevices(verified.get(), &installed)) {
+        if (createdHere) {
+            bool ignoredReboot = false;
+            RemoveDevice(created.get(), createdData, &ignoredReboot);
+        }
+        return false;
+    }
+    if (installed.size() != 1 || !installed[0].present || !installed[0].exactService) {
+        if (createdHere) {
+            bool ignoredReboot = false;
+            RemoveDevice(created.get(), createdData, &ignoredReboot);
+        }
+        if (installed.empty() || (installed.size() == 1 && !installed[0].present)) {
+            SetLastError(ERROR_DEVICE_NOT_AVAILABLE);
+        } else if (installed.size() > 1) {
+            SetLastError(ERROR_DUPLICATE_SERVICE_NAME);
+        } else {
+            SetLastError(ERROR_SERVICE_NOT_FOUND);
+        }
         return Fail(L"verify installed VIIPER UDE controller");
     }
     if (!rebootRequired && !installed[0].started) {
+        if (createdHere) {
+            bool ignoredReboot = false;
+            RemoveDevice(created.get(), createdData, &ignoredReboot);
+        }
         std::wcerr << L"error: VIIPER UDE controller did not start; problem="
                    << installed[0].problem << L"\n";
         return false;
@@ -293,7 +376,10 @@ bool Remove() {
     if (!set) {
         return Fail(L"SetupDiGetClassDevs(ROOT)");
     }
-    auto matches = FindDevices(set.get());
+    std::vector<DeviceMatch> matches;
+    if (!FindDevices(set.get(), &matches)) {
+        return false;
+    }
     bool rebootRequired = false;
     for (auto& match : matches) {
         if (!RemoveDevice(set.get(), match.data, &rebootRequired)) {
@@ -304,7 +390,11 @@ bool Remove() {
     if (!verified) {
         return Fail(L"verify removed VIIPER UDE controller");
     }
-    if (!FindDevices(verified.get()).empty() && !rebootRequired) {
+    std::vector<DeviceMatch> remaining;
+    if (!FindDevices(verified.get(), &remaining)) {
+        return false;
+    }
+    if (!remaining.empty() && !rebootRequired) {
         SetLastError(ERROR_DEVICE_IN_USE);
         return Fail(L"verify removed VIIPER UDE controller");
     }
@@ -318,10 +408,15 @@ bool Status() {
     if (!set) {
         return Fail(L"SetupDiGetClassDevs(ROOT)");
     }
-    const auto matches = FindDevices(set.get());
+    std::vector<DeviceMatch> matches;
+    if (!FindDevices(set.get(), &matches)) {
+        return false;
+    }
     std::wcout << L"devices=" << matches.size();
     if (matches.size() == 1) {
-        std::wcout << L" started=" << (matches[0].started ? 1 : 0)
+        std::wcout << L" present=" << (matches[0].present ? 1 : 0)
+                   << L" started=" << (matches[0].started ? 1 : 0)
+                   << L" exactService=" << (matches[0].exactService ? 1 : 0)
                    << L" problem=" << matches[0].problem;
     }
     std::wcout << L"\n";
