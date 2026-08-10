@@ -145,7 +145,7 @@ jobs:
           & $inputOutput snapshot $inputSnapshot
           if ($LASTEXITCODE -ne 0 -or -not (Test-Path $inputSnapshot)) { throw "ViiperUdeInputProbe HID snapshot smoke test failed" }
           Remove-Item -LiteralPath $inputSnapshot -Force
-      - name: Validate Hardware Dev Center CAB structure
+      - name: Validate testing-only Hardware Dev Center CAB structure
         shell: pwsh
         run: |
           ./native/udecx/tools/New-ViiperUdeAttestationPackage.ps1 `
@@ -153,7 +153,8 @@ jobs:
             -SysPath native/udecx/x64/Release/ViiperUde/ViiperUde.sys `
             -PdbPath native/udecx/x64/Release/ViiperUde.pdb `
             -CatalogPath native/udecx/x64/Release/ViiperUde/viiperude.cat `
-            -OutputPath native/udecx/x64/Release/ViiperUdeAttestationStructure.cab
+            -OutputPath native/udecx/x64/Release/ViiperUdeAttestationStructure.cab `
+            -AcknowledgeTestingOnly
       - name: Analyze native driver and setup helper
         uses: github/codeql-action/analyze@v4
         with:

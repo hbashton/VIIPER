@@ -15,11 +15,17 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$OutputPath,
 
+    [switch]$AcknowledgeTestingOnly,
+
     [switch]$Force
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+if (-not $AcknowledgeTestingOnly) {
+    throw 'Microsoft documents attestation signing as testing-only. Pass -AcknowledgeTestingOnly to create a controlled-test submission CAB; use HLK/WHCP for a VIIPER retail release.'
+}
 
 function Resolve-RequiredFile {
     param(
@@ -156,7 +162,9 @@ try {
 
     $manifest = [ordered]@{
         schema = 1
-        purpose = 'Microsoft Hardware Dev Center attestation submission'
+        purpose = 'Microsoft Hardware Dev Center controlled-test attestation submission; not a retail release package'
+        releaseEligible = $false
+        requiredProductionRoute = 'HLK/WHCP dashboard signing'
         cabinet = [System.IO.Path]::GetFileName($outputFullPath)
         cabinetSha256 = (Get-FileHash -LiteralPath $outputFullPath -Algorithm SHA256).Hash
         packageFolder = $packageFolder
@@ -177,9 +185,9 @@ try {
         ($manifest | ConvertTo-Json -Depth 5),
         [System.Text.UTF8Encoding]::new($false))
 
-    Write-Host "Created exact VIIPER attestation package: $outputFullPath"
+    Write-Host "Created exact VIIPER controlled-test attestation package: $outputFullPath"
     Write-Host "Hash manifest: $manifestPath"
-    Write-Host 'The CAB is not production-loadable yet. EV-sign it, submit it to Microsoft Hardware Dev Center, and validate the Microsoft-signed result.'
+    Write-Warning 'This CAB and any attestation-signed result are testing-only under Microsoft current policy. Do not ship them to retail users. A release requires HLK/WHCP dashboard signing.'
 }
 finally {
     if (Test-Path -LiteralPath $workRoot) {

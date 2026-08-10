@@ -12,8 +12,9 @@ Directory contract:
 - `tools/ViiperUdeCtl.cpp` installs, verifies, or removes the exact root
   controller without creating duplicates or leaving a failed devnode behind.
 - `tools/New-ViiperUdeAttestationPackage.ps1` creates and hash-verifies the
-  exact Hardware Dev Center CAB structure; it does not pretend that an
-  unsigned CI artifact is a production driver.
+  exact controlled-test Hardware Dev Center CAB structure and requires an
+  explicit testing-only acknowledgement. Microsoft currently restricts
+  attestation to testing scenarios; production release requires HLK/WHCP.
 - `tools/Test-ViiperUdeSignedPackage.ps1` validates the Microsoft-returned
   driver and catalog against kernel signing policy.
 - `tools/Invoke-ViiperUdeLiveValidation.ps1` hash-binds that verified package

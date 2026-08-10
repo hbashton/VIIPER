@@ -6,21 +6,25 @@ package must be signed by Microsoft through Hardware Dev Center.
 
 ## Supported release paths
 
-### Desktop preview: attestation signing
+### Controlled testing: attestation signing
 
-Attestation signing is the shortest supported path for a Windows 10/11 Desktop
-preview. It is not Windows Certified, cannot be distributed to retail users by
-Windows Update, and does not support Windows Server 2016 or later.
+Microsoft now documents attestation signing as **testing-only**. An
+attestation-signed package is not Windows Certified and is not a supported
+retail release path. It can be used only in Microsoft's documented controlled
+testing scenarios (for example, CoDev or Test Registry Key / Surface SSRK), and
+it does not support Windows Server 2016 or later. It must never be shipped as
+the public VIIPER driver.
 
 1. Build the exact x64 Release driver, INF, PDB, and catalog.
 2. Run `native/udecx/tools/New-ViiperUdeAttestationPackage.ps1` with explicit
-   paths to those four artifacts. The script validates the INF contract,
+   paths to those four artifacts and `-AcknowledgeTestingOnly`. The script
+   validates the INF contract,
    creates the required non-root `ViiperUde` folder in the CAB, re-extracts the
    CAB, verifies every SHA-256 hash, and writes a sidecar hash manifest.
 3. Sign the CAB with a SHA-256 code-signing certificate registered to the
    organization's Hardware Dev Center account. Establishing that account and
    submitting attestation packages requires a currently valid EV certificate.
-4. Submit the signed CAB in Partner Center with test-signing options disabled.
+4. Submit the signed CAB through the applicable Partner Center testing flow.
 5. Download Microsoft's returned package and run
    `native/udecx/tools/Test-ViiperUdeSignedPackage.ps1`. It requires valid
    Microsoft kernel-policy signatures on both the SYS and catalog and reruns
@@ -29,15 +33,18 @@ Windows Update, and does not support Windows Server 2016 or later.
 
 The structural CAB produced by CI is not installable production media. It has
 not been EV-signed, submitted to Microsoft, or returned with Microsoft's
-signature. CI names it accordingly and never promotes it as a release driver.
+signature. Even a Microsoft attestation-signed result remains a controlled-test
+artifact under the current Microsoft contract. CI names it accordingly and
+never promotes it as a release driver.
 
 ### Production certification: HLK/WHCP
 
-HLK/WHCP is the production target. It covers Windows Server and is the route
-required for retail Windows Update publication. Run the controller and child
-devices through the applicable Device Fundamentals, USB, HID, audio, power,
-reliability, and security playlists, submit the resulting HLKX package, and
-validate the dashboard-signed result with the same local validation script.
+HLK/WHCP is the only VIIPER production target. Microsoft recommends HLK-tested,
+dashboard-signed drivers for release; WHCP is required for retail Windows
+Update publication. Run the controller and child devices through the
+applicable Device Fundamentals, USB, HID, audio, power, reliability, and
+security playlists, submit the resulting HLKX package, and validate the
+dashboard-signed result with the same local validation script.
 
 ## Package invariants
 
@@ -58,8 +65,8 @@ validate the dashboard-signed result with the same local validation script.
 
 The branch currently proves compilation, static analysis, ABI/lifecycle tests,
 fuzzing, race tests, deterministic package structure, and payload hashing. A
-native driver is not production-ready until the Microsoft-signed package also
-passes Driver Verifier, HLK or the scoped attestation test matrix, repeated
+native driver is not production-ready until the HLK/WHCP dashboard-signed
+package also passes Driver Verifier, the complete HLK matrix, repeated
 install/update/rollback, process crash, sleep/resume, and multi-controller
 media soak on a disposable test machine.
 
