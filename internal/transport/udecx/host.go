@@ -60,6 +60,7 @@ type registeredDevice struct {
 	fastInput         map[uint8]struct{}
 	publishers        map[uint8]*inputPublisher
 	activeInput       map[uint8]bool
+	resettingInput    map[uint8]bool
 	inputSequences    map[uint8]uint64
 	inD0              bool
 	resetting         bool
@@ -185,7 +186,8 @@ func (h *Host) Register(ctx context.Context, deviceID uint64, dev usb.Device) (D
 	entry := &registeredDevice{
 		identity: identity, device: dev, ctx: deviceCtx, cancel: cancel,
 		fastInput: fastInputEndpoints(dev), publishers: make(map[uint8]*inputPublisher),
-		activeInput: make(map[uint8]bool), inputSequences: make(map[uint8]uint64), inD0: true,
+		activeInput: make(map[uint8]bool), resettingInput: make(map[uint8]bool),
+		inputSequences: make(map[uint8]uint64), inD0: true,
 	}
 	h.devices[deviceID] = entry
 	h.generations[deviceID] = generation
@@ -286,6 +288,7 @@ func (h *Host) startInputPublisher(entry *registeredDevice, endpoint uint8) {
 	}
 	h.mu.Lock()
 	if !h.running || entry.stopping || entry.publisherStopping || !entry.inD0 || entry.resetting ||
+		entry.resettingInput[endpoint] ||
 		h.devices[entry.identity.DeviceID] != entry {
 		h.mu.Unlock()
 		return
@@ -582,6 +585,12 @@ func (h *Host) runLane(lane *operationLane, entry *registeredDevice) {
 					case OperationEndpointPurge:
 						h.mu.Lock()
 						entry.activeInput[current.EndpointAddress] = false
+						delete(entry.resettingInput, current.EndpointAddress)
+						h.mu.Unlock()
+						h.stopInputPublisher(entry, current.EndpointAddress)
+					case OperationEndpointReset:
+						h.mu.Lock()
+						entry.resettingInput[current.EndpointAddress] = true
 						h.mu.Unlock()
 						h.stopInputPublisher(entry, current.EndpointAddress)
 					case OperationDeviceD0Exit:
@@ -629,6 +638,14 @@ func (h *Host) runLane(lane *operationLane, entry *registeredDevice) {
 						entry.activeInput[current.EndpointAddress] = true
 						h.mu.Unlock()
 						h.startInputPublisher(entry, current.EndpointAddress)
+					case OperationEndpointReset:
+						h.mu.Lock()
+						delete(entry.resettingInput, current.EndpointAddress)
+						restart := entry.activeInput[current.EndpointAddress]
+						h.mu.Unlock()
+						if restart {
+							h.startInputPublisher(entry, current.EndpointAddress)
+						}
 					case OperationDeviceD0Entry:
 						h.mu.Lock()
 						if current.DeviceSequence > entry.powerSequence {

@@ -204,6 +204,14 @@ interface fields are only hints for alternates that contain no endpoints.
   completion only after the Go controller engine has applied the reset or
   alternate-setting transition. Start, purge, and power notifications remain
   unacknowledged and cannot add a media round trip.
+- Endpoint reset owns a gate separate from endpoint purge. The UdeCx reset
+  callback closes both broker and direct-input admission under the broker lock,
+  cancels forwarded work, and defers its acknowledged lifecycle event until the
+  last already-admitted endpoint operation drains. User mode stops and joins
+  that endpoint's direct-input publisher before applying recovery, acknowledges
+  the reset, then resumes the same sequence. Reset never calls purge-complete or
+  waits for a later start callback, matching UdeCx's distinct reset and purge
+  contracts.
 - Device reset closes direct input admission in the kernel callback and pauses
   every user-mode publisher before controller state is cleared. Admission and
   the active publishers reopen only after the generation-bound reset request

@@ -534,7 +534,13 @@ ViiperBeginRemoveDevice(
         if (InterlockedCompareExchange(&deviceContext->Purging, 0, 0) != 0) {
             continue;
         }
+        // DeviceLock owns the table slot; BrokerLock is the admission
+        // linearization point shared with forwarded URBs and direct input.
+        // Set Purging through both before revoking the table entry so no
+        // request that already referenced this generation can start late.
+        WdfSpinLockAcquire(ControllerContext->BrokerLock);
         InterlockedExchange(&deviceContext->Purging, TRUE);
+        WdfSpinLockRelease(ControllerContext->BrokerLock);
         ControllerContext->Devices[index] = WDF_NO_HANDLE;
         ControllerContext->RemovingSlots[index] = TRUE;
         *Device = current;
@@ -675,10 +681,13 @@ ViiperEvtUsbDeviceD0Entry(
     _In_ UDECXUSBDEVICE Device
     )
 {
-    UNREFERENCED_PARAMETER(Controller);
+    VIIPER_UDE_CONTROLLER_CONTEXT *controllerContext =
+        ViiperGetControllerContext(Controller);
     // This callback is the exact UdeCx power boundary. Open direct input
     // admission before publishing the ordered advisory event to user mode.
+    WdfSpinLockAcquire(controllerContext->BrokerLock);
     InterlockedExchange(&ViiperGetDeviceContext(Device)->InD0, TRUE);
+    WdfSpinLockRelease(controllerContext->BrokerLock);
     (VOID)ViiperQueueDeviceLifecycleEvent(Device, ViiperUdeOperationDeviceD0Entry);
     return STATUS_SUCCESS;
 }
@@ -690,12 +699,15 @@ ViiperEvtUsbDeviceD0Exit(
     _In_ UDECX_USB_DEVICE_WAKE_SETTING WakeSetting
     )
 {
-    UNREFERENCED_PARAMETER(Controller);
+    VIIPER_UDE_CONTROLLER_CONTEXT *controllerContext =
+        ViiperGetControllerContext(Controller);
     UNREFERENCED_PARAMETER(WakeSetting);
     // Close direct input admission synchronously. Waiting for the user-mode
     // notification would leave a scheduler window in which a fresh report
     // could complete a Windows poll after the child had left D0.
+    WdfSpinLockAcquire(controllerContext->BrokerLock);
     InterlockedExchange(&ViiperGetDeviceContext(Device)->InD0, FALSE);
+    WdfSpinLockRelease(controllerContext->BrokerLock);
     (VOID)ViiperQueueDeviceLifecycleEvent(Device, ViiperUdeOperationDeviceD0Exit);
     return STATUS_SUCCESS;
 }
@@ -732,6 +744,8 @@ ViiperBeginAcknowledgedDeviceReset(
     )
 {
     VIIPER_UDE_DEVICE_CONTEXT *deviceContext = ViiperGetDeviceContext(Device);
+    VIIPER_UDE_CONTROLLER_CONTEXT *controllerContext =
+        ViiperGetControllerContext(deviceContext->Controller);
     NTSTATUS status;
 
     // Post-enumeration reset and device-configuration replacement are both
@@ -739,7 +753,15 @@ ViiperBeginAcknowledgedDeviceReset(
     // path synchronously and permit only one reset transaction for a child.
     // User mode stops and joins the publishers before acknowledging the
     // operation; completion then reopens this exact kernel gate.
-    if (InterlockedCompareExchange(&deviceContext->Resetting, TRUE, FALSE) != FALSE) {
+    WdfSpinLockAcquire(controllerContext->BrokerLock);
+    if (InterlockedCompareExchange(&deviceContext->Purging, 0, 0) != 0 ||
+        InterlockedCompareExchange(&deviceContext->Resetting, TRUE, FALSE) != FALSE) {
+        status = STATUS_DEVICE_BUSY;
+    } else {
+        status = STATUS_SUCCESS;
+    }
+    WdfSpinLockRelease(controllerContext->BrokerLock);
+    if (!NT_SUCCESS(status)) {
         return STATUS_DEVICE_BUSY;
     }
     status = ViiperQueueAcknowledgedDeviceLifecycleEvent(
@@ -890,6 +912,14 @@ ViiperEvtEndpointAdd(
     attributes.ParentObject = endpoint;
     status = WdfWorkItemCreate(
         &workItemConfig, &attributes, &endpointContext->PurgeWorkItem);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+    WDF_WORKITEM_CONFIG_INIT(&workItemConfig, ViiperEvtEndpointResetWorkItem);
+    WDF_OBJECT_ATTRIBUTES_INIT(&attributes);
+    attributes.ParentObject = endpoint;
+    status = WdfWorkItemCreate(
+        &workItemConfig, &attributes, &endpointContext->ResetWorkItem);
     if (!NT_SUCCESS(status)) {
         return status;
     }
@@ -1080,15 +1110,23 @@ ViiperSubmitInputReport(
     // another. Serialize only this endpoint, preserving report order even if
     // a faulty or hostile owner submits concurrent updates for the same pad.
     WdfWaitLockAcquire(endpointContext->InputLock, NULL);
-    ViiperEndpointOperationStarted(endpoint);
-    if (InterlockedCompareExchange(&endpointContext->Purging, 0, 0) != 0) {
-        ViiperEndpointOperationCompleted(endpoint);
+    WdfSpinLockAcquire(controllerContext->BrokerLock);
+    if (InterlockedCompareExchange(&deviceContext->InD0, 0, 0) == 0 ||
+        InterlockedCompareExchange(&deviceContext->Purging, 0, 0) != 0 ||
+        InterlockedCompareExchange(&deviceContext->Resetting, 0, 0) != 0 ||
+        InterlockedCompareExchange(&endpointContext->Purging, 0, 0) != 0 ||
+        InterlockedCompareExchange(&endpointContext->Resetting, 0, 0) != 0) {
+        WdfSpinLockRelease(controllerContext->BrokerLock);
         WdfWaitLockRelease(endpointContext->InputLock);
         WdfObjectDereference(endpoint);
-        // Endpoint purge and restart preserve the device generation. Do not
-        // turn the one report racing purge into a fatal user-mode session.
+        // Endpoint purge/start and endpoint reset preserve the device
+        // generation. A publisher can have one already-built latest-state
+        // report crossing either callback; acknowledge and discard it rather
+        // than faulting the otherwise valid owner session.
         return STATUS_SUCCESS;
     }
+    ViiperEndpointOperationStarted(endpoint);
+    WdfSpinLockRelease(controllerContext->BrokerLock);
     if (input->Sequence <= (ULONGLONG)InterlockedCompareExchange64(
             &endpointContext->LastInputSequence, 0, 0)) {
         ViiperEndpointOperationCompleted(endpoint);
@@ -1156,14 +1194,67 @@ ViiperEvtEndpointReset(
     _In_ WDFREQUEST Request
     )
 {
+    VIIPER_UDE_ENDPOINT_CONTEXT *endpointContext = ViiperGetEndpointContext(Endpoint);
+    VIIPER_UDE_DEVICE_CONTEXT *deviceContext = ViiperGetDeviceContext(endpointContext->Device);
+    VIIPER_UDE_CONTROLLER_CONTEXT *controllerContext =
+        ViiperGetControllerContext(deviceContext->Controller);
     NTSTATUS status;
 
-    InterlockedExchange64(&ViiperGetEndpointContext(Endpoint)->NextIsoStartFrame, 0);
-    ViiperPurgeEndpointOperations(Endpoint, STATUS_DEVICE_NOT_READY);
-    status = ViiperQueueAcknowledgedEndpointLifecycleEvent(
-        Endpoint, Request, ViiperUdeOperationEndpointReset);
+    WdfSpinLockAcquire(controllerContext->BrokerLock);
+    if (InterlockedCompareExchange(&deviceContext->Purging, 0, 0) != 0 ||
+        InterlockedCompareExchange(&deviceContext->Resetting, 0, 0) != 0 ||
+        InterlockedCompareExchange(&endpointContext->Purging, 0, 0) != 0 ||
+        InterlockedCompareExchange(&endpointContext->Resetting, TRUE, FALSE) != FALSE) {
+        status = STATUS_DEVICE_BUSY;
+    } else {
+        status = STATUS_SUCCESS;
+    }
+    WdfSpinLockRelease(controllerContext->BrokerLock);
     if (!NT_SUCCESS(status)) {
         WdfRequestComplete(Request, status);
+        return;
+    }
+
+    InterlockedExchange64(&endpointContext->NextIsoStartFrame, 0);
+    ViiperPurgeEndpointOperations(Endpoint, STATUS_DEVICE_NOT_READY);
+    endpointContext->ResetRequest = Request;
+    // A forwarded broker operation or direct input copy may have won
+    // admission immediately before Resetting was raised. Defer publication of
+    // the reset request until those owners have actually completed; otherwise
+    // user mode could clear controller state while the old transfer is still
+    // writing into the endpoint.
+    WdfWorkItemEnqueue(endpointContext->ResetWorkItem);
+}
+
+VOID
+ViiperEvtEndpointResetWorkItem(
+    _In_ WDFWORKITEM WorkItem
+    )
+{
+    UDECXUSBENDPOINT endpoint = (UDECXUSBENDPOINT)WdfWorkItemGetParentObject(WorkItem);
+    VIIPER_UDE_ENDPOINT_CONTEXT *endpointContext = ViiperGetEndpointContext(endpoint);
+    WDFREQUEST request;
+    NTSTATUS status;
+
+    PAGED_CODE();
+    (VOID)KeWaitForSingleObject(
+        &endpointContext->OperationsDrained,
+        Executive,
+        KernelMode,
+        FALSE,
+        NULL);
+    request = endpointContext->ResetRequest;
+    endpointContext->ResetRequest = WDF_NO_HANDLE;
+    if (InterlockedCompareExchange(&endpointContext->Purging, 0, 0) != 0) {
+        InterlockedExchange(&endpointContext->Resetting, FALSE);
+        WdfRequestComplete(request, STATUS_DEVICE_NOT_READY);
+        return;
+    }
+    status = ViiperQueueAcknowledgedEndpointLifecycleEvent(
+        endpoint, request, ViiperUdeOperationEndpointReset);
+    if (!NT_SUCCESS(status)) {
+        InterlockedExchange(&endpointContext->Resetting, FALSE);
+        WdfRequestComplete(request, status);
     }
 }
 
@@ -1194,7 +1285,17 @@ ViiperEvtEndpointPurge(
     )
 {
     VIIPER_UDE_ENDPOINT_CONTEXT *endpointContext = ViiperGetEndpointContext(Endpoint);
+    VIIPER_UDE_DEVICE_CONTEXT *deviceContext = ViiperGetDeviceContext(endpointContext->Device);
+    VIIPER_UDE_CONTROLLER_CONTEXT *controllerContext =
+        ViiperGetControllerContext(deviceContext->Controller);
+
+    // Serialize the admission gate with both pending-slot allocation and the
+    // direct input fast path. This makes OperationsDrained a reliable purge
+    // barrier instead of allowing a transfer to start after the work item has
+    // already observed the event as signaled.
+    WdfSpinLockAcquire(controllerContext->BrokerLock);
     InterlockedExchange(&endpointContext->Purging, TRUE);
+    WdfSpinLockRelease(controllerContext->BrokerLock);
     InterlockedExchange64(&endpointContext->NextIsoStartFrame, 0);
     ViiperPurgeEndpointOperations(Endpoint, STATUS_DEVICE_NOT_READY);
     (VOID)ViiperQueueEndpointLifecycleEvent(Endpoint, ViiperUdeOperationEndpointPurge);
@@ -1210,6 +1311,9 @@ ViiperEvtEndpointStart(
     )
 {
     VIIPER_UDE_ENDPOINT_CONTEXT *endpointContext = ViiperGetEndpointContext(Endpoint);
+    VIIPER_UDE_DEVICE_CONTEXT *deviceContext = ViiperGetDeviceContext(endpointContext->Device);
+    VIIPER_UDE_CONTROLLER_CONTEXT *controllerContext =
+        ViiperGetControllerContext(deviceContext->Controller);
 
     // UdeCx defines START as the boundary at which both the endpoint queue and
     // any client-owned forwarded paths may resume. Open the kernel admission
@@ -1218,7 +1322,9 @@ ViiperEvtEndpointStart(
     // while Purging is still true, consuming and discarding the first fresh
     // sequence after resume.
     InterlockedExchange64(&endpointContext->NextIsoStartFrame, 0);
+    WdfSpinLockAcquire(controllerContext->BrokerLock);
     InterlockedExchange(&endpointContext->Purging, FALSE);
+    WdfSpinLockRelease(controllerContext->BrokerLock);
     (VOID)ViiperQueueEndpointLifecycleEvent(Endpoint, ViiperUdeOperationEndpointStart);
 }
 

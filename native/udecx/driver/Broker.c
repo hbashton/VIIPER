@@ -274,6 +274,40 @@ ViiperSetDeviceResettingByIdentity(
 
 static
 VOID
+ViiperSetEndpointResettingByIdentity(
+    _In_ VIIPER_UDE_CONTROLLER_CONTEXT *ControllerContext,
+    _In_ ULONGLONG DeviceId,
+    _In_ ULONG Generation,
+    _In_ UCHAR EndpointAddress,
+    _In_ LONG Value
+    )
+{
+    ULONG index;
+
+    WdfWaitLockAcquire(ControllerContext->DeviceLock, NULL);
+    for (index = 0; index < VIIPER_UDE_MAX_DEVICES; ++index) {
+        UDECXUSBDEVICE device = ControllerContext->Devices[index];
+        VIIPER_UDE_DEVICE_CONTEXT *deviceContext;
+        UDECXUSBENDPOINT endpoint;
+        if (device == WDF_NO_HANDLE) {
+            continue;
+        }
+        deviceContext = ViiperGetDeviceContext(device);
+        if (deviceContext->DeviceId != DeviceId ||
+            deviceContext->Generation != Generation) {
+            continue;
+        }
+        endpoint = deviceContext->Endpoints[EndpointAddress];
+        if (endpoint != WDF_NO_HANDLE) {
+            InterlockedExchange(&ViiperGetEndpointContext(endpoint)->Resetting, Value);
+        }
+        break;
+    }
+    WdfWaitLockRelease(ControllerContext->DeviceLock);
+}
+
+static
+VOID
 ViiperClearSlotLocked(
     _In_ VIIPER_UDE_CONTROLLER_CONTEXT *ControllerContext,
     _In_ ULONG Slot
@@ -781,6 +815,7 @@ ViiperAllocatePendingSlot(
 
     WdfSpinLockAcquire(ControllerContext->BrokerLock);
     if (InterlockedCompareExchange(&endpointContext->Purging, 0, 0) != 0 ||
+        InterlockedCompareExchange(&endpointContext->Resetting, 0, 0) != 0 ||
         InterlockedCompareExchange(&deviceContext->Resetting, 0, 0) != 0 ||
         InterlockedCompareExchange(&deviceContext->Purging, 0, 0) != 0) {
         status = STATUS_DEVICE_NOT_READY;
@@ -1688,6 +1723,7 @@ ViiperCompleteManagementOperation(
     ULONG slot = (encodedSlot & ~VIIPER_UDE_MANAGEMENT_SLOT_FLAG) - 1;
     WDFREQUEST request = WDF_NO_HANDLE;
     ULONG kind = 0;
+    UCHAR endpointAddress = 0;
 
     if ((encodedSlot & VIIPER_UDE_MANAGEMENT_SLOT_FLAG) == 0 ||
         slot >= VIIPER_UDE_MAX_PENDING_MANAGEMENT ||
@@ -1705,6 +1741,7 @@ ViiperCompleteManagementOperation(
         ControllerContext->ManagementSlots[slot].DeviceGeneration == Completion->Generation) {
         request = ControllerContext->ManagementSlots[slot].Request;
         kind = ControllerContext->ManagementSlots[slot].Kind;
+        endpointAddress = ControllerContext->ManagementSlots[slot].EndpointAddress;
         ControllerContext->ManagementSlots[slot].State = ViiperUdePendingCompleting;
         WdfObjectReference(request);
     }
@@ -1721,6 +1758,17 @@ ViiperCompleteManagementOperation(
         // sees the post-reset state, while no direct report can cross early.
         ViiperSetDeviceResettingByIdentity(
             ControllerContext, Completion->DeviceId, Completion->Generation, FALSE);
+    } else if (kind == ViiperUdeOperationEndpointReset) {
+        // Endpoint reset is a distinct UdeCx boundary, not a purge/start
+        // cycle. Reopen only this endpoint immediately before completing the
+        // asynchronous reset request. The host has already stopped and joined
+        // its direct-input publisher before sending this acknowledgement.
+        ViiperSetEndpointResettingByIdentity(
+            ControllerContext,
+            Completion->DeviceId,
+            Completion->Generation,
+            endpointAddress,
+            FALSE);
     }
     WdfRequestComplete(request, (NTSTATUS)Completion->Status);
     WdfSpinLockAcquire(ControllerContext->BrokerLock);
