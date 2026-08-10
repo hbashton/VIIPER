@@ -185,6 +185,11 @@ ViiperEvtIoDeviceControlRoute(
     UNREFERENCED_PARAMETER(OutputBufferLength);
     UNREFERENCED_PARAMETER(InputBufferLength);
 
+    if (InterlockedCompareExchange(&context->ShuttingDown, 0, 0) != 0) {
+        WdfRequestComplete(Request, STATUS_DEVICE_REMOVED);
+        return;
+    }
+
     // The default queue performs routing only. Keeping it parallel prevents a
     // large media completion or lifecycle mutation on the serialized control
     // queue from delaying an already encoded interrupt-IN report.
@@ -203,10 +208,17 @@ ViiperEvtInputIoDeviceControl(
     _In_ ULONG IoControlCode
     )
 {
+    VIIPER_UDE_CONTROLLER_CONTEXT *context =
+        ViiperGetControllerContext(WdfIoQueueGetDevice(Queue));
     NTSTATUS status;
 
     UNREFERENCED_PARAMETER(OutputBufferLength);
     UNREFERENCED_PARAMETER(InputBufferLength);
+
+    if (InterlockedCompareExchange(&context->ShuttingDown, 0, 0) != 0) {
+        WdfRequestComplete(Request, STATUS_DEVICE_REMOVED);
+        return;
+    }
 
     status = IoControlCode == IOCTL_VIIPER_UDE_SUBMIT_INPUT_REPORT
         ? ViiperSubmitInputReport(Queue, Request)
@@ -223,10 +235,17 @@ ViiperEvtIoDeviceControl(
     _In_ ULONG IoControlCode
     )
 {
+    VIIPER_UDE_CONTROLLER_CONTEXT *context =
+        ViiperGetControllerContext(WdfIoQueueGetDevice(Queue));
     NTSTATUS status;
 
     UNREFERENCED_PARAMETER(OutputBufferLength);
     UNREFERENCED_PARAMETER(InputBufferLength);
+
+    if (InterlockedCompareExchange(&context->ShuttingDown, 0, 0) != 0) {
+        WdfRequestComplete(Request, STATUS_DEVICE_REMOVED);
+        return;
+    }
 
     switch (IoControlCode) {
     case IOCTL_VIIPER_UDE_NEGOTIATE:

@@ -116,20 +116,16 @@ cannot replay itself into multiple successor polls. Live validation requires
 both forward publication and a completed Windows poll without inventing a
 strict one-to-one relationship.
 
-UDE URB completion deliberately keeps a separate DPC boundary. The individual
-`UdecxUrbComplete` API reference currently lists `PASSIVE_LEVEL`, but
-Microsoft's complete UDE client-driver guide is more specific: existing USB
-drivers require completion at `DISPATCH_LEVEL`, a synchronously processed URB
-must not be completed on its submitting thread, and cancellation must complete
-on a separate DPC. usbip-win2 0.9.7.8 independently follows that same contract.
-VIIPER therefore copies data and transfers ownership at PASSIVE level, then
-uses one preallocated controller DPC to finish bounded broker slots. Direct
-producer input arrives on a separate user I/O path and completes at
-`DISPATCH_LEVEL` without allocating per report. A late cached poll first crosses
-a preallocated endpoint work-item boundary before the same DISPATCH-level
-completion, because `WdfIoQueueReadyNotify` is permitted to run inline on the
-UdeCx submitter thread. This is not optional scheduler padding; removing either
-boundary would violate the documented UDE compatibility contract.
+Both `UdecxUrbComplete` and `UdecxUrbCompleteWithNtStatus` require
+`PASSIVE_LEVEL`. VIIPER therefore uses one preallocated controller work item to
+finish bounded broker slots, including cancellations that can originate at
+dispatch level. The worker drains every ready slot per invocation, so the
+PASSIVE transition neither allocates per request nor creates one work item per
+packet. Direct producer input already runs on an explicitly passive queue and
+can complete there. A late cached poll first crosses the preallocated endpoint
+work-item boundary because `WdfIoQueueReadyNotify` is permitted to run inline on
+the UdeCx submitter thread; the boundary avoids recursive successor-poll
+completion while preserving the documented passive completion contract.
 
 Input publishers start and stop from UdeCx endpoint lifecycle notifications,
 retain their sequence across a purge/start cycle, and are cancelled before
@@ -227,7 +223,33 @@ interface fields are only hints for alternates that contain no endpoints.
 
 ## Synchronization model
 
-- A controller-level lock protects the device table and owner registration.
+- Separate controller locks protect the device table and broker-owner
+  registration; the broker spin lock is the operation-admission boundary.
+- Broker file callbacks explicitly run at `WdfExecutionLevelPassive`, matching
+  their wait-lock, synchronous-queue-purge, and pageable cleanup operations.
+- Every UdeCx USB-device and endpoint object explicitly requests
+  `WdfExecutionLevelPassive`. Microsoft permits the device power/reset,
+  endpoint-configuration, start, purge, and reset callbacks at up to
+  `DISPATCH_LEVEL`, but VIIPER's callbacks create WDF/UdeCx objects and acquire
+  the embedded device-table `FAST_MUTEX`, operations whose contract is below
+  dispatch level. The KMDF controller default is dispatch execution, so relying
+  on inherited or presently observed callback context is not a valid safety
+  contract.
+- Controller removal closes a single `ShuttingDown` admission gate in
+  `EvtDeviceSelfManagedIoCleanup`, while the controller's queues, timer,
+  passive completion worker, locks, and broker storage are still valid.
+  Cleanup first joins any file cleanup that crossed the owner lock before the
+  gate, then purges user-mode queues, aborts every admitted broker operation,
+  waits for the tracked operation count to reach zero, and flushes the worker
+  before revoking device-table handles. The final controller
+  `EvtCleanupCallback` performs only invariant checks because KMDF has already
+  cleaned up child objects by then.
+- UdeCx USB-device deletion remains asynchronous. Shutdown snapshots and
+  revokes each device under the embedded `FAST_MUTEX`, invokes
+  `UdecxUsbDevicePlugOutAndDelete` after dropping the lock, and never waits for
+  child cleanup from the PnP cleanup callback. Embedding the mutex in the
+  controller context keeps endpoint/device cleanup independent of sibling WDF
+  child deletion order.
 - Removal atomically revokes the UDE handle from the device table before
   `UdecxUsbDevicePlugOutAndDelete`; that slot remains reserved until the
   asynchronous object cleanup runs. Once that API returns, success or failure,
@@ -324,8 +346,8 @@ interface fields are only hints for alternates that contain no endpoints.
   threads.
 - Every mark-cancelable transition revalidates its prior state under the broker
   lock. If KMDF invokes cancellation before that lock is reacquired, the cancel
-  callback's DPC ownership is final and cannot be overwritten by admission or
-  publication.
+  callback's passive-completion ownership is final and cannot be overwritten
+  by admission or publication.
 - Broker dequeue validation, wait-count admission, and transfer into the
   manual inverted-call queue share the owner lock with file cleanup. No close
   can finish purging that queue and then have an already-validated request
@@ -435,6 +457,12 @@ validation contract is documented in
 - Microsoft, *Write a UDE client driver*
   <https://learn.microsoft.com/windows-hardware/drivers/usbcon/writing-a-ude-client-driver>
 - Microsoft, `EVT_UDECX_USB_ENDPOINT_PURGE`
+- Microsoft, `UdecxUrbComplete` and `UdecxUrbCompleteWithNtStatus`
+  <https://learn.microsoft.com/windows-hardware/drivers/ddi/udecxurb/nf-udecxurb-udecxurbcomplete>
+- Microsoft, `EvtDeviceSelfManagedIoCleanup`
+  <https://learn.microsoft.com/windows-hardware/drivers/ddi/wdfdevice/nc-wdfdevice-evt_wdf_device_self_managed_io_cleanup>
+- Microsoft, `WdfWorkItemEnqueue` and `WdfWorkItemFlush`
+  <https://learn.microsoft.com/windows-hardware/drivers/ddi/wdfworkitem/nf-wdfworkitem-wdfworkitemenqueue>
 - Microsoft, *KMDF Version History*
 - Microsoft, *Install the WDK using NuGet*
 - Microsoft Windows Driver Samples CI guidance

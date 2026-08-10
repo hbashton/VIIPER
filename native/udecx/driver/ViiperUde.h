@@ -26,7 +26,7 @@ typedef enum VIIPER_UDE_PENDING_STATE {
     ViiperUdePendingPublishing,
     ViiperUdePendingInFlight,
     ViiperUdePendingCompleting,
-    ViiperUdePendingDpcCompletion
+    ViiperUdePendingPassiveCompletion
 } VIIPER_UDE_PENDING_STATE;
 
 typedef struct VIIPER_UDE_PENDING_SLOT {
@@ -88,7 +88,11 @@ WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(VIIPER_UDE_REQUEST_CONTEXT, ViiperGetRequestC
 
 typedef struct VIIPER_UDE_CONTROLLER_CONTEXT {
     WDFWAITLOCK OwnerLock;
-    WDFWAITLOCK DeviceLock;
+    // This lock is embedded in the controller context instead of being a WDF
+    // child object. UdeCx endpoint/device cleanup can run while the framework
+    // is deleting sibling controller children, but the parent context remains
+    // alive until every child cleanup callback has returned.
+    FAST_MUTEX DeviceLock;
     WDFSPINLOCK BrokerLock;
     WDFMEMORY PendingStorage;
     VIIPER_UDE_PENDING_SLOT *PendingSlots;
@@ -99,7 +103,7 @@ typedef struct VIIPER_UDE_CONTROLLER_CONTEXT {
     VIIPER_UDE_NOTIFICATION *Notifications;
     WDFMEMORY ManagementStorage;
     VIIPER_UDE_MANAGEMENT_SLOT *ManagementSlots;
-    WDFDPC CompletionDpc;
+    WDFWORKITEM CompletionWorkItem;
     ULONG NotificationHead;
     ULONG NotificationTail;
     ULONG NotificationCount;
@@ -109,10 +113,14 @@ typedef struct VIIPER_UDE_CONTROLLER_CONTEXT {
     WDFQUEUE InputQueue;
     WDFQUEUE WaitingDequeues;
     WDFTIMER OwnerCleanupTimer;
+    KEVENT BrokerOperationsDrained;
+    KEVENT FileCleanupsDrained;
     BOOLEAN CleanupInProgress;
+    volatile LONG ShuttingDown;
     volatile LONG BrokerFaulted;
     volatile LONG OwnerReferenced;
     volatile LONG ActiveOwnerAdmissions;
+    volatile LONG ActiveFileCleanups;
     volatile LONG CleanupRetries;
     volatile LONG ActiveDevices;
     volatile LONG PendingOperations;
@@ -201,6 +209,8 @@ DRIVER_INITIALIZE DriverEntry;
 EVT_WDF_DRIVER_DEVICE_ADD ViiperEvtDeviceAdd;
 EVT_WDF_OBJECT_CONTEXT_CLEANUP ViiperEvtDriverCleanup;
 EVT_WDF_OBJECT_CONTEXT_CLEANUP ViiperEvtControllerCleanup;
+EVT_WDF_DEVICE_SELF_MANAGED_IO_INIT ViiperEvtDeviceSelfManagedIoInit;
+EVT_WDF_DEVICE_SELF_MANAGED_IO_CLEANUP ViiperEvtDeviceSelfManagedIoCleanup;
 EVT_WDF_DEVICE_FILE_CREATE ViiperEvtFileCreate;
 EVT_WDF_FILE_CLEANUP ViiperEvtFileCleanup;
 EVT_WDF_TIMER ViiperEvtOwnerCleanupRetry;
@@ -223,7 +233,7 @@ EVT_WDF_IO_QUEUE_STATE ViiperEvtFastInputQueueReady;
 EVT_WDF_WORKITEM ViiperEvtFastInputWorkItem;
 EVT_WDF_WORKITEM ViiperEvtEndpointPurgeWorkItem;
 EVT_WDF_WORKITEM ViiperEvtEndpointResetWorkItem;
-EVT_WDF_DPC ViiperEvtCompletionDpc;
+EVT_WDF_WORKITEM ViiperEvtCompletionWorkItem;
 EVT_WDF_OBJECT_CONTEXT_CLEANUP ViiperEvtVirtualDeviceCleanup;
 EVT_WDF_OBJECT_CONTEXT_CLEANUP ViiperEvtEndpointCleanup;
 
@@ -232,10 +242,11 @@ NTSTATUS ViiperInitializeBroker(_In_ WDFDEVICE Device);
 NTSTATUS ViiperCreateVirtualDevice(_In_ WDFQUEUE Queue, _In_ WDFREQUEST Request);
 NTSTATUS ViiperDestroyVirtualDevice(_In_ WDFQUEUE Queue, _In_ WDFREQUEST Request);
 BOOLEAN ViiperDestroyOwnedDevices(_In_ WDFDEVICE Controller, _In_ WDFFILEOBJECT OwnerFile);
+VOID ViiperBeginControllerShutdown(_In_ WDFDEVICE Controller);
 NTSTATUS ViiperQueueDequeueOperation(_In_ WDFQUEUE Queue, _In_ WDFREQUEST Request);
 NTSTATUS ViiperCompleteOperation(_In_ WDFQUEUE Queue, _In_ WDFREQUEST Request);
 NTSTATUS ViiperQueueUrb(_In_ WDFQUEUE Queue, _In_ WDFREQUEST Request);
-VOID ViiperCompleteUnownedUrbAsync(
+VOID ViiperCompleteUnownedUrb(
     _In_ WDFDEVICE Controller,
     _In_ WDFREQUEST Request,
     _In_ NTSTATUS Status);
