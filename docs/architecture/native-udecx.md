@@ -139,9 +139,18 @@ unplug all converge on the same idempotent purge path.
 - Each fast interrupt-IN endpoint has its own passive lock. Different
   controllers publish concurrently, while accidental concurrent submissions
   for one endpoint cannot reorder reports or replay a coalesced sequence.
+- Parallel media callbacks receive a per-endpoint admission sequence under the
+  broker lock. An URB cannot publish ahead of an earlier live unpublished
+  admission; cancellation retires the admission before dispatch resumes, so
+  the public endpoint sequence remains contiguous without limiting media to
+  one in-flight URB.
 - Media callbacks do not take the controller lock.
 - Interrupt-IN queues are manual and completed from fresh input snapshots;
   output and media endpoints retain independent ordered queues.
+- A direct input report that was already submitted when D0 exit, unplug, or
+  endpoint purge begins is acknowledged and discarded at that exact lifecycle
+  boundary. Stale generations and replayed sequences remain hard failures, so
+  normal teardown cannot fault the exclusive broker session.
 - UDE callbacks never wait on user mode while holding a WDF lock.
 - Blocking work is represented by cancelable WDF requests, not sleeping kernel
   threads.

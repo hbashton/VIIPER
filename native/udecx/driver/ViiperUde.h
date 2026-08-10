@@ -32,6 +32,7 @@ typedef struct VIIPER_UDE_PENDING_SLOT {
     UDECXUSBENDPOINT Endpoint;
     ULONGLONG Token;
     ULONGLONG DeviceId;
+    ULONGLONG AdmissionSequence;
     ULONG Generation;
     ULONG DeviceGeneration;
     VIIPER_UDE_PENDING_STATE State;
@@ -147,6 +148,7 @@ typedef struct VIIPER_UDE_ENDPOINT_CONTEXT {
     USB_ENDPOINT_DESCRIPTOR Descriptor;
     volatile LONG Purging;
     volatile LONG64 LastInputSequence;
+    ULONGLONG NextAdmissionSequence;
     BOOLEAN FastInput;
 } VIIPER_UDE_ENDPOINT_CONTEXT;
 

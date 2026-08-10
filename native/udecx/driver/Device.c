@@ -801,6 +801,7 @@ ViiperSubmitInputReport(
     ULONG transferLength;
     ULONG index;
     NTSTATUS status;
+    BOOLEAN lifecycleDrop = FALSE;
 
     status = ViiperValidateBrokerOwner(controller, Request);
     if (!NT_SUCCESS(status)) {
@@ -843,9 +844,12 @@ ViiperSubmitInputReport(
         deviceContext = ViiperGetDeviceContext(device);
         if (deviceContext->OwnerFile != ownerFile ||
             deviceContext->DeviceId != input->DeviceId ||
-            deviceContext->Generation != input->Generation ||
-            InterlockedCompareExchange(&deviceContext->Purging, 0, 0) != 0) {
+            deviceContext->Generation != input->Generation) {
             continue;
+        }
+        if (InterlockedCompareExchange(&deviceContext->Purging, 0, 0) != 0) {
+            lifecycleDrop = TRUE;
+            break;
         }
         endpoint = deviceContext->Endpoints[input->EndpointAddress];
         if (endpoint != WDF_NO_HANDLE) {
@@ -854,6 +858,13 @@ ViiperSubmitInputReport(
         break;
     }
     WdfWaitLockRelease(controllerContext->DeviceLock);
+    if (lifecycleDrop) {
+        // A report already submitted by the owner may cross the D0/unplug
+        // boundary before the ordered lifecycle notification cancels its
+        // publisher. It is stale latest-state data, not a broken owner
+        // session. Acknowledge and discard it exactly at that boundary.
+        return STATUS_SUCCESS;
+    }
     if (endpoint == WDF_NO_HANDLE) {
         return STATUS_NOT_FOUND;
     }
@@ -869,8 +880,14 @@ ViiperSubmitInputReport(
     // another. Serialize only this endpoint, preserving report order even if
     // a faulty or hostile owner submits concurrent updates for the same pad.
     WdfWaitLockAcquire(endpointContext->InputLock, NULL);
-    if (InterlockedCompareExchange(&endpointContext->Purging, 0, 0) != 0 ||
-        input->Sequence <= (ULONGLONG)InterlockedCompareExchange64(
+    if (InterlockedCompareExchange(&endpointContext->Purging, 0, 0) != 0) {
+        WdfWaitLockRelease(endpointContext->InputLock);
+        WdfObjectDereference(endpoint);
+        // Endpoint purge and restart preserve the device generation. Do not
+        // turn the one report racing purge into a fatal user-mode session.
+        return STATUS_SUCCESS;
+    }
+    if (input->Sequence <= (ULONGLONG)InterlockedCompareExchange64(
             &endpointContext->LastInputSequence, 0, 0)) {
         WdfWaitLockRelease(endpointContext->InputLock);
         WdfObjectDereference(endpoint);

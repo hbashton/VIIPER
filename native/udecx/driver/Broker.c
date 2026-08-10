@@ -12,6 +12,8 @@
 
 EVT_WDF_REQUEST_CANCEL ViiperEvtUrbCancel;
 
+static VOID ViiperDispatchAvailable(_In_ WDFDEVICE Controller);
+
 typedef struct VIIPER_UDE_ORPHAN_COMPLETION_CONTEXT {
     WDFREQUEST Request;
     NTSTATUS Status;
@@ -218,6 +220,7 @@ ViiperClearSlotLocked(
     pending->Endpoint = WDF_NO_HANDLE;
     pending->Token = 0;
     pending->DeviceId = 0;
+    pending->AdmissionSequence = 0;
     pending->DeviceGeneration = 0;
     pending->State = ViiperUdePendingEmpty;
     pending->AbortPending = FALSE;
@@ -529,6 +532,11 @@ ViiperAllocatePendingSlot(
         pending->Endpoint = Endpoint;
         pending->Token = ((ULONGLONG)pending->Generation << 32) | (index + 1);
         pending->DeviceId = deviceContext->DeviceId;
+        ++endpointContext->NextAdmissionSequence;
+        if (endpointContext->NextAdmissionSequence == 0) {
+            ++endpointContext->NextAdmissionSequence;
+        }
+        pending->AdmissionSequence = endpointContext->NextAdmissionSequence;
         pending->DeviceGeneration = deviceContext->Generation;
         pending->State = ViiperUdePendingPreparing;
         pending->AbortPending = FALSE;
@@ -548,6 +556,39 @@ ViiperAllocatePendingSlot(
         InterlockedIncrement64(&ControllerContext->QueueExhaustions);
     }
     return status;
+}
+
+static
+BOOLEAN
+ViiperHasEarlierUnpublishedAdmissionLocked(
+    _In_ VIIPER_UDE_CONTROLLER_CONTEXT *ControllerContext,
+    _In_ ULONG CandidateSlot
+    )
+{
+    const VIIPER_UDE_PENDING_SLOT *candidate =
+        &ControllerContext->PendingSlots[CandidateSlot];
+    ULONG index;
+
+    for (index = 0; index < VIIPER_UDE_MAX_PENDING_OPERATIONS; ++index) {
+        const VIIPER_UDE_PENDING_SLOT *other;
+        if (index == CandidateSlot) {
+            continue;
+        }
+        other = &ControllerContext->PendingSlots[index];
+        if (other->State == ViiperUdePendingEmpty || other->PublishedToOwner ||
+            other->AbortPending ||
+            other->State == ViiperUdePendingCompleting ||
+            other->State == ViiperUdePendingDpcCompletion ||
+            other->DeviceId != candidate->DeviceId ||
+            other->DeviceGeneration != candidate->DeviceGeneration ||
+            other->EndpointAddress != candidate->EndpointAddress ||
+            other->AdmissionSequence == 0 ||
+            other->AdmissionSequence >= candidate->AdmissionSequence) {
+            continue;
+        }
+        return TRUE;
+    }
+    return FALSE;
 }
 
 VOID
@@ -979,7 +1020,8 @@ ViiperDispatchAvailable(
             ULONG candidate = (controllerContext->NextPendingSlot + index) %
                 VIIPER_UDE_MAX_PENDING_OPERATIONS;
             VIIPER_UDE_PENDING_SLOT *pending = &controllerContext->PendingSlots[candidate];
-            if (pending->State == ViiperUdePendingQueued) {
+            if (pending->State == ViiperUdePendingQueued &&
+                !ViiperHasEarlierUnpublishedAdmissionLocked(controllerContext, candidate)) {
                 status = WdfIoQueueRetrieveNextRequest(
                     controllerContext->WaitingDequeues, &dequeueRequest);
                 if (!NT_SUCCESS(status)) {
