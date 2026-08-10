@@ -269,7 +269,7 @@ int Measure(
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
     while (matches < sampleCount && std::chrono::steady_clock::now() < deadline) {
         ResetEvent(event.get());
-        std::fill(report.begin(), report.end(), 0);
+        std::fill(report.begin(), report.end(), std::uint8_t{0});
         DWORD transferred = 0;
         BOOL completed = ReadFile(device->file.get(), report.data(),
             static_cast<DWORD>(report.size()), &transferred, &overlapped);
