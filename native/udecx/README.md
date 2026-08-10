@@ -75,6 +75,12 @@ generation must also create one new render/capture endpoint pair; three seconds
 of simultaneous WASAPI render/capture must increase native ISO, host-to-device,
 and device-to-host byte counters. The baseline snapshot prevents a connected
 physical controller from being mistaken for the virtual device.
+On Windows 10 2004 or newer, `-RestartRootDevice -DisposableTestMachine`
+restarts the exact signed root devnode with a live DualSense child and input
+publisher. The invalidated owner must terminate, the restarted controller must
+return with zero children and pending requests, and a fresh exclusive session
+must re-enumerate, service input, and tear down cleanly. No wildcard or
+hardware-ID-wide PnP operation is used.
 
 The Driver Verifier pass is a separate, explicit disposable-machine gate:
 
@@ -86,7 +92,9 @@ The Driver Verifier pass is a separate, explicit disposable-machine gate:
 .\native\udecx\tools\Invoke-ViiperUdeLiveValidation.ps1 `
   -SignedPackageDirectory C:\ViiperUde\MicrosoftSigned `
   -Iterations 10 `
-  -RequireDriverVerifier
+  -RequireDriverVerifier `
+  -RestartRootDevice `
+  -DisposableTestMachine
 ```
 
 Microsoft warns that Driver Verifier can intentionally bugcheck a machine;

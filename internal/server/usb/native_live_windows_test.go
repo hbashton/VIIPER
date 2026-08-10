@@ -29,6 +29,7 @@ const (
 	liveNativeTestIterations  = "VIIPER_UDE_LIVE_ITERATIONS"
 	liveNativeCrashChild      = "VIIPER_UDE_LIVE_CRASH_CHILD"
 	liveNativeMediaProbe      = "VIIPER_UDE_LIVE_MEDIA_PROBE"
+	liveNativeRestartInstance = "VIIPER_UDE_LIVE_RESTART_INSTANCE_ID"
 	liveNativeCrashExitCode   = 86
 )
 
@@ -584,5 +585,158 @@ func TestNativeUDELiveOwnerCrashRecovery(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("recovered native UDE host did not stop within 5 seconds")
+	}
+}
+
+// TestNativeUDELiveRootRestartRecovery is enabled only by the signed-package
+// PowerShell gate on a disposable Windows test machine. It restarts the exact
+// installed root devnode while a real child and direct-input publisher are
+// active, then requires the invalidated owner to terminate and a fresh broker
+// session to enumerate and service input without stale kernel state.
+func TestNativeUDELiveRootRestartRecovery(t *testing.T) {
+	if os.Getenv(liveNativeTestEnvironment) != "1" {
+		t.Skipf("set %s=1 after installing a verified Microsoft-signed native UDE package",
+			liveNativeTestEnvironment)
+	}
+	instanceID := os.Getenv(liveNativeRestartInstance)
+	if instanceID == "" {
+		t.Skipf("set %s only through the signed disposable-machine validation gate",
+			liveNativeRestartInstance)
+	}
+
+	testCtx, cancelTest := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancelTest()
+	client, err := udecx.Open(testCtx)
+	if err != nil {
+		t.Fatalf("open native UDE controller before root restart: %v", err)
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	server := serverusb.New(serverusb.ServerConfig{ConnectionTimeout: 5 * time.Second}, logger, nil)
+	processor, err := serverusb.NewNativeProcessor(server)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host, err := udecx.NewHost(client, processor, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- host.Serve(testCtx) }()
+	dev, publishInput, err := liveNativeControllers()[2].new()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = host.Register(testCtx, 0x56494950504e5052, dev); err != nil {
+		t.Fatalf("register DualSense before root restart: %v", err)
+	}
+	inputDeadline := time.Now().Add(time.Second)
+	for sequence := uint64(1); time.Now().Before(inputDeadline); sequence++ {
+		publishInput(sequence)
+		time.Sleep(time.Millisecond)
+	}
+	inputCtx, cancelInput := context.WithTimeout(testCtx, 20*time.Second)
+	_, err = waitForNativeStats(inputCtx, client,
+		"pre-restart direct input", func(stats udecx.Stats) bool {
+			return stats.ActiveDevices == 1 && stats.InputReportsCompleted != 0
+		})
+	cancelInput()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	restart := exec.CommandContext(testCtx, "pnputil.exe", "/restart-device", instanceID)
+	restartOutput, restartErr := restart.CombinedOutput()
+	if restartErr != nil {
+		host.Close()
+		_ = client.Close()
+		t.Fatalf("restart exact native UDE root devnode %q: %v\n%s",
+			instanceID, restartErr, restartOutput)
+	}
+	select {
+	case <-serveDone:
+	case <-time.After(30 * time.Second):
+		host.Close()
+		_ = client.Close()
+		t.Fatal("native host did not observe root-devnode restart within 30 seconds")
+	}
+	host.Close()
+	if closeErr := client.Close(); closeErr != nil {
+		t.Fatalf("close invalidated pre-restart controller handle: %v", closeErr)
+	}
+
+	var recovered *udecx.Client
+	recoveryDeadline := time.Now().Add(45 * time.Second)
+	for recovered == nil && time.Now().Before(recoveryDeadline) {
+		candidate, openErr := udecx.Open(testCtx)
+		if openErr == nil {
+			stats, queryErr := candidate.QueryStats(testCtx)
+			if queryErr == nil && stats.ActiveDevices == 0 && stats.PendingOperations == 0 {
+				recovered = candidate
+				break
+			}
+			_ = candidate.Close()
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if recovered == nil {
+		t.Fatal("native UDE root devnode did not return as a clean exclusive broker after restart")
+	}
+	defer recovered.Close()
+
+	server = serverusb.New(serverusb.ServerConfig{ConnectionTimeout: 5 * time.Second}, logger, nil)
+	processor, err = serverusb.NewNativeProcessor(server)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recoveredHost, err := udecx.NewHost(recovered, processor, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recoveredCtx, cancelRecovered := context.WithCancel(testCtx)
+	recoveredDone := make(chan error, 1)
+	go func() { recoveredDone <- recoveredHost.Serve(recoveredCtx) }()
+	dev, publishInput, err = liveNativeControllers()[2].new()
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := recoveredHost.Register(testCtx, 0x56494950504e5052, dev)
+	if err != nil {
+		t.Fatalf("register DualSense after root restart: %v", err)
+	}
+	for sequence := uint64(1); sequence <= 1000; sequence++ {
+		publishInput(sequence)
+		time.Sleep(time.Millisecond)
+	}
+	recoveredInputCtx, cancelRecoveredInput := context.WithTimeout(testCtx, 20*time.Second)
+	_, err = waitForNativeStats(recoveredInputCtx, recovered,
+		"post-restart direct input", func(stats udecx.Stats) bool {
+			return stats.ActiveDevices == 1 && stats.InputReportsCompleted != 0
+		})
+	cancelRecoveredInput()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = recoveredHost.Unregister(testCtx, identity); err != nil {
+		t.Fatalf("unregister DualSense after root restart: %v", err)
+	}
+	cleanCtx, cancelClean := context.WithTimeout(testCtx, 20*time.Second)
+	after, err := waitForNativeStats(cleanCtx, recovered,
+		"post-restart teardown", func(stats udecx.Stats) bool {
+			return stats.ActiveDevices == 0 && stats.PendingOperations == 0
+		})
+	cancelClean()
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertCleanNativeStatsDelta(t, udecx.Stats{}, after)
+	cancelRecovered()
+	recoveredHost.Close()
+	select {
+	case err = <-recoveredDone:
+		if err != nil {
+			t.Fatalf("post-restart host shutdown: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("post-restart native host did not stop within 5 seconds")
 	}
 }

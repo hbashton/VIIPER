@@ -10,7 +10,11 @@ param(
 
     [switch]$RequireDriverVerifier,
 
-    [string]$MediaProbePath
+    [string]$MediaProbePath,
+
+    [switch]$RestartRootDevice,
+
+    [switch]$DisposableTestMachine
 )
 
 Set-StrictMode -Version Latest
@@ -75,6 +79,15 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
     throw 'Live VIIPER UDE validation must run from an elevated PowerShell session.'
 }
 
+if ($RestartRootDevice) {
+    if (-not $DisposableTestMachine) {
+        throw 'Root-device restart validation is destructive to the active native session. Pass -DisposableTestMachine on a dedicated test system.'
+    }
+    if ([Environment]::OSVersion.Version.Build -lt 19041) {
+        throw 'PnPUtil /restart-device requires Windows 10 version 2004 (build 19041) or newer.'
+    }
+}
+
 if ($RequireDriverVerifier) {
     $verifierOutput = (& verifier.exe /query 2>&1 | Out-String)
     if ($LASTEXITCODE -ne 0) {
@@ -97,6 +110,7 @@ $go = Get-Command go.exe -ErrorAction Stop
 $oldLive = [Environment]::GetEnvironmentVariable('VIIPER_UDE_LIVE', 'Process')
 $oldIterations = [Environment]::GetEnvironmentVariable('VIIPER_UDE_LIVE_ITERATIONS', 'Process')
 $oldMediaProbe = [Environment]::GetEnvironmentVariable('VIIPER_UDE_LIVE_MEDIA_PROBE', 'Process')
+$oldRestartInstance = [Environment]::GetEnvironmentVariable('VIIPER_UDE_LIVE_RESTART_INSTANCE_ID', 'Process')
 try {
     $env:VIIPER_UDE_LIVE = '1'
     $env:VIIPER_UDE_LIVE_ITERATIONS = [string]$Iterations
@@ -106,11 +120,17 @@ try {
     else {
         [Environment]::SetEnvironmentVariable('VIIPER_UDE_LIVE_MEDIA_PROBE', $null, 'Process')
     }
-    $timeoutMinutes = ($Iterations * 5) + 2
+    if ($RestartRootDevice) {
+        $env:VIIPER_UDE_LIVE_RESTART_INSTANCE_ID = [string]$devnodes[0].DeviceID
+    }
+    else {
+        [Environment]::SetEnvironmentVariable('VIIPER_UDE_LIVE_RESTART_INSTANCE_ID', $null, 'Process')
+    }
+    $timeoutMinutes = ($Iterations * 5) + $(if ($RestartRootDevice) { 5 } else { 2 })
     Push-Location $repository
     try {
         & $go.Source test -count=1 -timeout "${timeoutMinutes}m" `
-            -run '^TestNativeUDELive(ProductionControllers|OwnerCrashRecovery)$' ./internal/server/usb
+            -run '^TestNativeUDELive(ProductionControllers|OwnerCrashRecovery|RootRestartRecovery)$' ./internal/server/usb
         if ($LASTEXITCODE -ne 0) {
             throw "Native UDE live validation failed with exit code $LASTEXITCODE."
         }
@@ -123,8 +143,10 @@ finally {
     [Environment]::SetEnvironmentVariable('VIIPER_UDE_LIVE', $oldLive, 'Process')
     [Environment]::SetEnvironmentVariable('VIIPER_UDE_LIVE_ITERATIONS', $oldIterations, 'Process')
     [Environment]::SetEnvironmentVariable('VIIPER_UDE_LIVE_MEDIA_PROBE', $oldMediaProbe, 'Process')
+    [Environment]::SetEnvironmentVariable('VIIPER_UDE_LIVE_RESTART_INSTANCE_ID', $oldRestartInstance, 'Process')
 }
 
 $verifierSuffix = if ($RequireDriverVerifier) { ' with Driver Verifier active' } else { '' }
 $mediaSuffix = if ($null -ne $resolvedMediaProbe) { ' with full-duplex CoreAudio media' } else { '' }
-Write-Host "VIIPER UDE live lifecycle/input validation passed for $Iterations iteration(s)$verifierSuffix$mediaSuffix."
+$restartSuffix = if ($RestartRootDevice) { ' with active root-device restart recovery' } else { '' }
+Write-Host "VIIPER UDE live lifecycle/input validation passed for $Iterations iteration(s)$verifierSuffix$mediaSuffix$restartSuffix."

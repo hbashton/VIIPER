@@ -89,6 +89,16 @@ and requires the driver's ISO packet, OUT-byte, and IN-byte counters all to
 advance. This distinguishes a visible-but-nonfunctional audio endpoint from a
 working full-duplex bus and avoids confusing an already-connected physical pad
 with the newly-created virtual one.
+The opt-in root-restart gate uses Microsoft's `pnputil /restart-device` only
+against the one package-verified VIIPER instance ID and only on an explicitly
+acknowledged disposable machine. It keeps a DualSense child and direct-input
+publisher active across removal, requires the old owner session to terminate,
+then hash-preserving PnP restart must expose a clean controller that accepts a
+new exclusive owner, re-enumerates the child, services input, and drains to
+zero again. Windows 10 1809 remains a supported runtime target, but this
+particular automated gate requires Windows 10 2004 because that is when
+Microsoft added `pnputil /restart-device`; 1809 power/PnP coverage belongs in
+the HLK/DevFund matrix.
 
 ## Primary Microsoft references
 
@@ -97,3 +107,4 @@ with the newly-created virtual one.
 - [Driver-signing options and best practices](https://learn.microsoft.com/windows-hardware/drivers/dashboard/driver-signing-offerings)
 - [Driver Verifier](https://learn.microsoft.com/windows-hardware/drivers/devtest/driver-verifier)
 - [Driver Verifier command syntax](https://learn.microsoft.com/windows-hardware/drivers/devtest/verifier-command-line)
+- [PnPUtil command syntax](https://learn.microsoft.com/windows-hardware/drivers/devtest/pnputil-command-syntax)
