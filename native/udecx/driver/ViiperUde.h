@@ -13,9 +13,44 @@
 
 EXTERN_C const GUID GUID_DEVINTERFACE_VIIPER_UDE;
 
+typedef enum VIIPER_UDE_PENDING_STATE {
+    ViiperUdePendingEmpty = 0,
+    ViiperUdePendingPreparing,
+    ViiperUdePendingQueued,
+    ViiperUdePendingPublishing,
+    ViiperUdePendingInFlight,
+    ViiperUdePendingCompleting
+} VIIPER_UDE_PENDING_STATE;
+
+typedef struct VIIPER_UDE_PENDING_SLOT {
+    WDFREQUEST Request;
+    UDECXUSBENDPOINT Endpoint;
+    ULONGLONG Token;
+    ULONG Generation;
+    VIIPER_UDE_PENDING_STATE State;
+    BOOLEAN AbortPending;
+    NTSTATUS AbortStatus;
+} VIIPER_UDE_PENDING_SLOT;
+
+typedef struct VIIPER_UDE_REQUEST_CONTEXT {
+    WDFDEVICE Controller;
+    UDECXUSBENDPOINT Endpoint;
+    ULONG PendingSlot;
+    ULONGLONG Token;
+    ULONG TransferLength;
+    ULONG IsoPacketCount;
+    BOOLEAN DirectionIn;
+} VIIPER_UDE_REQUEST_CONTEXT;
+
+WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(VIIPER_UDE_REQUEST_CONTEXT, ViiperGetRequestContext)
+
 typedef struct VIIPER_UDE_CONTROLLER_CONTEXT {
     WDFWAITLOCK OwnerLock;
     WDFWAITLOCK DeviceLock;
+    WDFSPINLOCK BrokerLock;
+    WDFMEMORY PendingStorage;
+    VIIPER_UDE_PENDING_SLOT *PendingSlots;
+    ULONG NextPendingSlot;
     WDFFILEOBJECT OwnerFile;
     WDFQUEUE DefaultQueue;
     WDFQUEUE WaitingDequeues;
@@ -92,6 +127,12 @@ EVT_WDF_IO_QUEUE_STATE ViiperEvtEndpointQueuePurged;
 EVT_WDF_OBJECT_CONTEXT_CLEANUP ViiperEvtVirtualDeviceCleanup;
 
 NTSTATUS ViiperCreateQueues(_In_ WDFDEVICE Device);
+NTSTATUS ViiperInitializeBroker(_In_ WDFDEVICE Device);
 NTSTATUS ViiperCreateVirtualDevice(_In_ WDFQUEUE Queue, _In_ WDFREQUEST Request);
 NTSTATUS ViiperDestroyVirtualDevice(_In_ WDFQUEUE Queue, _In_ WDFREQUEST Request);
 VOID ViiperDestroyOwnedDevices(_In_ WDFDEVICE Controller, _In_ WDFFILEOBJECT OwnerFile);
+NTSTATUS ViiperQueueDequeueOperation(_In_ WDFQUEUE Queue, _In_ WDFREQUEST Request);
+NTSTATUS ViiperCompleteOperation(_In_ WDFQUEUE Queue, _In_ WDFREQUEST Request);
+NTSTATUS ViiperQueueUrb(_In_ WDFQUEUE Queue, _In_ WDFREQUEST Request);
+VOID ViiperPurgeEndpointOperations(_In_ UDECXUSBENDPOINT Endpoint, _In_ NTSTATUS Status);
+VOID ViiperPurgeOwnerOperations(_In_ WDFDEVICE Controller, _In_ NTSTATUS Status);

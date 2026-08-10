@@ -481,6 +481,7 @@ ViiperCreateEndpointQueue(
     queueConfig.EvtIoInternalDeviceControl = ViiperEvtEndpointIoInternalControl;
     WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&attributes, UDECXUSBENDPOINT);
     attributes.ParentObject = Endpoint;
+    attributes.ExecutionLevel = WdfExecutionLevelPassive;
     status = WdfIoQueueCreate(deviceContext->Controller, &queueConfig, &attributes, &endpointContext->Queue);
     if (!NT_SUCCESS(status)) {
         return status;
@@ -583,6 +584,7 @@ ViiperEvtEndpointPurge(
 {
     VIIPER_UDE_ENDPOINT_CONTEXT *endpointContext = ViiperGetEndpointContext(Endpoint);
     endpointContext->Purging = TRUE;
+    ViiperPurgeEndpointOperations(Endpoint, STATUS_DEVICE_NOT_READY);
     WdfIoQueuePurge(endpointContext->Queue, ViiperEvtEndpointQueuePurged, Endpoint);
 }
 
@@ -619,7 +621,10 @@ ViiperEvtEndpointIoInternalControl(
     UNREFERENCED_PARAMETER(OutputBufferLength);
     UNREFERENCED_PARAMETER(InputBufferLength);
     if (IoControlCode == IOCTL_INTERNAL_USB_SUBMIT_URB) {
-        UdecxUrbCompleteWithNtStatus(Request, STATUS_NOT_SUPPORTED);
+        NTSTATUS status = ViiperQueueUrb(Queue, Request);
+        if (status != STATUS_PENDING) {
+            UdecxUrbCompleteWithNtStatus(Request, status);
+        }
     } else {
         WdfRequestComplete(Request, STATUS_INVALID_DEVICE_REQUEST);
     }

@@ -27,9 +27,12 @@ ViiperEvtQueryUsbCapability(
     UNREFERENCED_PARAMETER(OutputBuffer);
 
     *ResultLength = 0;
-    if (IsEqualGUIDAligned(*CapabilityType, GUID_USB_CAPABILITY_CHAINED_MDLS) ||
-        IsEqualGUIDAligned(*CapabilityType, GUID_USB_CAPABILITY_SELECTIVE_SUSPEND) ||
-        IsEqualGUIDAligned(*CapabilityType, GUID_USB_CAPABILITY_DEVICE_CONNECTION_HIGH_SPEED_COMPATIBLE)) {
+    if (RtlEqualMemory(CapabilityType, &GUID_USB_CAPABILITY_CHAINED_MDLS, sizeof(GUID)) ||
+        RtlEqualMemory(CapabilityType, &GUID_USB_CAPABILITY_SELECTIVE_SUSPEND, sizeof(GUID)) ||
+        RtlEqualMemory(
+            CapabilityType,
+            &GUID_USB_CAPABILITY_DEVICE_CONNECTION_HIGH_SPEED_COMPATIBLE,
+            sizeof(GUID))) {
         return STATUS_SUCCESS;
     }
 
@@ -46,6 +49,7 @@ ViiperEvtDeviceAdd(
     WDFDEVICE device;
     WDF_OBJECT_ATTRIBUTES attributes;
     WDF_OBJECT_ATTRIBUTES fileAttributes;
+    WDF_OBJECT_ATTRIBUTES requestAttributes;
     WDF_FILEOBJECT_CONFIG fileConfig;
     UDECX_WDF_DEVICE_CONFIG udeConfig;
     VIIPER_UDE_CONTROLLER_CONTEXT *context;
@@ -67,6 +71,9 @@ ViiperEvtDeviceAdd(
         ViiperEvtFileCleanup);
     WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&fileAttributes, VIIPER_UDE_FILE_CONTEXT);
     WdfDeviceInitSetFileObjectConfig(DeviceInit, &fileConfig, &fileAttributes);
+
+    WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&requestAttributes, VIIPER_UDE_REQUEST_CONTEXT);
+    WdfDeviceInitSetRequestAttributes(DeviceInit, &requestAttributes);
 
     status = UdecxInitializeWdfDeviceInit(DeviceInit);
     if (!NT_SUCCESS(status)) {
@@ -90,6 +97,10 @@ ViiperEvtDeviceAdd(
         return status;
     }
     status = WdfWaitLockCreate(&attributes, &context->DeviceLock);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+    status = ViiperInitializeBroker(device);
     if (!NT_SUCCESS(status)) {
         return status;
     }
@@ -119,11 +130,13 @@ ViiperEvtControllerCleanup(
 
     PAGED_CODE();
     context = ViiperGetControllerContext((WDFDEVICE)ControllerObject);
+    ViiperPurgeOwnerOperations((WDFDEVICE)ControllerObject, STATUS_DEVICE_REMOVED);
     if (context->DefaultQueue != WDF_NO_HANDLE) {
         WdfIoQueuePurgeSynchronously(context->DefaultQueue);
     }
     if (context->WaitingDequeues != WDF_NO_HANDLE) {
         WdfIoQueuePurgeSynchronously(context->WaitingDequeues);
+        InterlockedExchange(&context->WaitingDequeueCount, 0);
     }
 }
 
@@ -178,11 +191,13 @@ ViiperEvtFileCleanup(
     WdfWaitLockRelease(context->OwnerLock);
 
     if (ownsController) {
+        ViiperPurgeOwnerOperations(device, STATUS_FILE_CLOSED);
         if (context->DefaultQueue != WDF_NO_HANDLE) {
             WdfIoQueuePurgeSynchronously(context->DefaultQueue);
         }
         if (context->WaitingDequeues != WDF_NO_HANDLE) {
             WdfIoQueuePurgeSynchronously(context->WaitingDequeues);
+            InterlockedExchange(&context->WaitingDequeueCount, 0);
         }
     }
     if (ownsController) {

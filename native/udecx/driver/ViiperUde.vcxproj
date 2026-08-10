@@ -66,6 +66,7 @@
     </DriverSign>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="Broker.c" />
     <ClCompile Include="Controller.c" />
     <ClCompile Include="Driver.c" />
     <ClCompile Include="Device.c" />

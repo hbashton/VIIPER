@@ -169,6 +169,12 @@ ViiperEvtIoDeviceControl(
     case IOCTL_VIIPER_UDE_DESTROY_DEVICE:
         status = ViiperDestroyVirtualDevice(Queue, Request);
         break;
+    case IOCTL_VIIPER_UDE_DEQUEUE_OPERATION:
+        status = ViiperQueueDequeueOperation(Queue, Request);
+        break;
+    case IOCTL_VIIPER_UDE_COMPLETE_OPERATION:
+        status = ViiperCompleteOperation(Queue, Request);
+        break;
     default:
         status = UdecxWdfDeviceTryHandleUserIoctl(WdfIoQueueGetDevice(Queue), Request)
             ? STATUS_PENDING
