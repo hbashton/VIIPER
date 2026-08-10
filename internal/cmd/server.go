@@ -48,6 +48,7 @@ func (s *Server) StartServer(ctx context.Context, logger *slog.Logger, rawLogger
 			return err
 		}
 	}
+	applyTransportAPISecurityPolicy(transport, &s.APIServerConfig)
 
 	ctx, cancel := context.WithCancel(ctx)
 	stopTray := tray.Run(ctx, cancel)
@@ -82,13 +83,7 @@ func (s *Server) StartServer(ctx context.Context, logger *slog.Logger, rawLogger
 			return fmt.Errorf("failed to write new API password to file: %w", err)
 		}
 		s.APIServerConfig.Password = newPwd
-		logger.Info("Generated API server password", "path", keyFilePath)
-		logger.Info("-------------------------------------")
-		logger.Info("Your VIIPER API server password is:")
-		logger.Info("-------------------------------------")
-		logger.Info(newPwd)
-		logger.Info("-------------------------------------")
-		logger.Info("You can change this password at any time by editing the file")
+		logGeneratedAPICredential(logger, keyFilePath)
 	}
 
 	usbSrv := usb.New(s.USBServerConfig, logger, rawLogger)
@@ -117,8 +112,8 @@ func (s *Server) StartServer(ctx context.Context, logger *slog.Logger, rawLogger
 	}
 
 	if s.APIServerConfig.Addr == "" {
-		logger.Error("API server address must be set (default :3242).")
-		return fmt.Errorf("API server address must be set (default :3242).") // nolint
+		logger.Error("API server address must be set", "default", api.DefaultListenAddress)
+		return fmt.Errorf("API server address must be set (default %s)", api.DefaultListenAddress)
 	}
 
 	apiSrv := api.New(usbSrv, s.APIServerConfig.Addr, s.APIServerConfig, logger)
@@ -172,6 +167,20 @@ func (s *Server) StartServer(ctx context.Context, logger *slog.Logger, rawLogger
 		}
 		return err
 	}
+}
+
+func applyTransportAPISecurityPolicy(transport string, config *api.ServerConfig) {
+	// The native broker owns local kernel topology and live controller streams.
+	// It must never inherit the historical unauthenticated-localhost exemption,
+	// particularly when the broker is eventually hosted as LocalSystem.
+	if transport == "native-ude" {
+		config.RequireLocalHostAuth = true
+	}
+}
+
+func logGeneratedAPICredential(logger *slog.Logger, path string) {
+	logger.Info("Generated API server credential", "path", path)
+	logger.Info("API clients must authenticate with the credential stored in that file")
 }
 
 func nativeDone(session nativeUDETransport) <-chan error {

@@ -21,10 +21,10 @@ All command-line flags have corresponding environment variables for easier deplo
 | Environment Variable | CLI Flag | Default | Description |
 |---------------------|----------|---------|-------------|
 | `VIIPER_USB_ADDR` | `--usb.addr` | `:3241` | USBIP server listen address |
-| `VIIPER_API_ADDR` | `--api.addr` | `:3242` | API server listen address |
+| `VIIPER_API_ADDR` | `--api.addr` | `127.0.0.1:3242` | API server listen address |
 | `VIIPER_API_DEVICE_HANDLER_TIMEOUT` | `--api.device-handler-timeout` | `5s` | Device handler auto-cleanup timeout |
 | `VIIPER_API_AUTO_ATTACH_LOCAL_CLIENT` | `--api.auto-attach-local-client` | `true` | Auto-attach exported devices to local usbip client |
-| `VIIPER_API_REQUIRE_LOCALHOST_AUTH` | `--api.require-localhost-auth` | `false` | Require authentication even for localhost connections |
+| `VIIPER_API_REQUIRE_LOCALHOST_AUTH` | `--api.require-local-host-auth` | `true` | Require authentication for localhost connections |
 | `VIIPER_CONNECTION_TIMEOUT` | `--connection-timeout` | `30s` | Connection operation timeout |
 
 ### Proxy Configuration
@@ -66,8 +66,7 @@ If --config is not provided, VIIPER will search for configuration in this order 
 
 ## Authentication and Security
 
-VIIPER requires authentication for remote (non-localhost) connections
-to prevent unauthorized device creation.  
+VIIPER requires authentication by default for local and remote API clients to prevent unauthorized device creation and stream takeover.
 
 The password file is _intentionally_ separated from the main configuration
 
@@ -77,15 +76,13 @@ The password file is _intentionally_ separated from the main configuration
     - **Windows:** `%APPDATA%\VIIPER\`  
     - **Linux/macOS (user):** `~/.config/github.com/Alia5/viiper/`  
     - **Linux (root/systemd):** `/etc/viiper/`  
-- **Auto-generation:** If the file doesn't exist,  
-VIIPER generates a random 16-character password on first start and displays it in the console
+- **Auto-generation:** If the file doesn't exist, VIIPER generates a random 16-character password on first start. The value is stored only in the credential file and is not printed to logs or the console.
 - **Custom passwords:** You can edit `viiper.key.txt` and replace it with any password of any length
 - **Encryption:** All authenticated connections use fast ChaCha20-Poly1305 encryption with unique session keys
 
-### Localhost Exemption
+### Localhost Authentication
 
-By default, clients connecting from `localhost`, `127.0.0.1`, or `::1` do NOT require authentication (they can optionally provide it).  
-To require authentication even for localhost connections, use `--api.require-localhost-auth=true`.
+Clients connecting from `localhost`, `127.0.0.1`, or `::1` authenticate by default. For legacy USB/IP development only, `--api.require-local-host-auth=false` opts out locally. Native UDE transport always requires authentication.
 
 ### Remote Connections
 
@@ -100,7 +97,7 @@ All remote clients MUST authenticate using the password from `viiper.key.txt`.
     ```json
     {
     "api": {
-        "addr": ":3242",
+        "addr": "127.0.0.1:3242",
         "device-handler-connect-timeout": "5s",
         "auto-attach-local-client": true
     },

@@ -20,19 +20,19 @@ This starts two services:
 - **USBIP Server** on port `3241` (standard USBIP protocol)
 - **VIIPER API Server** on port `3242` (management and device interactions)
 
-!!! warning "Authentication for Remote Connections"
+!!! warning "API Authentication"
     On first start, VIIPER generates a random password
     and saves it to `<USER_CONFIG_DIR>/viiper.key.txt`.  
     Windows: `%APPDATA%\VIIPER\viiper.key.txt`  
     Linux (user): `~/.config/github.com/Alia5/viiper/viiper.key.txt`  
     Linux (root/systemd): `/etc/viiper/viiper.key.txt`
 
-    - **Localhost clients** (`127.0.0.1`, `::1`): Authentication is **optional** (but supported)
-    - **Remote clients**: Authentication is **required** - provide the password using your client library
+    - **Localhost clients** (`127.0.0.1`, `::1`): Authentication is **required by default**
+    - **Remote clients**: Authentication is **always required** - provide the password using your client library
     
     All authenticated connections use **ChaCha20-Poly1305 encryption** to protect against man-in-the-middle attacks.
     
-    You can change the password at any time by editing `viiper.key.txt`.
+    The password is never printed in logs or the console. Read it from `viiper.key.txt`; you can change it by editing that file while VIIPER is stopped.
 
 !!! tip "Auto-attach Feature"
     By default, VIIPER automatically attaches newly created devices to the local machine. You can disable this with `--api.auto-attach-local-client=false`.  

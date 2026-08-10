@@ -32,6 +32,11 @@ type Server struct {
 	deviceStreams deviceStreamCoordinator
 }
 
+// DefaultListenAddress deliberately names one loopback interface. An empty
+// host (for example, ":3242") asks the operating system to listen on every
+// interface and must only be selected explicitly by an administrator.
+const DefaultListenAddress = "127.0.0.1:3242"
+
 // microphonePCMResetter is implemented by audio-capable virtual controllers.
 // Its reset is coordinated with stream ownership instead of individual device
 // handlers so a same-device replacement can retain already-buffered capture.
@@ -48,6 +53,11 @@ const deviceStreamReconnectGrace = 250 * time.Millisecond
 // New creates a new ApiServer bound to a server.Server instance.
 func New(s *usb.Server, addr string, config ServerConfig, logger *slog.Logger) *Server {
 	cfg := config
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		addr = DefaultListenAddress
+	}
+	cfg.Addr = addr
 	a := &Server{
 		usbs:   s,
 		addr:   addr,
@@ -96,6 +106,9 @@ func (s *Server) Addr() string {
 
 // Start listens on the configured address and serves incoming API commands.
 func (s *Server) Start() error {
+	if err := validateSecurityConfiguration(s.addr, *s.config); err != nil {
+		return err
+	}
 	ln, err := net.Listen("tcp", s.addr)
 	if err != nil {
 		return err
@@ -107,6 +120,33 @@ func (s *Server) Start() error {
 	s.logger.Info("API listening", "addr", s.addr)
 	go s.serve()
 	return nil
+}
+
+func validateSecurityConfiguration(addr string, config ServerConfig) error {
+	passwordPresent := strings.TrimSpace(config.Password) != ""
+	if config.RequireLocalHostAuth && !passwordPresent {
+		return errors.New("API authentication is required for localhost, but no API credential is configured")
+	}
+	if !isLoopbackListenAddress(addr) && !passwordPresent {
+		return fmt.Errorf("API address %q may accept remote connections, but no API credential is configured", addr)
+	}
+	return nil
+}
+
+func isLoopbackListenAddress(addr string) bool {
+	host, _, err := net.SplitHostPort(strings.TrimSpace(addr))
+	if err != nil {
+		return false
+	}
+	host = strings.Trim(strings.TrimSpace(host), "[]")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	if zone := strings.LastIndexByte(host, '%'); zone >= 0 {
+		host = host[:zone]
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // Close stops the API server.

@@ -90,11 +90,11 @@ VIIPER takes care of all USBIP protocol details, so you can focus on implementin
 On `localhost` VIIPER also automatically attached the USBIP client, so you don't have to worry about USBIP details at all.
 
 !!! info "Security: Authentication & Encryption"
-    VIIPER **requires authentication for remote connections**
-    to prevent unauthorized device creation.  
+    VIIPER **requires authentication by default**, including on localhost,
+    to prevent unauthorized device creation and stream takeover.
     All authenticated connections use fast **ChaCha20-Poly1305 encryption**
     to protect against man-in-the-middle attacks.  
-    Localhost connections are exempt from authentication by default for convenience.
+    Native UDE mode never permits unauthenticated topology or stream control.
 
 See the [API documentation](api/overview) for details
 

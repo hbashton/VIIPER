@@ -77,8 +77,8 @@ If you ever worked with HTTP APIs before, you'll feel right at home.
 The exception to this are the device-control and feedback streams, which are raw binary streams specific to each device type.
 
 - **Transport**: TCP with optional encryption (ChaCha20-Poly1305)
-- **Default listen address**: `:3242` (configurable via `--api.addr`)
-- **Authentication**: Required for remote connections, optional for localhost (password-based with HMAC validation)
+- **Default listen address**: `127.0.0.1:3242` (configurable via `--api.addr`)
+- **Authentication**: Required by default for localhost and always required for remote connections (password-based with HMAC validation)
 - **Encryption**: Automatic for authenticated connections (ChaCha20-Poly1305 with unique session keys)
 - **Request format**: a single ASCII/UTF‑8 line terminated by `\0`
 - **Routing**: path followed by optional payload separated by whitespace  
@@ -94,11 +94,11 @@ The exception to this are the device-control and feedback streams, which are raw
 !!! warning "Connection timing and auto‑cleanup"
     After you add a device with `bus/{id}/add`, you must connect to its streaming endpoint within the configured `DeviceHandlerConnectTimeout` (default: 5s). If no stream connection is established in time, the device is automatically removed. Likewise, when a stream disconnects, a reconnection timer with the same timeout starts; if the client doesn’t reconnect before it expires, the device is removed.
 
-!!! warning "Authentication Required for Remote Connections"
-    **VIIPER requires authentication for all non-localhost connections.**  
+!!! warning "Authentication Required"
+    **VIIPER requires authentication for API topology and device-stream control by default.**
 
-    - **Localhost clients** (`127.0.0.1`, `::1`, `localhost`): Authentication is **optional** (but supported) by default
-    - **Remote clients**: Authentication is **required** and enforced
+    - **Localhost clients** (`127.0.0.1`, `::1`, `localhost`): Authentication is **required by default**
+    - **Remote clients**: Authentication is **always required** and enforced
     
     On first start, VIIPER generates a random password
     and saves it to `<USER_CONFIG_DIR>/viiper.key.txt`.  
@@ -106,9 +106,9 @@ The exception to this are the device-control and feedback streams, which are raw
     Linux (user): `~/.config/github.com/Alia5/viiper/viiper.key.txt`  
     Linux (root/systemd): `/etc/viiper/viiper.key.txt`
 
-    Remote clients must provide this password to establish a connection.  
+    Clients must provide this password to establish an authenticated connection. The value is never printed to a VIIPER log or console.
 
-    See the [Configuration](../cli/configuration.md) documentation for details on password management and the `--api.require-localhost-auth` option.
+    See the [Configuration](../cli/configuration.md) documentation for credential management and the legacy USB/IP localhost development opt-out.
 
 ## Endpoints
 

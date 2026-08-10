@@ -18,8 +18,8 @@ The server exposes two interfaces:
 1. **USBIP Server** - Standard USBIP protocol for device attachment
 2. **VIIPER API Server** - Management API for device/bus control
 
-!!! warning "Authentication Required for Remote Connections"
-    VIIPER requires **authentication for all remote (non-localhost) connections** to prevent unauthorized device creation.  
+!!! warning "Authentication Required"
+    VIIPER requires authentication by default, including for localhost, to prevent an unrelated local process from creating devices or taking over a live controller stream.
 
     On first start, VIIPER generates a random password
     and saves it to `<USER_CONFIG_DIR>/viiper.key.txt`.  
@@ -27,11 +27,11 @@ The server exposes two interfaces:
     Linux (user): `~/.config/github.com/Alia5/viiper/viiper.key.txt`  
     Linux (root/systemd): `/etc/viiper/viiper.key.txt`
     
-    - **Localhost clients** (`127.0.0.1`, `::1`): Authentication is optional by default
-    - **Remote clients**: Authentication is required and enforced
+    - **Localhost clients** (`127.0.0.1`, `::1`): Authentication is required by default
+    - **Remote clients**: Authentication is always required and enforced
     - All authenticated connections use **ChaCha20-Poly1305 encryption**
-    
-    See the `--api.require-localhost-auth` option below to require authentication for localhost connections.
+
+    The credential is never printed to the console or log. Clients read it from the protected credential file. Native UDE mode always requires localhost authentication.
 
 !!! info "Automatic Local Attachment"
     By default, VIIPER automatically attaches newly created devices to the local USBIP client (localhost only).  
@@ -51,7 +51,7 @@ USBIP server listen address.
 
 API server listen address.
 
-**Default:** `:3242`  
+**Default:** `127.0.0.1:3242`
 **Environment Variable:** `VIIPER_API_ADDR`
 
 ### `--api.device-handler-timeout`
@@ -76,20 +76,19 @@ Disable example:
 viiper server --api.auto-attach-local-client=false
 ```
 
-### `--api.require-localhost-auth`
+### `--api.require-local-host-auth`
 
 Require authentication even for clients connecting from localhost (`127.0.0.1`, `::1`, `localhost`).
 
-By default, localhost clients are exempt from authentication for convenience during local development.  
-Enable this option if you want to enforce authentication for all connections regardless of origin.
+Authentication is enabled by default. Legacy USB/IP development can explicitly disable it for localhost only; native UDE mode ignores that opt-out and remains authenticated.
 
-**Default:** `false`  
+**Default:** `true`
 **Environment Variable:** `VIIPER_API_REQUIRE_LOCALHOST_AUTH`
 
-Enable example:
+Local USB/IP development opt-out:
 
 ```bash
-viiper server --api.require-localhost-auth=true
+viiper server --api.require-local-host-auth=false
 ```
 
 ### `--connection-timeout`
@@ -103,7 +102,7 @@ Connection operation timeout for both USBIP and API servers.
 
 ### Basic Server
 
-Start server with default settings (USBIP on :3241, API on :3242):
+Start server with default settings (USBIP on :3241, API on 127.0.0.1:3242):
 
 ```bash
 viiper server
