@@ -307,6 +307,135 @@ func TestNativeProcessorRunsDualSenseHIDSpeakerAndMicrophoneConcurrently(t *test
 	}
 }
 
+func TestNativeProcessorRunsDualShock4HIDSpeakerAndMicrophoneConcurrently(t *testing.T) {
+	const iterations = 12
+	dev, err := dualshock4.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	processor := newProductionProcessor(t)
+	startNativeEndpoint(t, processor, dev, dualshock4.EndpointAudioOut)
+	startNativeEndpoint(t, processor, dev, dualshock4.EndpointMicrophoneIn)
+
+	var outputReports atomic.Uint64
+	var speakerTransfers atomic.Uint64
+	var callbackFailure atomic.Value
+	dev.SetOutputCallback(func(dualshock4.OutputState) {
+		outputReports.Add(1)
+	})
+	const speakerPackets = 10
+	const speakerPacketLength = 128
+	dev.SetSpeakerCallback(func(pcm []byte) {
+		if len(pcm) != speakerPackets*speakerPacketLength {
+			callbackFailure.CompareAndSwap(nil, fmt.Errorf(
+				"speaker callback length=%d want=%d",
+				len(pcm), speakerPackets*speakerPacketLength))
+			return
+		}
+		speakerTransfers.Add(1)
+	})
+
+	microphoneFrame := make([]byte, dualshock4.USBMicrophoneClientFrameSize)
+	for index := range microphoneFrame {
+		microphoneFrame[index] = byte(index*11 + 7)
+	}
+	// Match the production capture contract's startup reserve before the first
+	// 1 ms USB microphone packet is requested.
+	for range 6 {
+		dev.QueueMicrophonePCMFrame(microphoneFrame)
+	}
+
+	errors := make(chan error, 3)
+	var workers sync.WaitGroup
+	workers.Add(3)
+
+	go func() {
+		defer workers.Done()
+		for iteration := range iterations {
+			report := []byte{
+				dualshock4.ReportIDOutput, 0, 0, 0,
+				byte(iteration + 1), byte(0x80 + iteration),
+				1, 2, 3, 0, 0,
+			}
+			_, processErr := processor.Process(context.Background(), dev, udecx.Operation{
+				Token: uint64(4000 + iteration), DeviceID: 2, Generation: 1,
+				Kind: udecx.OperationTransfer, EndpointAddress: dualshock4.EndpointOut,
+				TransferLength: uint32(len(report)), Payload: report,
+			})
+			if processErr != nil {
+				errors <- fmt.Errorf("HID output iteration %d: %w", iteration, processErr)
+				return
+			}
+		}
+	}()
+
+	go func() {
+		defer workers.Done()
+		payload := make([]byte, speakerPackets*speakerPacketLength)
+		for index := range payload {
+			payload[index] = byte(index*31 + 9)
+		}
+		for iteration := range iterations {
+			op := productionIsoOperation(
+				uint64(5000+iteration), dualshock4.EndpointAudioOut,
+				false, payload, speakerPackets, speakerPacketLength)
+			op.DeviceID = 2
+			populateProductionEndpointMetadata(dev, &op)
+			completion, processErr := processor.Process(context.Background(), dev, op)
+			if processErr != nil {
+				errors <- fmt.Errorf("speaker iteration %d: %w", iteration, processErr)
+				return
+			}
+			if completion.TransferLength != uint32(len(payload)) ||
+				len(completion.IsoPackets) != speakerPackets {
+				errors <- fmt.Errorf("speaker iteration %d malformed completion: %+v",
+					iteration, completion)
+				return
+			}
+		}
+	}()
+
+	go func() {
+		defer workers.Done()
+		const microphonePackets = 10
+		for iteration := range iterations {
+			dev.QueueMicrophonePCMFrame(microphoneFrame)
+			op := productionIsoOperation(
+				uint64(6000+iteration), dualshock4.EndpointMicrophoneIn,
+				true, nil, microphonePackets, dualshock4.USBMicrophonePacketSize)
+			op.DeviceID = 2
+			populateProductionEndpointMetadata(dev, &op)
+			completion, processErr := processor.Process(context.Background(), dev, op)
+			if processErr != nil {
+				errors <- fmt.Errorf("microphone iteration %d: %w", iteration, processErr)
+				return
+			}
+			if completion.TransferLength == 0 ||
+				len(completion.Payload) != microphonePackets*dualshock4.USBMicrophonePacketSize ||
+				len(completion.IsoPackets) != microphonePackets {
+				errors <- fmt.Errorf("microphone iteration %d malformed completion: %+v",
+					iteration, completion)
+				return
+			}
+		}
+	}()
+
+	workers.Wait()
+	close(errors)
+	for workerErr := range errors {
+		t.Error(workerErr)
+	}
+	if failure := callbackFailure.Load(); failure != nil {
+		t.Error(failure)
+	}
+	if got := outputReports.Load(); got != iterations {
+		t.Errorf("DualShock 4 output callbacks=%d want=%d", got, iterations)
+	}
+	if got := speakerTransfers.Load(); got != iterations {
+		t.Errorf("DualShock 4 speaker callbacks=%d want=%d", got, iterations)
+	}
+}
+
 func productionIsoOperation(token uint64, endpoint uint8, input bool, payload []byte,
 	packetCount int, packetLength uint32) udecx.Operation {
 	packets := make([]udecx.IsoPacket, packetCount)
