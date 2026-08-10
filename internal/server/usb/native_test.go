@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"log/slog"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -240,5 +242,99 @@ func TestNativeProcessorCompletesIsoOutWithoutEchoPayload(t *testing.T) {
 	if !bytes.Equal(dev.payload, payload) || len(completion.Payload) != 0 ||
 		completion.TransferLength != 32 || len(completion.IsoPackets) != 2 {
 		t.Fatalf("unexpected ISO OUT completion: %+v captured=%x", completion, dev.payload)
+	}
+}
+
+type concurrentNativeTestDevice struct {
+	desc      *usbdevice.Descriptor
+	mu        sync.Mutex
+	altEvents [][2]uint8
+	transfers atomic.Uint64
+}
+
+func (d *concurrentNativeTestDevice) HandleTransfer(
+	_ context.Context, _, _ uint32, _ []byte,
+) []byte {
+	d.transfers.Add(1)
+	return nil
+}
+
+func (d *concurrentNativeTestDevice) GetDescriptor() *usbdevice.Descriptor { return d.desc }
+func (*concurrentNativeTestDevice) GetDeviceSpecificArgs() map[string]any  { return nil }
+func (d *concurrentNativeTestDevice) SetInterfaceAltSetting(iface, alt uint8) {
+	d.mu.Lock()
+	d.altEvents = append(d.altEvents, [2]uint8{iface, alt})
+	d.mu.Unlock()
+}
+
+func TestNativeProcessorConcurrentMediaAndLifecycleSoak(t *testing.T) {
+	desc := &usbdevice.Descriptor{Interfaces: []usbdevice.InterfaceConfig{
+		{Descriptor: usbdevice.InterfaceDescriptor{BInterfaceNumber: 2}},
+		{Descriptor: usbdevice.InterfaceDescriptor{
+			BInterfaceNumber: 2, BAlternateSetting: 1, BNumEndpoints: 1,
+		}, Endpoints: []usbdevice.EndpointDescriptor{{
+			BEndpointAddress: 0x02, BMAttributes: 0x05,
+			WMaxPacketSize: 4, BInterval: 1,
+		}}},
+	}}
+	dev := &concurrentNativeTestDevice{desc: desc}
+	processor := nativeProcessorForTest(t)
+	identity := udecx.DeviceIdentity{DeviceID: 91, Generation: 14}
+	base := udecx.Operation{
+		DeviceID: identity.DeviceID, Generation: identity.Generation,
+		EndpointAddress: 0x02, EndpointAttributes: 0x05,
+		EndpointInterval: 1, EndpointMaxPacketSize: 4,
+	}
+
+	var wg sync.WaitGroup
+	for worker := range 4 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for iteration := range 25 {
+				if (worker+iteration)%2 == 0 {
+					op := base
+					op.Kind = udecx.OperationEndpointStart
+					if err := processor.Lifecycle(context.Background(), dev, op); err != nil {
+						t.Errorf("endpoint start: %v", err)
+						return
+					}
+				} else {
+					op := base
+					op.Kind = udecx.OperationEndpointPurge
+					if err := processor.Lifecycle(context.Background(), dev, op); err != nil {
+						t.Errorf("endpoint purge: %v", err)
+						return
+					}
+				}
+
+				op := base
+				op.Token = uint64(worker*25 + iteration + 1)
+				op.Kind = udecx.OperationTransfer
+				op.TransferLength = 4
+				op.Payload = []byte{1, 2, 3, 4}
+				op.IsoPackets = []udecx.IsoPacket{{Offset: 0, Length: 4}}
+				if _, err := processor.Process(context.Background(), dev, op); err != nil {
+					t.Errorf("ISO transfer: %v", err)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	processor.Reset(dev, identity)
+
+	if got := dev.transfers.Load(); got != 100 {
+		t.Fatalf("processed %d transfers, want 100", got)
+	}
+	processor.mu.Lock()
+	defer processor.mu.Unlock()
+	if len(processor.next) != 0 || len(processor.lastIn) != 0 {
+		t.Fatalf("reset retained clocks=%d cached-input=%d", len(processor.next), len(processor.lastIn))
+	}
+	processor.lifecycleMu.Lock()
+	defer processor.lifecycleMu.Unlock()
+	if len(processor.active) != 0 {
+		t.Fatalf("reset retained %d active native sessions", len(processor.active))
 	}
 }

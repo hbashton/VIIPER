@@ -143,6 +143,14 @@ func (p *stubbornProcessor) Process(context.Context, usb.Device, Operation) (Com
 func (*stubbornProcessor) Reset(usb.Device, DeviceIdentity)                       {}
 func (*stubbornProcessor) Lifecycle(context.Context, usb.Device, Operation) error { return nil }
 
+type noopProcessor struct{}
+
+func (*noopProcessor) Process(context.Context, usb.Device, Operation) (Completion, error) {
+	return Completion{}, nil
+}
+func (*noopProcessor) Lifecycle(context.Context, usb.Device, Operation) error { return nil }
+func (*noopProcessor) Reset(usb.Device, DeviceIdentity)                       {}
+
 func hostTestDevice() usb.Device {
 	return &snapshotDevice{descriptor: usb.Descriptor{
 		Device: usb.DeviceDescriptor{
@@ -155,6 +163,43 @@ func hostTestDevice() usb.Device {
 			BEndpointAddress: 0x81, BMAttributes: 3, WMaxPacketSize: 64, BInterval: 4,
 		}}}},
 	}}
+}
+
+func TestHostRepeatedCreateRemoveLeavesOnlyGenerationHistory(t *testing.T) {
+	driver := newFakeHostDriver()
+	host, err := NewHost(driver, &noopProcessor{}, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const cycles = 512
+	for cycle := 1; cycle <= cycles; cycle++ {
+		identity, registerErr := host.Register(context.Background(), 72, hostTestDevice())
+		if registerErr != nil {
+			t.Fatalf("cycle %d register: %v", cycle, registerErr)
+		}
+		if identity.Generation != uint32(cycle) {
+			t.Fatalf("cycle %d generation=%d", cycle, identity.Generation)
+		}
+		if unregisterErr := host.Unregister(context.Background(), identity); unregisterErr != nil {
+			t.Fatalf("cycle %d unregister: %v", cycle, unregisterErr)
+		}
+	}
+
+	host.mu.RLock()
+	devices, lanes := len(host.devices), len(host.lanes)
+	generation := host.generations[72]
+	host.mu.RUnlock()
+	host.operationMu.Lock()
+	operations := len(host.operations)
+	host.operationMu.Unlock()
+	driver.mu.Lock()
+	created, destroyed := len(driver.created), len(driver.destroyed)
+	driver.mu.Unlock()
+	if devices != 0 || lanes != 0 || operations != 0 || generation != cycles ||
+		created != cycles || destroyed != cycles {
+		t.Fatalf("devices=%d lanes=%d operations=%d generation=%d created=%d destroyed=%d",
+			devices, lanes, operations, generation, created, destroyed)
+	}
 }
 
 type inputPublisherTestDevice struct {
