@@ -48,6 +48,12 @@ func SnapshotDevice(deviceID uint64, generation uint32, dev usb.Device) (CreateD
 	sort.Ints(indices)
 	for _, value := range indices {
 		index := uint8(value)
+		// The Microsoft OS 1.0 descriptor owns the reserved 0xEE string
+		// exactly as it does on the USB/IP control path. Never publish a
+		// conflicting ordinary string at that index.
+		if index == 0xEE && desc.MicrosoftOS10 != nil {
+			continue
+		}
 		languageID := uint16(0x0409)
 		if index == 0 {
 			languageID = 0
@@ -55,6 +61,13 @@ func SnapshotDevice(deviceID uint64, generation uint32, dev usb.Device) (CreateD
 		appendDescriptor(
 			DescriptorString, uint16(index), languageID,
 			usb.EncodeStringDescriptor(desc.Strings[index]))
+	}
+	if desc.MicrosoftOS10 != nil {
+		appendDescriptor(
+			DescriptorString,
+			0xEE,
+			0,
+			desc.MicrosoftOS10.StringDescriptor())
 	}
 
 	if _, err := message.MarshalBinary(); err != nil {

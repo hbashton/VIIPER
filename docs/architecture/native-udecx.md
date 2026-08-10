@@ -122,7 +122,9 @@ device, configuration, BOS, language/string records, and device-speed policy.
 The driver validates all offsets and lengths before constructing a UDE device.
 Descriptor normalization required by UdeCx is a named policy, not an implicit
 mutation: high-speed bulk packets are 512 bytes and interval conversion is
-covered by descriptor tests.
+covered by descriptor tests. The reserved Microsoft OS 1.0 `0xEE` string is
+published explicitly when a controller exposes one, preserving WinUSB binding
+for vendor interfaces such as the Switch 2 Pro path.
 
 ## Lifecycle
 

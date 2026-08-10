@@ -52,3 +52,45 @@ func TestSnapshotDevicePreservesDescriptorBytes(t *testing.T) {
 		t.Fatalf("configuration total length=%d want=%d", got, len(config))
 	}
 }
+
+func TestSnapshotDevicePublishesMicrosoftOS10ReservedString(t *testing.T) {
+	msOS := &usb.MicrosoftOS10Descriptor{VendorCode: 0x20, CompatibleID: "WINUSB"}
+	dev := &snapshotDevice{descriptor: usb.Descriptor{
+		Device: usb.DeviceDescriptor{
+			BcdUSB: 0x0200, BMaxPacketSize0: 64, IDVendor: 0x057e,
+			IDProduct: 0x2073, BNumConfigurations: 1, Speed: uint32(DeviceSpeedHigh),
+		},
+		Interfaces: []usb.InterfaceConfig{{
+			Descriptor: usb.InterfaceDescriptor{BInterfaceNumber: 0},
+		}},
+		MicrosoftOS10: msOS,
+		Strings: map[uint8]string{
+			0:    "\u0409",
+			1:    "Nintendo",
+			0xEE: "must not shadow the Microsoft descriptor",
+		},
+	}}
+
+	snapshot, err := SnapshotDevice(8, 2, dev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var matches []DescriptorRecord
+	for _, record := range snapshot.Descriptors {
+		if record.Kind == DescriptorString && record.Index == 0xEE {
+			matches = append(matches, record)
+		}
+	}
+	if len(matches) != 1 {
+		t.Fatalf("Microsoft OS string count=%d want=1", len(matches))
+	}
+	record := matches[0]
+	if record.LanguageID != 0 {
+		t.Fatalf("Microsoft OS string language=%#x want=0", record.LanguageID)
+	}
+	got := snapshot.DescriptorData[record.Offset : record.Offset+record.Length]
+	want := msOS.StringDescriptor()
+	if string(got) != string(want) {
+		t.Fatalf("Microsoft OS string=%x want=%x", got, want)
+	}
+}
