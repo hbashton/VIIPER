@@ -57,7 +57,7 @@ func TestNativeProcessorServesSwitchMicrosoftOS10FeatureDescriptor(t *testing.T)
 	}
 }
 
-func TestNativeProcessorAppliesUdeCxInterfaceSettingLifecycle(t *testing.T) {
+func TestNativeProcessorDerivesInterfaceSettingFromEndpointLifecycle(t *testing.T) {
 	desc := &usbdevice.Descriptor{
 		Device: usbdevice.DeviceDescriptor{Speed: uint32(udecx.DeviceSpeedHigh)},
 		Interfaces: []usbdevice.InterfaceConfig{
@@ -65,32 +65,83 @@ func TestNativeProcessorAppliesUdeCxInterfaceSettingLifecycle(t *testing.T) {
 				BInterfaceNumber: 2, BAlternateSetting: 0,
 			}},
 			{Descriptor: usbdevice.InterfaceDescriptor{
-				BInterfaceNumber: 2, BAlternateSetting: 1,
-			}},
+				BInterfaceNumber: 2, BAlternateSetting: 1, BNumEndpoints: 1,
+			}, Endpoints: []usbdevice.EndpointDescriptor{{
+				BEndpointAddress: 0x82, BMAttributes: 0x05,
+				WMaxPacketSize: 196, BInterval: 4,
+			}}},
 		},
 	}
 	dev := &altSettingTestDevice{desc: desc}
 	processor := nativeProcessorForTest(t)
-	op := udecx.Operation{
+	// UdeCx supplies incorrect numeric interface fields for some composite
+	// devices. An endpoint-bearing alternate must therefore ignore this hint.
+	if err := processor.Lifecycle(context.Background(), dev, udecx.Operation{
 		DeviceID: 1, Generation: 1, Kind: udecx.OperationSetInterface,
-		InterfaceNumber: 2, InterfaceSetting: 1,
+		InterfaceNumber: 0, InterfaceSetting: 0,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := processor.server.getInterfaceAlt(dev, 2); got != 0 {
+		t.Fatalf("unreliable interface hint changed interface 2 alt to %d", got)
+	}
+
+	op := udecx.Operation{
+		DeviceID: 1, Generation: 1, Kind: udecx.OperationEndpointStart,
+		EndpointAddress: 0x82, EndpointAttributes: 0x05,
+		EndpointInterval: 4, EndpointMaxPacketSize: 196,
 	}
 	if err := processor.Lifecycle(context.Background(), dev, op); err != nil {
 		t.Fatal(err)
 	}
 	if got := processor.server.getInterfaceAlt(dev, 2); got != 1 {
-		t.Fatalf("interface 2 alt=%d want 1", got)
-	}
-	if len(dev.altEvents) != 1 || dev.altEvents[0] != [2]uint8{2, 1} {
-		t.Fatalf("device alternate-setting events=%v want [[2 1]]", dev.altEvents)
+		t.Fatalf("interface 2 alt=%d want 1 after endpoint start", got)
 	}
 
-	op.InterfaceSetting = 3
-	if err := processor.Lifecycle(context.Background(), dev, op); err == nil {
-		t.Fatal("invalid native alternate setting unexpectedly succeeded")
+	op.Kind = udecx.OperationEndpointPurge
+	if err := processor.Lifecycle(context.Background(), dev, op); err != nil {
+		t.Fatal(err)
+	}
+	if got := processor.server.getInterfaceAlt(dev, 2); got != 0 {
+		t.Fatalf("interface 2 alt=%d want 0 after endpoint purge", got)
+	}
+	if want := [][2]uint8{{2, 1}, {2, 0}}; !bytes.Equal(flattenAltEvents(dev.altEvents), flattenAltEvents(want)) {
+		t.Fatalf("device alternate-setting events=%v want %v", dev.altEvents, want)
+	}
+}
+
+func flattenAltEvents(events [][2]uint8) []byte {
+	result := make([]byte, 0, len(events)*2)
+	for _, event := range events {
+		result = append(result, event[0], event[1])
+	}
+	return result
+}
+
+func TestNativeProcessorFirstISOTransferClosesEndpointStartRace(t *testing.T) {
+	desc := &usbdevice.Descriptor{Interfaces: []usbdevice.InterfaceConfig{
+		{Descriptor: usbdevice.InterfaceDescriptor{BInterfaceNumber: 2}},
+		{Descriptor: usbdevice.InterfaceDescriptor{
+			BInterfaceNumber: 2, BAlternateSetting: 1, BNumEndpoints: 1,
+		}, Endpoints: []usbdevice.EndpointDescriptor{{
+			BEndpointAddress: 0x02, BMAttributes: 0x05,
+			WMaxPacketSize: 196, BInterval: 4,
+		}}},
+	}}
+	dev := &isoOutRecordingDevice{desc: desc}
+	processor := nativeProcessorForTest(t)
+	_, err := processor.Process(context.Background(), dev, udecx.Operation{
+		Token: 1, DeviceID: 3, Generation: 7, Kind: udecx.OperationTransfer,
+		EndpointAddress: 0x02, EndpointAttributes: 0x05,
+		EndpointInterval: 4, EndpointMaxPacketSize: 196,
+		TransferLength: 4, Payload: []byte{1, 2, 3, 4},
+		IsoPackets: []udecx.IsoPacket{{Offset: 0, Length: 4}},
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 	if got := processor.server.getInterfaceAlt(dev, 2); got != 1 {
-		t.Fatalf("invalid transition changed interface 2 alt to %d", got)
+		t.Fatalf("first ISO transfer left interface 2 at alt %d", got)
 	}
 }
 

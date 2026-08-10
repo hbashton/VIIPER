@@ -120,6 +120,8 @@ Every operation carries:
 - device ID and generation;
 - a globally unique token for that generation;
 - endpoint address and transfer direction;
+- endpoint attributes, interval, and maximum packet size copied from the
+  UdeCx endpoint descriptor;
 - operation kind and URB function;
 - transfer flags, setup packet, and start frame where applicable;
 - ordered isochronous packet metadata;
@@ -154,6 +156,23 @@ Absent -> Creating -> Enumerating -> Active
 
 Power loss, owner process exit, DS4Windows restart, VIIPER restart, and explicit
 unplug all converge on the same idempotent purge path.
+
+### Composite alternate-setting identity
+
+The usbip-win2 0.9.7.8 UdeCx implementation documents that UdeCx can report
+incorrect `InterfaceNumber` and `NewInterfaceSetting` values for composite
+device alternate-setting changes. usbip-win2 compensates with an upper filter
+on every USB 3 root hub. VIIPER does not install that system-wide filter.
+
+Every endpoint callback already supplies the authoritative endpoint descriptor.
+The kernel copies its address, attributes, interval, and maximum packet size
+into the versioned broker operation. User mode matches that complete signature
+against the immutable controller descriptor and derives the owning interface
+and alternate setting. Endpoint start activates it; purge returns it to zero
+only after the last endpoint belonging to the active alternate is gone. The
+first ISO URB is also authoritative activation, closing the cross-worker race
+where media reaches user mode before its start notification. Numeric UdeCx
+interface fields are only hints for alternates that contain no endpoints.
 
 ## Synchronization model
 

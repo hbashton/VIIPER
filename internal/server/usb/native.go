@@ -18,14 +18,28 @@ type nativeLaneKey struct {
 	endpoint   uint8
 }
 
+type nativeSessionKey struct {
+	deviceID   uint64
+	generation uint32
+}
+
+type nativeEndpointSignature struct {
+	address    uint8
+	attributes uint8
+	interval   uint8
+	maxPacket  uint16
+}
+
 // NativeProcessor adapts the native UdeCx broker to the same control and
 // transfer engine used by USB/IP. Transport-specific clocks live here; device
 // state, feedback, HID, audio, and descriptor behavior remain in usb.Device.
 type NativeProcessor struct {
-	server *Server
-	mu     sync.Mutex
-	next   map[nativeLaneKey]time.Time
-	lastIn map[nativeLaneKey][]byte
+	server      *Server
+	mu          sync.Mutex
+	lifecycleMu sync.Mutex
+	next        map[nativeLaneKey]time.Time
+	lastIn      map[nativeLaneKey][]byte
+	active      map[nativeSessionKey]map[nativeEndpointSignature]struct{}
 }
 
 func NewNativeProcessor(server *Server) (*NativeProcessor, error) {
@@ -36,10 +50,17 @@ func NewNativeProcessor(server *Server) (*NativeProcessor, error) {
 		server: server,
 		next:   make(map[nativeLaneKey]time.Time),
 		lastIn: make(map[nativeLaneKey][]byte),
+		active: make(map[nativeSessionKey]map[nativeEndpointSignature]struct{}),
 	}, nil
 }
 
 func (p *NativeProcessor) Reset(dev usbdevice.Device, identity udecx.DeviceIdentity) {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	p.resetDeviceLocked(dev, identity)
+}
+
+func (p *NativeProcessor) resetDeviceLocked(dev usbdevice.Device, identity udecx.DeviceIdentity) {
 	p.server.resetInterfaceAlts(dev)
 	p.mu.Lock()
 	for key := range p.next {
@@ -49,6 +70,7 @@ func (p *NativeProcessor) Reset(dev usbdevice.Device, identity udecx.DeviceIdent
 		}
 	}
 	p.mu.Unlock()
+	delete(p.active, nativeSessionKey{deviceID: identity.DeviceID, generation: identity.Generation})
 }
 
 func (p *NativeProcessor) Lifecycle(_ context.Context, dev usbdevice.Device, op udecx.Operation) error {
@@ -60,7 +82,14 @@ func (p *NativeProcessor) Lifecycle(_ context.Context, dev usbdevice.Device, op 
 	switch op.Kind {
 	case udecx.OperationEndpointStart:
 		p.clearLane(key)
-	case udecx.OperationEndpointPurge, udecx.OperationEndpointReset:
+		p.activateEndpoint(dev, op)
+	case udecx.OperationEndpointPurge:
+		p.clearLane(key)
+		if resetter, ok := dev.(usbdevice.EndpointResetDevice); ok {
+			resetter.ResetEndpoint(op.EndpointAddress)
+		}
+		p.deactivateEndpoint(dev, op)
+	case udecx.OperationEndpointReset:
 		p.clearLane(key)
 		if resetter, ok := dev.(usbdevice.EndpointResetDevice); ok {
 			resetter.ResetEndpoint(op.EndpointAddress)
@@ -73,17 +102,147 @@ func (p *NativeProcessor) Lifecycle(_ context.Context, dev usbdevice.Device, op 
 		// anchors so the first resumed transfer starts from the current time.
 		p.clearDeviceLanes(identity)
 	case udecx.OperationSetInterface:
-		if !descriptorHasInterfaceAlt(dev.GetDescriptor(), op.InterfaceNumber, op.InterfaceSetting) {
-			return fmt.Errorf("native UDE selected invalid alternate setting %d for interface %d",
-				op.InterfaceSetting, op.InterfaceNumber)
-		}
-		p.clearDeviceLanes(identity)
-		p.server.setInterfaceAlt(dev, op.InterfaceNumber, op.InterfaceSetting)
-		p.server.notifyInterfaceAlt(dev, op.InterfaceNumber, op.InterfaceSetting)
+		// UdeCx is documented by usbip-win2 0.9.7.8 to return incorrect
+		// interface/alternate values for some composite devices. Treat this as
+		// a hint only. Interfaces with endpoint-bearing alternate settings are
+		// driven by the exact endpoint descriptors carried by start/purge and
+		// transfer operations instead.
+		p.applyInterfaceHint(dev, op)
 	default:
 		return fmt.Errorf("unsupported native UDE lifecycle operation %d", op.Kind)
 	}
 	return nil
+}
+
+func signatureFromOperation(op udecx.Operation) nativeEndpointSignature {
+	return nativeEndpointSignature{
+		address: op.EndpointAddress, attributes: op.EndpointAttributes,
+		interval: op.EndpointInterval, maxPacket: op.EndpointMaxPacketSize,
+	}
+}
+
+func signatureFromDescriptor(endpoint usbdevice.EndpointDescriptor) nativeEndpointSignature {
+	return nativeEndpointSignature{
+		address: endpoint.BEndpointAddress, attributes: endpoint.BMAttributes,
+		interval: endpoint.BInterval, maxPacket: endpoint.WMaxPacketSize,
+	}
+}
+
+func descriptorInterfaceAltForEndpoint(desc *usbdevice.Descriptor,
+	signature nativeEndpointSignature) (uint8, uint8, bool) {
+	if desc == nil || signature.address == 0 {
+		return 0, 0, false
+	}
+	var interfaceNumber, alternateSetting uint8
+	found := false
+	for _, iface := range desc.Interfaces {
+		if iface.Descriptor.BAlternateSetting == 0 {
+			continue
+		}
+		for _, endpoint := range iface.Endpoints {
+			if signatureFromDescriptor(endpoint) != signature {
+				continue
+			}
+			candidateInterface := iface.Descriptor.BInterfaceNumber
+			candidateAlt := iface.Descriptor.BAlternateSetting
+			if found && (candidateInterface != interfaceNumber || candidateAlt != alternateSetting) {
+				return 0, 0, false
+			}
+			interfaceNumber, alternateSetting, found = candidateInterface, candidateAlt, true
+		}
+	}
+	return interfaceNumber, alternateSetting, found
+}
+
+func descriptorInterfaceUsesEndpointLifecycle(desc *usbdevice.Descriptor, interfaceNumber uint8) bool {
+	if desc == nil {
+		return false
+	}
+	for _, iface := range desc.Interfaces {
+		if iface.Descriptor.BInterfaceNumber == interfaceNumber &&
+			iface.Descriptor.BAlternateSetting != 0 && len(iface.Endpoints) != 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func descriptorInterfaceAltIsActive(desc *usbdevice.Descriptor, interfaceNumber, alternateSetting uint8,
+	active map[nativeEndpointSignature]struct{}) bool {
+	if desc == nil {
+		return false
+	}
+	for _, iface := range desc.Interfaces {
+		if iface.Descriptor.BInterfaceNumber != interfaceNumber ||
+			iface.Descriptor.BAlternateSetting != alternateSetting {
+			continue
+		}
+		for _, endpoint := range iface.Endpoints {
+			if _, ok := active[signatureFromDescriptor(endpoint)]; ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (p *NativeProcessor) activateEndpoint(dev usbdevice.Device, op udecx.Operation) {
+	signature := signatureFromOperation(op)
+	interfaceNumber, alternateSetting, ok := descriptorInterfaceAltForEndpoint(
+		dev.GetDescriptor(), signature)
+	if !ok {
+		return
+	}
+	identity := nativeSessionKey{deviceID: op.DeviceID, generation: op.Generation}
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	active := p.active[identity]
+	if active == nil {
+		active = make(map[nativeEndpointSignature]struct{})
+		p.active[identity] = active
+	}
+	active[signature] = struct{}{}
+	if p.server.getInterfaceAlt(dev, interfaceNumber) != alternateSetting {
+		p.server.setInterfaceAlt(dev, interfaceNumber, alternateSetting)
+		p.server.notifyInterfaceAlt(dev, interfaceNumber, alternateSetting)
+	}
+}
+
+func (p *NativeProcessor) deactivateEndpoint(dev usbdevice.Device, op udecx.Operation) {
+	signature := signatureFromOperation(op)
+	interfaceNumber, alternateSetting, ok := descriptorInterfaceAltForEndpoint(
+		dev.GetDescriptor(), signature)
+	if !ok {
+		return
+	}
+	identity := nativeSessionKey{deviceID: op.DeviceID, generation: op.Generation}
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	active := p.active[identity]
+	delete(active, signature)
+	if len(active) == 0 {
+		delete(p.active, identity)
+	}
+	if p.server.getInterfaceAlt(dev, interfaceNumber) == alternateSetting &&
+		!descriptorInterfaceAltIsActive(dev.GetDescriptor(), interfaceNumber, alternateSetting, active) {
+		p.server.setInterfaceAlt(dev, interfaceNumber, 0)
+		p.server.notifyInterfaceAlt(dev, interfaceNumber, 0)
+	}
+}
+
+func (p *NativeProcessor) applyInterfaceHint(dev usbdevice.Device, op udecx.Operation) {
+	desc := dev.GetDescriptor()
+	if !descriptorHasInterfaceAlt(desc, op.InterfaceNumber, op.InterfaceSetting) ||
+		descriptorInterfaceUsesEndpointLifecycle(desc, op.InterfaceNumber) {
+		return
+	}
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	if p.server.getInterfaceAlt(dev, op.InterfaceNumber) == op.InterfaceSetting {
+		return
+	}
+	p.server.setInterfaceAlt(dev, op.InterfaceNumber, op.InterfaceSetting)
+	p.server.notifyInterfaceAlt(dev, op.InterfaceNumber, op.InterfaceSetting)
 }
 
 func (p *NativeProcessor) clearDeviceLanes(identity udecx.DeviceIdentity) {
@@ -117,6 +276,12 @@ func (p *NativeProcessor) Process(ctx context.Context, dev usbdevice.Device, op 
 		dir = usbip.DirIn
 	}
 	key := nativeLaneKey{deviceID: op.DeviceID, generation: op.Generation, endpoint: op.EndpointAddress}
+	if len(op.IsoPackets) != 0 {
+		// The first ISO URB is itself authoritative proof that Windows activated
+		// this endpoint. This also closes the scheduling race where a transfer is
+		// dequeued before the endpoint-start notification reaches another worker.
+		p.activateEndpoint(dev, op)
+	}
 
 	switch {
 	case op.Kind == udecx.OperationControl:

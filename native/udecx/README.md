@@ -11,7 +11,8 @@ Directory contract:
 - `package/` contains INF and installation metadata.
 - `tools/ViiperUdeCtl.cpp` installs, verifies, or removes the exact root
   controller without creating duplicates or leaving a failed devnode behind.
-- `tests/` contains ABI, lifecycle, descriptor, cancellation, and fault tests.
+- ABI, lifecycle, descriptor, cancellation, and fault tests live beside the Go
+  broker packages and in the native-driver CI gates.
 
 The design and release gates are in
 `docs/architecture/native-udecx.md`.

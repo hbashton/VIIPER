@@ -13,7 +13,7 @@ import (
 const (
 	Magic    uint32 = 0x45445556
 	ABIMajor uint16 = 1
-	ABIMinor uint16 = 4
+	ABIMinor uint16 = 5
 
 	HeaderSize            = 16
 	NegotiateRequestSize  = 32
@@ -277,22 +277,25 @@ type IsoPacket struct {
 }
 
 type Operation struct {
-	Token            uint64
-	DeviceID         uint64
-	Generation       uint32
-	Kind             OperationKind
-	EndpointAddress  uint8
-	Direction        uint8
-	InterfaceNumber  uint8
-	InterfaceSetting uint8
-	URBFunction      uint32
-	TransferFlags    uint32
-	StartFrame       uint32
-	TransferLength   uint32
-	SetupPacket      [8]byte
-	IsoPackets       []IsoPacket
-	Payload          []byte
-	EndpointSequence uint64
+	Token                 uint64
+	DeviceID              uint64
+	Generation            uint32
+	Kind                  OperationKind
+	EndpointAddress       uint8
+	Direction             uint8
+	InterfaceNumber       uint8
+	InterfaceSetting      uint8
+	EndpointAttributes    uint8
+	EndpointInterval      uint8
+	EndpointMaxPacketSize uint16
+	URBFunction           uint32
+	TransferFlags         uint32
+	StartFrame            uint32
+	TransferLength        uint32
+	SetupPacket           [8]byte
+	IsoPackets            []IsoPacket
+	Payload               []byte
+	EndpointSequence      uint64
 }
 
 func ParseOperation(src []byte) (Operation, error) {
@@ -316,21 +319,24 @@ func ParseOperation(src []byte) (Operation, error) {
 		return Operation{}, ErrInvalidRange
 	}
 	op := Operation{
-		Token:            binary.LittleEndian.Uint64(src[16:24]),
-		DeviceID:         binary.LittleEndian.Uint64(src[24:32]),
-		Generation:       binary.LittleEndian.Uint32(src[32:36]),
-		Kind:             OperationKind(binary.LittleEndian.Uint32(src[36:40])),
-		EndpointAddress:  src[40],
-		Direction:        src[41],
-		InterfaceNumber:  src[42],
-		InterfaceSetting: src[43],
-		URBFunction:      binary.LittleEndian.Uint32(src[44:48]),
-		TransferFlags:    binary.LittleEndian.Uint32(src[48:52]),
-		StartFrame:       binary.LittleEndian.Uint32(src[52:56]),
-		TransferLength:   transferLength,
-		EndpointSequence: binary.LittleEndian.Uint64(src[88:96]),
-		IsoPackets:       make([]IsoPacket, int(packetCount)),
-		Payload:          append([]byte(nil), src[payloadOffset:payloadOffset+payloadLength]...),
+		Token:                 binary.LittleEndian.Uint64(src[16:24]),
+		DeviceID:              binary.LittleEndian.Uint64(src[24:32]),
+		Generation:            binary.LittleEndian.Uint32(src[32:36]),
+		Kind:                  OperationKind(binary.LittleEndian.Uint32(src[36:40])),
+		EndpointAddress:       src[40],
+		Direction:             src[41],
+		InterfaceNumber:       src[42],
+		InterfaceSetting:      src[43],
+		EndpointAttributes:    src[84],
+		EndpointInterval:      src[85],
+		EndpointMaxPacketSize: binary.LittleEndian.Uint16(src[86:88]),
+		URBFunction:           binary.LittleEndian.Uint32(src[44:48]),
+		TransferFlags:         binary.LittleEndian.Uint32(src[48:52]),
+		StartFrame:            binary.LittleEndian.Uint32(src[52:56]),
+		TransferLength:        transferLength,
+		EndpointSequence:      binary.LittleEndian.Uint64(src[88:96]),
+		IsoPackets:            make([]IsoPacket, int(packetCount)),
+		Payload:               append([]byte(nil), src[payloadOffset:payloadOffset+payloadLength]...),
 	}
 	copy(op.SetupPacket[:], src[76:84])
 	for i := range op.IsoPackets {

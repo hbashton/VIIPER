@@ -54,6 +54,9 @@ typedef struct VIIPER_UDE_NOTIFICATION {
     UCHAR EndpointAddress;
     UCHAR InterfaceNumber;
     UCHAR InterfaceSetting;
+    UCHAR EndpointAttributes;
+    UCHAR EndpointInterval;
+    USHORT EndpointMaxPacketSize;
 } VIIPER_UDE_NOTIFICATION;
 
 typedef struct VIIPER_UDE_REQUEST_CONTEXT {

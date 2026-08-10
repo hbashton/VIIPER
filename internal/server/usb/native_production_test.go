@@ -113,8 +113,8 @@ func TestNativeProcessorPreservesPlayStationIsochronousMedia(t *testing.T) {
 			t.Fatal(err)
 		}
 		processor := newProductionProcessor(t)
-		setNativeInterface(t, processor, dev, dualsense.InterfaceHapticsAudio, 1)
-		setNativeInterface(t, processor, dev, dualsense.InterfaceMicrophone, 1)
+		startNativeEndpoint(t, processor, dev, dualsense.EndpointHapticsAudioOut)
+		startNativeEndpoint(t, processor, dev, dualsense.EndpointMicrophoneIn)
 
 		var speaker []byte
 		dev.SetAtomicAudioHapticsCallback(func(_ dualsense.OutputState, pcm []byte) {
@@ -150,8 +150,8 @@ func TestNativeProcessorPreservesPlayStationIsochronousMedia(t *testing.T) {
 			t.Fatal(err)
 		}
 		processor := newProductionProcessor(t)
-		setNativeInterface(t, processor, dev, dualshock4.InterfaceSpeaker, 1)
-		setNativeInterface(t, processor, dev, dualshock4.InterfaceMicrophone, 1)
+		startNativeEndpoint(t, processor, dev, dualshock4.EndpointAudioOut)
+		startNativeEndpoint(t, processor, dev, dualshock4.EndpointMicrophoneIn)
 
 		speakerPCM := make([]byte, 128)
 		for i := range speakerPCM {
@@ -190,16 +190,31 @@ func newProductionProcessor(t *testing.T) *serverusb.NativeProcessor {
 	return processor
 }
 
-func setNativeInterface(t *testing.T, processor *serverusb.NativeProcessor,
-	dev usbdevice.Device, iface, alt uint8) {
+func startNativeEndpoint(t *testing.T, processor *serverusb.NativeProcessor,
+	dev usbdevice.Device, endpointAddress uint8) {
 	t.Helper()
-	err := processor.Lifecycle(context.Background(), dev, udecx.Operation{
-		DeviceID: 1, Generation: 1, Kind: udecx.OperationSetInterface,
-		InterfaceNumber: iface, InterfaceSetting: alt,
-	})
-	if err != nil {
-		t.Fatal(err)
+	for _, iface := range dev.GetDescriptor().Interfaces {
+		if iface.Descriptor.BAlternateSetting == 0 {
+			continue
+		}
+		for _, endpoint := range iface.Endpoints {
+			if endpoint.BEndpointAddress != endpointAddress {
+				continue
+			}
+			err := processor.Lifecycle(context.Background(), dev, udecx.Operation{
+				DeviceID: 1, Generation: 1, Kind: udecx.OperationEndpointStart,
+				EndpointAddress:       endpoint.BEndpointAddress,
+				EndpointAttributes:    endpoint.BMAttributes,
+				EndpointInterval:      endpoint.BInterval,
+				EndpointMaxPacketSize: endpoint.WMaxPacketSize,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			return
+		}
 	}
+	t.Fatalf("endpoint %#x has no nonzero alternate setting", endpointAddress)
 }
 
 func processNativeIso(t *testing.T, processor *serverusb.NativeProcessor,
@@ -215,6 +230,15 @@ func processNativeIso(t *testing.T, processor *serverusb.NativeProcessor,
 		Token: 100, DeviceID: 1, Generation: 1, Kind: udecx.OperationTransfer,
 		EndpointAddress: endpoint, TransferLength: transferLength,
 		IsoPackets: packets, Payload: payload,
+	}
+	for _, iface := range dev.GetDescriptor().Interfaces {
+		for _, descEndpoint := range iface.Endpoints {
+			if descEndpoint.BEndpointAddress == endpoint {
+				op.EndpointAttributes = descEndpoint.BMAttributes
+				op.EndpointInterval = descEndpoint.BInterval
+				op.EndpointMaxPacketSize = descEndpoint.WMaxPacketSize
+			}
+		}
 	}
 	if input {
 		op.Direction = 1

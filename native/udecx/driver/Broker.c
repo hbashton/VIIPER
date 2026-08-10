@@ -200,6 +200,9 @@ ViiperDispatchNotificationEvents(
         operation->EndpointAddress = event.EndpointAddress;
         operation->InterfaceNumber = event.InterfaceNumber;
         operation->InterfaceSetting = event.InterfaceSetting;
+        operation->EndpointAttributes = event.EndpointAttributes;
+        operation->EndpointInterval = event.EndpointInterval;
+        operation->EndpointMaxPacketSize = event.EndpointMaxPacketSize;
         operation->EndpointSequence = event.EndpointSequence;
         WdfRequestSetInformation(dequeueRequest, sizeof(*operation));
         InterlockedIncrement64(&controllerContext->NotificationEventsDelivered);
@@ -395,7 +398,7 @@ BOOLEAN
 ViiperQueueLifecycleEventLocked(
     _In_ VIIPER_UDE_CONTROLLER_CONTEXT *ControllerContext,
     _In_ VIIPER_UDE_DEVICE_CONTEXT *DeviceContext,
-    _In_ UCHAR EndpointAddress,
+    _In_opt_ const USB_ENDPOINT_DESCRIPTOR *EndpointDescriptor,
     _In_ VIIPER_UDE_OPERATION_KIND Kind,
     _In_ UCHAR InterfaceNumber,
     _In_ UCHAR InterfaceSetting
@@ -413,11 +416,16 @@ ViiperQueueLifecycleEventLocked(
     event->DeviceId = DeviceContext->DeviceId;
     event->Generation = DeviceContext->Generation;
     event->Kind = Kind;
-    event->EndpointAddress = EndpointAddress;
+    if (EndpointDescriptor != NULL) {
+        event->EndpointAddress = EndpointDescriptor->bEndpointAddress;
+        event->EndpointAttributes = EndpointDescriptor->bmAttributes;
+        event->EndpointInterval = EndpointDescriptor->bInterval;
+        event->EndpointMaxPacketSize = EndpointDescriptor->wMaxPacketSize;
+    }
     event->InterfaceNumber = InterfaceNumber;
     event->InterfaceSetting = InterfaceSetting;
     event->EndpointSequence = (ULONGLONG)InterlockedIncrement64(
-        &DeviceContext->EndpointSequences[EndpointAddress]);
+        &DeviceContext->EndpointSequences[event->EndpointAddress]);
     ControllerContext->NotificationTail = (ControllerContext->NotificationTail + 1) %
         VIIPER_UDE_MAX_PENDING_OPERATIONS;
     ++ControllerContext->NotificationCount;
@@ -440,7 +448,7 @@ ViiperQueueEndpointLifecycleEvent(
     queued = ViiperQueueLifecycleEventLocked(
         controllerContext,
         deviceContext,
-        endpointContext->Descriptor.bEndpointAddress,
+        &endpointContext->Descriptor,
         Kind,
         0,
         0);
@@ -465,7 +473,7 @@ ViiperQueueDeviceLifecycleEvent(
 
     WdfSpinLockAcquire(controllerContext->BrokerLock);
     queued = ViiperQueueLifecycleEventLocked(
-        controllerContext, deviceContext, 0, Kind, 0, 0);
+        controllerContext, deviceContext, NULL, Kind, 0, 0);
     WdfSpinLockRelease(controllerContext->BrokerLock);
     if (!queued) {
         return STATUS_INSUFFICIENT_RESOURCES;
@@ -490,7 +498,7 @@ ViiperQueueInterfaceLifecycleEvent(
     queued = ViiperQueueLifecycleEventLocked(
         controllerContext,
         deviceContext,
-        0,
+        NULL,
         ViiperUdeOperationSetInterface,
         InterfaceNumber,
         InterfaceSetting);
@@ -962,6 +970,9 @@ ViiperSerializeOperation(
         urb->UrbHeader.Function == URB_FUNCTION_CONTROL_TRANSFER_EX)
         ? ViiperUdeOperationControl : ViiperUdeOperationTransfer;
     operation->EndpointAddress = endpointContext->Descriptor.bEndpointAddress;
+    operation->EndpointAttributes = endpointContext->Descriptor.bmAttributes;
+    operation->EndpointInterval = endpointContext->Descriptor.bInterval;
+    operation->EndpointMaxPacketSize = endpointContext->Descriptor.wMaxPacketSize;
     operation->Direction = directionIn ? 1 : 0;
     operation->UrbFunction = urb->UrbHeader.Function;
     operation->TransferFlags = transferFlags;
