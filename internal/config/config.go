@@ -27,8 +27,9 @@ type CLI struct {
 	Log          `embed:"" prefix:"log."`
 	codegenCommand
 
-	Server cmd.Server `cmd:"" help:"Start the VIIPER USB-IP server" default:""`
-	Proxy  cmd.Proxy  `cmd:"" help:"Start the VIIPER USB-IP proxy"`
+	Server  cmd.Server         `cmd:"" help:"Start the VIIPER USB-IP server" default:""`
+	Service cmd.ServiceCommand `cmd:"" help:"Run the managed Windows native UDE broker service" hidden:""`
+	Proxy   cmd.Proxy          `cmd:"" help:"Start the VIIPER USB-IP proxy"`
 
 	Config    cmd.ConfigCommand `cmd:"" help:"Manage configuration files"`
 	Install   cmd.Install       `cmd:"" help:"Add the current VIIPER executable to system startup and runs it (creates a Systemd service on Linux)"`

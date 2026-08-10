@@ -56,7 +56,10 @@ func main() {
 	ctx.Bind(logger)
 	ctx.BindTo(rawLogger, (*log.RawLogger)(nil))
 
-	if cli.UpdateNotify != config.UpdateNotifyNone {
+	// A broker hosted by Service Control Manager has no interactive desktop.
+	// Update UI belongs to DS4Windows/the package installer, never session 0.
+	isServiceCommand := strings.HasPrefix(ctx.Command(), "service")
+	if !isServiceCommand && cli.UpdateNotify != config.UpdateNotifyNone {
 		go func() {
 			time.Sleep(10 * time.Second)
 			updater.CheckUpdate(Version, cli.UpdateNotify)

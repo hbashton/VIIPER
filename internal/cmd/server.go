@@ -29,6 +29,8 @@ type Server struct {
 	APIServerConfig   api.ServerConfig `embed:"" prefix:"api."`
 	ConnectionTimeout time.Duration    `help:"ConnectionTimeout operation timeout" default:"30s" env:"VIIPER_CONNECTION_TIMEOUT"`
 	Transport         string           `help:"Virtual USB transport: usbip or native-ude" default:"usbip" env:"VIIPER_TRANSPORT"`
+	KeyFile           string           `help:"Path to the API credential file." env:"VIIPER_KEY_FILE" type:"path"`
+	serviceMode       bool
 }
 
 // Run is called by Kong when the server command is executed.
@@ -52,7 +54,10 @@ func (s *Server) StartServer(ctx context.Context, logger *slog.Logger, rawLogger
 	applyTransportAPISecurityPolicy(transport, &s.APIServerConfig)
 
 	ctx, cancel := context.WithCancel(ctx)
-	stopTray := tray.Run(ctx, cancel)
+	stopTray := func() {}
+	if !s.serviceMode {
+		stopTray = tray.Run(ctx, cancel)
+	}
 	defer func() {
 		cancel()
 		stopTray()
@@ -65,14 +70,26 @@ func (s *Server) StartServer(ctx context.Context, logger *slog.Logger, rawLogger
 	logger.Info("Starting VIIPER virtual USB server", "transport", transport,
 		"usbipAddr", s.USBServerConfig.Addr)
 
-	keyFileDir, err := configpaths.KeyFileDir()
-	if err != nil {
-		return fmt.Errorf("failed to resolve key file path: %w", err)
+	keyFilePath := strings.TrimSpace(s.KeyFile)
+	if keyFilePath == "" {
+		keyFileDir, err := configpaths.KeyFileDir()
+		if err != nil {
+			return fmt.Errorf("failed to resolve key file path: %w", err)
+		}
+		keyFilePath = filepath.Join(keyFileDir, keyFileName)
+	} else if !filepath.IsAbs(keyFilePath) {
+		return fmt.Errorf("API credential path must be absolute: %s", keyFilePath)
 	}
-	keyFilePath := filepath.Join(keyFileDir, keyFileName)
+	keyFileDir := filepath.Dir(keyFilePath)
 	if pwd, err := os.ReadFile(keyFilePath); err == nil {
 		s.APIServerConfig.Password = strings.TrimSpace(string(pwd))
+		if s.APIServerConfig.Password == "" {
+			return fmt.Errorf("API credential file is empty: %s", keyFilePath)
+		}
 	} else {
+		if s.serviceMode {
+			return fmt.Errorf("managed service API credential is missing or unreadable at %s: %w", keyFilePath, err)
+		}
 		newPwd, err := auth.GenerateKey()
 		if err != nil {
 			return fmt.Errorf("failed to generate new API password: %w", err)
