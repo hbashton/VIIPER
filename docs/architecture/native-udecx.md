@@ -86,6 +86,14 @@ The transport is intentionally split by USB semantics:
   operation through the existing `usb.Device` interface, then submits
   `COMPLETE_OPERATION`.
 
+The input counters intentionally measure opposite sides of that cache:
+`InputReportsSubmitted` counts accepted latest-state publications, while
+`InputReportsCompleted` counts Windows interrupt-IN polls completed from the
+cache. A host may poll the same stable controller state more than once, so the
+completed count can legitimately exceed the submitted count. Live validation
+requires both forward publication and a completed Windows poll; it does not
+invent a one-to-one relationship that USB interrupt polling does not have.
+
 Input publishers start and stop from UdeCx endpoint lifecycle notifications,
 retain their sequence across a purge/start cycle, and are cancelled before
 device removal. Removal rejected before UdeCx takes the child restores the

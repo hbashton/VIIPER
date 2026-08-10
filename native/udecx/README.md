@@ -41,6 +41,9 @@ retained and completed by KMDF's manual-queue ready notification; reset, purge,
 D0 exit, and device reset invalidate it behind the same admission barriers used
 by the direct producer. This removes the old lost-rendezvous window and never
 requires an extra feeder update to wake an already-posted host poll.
+`InputReportsSubmitted` counts accepted state publications and
+`InputReportsCompleted` counts host polls served from that cache, so a stable
+state may produce more completions than submissions by design.
 
 The design and release gates are in
 `docs/architecture/native-udecx.md`. The Microsoft signing boundary is in

@@ -294,8 +294,9 @@ func TestNativeUDELiveProductionControllers(t *testing.T) {
 				if waitErr != nil {
 					t.Fatal(waitErr)
 				}
-				if inputStats.InputReportsCompleted > inputStats.InputReportsSubmitted {
-					t.Fatalf("completed input reports exceed submissions: %+v", inputStats)
+				if inputStats.InputReportsSubmitted <= before.InputReportsSubmitted {
+					t.Fatalf("%s did not publish a direct input state: before=%+v after=%+v",
+						controller.name, before, inputStats)
 				}
 
 				unregisterCtx, cancelUnregister := context.WithTimeout(testCtx, 20*time.Second)
