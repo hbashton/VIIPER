@@ -159,6 +159,8 @@ typedef struct VIIPER_UDE_DEVICE_CONTEXT {
     volatile LONG Purging;
     volatile LONG ActiveCounted;
     volatile LONG OwnerReferenced;
+    ULONG MaxPendingOperations;
+    volatile LONG PendingOperations;
     UDECXUSBENDPOINT DefaultEndpoint;
     UDECXUSBENDPOINT Endpoints[256];
     BOOLEAN RetiredEndpoints[256];

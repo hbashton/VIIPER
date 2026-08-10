@@ -470,6 +470,7 @@ ViiperCreateVirtualDevice(
     deviceContext->Generation = input->Generation;
     deviceContext->Slot = VIIPER_UDE_MAX_DEVICES;
     deviceContext->Speed = speed;
+    deviceContext->MaxPendingOperations = input->MaxPendingOperations;
     WdfObjectReference(ownerFile);
     InterlockedExchange(&deviceContext->OwnerReferenced, 1);
 

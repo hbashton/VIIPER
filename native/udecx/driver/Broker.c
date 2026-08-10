@@ -253,6 +253,11 @@ ViiperClearSlotLocked(
 {
     VIIPER_UDE_PENDING_SLOT *pending = &ControllerContext->PendingSlots[Slot];
     UDECXUSBENDPOINT endpoint = pending->Endpoint;
+    VIIPER_UDE_DEVICE_CONTEXT *deviceContext = NULL;
+
+    if (endpoint != WDF_NO_HANDLE) {
+        deviceContext = ViiperGetDeviceContext(ViiperGetEndpointContext(endpoint)->Device);
+    }
 
     pending->Request = WDF_NO_HANDLE;
     pending->Endpoint = WDF_NO_HANDLE;
@@ -269,6 +274,9 @@ ViiperClearSlotLocked(
     pending->CompletionUsbdStatus = USBD_STATUS_SUCCESS;
     pending->CompleteWithNtStatus = FALSE;
     InterlockedDecrement(&ControllerContext->PendingOperations);
+    if (deviceContext != NULL) {
+        InterlockedDecrement(&deviceContext->PendingOperations);
+    }
     if (endpoint != WDF_NO_HANDLE) {
         ViiperEndpointOperationCompleted(endpoint);
     }
@@ -747,6 +755,10 @@ ViiperAllocatePendingSlot(
     if (InterlockedCompareExchange(&endpointContext->Purging, 0, 0) != 0 ||
         InterlockedCompareExchange(&deviceContext->Purging, 0, 0) != 0) {
         status = STATUS_DEVICE_NOT_READY;
+    } else if ((ULONG)InterlockedCompareExchange(
+            &deviceContext->PendingOperations, 0, 0) >=
+            deviceContext->MaxPendingOperations) {
+        status = STATUS_QUOTA_EXCEEDED;
     }
     for (offset = 0; status == STATUS_INSUFFICIENT_RESOURCES &&
             offset < VIIPER_UDE_MAX_PENDING_OPERATIONS; ++offset) {
@@ -778,6 +790,7 @@ ViiperAllocatePendingSlot(
         ControllerContext->NextPendingSlot = (index + 1) % VIIPER_UDE_MAX_PENDING_OPERATIONS;
         ViiperEndpointOperationStarted(Endpoint);
         InterlockedIncrement(&ControllerContext->PendingOperations);
+        InterlockedIncrement(&deviceContext->PendingOperations);
         *Slot = index;
         *Token = pending->Token;
         status = STATUS_SUCCESS;
@@ -785,7 +798,7 @@ ViiperAllocatePendingSlot(
     }
     WdfSpinLockRelease(ControllerContext->BrokerLock);
 
-    if (status == STATUS_INSUFFICIENT_RESOURCES) {
+    if (status == STATUS_INSUFFICIENT_RESOURCES || status == STATUS_QUOTA_EXCEEDED) {
         InterlockedIncrement64(&ControllerContext->QueueExhaustions);
     }
     return status;

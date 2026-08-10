@@ -59,8 +59,10 @@ The kernel driver owns only Windows USB presentation and transfer lifecycle.
 5. Purge stops admission, cancels queued and in-flight work, waits for ownership
    to settle, then acknowledges UdeCx.
 6. Driver unload and file cleanup leave no UDE device, request, or worker alive.
-7. Endpoint queues are bounded. Saturation is observable and never overwrites
-   live media or state silently.
+7. Endpoint queues are bounded. The broker enforces both its controller-wide
+   ceiling and each child's negotiated pending-operation quota, so one busy
+   media device cannot starve another controller. Saturation is observable and
+   never overwrites live media or state silently.
 8. Shared report state is snapshotted atomically before encoding. Media and
    state never share mutable buffers.
 9. No raw user pointer crosses the ABI.
