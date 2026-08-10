@@ -190,6 +190,10 @@ interface fields are only hints for alternates that contain no endpoints.
   object teardown completes. User mode can retry only failures returned before
   ownership reached UdeCx.
 - Each device has a short-held state lock and independent endpoint queues.
+- User mode serializes controller-engine lifecycle mutations as one complete
+  transaction. Endpoint reset cannot overlap an endpoint start/purge, device
+  reset, or alternate-setting change, while ordinary HID and media transfers
+  remain concurrent on their independent endpoint lanes.
 - Each endpoint owns a drain event covering both broker-forwarded URBs and the
   direct interrupt-IN fast path. UdeCx itself owns and purges the framework
   endpoint queue; VIIPER never starts or purges that queue. The purge callback

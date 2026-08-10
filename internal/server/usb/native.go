@@ -74,6 +74,9 @@ func (p *NativeProcessor) resetDeviceLocked(dev usbdevice.Device, identity udecx
 }
 
 func (p *NativeProcessor) Lifecycle(_ context.Context, dev usbdevice.Device, op udecx.Operation) error {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+
 	identity := udecx.DeviceIdentity{DeviceID: op.DeviceID, Generation: op.Generation}
 	key := nativeLaneKey{
 		deviceID: op.DeviceID, generation: op.Generation, endpoint: op.EndpointAddress,
@@ -82,20 +85,20 @@ func (p *NativeProcessor) Lifecycle(_ context.Context, dev usbdevice.Device, op 
 	switch op.Kind {
 	case udecx.OperationEndpointStart:
 		p.clearLane(key)
-		p.activateEndpoint(dev, op)
+		p.activateEndpointLocked(dev, op)
 	case udecx.OperationEndpointPurge:
 		p.clearLane(key)
 		if resetter, ok := dev.(usbdevice.EndpointResetDevice); ok {
 			resetter.ResetEndpoint(op.EndpointAddress)
 		}
-		p.deactivateEndpoint(dev, op)
+		p.deactivateEndpointLocked(dev, op)
 	case udecx.OperationEndpointReset:
 		p.clearLane(key)
 		if resetter, ok := dev.(usbdevice.EndpointResetDevice); ok {
 			resetter.ResetEndpoint(op.EndpointAddress)
 		}
 	case udecx.OperationDeviceReset:
-		p.Reset(dev, identity)
+		p.resetDeviceLocked(dev, identity)
 	case udecx.OperationDeviceD0Entry, udecx.OperationDeviceD0Exit:
 		// A link-power transition is not a USB reset. Preserve the selected
 		// audio interfaces and controller state, but discard stale service-clock
@@ -107,7 +110,7 @@ func (p *NativeProcessor) Lifecycle(_ context.Context, dev usbdevice.Device, op 
 		// a hint only. Interfaces with endpoint-bearing alternate settings are
 		// driven by the exact endpoint descriptors carried by start/purge and
 		// transfer operations instead.
-		p.applyInterfaceHint(dev, op)
+		p.applyInterfaceHintLocked(dev, op)
 	default:
 		return fmt.Errorf("unsupported native UDE lifecycle operation %d", op.Kind)
 	}
@@ -187,6 +190,12 @@ func descriptorInterfaceAltIsActive(desc *usbdevice.Descriptor, interfaceNumber,
 }
 
 func (p *NativeProcessor) activateEndpoint(dev usbdevice.Device, op udecx.Operation) {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	p.activateEndpointLocked(dev, op)
+}
+
+func (p *NativeProcessor) activateEndpointLocked(dev usbdevice.Device, op udecx.Operation) {
 	signature := signatureFromOperation(op)
 	interfaceNumber, alternateSetting, ok := descriptorInterfaceAltForEndpoint(
 		dev.GetDescriptor(), signature)
@@ -194,8 +203,6 @@ func (p *NativeProcessor) activateEndpoint(dev usbdevice.Device, op udecx.Operat
 		return
 	}
 	identity := nativeSessionKey{deviceID: op.DeviceID, generation: op.Generation}
-	p.lifecycleMu.Lock()
-	defer p.lifecycleMu.Unlock()
 	active := p.active[identity]
 	if active == nil {
 		active = make(map[nativeEndpointSignature]struct{})
@@ -208,7 +215,7 @@ func (p *NativeProcessor) activateEndpoint(dev usbdevice.Device, op udecx.Operat
 	}
 }
 
-func (p *NativeProcessor) deactivateEndpoint(dev usbdevice.Device, op udecx.Operation) {
+func (p *NativeProcessor) deactivateEndpointLocked(dev usbdevice.Device, op udecx.Operation) {
 	signature := signatureFromOperation(op)
 	interfaceNumber, alternateSetting, ok := descriptorInterfaceAltForEndpoint(
 		dev.GetDescriptor(), signature)
@@ -216,8 +223,6 @@ func (p *NativeProcessor) deactivateEndpoint(dev usbdevice.Device, op udecx.Oper
 		return
 	}
 	identity := nativeSessionKey{deviceID: op.DeviceID, generation: op.Generation}
-	p.lifecycleMu.Lock()
-	defer p.lifecycleMu.Unlock()
 	active := p.active[identity]
 	delete(active, signature)
 	if len(active) == 0 {
@@ -230,14 +235,12 @@ func (p *NativeProcessor) deactivateEndpoint(dev usbdevice.Device, op udecx.Oper
 	}
 }
 
-func (p *NativeProcessor) applyInterfaceHint(dev usbdevice.Device, op udecx.Operation) {
+func (p *NativeProcessor) applyInterfaceHintLocked(dev usbdevice.Device, op udecx.Operation) {
 	desc := dev.GetDescriptor()
 	if !descriptorHasInterfaceAlt(desc, op.InterfaceNumber, op.InterfaceSetting) ||
 		descriptorInterfaceUsesEndpointLifecycle(desc, op.InterfaceNumber) {
 		return
 	}
-	p.lifecycleMu.Lock()
-	defer p.lifecycleMu.Unlock()
 	if p.server.getInterfaceAlt(dev, op.InterfaceNumber) == op.InterfaceSetting {
 		return
 	}

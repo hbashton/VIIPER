@@ -267,6 +267,88 @@ func (d *concurrentNativeTestDevice) SetInterfaceAltSetting(iface, alt uint8) {
 	d.mu.Unlock()
 }
 
+type lifecycleGateDevice struct {
+	desc         *usbdevice.Descriptor
+	resetStarted chan struct{}
+	resetRelease chan struct{}
+	altChanged   chan [2]uint8
+}
+
+func (*lifecycleGateDevice) HandleTransfer(context.Context, uint32, uint32, []byte) []byte {
+	return nil
+}
+func (d *lifecycleGateDevice) GetDescriptor() *usbdevice.Descriptor { return d.desc }
+func (*lifecycleGateDevice) GetDeviceSpecificArgs() map[string]any  { return nil }
+func (d *lifecycleGateDevice) ResetEndpoint(uint8) {
+	close(d.resetStarted)
+	<-d.resetRelease
+}
+func (d *lifecycleGateDevice) SetInterfaceAltSetting(iface, alt uint8) {
+	d.altChanged <- [2]uint8{iface, alt}
+}
+
+func TestNativeProcessorSerializesEndpointResetWithEndpointStart(t *testing.T) {
+	desc := &usbdevice.Descriptor{Interfaces: []usbdevice.InterfaceConfig{
+		{Descriptor: usbdevice.InterfaceDescriptor{BInterfaceNumber: 2}},
+		{Descriptor: usbdevice.InterfaceDescriptor{
+			BInterfaceNumber: 2, BAlternateSetting: 1, BNumEndpoints: 1,
+		}, Endpoints: []usbdevice.EndpointDescriptor{{
+			BEndpointAddress: 0x02, BMAttributes: 0x05,
+			WMaxPacketSize: 4, BInterval: 1,
+		}}},
+	}}
+	dev := &lifecycleGateDevice{
+		desc: desc, resetStarted: make(chan struct{}), resetRelease: make(chan struct{}),
+		altChanged: make(chan [2]uint8, 1),
+	}
+	processor := nativeProcessorForTest(t)
+	base := udecx.Operation{
+		DeviceID: 92, Generation: 1, EndpointAddress: 0x02,
+		EndpointAttributes: 0x05, EndpointInterval: 1, EndpointMaxPacketSize: 4,
+	}
+
+	resetDone := make(chan error, 1)
+	go func() {
+		op := base
+		op.Kind = udecx.OperationEndpointReset
+		resetDone <- processor.Lifecycle(context.Background(), dev, op)
+	}()
+	select {
+	case <-dev.resetStarted:
+	case <-time.After(time.Second):
+		t.Fatal("endpoint reset did not reach the controller engine")
+	}
+
+	startDone := make(chan error, 1)
+	go func() {
+		op := base
+		op.Kind = udecx.OperationEndpointStart
+		startDone <- processor.Lifecycle(context.Background(), dev, op)
+	}()
+	select {
+	case event := <-dev.altChanged:
+		close(dev.resetRelease)
+		t.Fatalf("endpoint start changed alternate setting during reset: %v", event)
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	close(dev.resetRelease)
+	if err := <-resetDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-startDone; err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case event := <-dev.altChanged:
+		if event != [2]uint8{2, 1} {
+			t.Fatalf("alternate setting event=%v want=[2 1]", event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("endpoint start did not resume after reset")
+	}
+}
+
 func TestNativeProcessorConcurrentMediaAndLifecycleSoak(t *testing.T) {
 	desc := &usbdevice.Descriptor{Interfaces: []usbdevice.InterfaceConfig{
 		{Descriptor: usbdevice.InterfaceDescriptor{BInterfaceNumber: 2}},
