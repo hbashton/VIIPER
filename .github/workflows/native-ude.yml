@@ -115,8 +115,10 @@ jobs:
           $mediaCommand = "`"$devCmd`" -arch=x64 -host_arch=x64 && cl.exe /nologo /std:c++20 /EHsc /W4 /WX /O2 /MT /D_WIN32_WINNT=0x0A00 `"$mediaSource`" /Fe:`"$mediaOutput`" /link Ole32.lib Ksuser.lib"
           cmd.exe /d /s /c $mediaCommand
           if ($LASTEXITCODE -ne 0 -or -not (Test-Path $mediaOutput)) { throw "ViiperUdeMediaProbe build failed" }
-          & $mediaOutput
-          if ($LASTEXITCODE -ne 2) { throw "ViiperUdeMediaProbe usage smoke test failed" }
+          $mediaSnapshot = Join-Path $env:RUNNER_TEMP "viiper-ude-media-smoke.snapshot"
+          & $mediaOutput snapshot $mediaSnapshot
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path $mediaSnapshot)) { throw "ViiperUdeMediaProbe endpoint snapshot smoke test failed" }
+          Remove-Item -LiteralPath $mediaSnapshot -Force
       - name: Validate Hardware Dev Center CAB structure
         shell: pwsh
         run: |
