@@ -27,8 +27,9 @@ func TestNativeServiceKeyFileUsesMachineData(t *testing.T) {
 func TestNativeServiceStopsCooperatively(t *testing.T) {
 	started := make(chan struct{})
 	stopped := make(chan struct{})
-	handler := &nativeBrokerService{run: func(ctx context.Context) error {
+	handler := &nativeBrokerService{run: func(ctx context.Context, ready func()) error {
 		close(started)
+		ready()
 		<-ctx.Done()
 		close(stopped)
 		return nil
@@ -64,8 +65,43 @@ func TestNativeServiceStopsCooperatively(t *testing.T) {
 	}
 }
 
+func TestNativeServiceDoesNotReportRunningBeforeBrokerReady(t *testing.T) {
+	releaseReady := make(chan struct{})
+	handler := &nativeBrokerService{run: func(ctx context.Context, ready func()) error {
+		select {
+		case <-releaseReady:
+			ready()
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		<-ctx.Done()
+		return nil
+	}}
+	requests := make(chan svc.ChangeRequest, 1)
+	changes := make(chan svc.Status, 8)
+	result := make(chan uint32, 1)
+	go func() {
+		_, code := handler.Execute(nil, requests, changes)
+		result <- code
+	}()
+
+	waitForServiceState(t, changes, svc.StartPending)
+	select {
+	case got := <-changes:
+		t.Fatalf("service reported state %v before broker readiness", got.State)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(releaseReady)
+	waitForServiceState(t, changes, svc.Running)
+	requests <- svc.ChangeRequest{Cmd: svc.Stop}
+	waitForServiceState(t, changes, svc.StopPending)
+	if code := <-result; code != 0 {
+		t.Fatalf("service exit code=%d want=0", code)
+	}
+}
+
 func TestNativeServiceReportsUnexpectedBrokerFailure(t *testing.T) {
-	handler := &nativeBrokerService{run: func(context.Context) error {
+	handler := &nativeBrokerService{run: func(context.Context, func()) error {
 		return errors.New("broker failed")
 	}}
 	changes := make(chan svc.Status, 8)

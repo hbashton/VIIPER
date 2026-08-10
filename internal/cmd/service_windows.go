@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Alia5/VIIPER/internal/log"
@@ -21,7 +22,7 @@ const NativeBrokerServiceName = "VIIPERNativeBroker"
 const serviceStopTimeout = 30 * time.Second
 
 type nativeBrokerService struct {
-	run func(context.Context) error
+	run func(context.Context, func()) error
 }
 
 func (c *ServiceCommand) Run(logger *slog.Logger, rawLogger log.RawLogger) error {
@@ -43,7 +44,8 @@ func (c *ServiceCommand) Run(logger *slog.Logger, rawLogger log.RawLogger) error
 		c.KeyFile = path
 	}
 	c.serviceMode = true
-	handler := &nativeBrokerService{run: func(ctx context.Context) error {
+	handler := &nativeBrokerService{run: func(ctx context.Context, ready func()) error {
+		c.ready = ready
 		return c.StartServer(ctx, logger, rawLogger)
 	}}
 	return svc.Run(NativeBrokerServiceName, handler)
@@ -68,15 +70,43 @@ func (s *nativeBrokerService) Execute(
 	changes <- svc.Status{State: svc.StartPending, WaitHint: 15_000}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	ready := make(chan struct{})
+	var readyOnce sync.Once
 	done := make(chan error, 1)
-	go func() { done <- s.run(ctx) }()
+	go func() {
+		done <- s.run(ctx, func() { readyOnce.Do(func() { close(ready) }) })
+	}()
 
 	running := svc.Status{
 		State:   svc.Running,
 		Accepts: svc.AcceptStop | svc.AcceptShutdown,
 	}
-	changes <- running
+	starting := svc.Status{State: svc.StartPending, WaitHint: 15_000, CheckPoint: 1}
+	for {
+		select {
+		case <-ready:
+			changes <- running
+			goto Running
+		case err := <-done:
+			changes <- svc.Status{State: svc.StopPending, WaitHint: 1_000}
+			if err != nil {
+				return true, 1
+			}
+			return true, 3
+		case request := <-requests:
+			switch request.Cmd {
+			case svc.Interrogate:
+				starting.CheckPoint++
+				changes <- starting
+			case svc.Stop, svc.Shutdown:
+				changes <- svc.Status{State: svc.StopPending, WaitHint: uint32(serviceStopTimeout / time.Millisecond)}
+				cancel()
+				return waitForServiceStop(done)
+			}
+		}
+	}
 
+Running:
 	for {
 		select {
 		case err := <-done:
@@ -92,20 +122,22 @@ func (s *nativeBrokerService) Execute(
 			case svc.Stop, svc.Shutdown:
 				changes <- svc.Status{State: svc.StopPending, WaitHint: uint32(serviceStopTimeout / time.Millisecond)}
 				cancel()
-				timer := time.NewTimer(serviceStopTimeout)
-				select {
-				case err := <-done:
-					if !timer.Stop() {
-						<-timer.C
-					}
-					if err != nil {
-						return true, 1
-					}
-					return false, 0
-				case <-timer.C:
-					return true, 2
-				}
+				return waitForServiceStop(done)
 			}
 		}
+	}
+}
+
+func waitForServiceStop(done <-chan error) (bool, uint32) {
+	timer := time.NewTimer(serviceStopTimeout)
+	defer timer.Stop()
+	select {
+	case err := <-done:
+		if err != nil {
+			return true, 1
+		}
+		return false, 0
+	case <-timer.C:
+		return true, 2
 	}
 }
