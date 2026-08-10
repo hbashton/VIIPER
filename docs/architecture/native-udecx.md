@@ -307,6 +307,9 @@ interface fields are only hints for alternates that contain no endpoints.
 
 This follows the useful ViGEmBus pattern of per-target ownership and manual
 request queues while accounting for UdeCx's endpoint-specific purge contract.
+Host-side create/remove gates are keyed by stable device ID: generations of
+one controller cannot cross, while a slow PnP transition for one pad cannot
+stall an independent pad's registration or removal.
 
 ## Delivery checkpoints
 

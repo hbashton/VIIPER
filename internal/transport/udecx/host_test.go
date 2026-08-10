@@ -28,6 +28,27 @@ type fastInputDriver struct {
 	submitErr error
 }
 
+type independentlyBlockingCreateDriver struct {
+	*fakeHostDriver
+	blockedDevice uint64
+	started       chan struct{}
+	release       chan struct{}
+}
+
+func (d *independentlyBlockingCreateDriver) CreateDevice(
+	ctx context.Context, device CreateDevice,
+) error {
+	if device.DeviceID == d.blockedDevice {
+		close(d.started)
+		select {
+		case <-d.release:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return d.fakeHostDriver.CreateDevice(ctx, device)
+}
+
 func (d *fastInputDriver) SubmitInputReport(ctx context.Context, report InputReport) error {
 	if d.submitErr != nil {
 		return d.submitErr
@@ -194,6 +215,130 @@ func hostTestDevice() usb.Device {
 			BEndpointAddress: 0x81, BMAttributes: 3, WMaxPacketSize: 64, BInterval: 4,
 		}}}},
 	}}
+}
+
+func TestHostDoesNotSerializeIndependentControllerRegistration(t *testing.T) {
+	driver := &independentlyBlockingCreateDriver{
+		fakeHostDriver: newFakeHostDriver(), blockedDevice: 81,
+		started: make(chan struct{}), release: make(chan struct{}),
+	}
+	host, err := NewHost(driver, &noopProcessor{}, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	type registerResult struct {
+		identity DeviceIdentity
+		err      error
+	}
+	blockedDone := make(chan registerResult, 1)
+	go func() {
+		identity, registerErr := host.Register(context.Background(), 81, hostTestDevice())
+		blockedDone <- registerResult{identity: identity, err: registerErr}
+	}()
+	select {
+	case <-driver.started:
+	case <-time.After(time.Second):
+		t.Fatal("first controller registration did not reach the driver")
+	}
+
+	independentDone := make(chan registerResult, 1)
+	go func() {
+		identity, registerErr := host.Register(context.Background(), 82, hostTestDevice())
+		independentDone <- registerResult{identity: identity, err: registerErr}
+	}()
+	var independent registerResult
+	select {
+	case independent = <-independentDone:
+		if independent.err != nil {
+			t.Fatalf("independent registration failed: %v", independent.err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("independent controller registration was blocked by another controller")
+	}
+
+	close(driver.release)
+	var blocked registerResult
+	select {
+	case blocked = <-blockedDone:
+		if blocked.err != nil {
+			t.Fatalf("blocked registration failed after release: %v", blocked.err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("first controller registration did not finish after release")
+	}
+
+	if err = host.Unregister(context.Background(), independent.identity); err != nil {
+		t.Fatal(err)
+	}
+	if err = host.Unregister(context.Background(), blocked.identity); err != nil {
+		t.Fatal(err)
+	}
+	host.lifecycleMu.Lock()
+	remainingGates := len(host.lifecycles)
+	host.lifecycleMu.Unlock()
+	if remainingGates != 0 {
+		t.Fatalf("lifecycle gates=%d want 0", remainingGates)
+	}
+}
+
+func TestHostSerializesSameControllerRegistration(t *testing.T) {
+	driver := &independentlyBlockingCreateDriver{
+		fakeHostDriver: newFakeHostDriver(), blockedDevice: 83,
+		started: make(chan struct{}), release: make(chan struct{}),
+	}
+	host, err := NewHost(driver, &noopProcessor{}, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	type registerResult struct {
+		identity DeviceIdentity
+		err      error
+	}
+	firstDone := make(chan registerResult, 1)
+	go func() {
+		identity, registerErr := host.Register(context.Background(), 83, hostTestDevice())
+		firstDone <- registerResult{identity: identity, err: registerErr}
+	}()
+	select {
+	case <-driver.started:
+	case <-time.After(time.Second):
+		t.Fatal("first same-controller registration did not reach the driver")
+	}
+
+	secondDone := make(chan error, 1)
+	go func() {
+		_, registerErr := host.Register(context.Background(), 83, hostTestDevice())
+		secondDone <- registerErr
+	}()
+	select {
+	case registerErr := <-secondDone:
+		t.Fatalf("same-controller registration crossed the in-flight create: %v", registerErr)
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	close(driver.release)
+	var first registerResult
+	select {
+	case first = <-firstDone:
+		if first.err != nil {
+			t.Fatal(first.err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("first same-controller registration did not finish")
+	}
+	select {
+	case registerErr := <-secondDone:
+		if registerErr == nil || !strings.Contains(registerErr.Error(), "already registered") {
+			t.Fatalf("second same-controller registration error=%v", registerErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("second same-controller registration did not revalidate after serialization")
+	}
+	if err = host.Unregister(context.Background(), first.identity); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestHostRepeatedCreateRemoveLeavesOnlyGenerationHistory(t *testing.T) {

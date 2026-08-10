@@ -97,6 +97,11 @@ type operationState struct {
 	done       bool
 }
 
+type deviceLifecycleGate struct {
+	mu         sync.Mutex
+	references int
+}
+
 // Host owns one exclusive driver session and routes operations concurrently
 // across endpoints while preserving strict FIFO within each endpoint.
 type Host struct {
@@ -106,6 +111,7 @@ type Host struct {
 	workers   int
 
 	lifecycleMu sync.Mutex
+	lifecycles  map[uint64]*deviceLifecycleGate
 	mu          sync.RWMutex
 	devices     map[uint64]*registeredDevice
 	generations map[uint64]uint32
@@ -133,10 +139,37 @@ func NewHost(driver Driver, processor OperationProcessor, workers int) (*Host, e
 		devices:     make(map[uint64]*registeredDevice),
 		generations: make(map[uint64]uint32),
 		lanes:       make(map[laneKey]*operationLane),
+		lifecycles:  make(map[uint64]*deviceLifecycleGate),
 		operations:  make(map[uint64]*operationState),
 	}
 	host.input, _ = driver.(InputReportDriver)
 	return host, nil
+}
+
+// lockDeviceLifecycle serializes create/remove for one stable device ID while
+// allowing independent controllers to enumerate or tear down concurrently.
+// References include both the holder and waiters, so a gate cannot be deleted
+// and replaced while an older waiter still targets it.
+func (h *Host) lockDeviceLifecycle(deviceID uint64) func() {
+	h.lifecycleMu.Lock()
+	gate := h.lifecycles[deviceID]
+	if gate == nil {
+		gate = &deviceLifecycleGate{}
+		h.lifecycles[deviceID] = gate
+	}
+	gate.references++
+	h.lifecycleMu.Unlock()
+
+	gate.mu.Lock()
+	return func() {
+		gate.mu.Unlock()
+		h.lifecycleMu.Lock()
+		gate.references--
+		if gate.references == 0 && h.lifecycles[deviceID] == gate {
+			delete(h.lifecycles, deviceID)
+		}
+		h.lifecycleMu.Unlock()
+	}
 }
 
 func fastInputEndpoints(dev usb.Device) map[uint8]struct{} {
@@ -158,11 +191,11 @@ func fastInputEndpoints(dev usb.Device) map[uint8]struct{} {
 // is installed before the driver plugs in the child because Windows can submit
 // its first descriptor request before CreateDevice returns.
 func (h *Host) Register(ctx context.Context, deviceID uint64, dev usb.Device) (DeviceIdentity, error) {
-	h.lifecycleMu.Lock()
-	defer h.lifecycleMu.Unlock()
 	if deviceID == 0 || dev == nil {
 		return DeviceIdentity{}, ErrInvalidRange
 	}
+	unlockLifecycle := h.lockDeviceLifecycle(deviceID)
+	defer unlockLifecycle()
 
 	h.mu.Lock()
 	// One driver file owner is one native UDE host session. Once Serve has
@@ -210,8 +243,11 @@ func (h *Host) Register(ctx context.Context, deviceID uint64, dev usb.Device) (D
 }
 
 func (h *Host) Unregister(ctx context.Context, identity DeviceIdentity) error {
-	h.lifecycleMu.Lock()
-	defer h.lifecycleMu.Unlock()
+	if identity.DeviceID == 0 || identity.Generation == 0 {
+		return ErrInvalidRange
+	}
+	unlockLifecycle := h.lockDeviceLifecycle(identity.DeviceID)
+	defer unlockLifecycle()
 
 	h.mu.RLock()
 	entry := h.devices[identity.DeviceID]
