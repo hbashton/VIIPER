@@ -65,8 +65,13 @@ func (p *NativeProcessor) Lifecycle(_ context.Context, dev usbdevice.Device, op 
 		if resetter, ok := dev.(usbdevice.EndpointResetDevice); ok {
 			resetter.ResetEndpoint(op.EndpointAddress)
 		}
-	case udecx.OperationDeviceReset, udecx.OperationDeviceD0Entry, udecx.OperationDeviceD0Exit:
+	case udecx.OperationDeviceReset:
 		p.Reset(dev, identity)
+	case udecx.OperationDeviceD0Entry, udecx.OperationDeviceD0Exit:
+		// A link-power transition is not a USB reset. Preserve the selected
+		// audio interfaces and controller state, but discard stale service-clock
+		// anchors so the first resumed transfer starts from the current time.
+		p.clearDeviceLanes(identity)
 	case udecx.OperationSetInterface:
 		if !descriptorHasInterfaceAlt(dev.GetDescriptor(), op.InterfaceNumber, op.InterfaceSetting) {
 			return fmt.Errorf("native UDE selected invalid alternate setting %d for interface %d",

@@ -5,6 +5,7 @@ import (
 	"context"
 	"log/slog"
 	"testing"
+	"time"
 
 	"github.com/Alia5/VIIPER/internal/transport/udecx"
 	usbdevice "github.com/Alia5/VIIPER/usb"
@@ -70,6 +71,39 @@ func TestNativeProcessorAppliesUdeCxInterfaceSettingLifecycle(t *testing.T) {
 	}
 	if got := processor.server.getInterfaceAlt(dev, 2); got != 1 {
 		t.Fatalf("invalid transition changed interface 2 alt to %d", got)
+	}
+}
+
+func TestNativeProcessorPreservesAlternateSettingAcrossLinkPower(t *testing.T) {
+	desc := &usbdevice.Descriptor{
+		Device: usbdevice.DeviceDescriptor{Speed: uint32(udecx.DeviceSpeedHigh)},
+		Interfaces: []usbdevice.InterfaceConfig{
+			{Descriptor: usbdevice.InterfaceDescriptor{BInterfaceNumber: 2, BAlternateSetting: 0}},
+			{Descriptor: usbdevice.InterfaceDescriptor{BInterfaceNumber: 2, BAlternateSetting: 1}},
+		},
+	}
+	dev := &altSettingTestDevice{desc: desc}
+	processor := nativeProcessorForTest(t)
+	processor.server.setInterfaceAlt(dev, 2, 1)
+	identity := udecx.DeviceIdentity{DeviceID: 4, Generation: 7}
+	key := nativeLaneKey{deviceID: identity.DeviceID, generation: identity.Generation, endpoint: 0x82}
+	processor.next[key] = time.Now()
+	processor.lastIn[key] = []byte{1, 2, 3}
+
+	for _, kind := range []udecx.OperationKind{
+		udecx.OperationDeviceD0Exit, udecx.OperationDeviceD0Entry,
+	} {
+		if err := processor.Lifecycle(context.Background(), dev, udecx.Operation{
+			DeviceID: identity.DeviceID, Generation: identity.Generation, Kind: kind,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if got := processor.server.getInterfaceAlt(dev, 2); got != 1 {
+			t.Fatalf("link-power event %d reset interface 2 alt to %d", kind, got)
+		}
+		if _, ok := processor.next[key]; ok {
+			t.Fatalf("link-power event %d retained stale service clock", kind)
+		}
 	}
 }
 

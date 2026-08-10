@@ -41,6 +41,9 @@ ViiperValidateCreateDevice(
     ULONG index;
     BOOLEAN foundDevice = FALSE;
     BOOLEAN foundConfiguration = FALSE;
+    BOOLEAN foundBos = FALSE;
+    BOOLEAN foundLanguageTable = FALSE;
+    BOOLEAN foundLocalizedString = FALSE;
 
     if (InputLength < sizeof(*Input) ||
         InputLength > (size_t)VIIPER_UDE_MAX_DESCRIPTOR_BYTES * 2 + sizeof(*Input) ||
@@ -102,17 +105,28 @@ ViiperValidateCreateDevice(
             foundConfiguration = TRUE;
             break;
         case ViiperUdeDescriptorBos:
-            if (record->Index != 0 || descriptor[1] != USB_BOS_DESCRIPTOR_TYPE) {
+            if (foundBos || record->Index != 0 ||
+                descriptor[1] != USB_BOS_DESCRIPTOR_TYPE) {
                 return FALSE;
             }
+            foundBos = TRUE;
             break;
         case ViiperUdeDescriptorString:
             if (record->Index > MAXUCHAR || record->Length > MAXUCHAR ||
                 descriptor[0] != record->Length || descriptor[1] != USB_STRING_DESCRIPTOR_TYPE ||
                 (record->Length & 1) != 0 ||
                 (record->Index == 0 && record->LanguageId != 0) ||
+                (record->Index == 0 && record->Length < 4) ||
                 (record->Index != 0 && record->LanguageId == 0)) {
                 return FALSE;
+            }
+            if (record->Index == 0) {
+                if (foundLanguageTable) {
+                    return FALSE;
+                }
+                foundLanguageTable = TRUE;
+            } else {
+                foundLocalizedString = TRUE;
             }
             break;
         default:
@@ -120,7 +134,8 @@ ViiperValidateCreateDevice(
         }
     }
 
-    return foundDevice && foundConfiguration;
+    return foundDevice && foundConfiguration &&
+        (!foundLocalizedString || foundLanguageTable);
 }
 
 static
@@ -243,7 +258,9 @@ ViiperClaimDeviceSlot(
             }
             continue;
         }
-        if (ViiperGetDeviceContext(current)->DeviceId == DeviceId) {
+        if (ViiperGetDeviceContext(current)->DeviceId == DeviceId &&
+            InterlockedCompareExchange(
+                &ViiperGetDeviceContext(current)->Purging, 0, 0) == 0) {
             status = STATUS_OBJECT_NAME_COLLISION;
             goto Exit;
         }
@@ -353,6 +370,8 @@ ViiperCreateVirtualDevice(
     deviceContext->DeviceId = input->DeviceId;
     deviceContext->Generation = input->Generation;
     deviceContext->Slot = VIIPER_UDE_MAX_DEVICES;
+    WdfObjectReference(ownerFile);
+    InterlockedExchange(&deviceContext->OwnerReferenced, 1);
 
     status = ViiperClaimDeviceSlot(controllerContext, device, input->DeviceId, &slot);
     if (!NT_SUCCESS(status)) {
@@ -407,11 +426,10 @@ ViiperBeginRemoveDevice(
             (MatchGeneration && deviceContext->Generation != Generation)) {
             continue;
         }
-        if (deviceContext->Purging) {
-            status = STATUS_DEVICE_BUSY;
-            break;
+        if (InterlockedCompareExchange(&deviceContext->Purging, 0, 0) != 0) {
+            continue;
         }
-        deviceContext->Purging = TRUE;
+        InterlockedExchange(&deviceContext->Purging, TRUE);
         *Device = current;
         status = STATUS_SUCCESS;
         break;
@@ -430,7 +448,7 @@ ViiperCancelRemoveDevice(
     WdfWaitLockAcquire(ControllerContext->DeviceLock, NULL);
     if (ViiperGetDeviceContext(Device)->Slot < VIIPER_UDE_MAX_DEVICES &&
         ControllerContext->Devices[ViiperGetDeviceContext(Device)->Slot] == Device) {
-        ViiperGetDeviceContext(Device)->Purging = FALSE;
+        InterlockedExchange(&ViiperGetDeviceContext(Device)->Purging, FALSE);
     }
     WdfWaitLockRelease(ControllerContext->DeviceLock);
 }
@@ -499,7 +517,8 @@ ViiperDestroyOwnedDevices(
             device = controllerContext->Devices[index];
             if (device != WDF_NO_HANDLE &&
                 ViiperGetDeviceContext(device)->OwnerFile == OwnerFile &&
-                !ViiperGetDeviceContext(device)->Purging) {
+                InterlockedCompareExchange(
+                    &ViiperGetDeviceContext(device)->Purging, 0, 0) == 0) {
                 deviceId = ViiperGetDeviceContext(device)->DeviceId;
                 break;
             }
@@ -543,6 +562,9 @@ ViiperEvtVirtualDeviceCleanup(
     if (InterlockedExchange(&deviceContext->ActiveCounted, 0) != 0) {
         InterlockedDecrement(&controllerContext->ActiveDevices);
     }
+    if (InterlockedExchange(&deviceContext->OwnerReferenced, 0) != 0) {
+        WdfObjectDereference(deviceContext->OwnerFile);
+    }
 }
 
 NTSTATUS
@@ -552,7 +574,8 @@ ViiperEvtUsbDeviceD0Entry(
     )
 {
     UNREFERENCED_PARAMETER(Controller);
-    return ViiperQueueDeviceLifecycleEvent(Device, ViiperUdeOperationDeviceD0Entry);
+    (VOID)ViiperQueueDeviceLifecycleEvent(Device, ViiperUdeOperationDeviceD0Entry);
+    return STATUS_SUCCESS;
 }
 
 NTSTATUS
@@ -564,7 +587,8 @@ ViiperEvtUsbDeviceD0Exit(
 {
     UNREFERENCED_PARAMETER(Controller);
     UNREFERENCED_PARAMETER(WakeSetting);
-    return ViiperQueueDeviceLifecycleEvent(Device, ViiperUdeOperationDeviceD0Exit);
+    (VOID)ViiperQueueDeviceLifecycleEvent(Device, ViiperUdeOperationDeviceD0Exit);
+    return STATUS_SUCCESS;
 }
 
 NTSTATUS
