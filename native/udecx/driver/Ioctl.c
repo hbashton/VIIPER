@@ -135,8 +135,9 @@ ViiperHandleQueryStats(
     output->IsoPackets = (ULONGLONG)ViiperReadCounter(&context->IsoPackets);
     output->BytesToDevice = (ULONGLONG)ViiperReadCounter(&context->BytesToDevice);
     output->BytesFromDevice = (ULONGLONG)ViiperReadCounter(&context->BytesFromDevice);
-    output->CancelEvents = (ULONGLONG)ViiperReadCounter(&context->CancelEventsDelivered);
-    output->CancelEventOverflows = (ULONGLONG)ViiperReadCounter(&context->CancelEventOverflows);
+    output->NotificationEvents = (ULONGLONG)ViiperReadCounter(&context->NotificationEventsDelivered);
+    output->NotificationEventOverflows =
+        (ULONGLONG)ViiperReadCounter(&context->NotificationEventOverflows);
     output->ActiveDevices = (ULONG)InterlockedCompareExchange(&context->ActiveDevices, 0, 0);
     output->PendingOperations = (ULONG)InterlockedCompareExchange(&context->PendingOperations, 0, 0);
     output->WaitingDequeues = (ULONG)InterlockedCompareExchange(&context->WaitingDequeueCount, 0, 0);

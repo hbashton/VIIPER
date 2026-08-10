@@ -140,9 +140,9 @@ ViiperEvtControllerCleanup(
     }
     if (context->BrokerLock != WDF_NO_HANDLE) {
         WdfSpinLockAcquire(context->BrokerLock);
-        context->CancelHead = 0;
-        context->CancelTail = 0;
-        context->CancelCount = 0;
+        context->NotificationHead = 0;
+        context->NotificationTail = 0;
+        context->NotificationCount = 0;
         WdfSpinLockRelease(context->BrokerLock);
     }
 }
@@ -207,9 +207,9 @@ ViiperEvtFileCleanup(
             InterlockedExchange(&context->WaitingDequeueCount, 0);
         }
         WdfSpinLockAcquire(context->BrokerLock);
-        context->CancelHead = 0;
-        context->CancelTail = 0;
-        context->CancelCount = 0;
+        context->NotificationHead = 0;
+        context->NotificationTail = 0;
+        context->NotificationCount = 0;
         WdfSpinLockRelease(context->BrokerLock);
     }
     if (ownsController) {

@@ -34,6 +34,7 @@ type Driver interface {
 // payload slices after Process returns.
 type OperationProcessor interface {
 	Process(context.Context, usb.Device, Operation) (Completion, error)
+	Lifecycle(context.Context, usb.Device, Operation) error
 	Reset(usb.Device, DeviceIdentity)
 }
 
@@ -236,12 +237,16 @@ func (h *Host) Serve(ctx context.Context) error {
 				h.cancelOperation(result.op)
 				continue
 			}
-			if err := h.trackOperation(result.op); err != nil {
-				h.completeUntrackedFailure(runCtx, result.op)
-				continue
+			if !isLifecycleOperation(result.op.Kind) {
+				if err := h.trackOperation(result.op); err != nil {
+					h.completeUntrackedFailure(runCtx, result.op)
+					continue
+				}
 			}
 			if err := h.dispatch(runCtx, result.op); err != nil {
-				h.completeFailure(runCtx, result.op)
+				if !isLifecycleOperation(result.op.Kind) {
+					h.completeFailure(runCtx, result.op)
+				}
 			}
 		}
 	}
@@ -298,17 +303,23 @@ func (h *Host) runLane(lane *operationLane, entry *registeredDevice) {
 			return
 		case op := <-lane.input:
 			if op.EndpointSequence < expected {
-				h.completeFailure(lane.ctx, op)
+				if !isLifecycleOperation(op.Kind) {
+					h.completeFailure(lane.ctx, op)
+				}
 				continue
 			}
 			if _, duplicate := pending[op.EndpointSequence]; duplicate {
-				h.completeFailure(lane.ctx, op)
+				if !isLifecycleOperation(op.Kind) {
+					h.completeFailure(lane.ctx, op)
+				}
 				continue
 			}
 			pending[op.EndpointSequence] = op
 			if len(pending) > laneQueueDepth {
 				for _, queued := range pending {
-					h.completeFailure(lane.ctx, queued)
+					if !isLifecycleOperation(queued.Kind) {
+						h.completeFailure(lane.ctx, queued)
+					}
 				}
 				return
 			}
@@ -318,10 +329,24 @@ func (h *Host) runLane(lane *operationLane, entry *registeredDevice) {
 					break
 				}
 				delete(pending, expected)
-				h.process(lane.ctx, entry.device, current)
+				if isLifecycleOperation(current.Kind) {
+					_ = h.processor.Lifecycle(lane.ctx, entry.device, current)
+				} else {
+					h.process(lane.ctx, entry.device, current)
+				}
 				expected++
 			}
 		}
+	}
+}
+
+func isLifecycleOperation(kind OperationKind) bool {
+	switch kind {
+	case OperationEndpointStart, OperationEndpointPurge, OperationEndpointReset,
+		OperationDeviceReset, OperationSetInterface, OperationDeviceD0Entry, OperationDeviceD0Exit:
+		return true
+	default:
+		return false
 	}
 }
 

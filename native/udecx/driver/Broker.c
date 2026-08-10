@@ -19,30 +19,32 @@ ViiperQueueCancelEventLocked(
     _In_ const VIIPER_UDE_PENDING_SLOT *Pending
     )
 {
-    VIIPER_UDE_CANCEL_EVENT *event;
+    VIIPER_UDE_NOTIFICATION *event;
 
     if (!Pending->PublishedToOwner) {
         return FALSE;
     }
-    if (ControllerContext->CancelCount >= VIIPER_UDE_MAX_PENDING_OPERATIONS) {
-        InterlockedIncrement64(&ControllerContext->CancelEventOverflows);
+    if (ControllerContext->NotificationCount >= VIIPER_UDE_MAX_PENDING_OPERATIONS) {
+        InterlockedIncrement64(&ControllerContext->NotificationEventOverflows);
         return FALSE;
     }
 
-    event = &ControllerContext->CancelEvents[ControllerContext->CancelTail];
+    event = &ControllerContext->Notifications[ControllerContext->NotificationTail];
     event->Token = Pending->Token;
     event->DeviceId = Pending->DeviceId;
+    event->EndpointSequence = 0;
     event->Generation = Pending->DeviceGeneration;
+    event->Kind = ViiperUdeOperationCancel;
     event->EndpointAddress = Pending->EndpointAddress;
-    ControllerContext->CancelTail = (ControllerContext->CancelTail + 1) %
+    ControllerContext->NotificationTail = (ControllerContext->NotificationTail + 1) %
         VIIPER_UDE_MAX_PENDING_OPERATIONS;
-    ++ControllerContext->CancelCount;
+    ++ControllerContext->NotificationCount;
     return TRUE;
 }
 
 static
 VOID
-ViiperDispatchCancelEvents(
+ViiperDispatchNotificationEvents(
     _In_ WDFDEVICE Controller
     )
 {
@@ -51,11 +53,11 @@ ViiperDispatchCancelEvents(
     for (;;) {
         WDFREQUEST dequeueRequest = WDF_NO_HANDLE;
         VIIPER_UDE_OPERATION *operation = NULL;
-        VIIPER_UDE_CANCEL_EVENT event = {0};
+        VIIPER_UDE_NOTIFICATION event = {0};
         NTSTATUS status;
 
         WdfSpinLockAcquire(controllerContext->BrokerLock);
-        if (controllerContext->CancelCount == 0) {
+        if (controllerContext->NotificationCount == 0) {
             WdfSpinLockRelease(controllerContext->BrokerLock);
             break;
         }
@@ -69,10 +71,10 @@ ViiperDispatchCancelEvents(
         status = WdfRequestRetrieveOutputBuffer(
             dequeueRequest, sizeof(*operation), (PVOID *)&operation, NULL);
         if (NT_SUCCESS(status)) {
-            event = controllerContext->CancelEvents[controllerContext->CancelHead];
-            controllerContext->CancelHead = (controllerContext->CancelHead + 1) %
+            event = controllerContext->Notifications[controllerContext->NotificationHead];
+            controllerContext->NotificationHead = (controllerContext->NotificationHead + 1) %
                 VIIPER_UDE_MAX_PENDING_OPERATIONS;
-            --controllerContext->CancelCount;
+            --controllerContext->NotificationCount;
         }
         WdfSpinLockRelease(controllerContext->BrokerLock);
 
@@ -89,10 +91,11 @@ ViiperDispatchCancelEvents(
         operation->Token = event.Token;
         operation->DeviceId = event.DeviceId;
         operation->Generation = event.Generation;
-        operation->Kind = ViiperUdeOperationCancel;
+        operation->Kind = event.Kind;
         operation->EndpointAddress = event.EndpointAddress;
+        operation->EndpointSequence = event.EndpointSequence;
         WdfRequestSetInformation(dequeueRequest, sizeof(*operation));
-        InterlockedIncrement64(&controllerContext->CancelEventsDelivered);
+        InterlockedIncrement64(&controllerContext->NotificationEventsDelivered);
         WdfRequestComplete(dequeueRequest, STATUS_SUCCESS);
     }
 }
@@ -197,17 +200,91 @@ ViiperInitializeBroker(
         &attributes,
         NonPagedPoolNx,
         0x56495543,
-        sizeof(VIIPER_UDE_CANCEL_EVENT) * VIIPER_UDE_MAX_PENDING_OPERATIONS,
-        &controllerContext->CancelStorage,
-        (PVOID *)&controllerContext->CancelEvents);
+        sizeof(VIIPER_UDE_NOTIFICATION) * VIIPER_UDE_MAX_PENDING_OPERATIONS,
+        &controllerContext->NotificationStorage,
+        (PVOID *)&controllerContext->Notifications);
     if (!NT_SUCCESS(status)) {
-        controllerContext->CancelStorage = WDF_NO_HANDLE;
-        controllerContext->CancelEvents = NULL;
+        controllerContext->NotificationStorage = WDF_NO_HANDLE;
+        controllerContext->Notifications = NULL;
         return status;
     }
     RtlZeroMemory(
-        controllerContext->CancelEvents,
-        sizeof(VIIPER_UDE_CANCEL_EVENT) * VIIPER_UDE_MAX_PENDING_OPERATIONS);
+        controllerContext->Notifications,
+        sizeof(VIIPER_UDE_NOTIFICATION) * VIIPER_UDE_MAX_PENDING_OPERATIONS);
+    return STATUS_SUCCESS;
+}
+
+static
+BOOLEAN
+ViiperQueueLifecycleEventLocked(
+    _In_ VIIPER_UDE_CONTROLLER_CONTEXT *ControllerContext,
+    _In_ VIIPER_UDE_DEVICE_CONTEXT *DeviceContext,
+    _In_ UCHAR EndpointAddress,
+    _In_ VIIPER_UDE_OPERATION_KIND Kind
+    )
+{
+    VIIPER_UDE_NOTIFICATION *event;
+
+    if (ControllerContext->NotificationCount >= VIIPER_UDE_MAX_PENDING_OPERATIONS) {
+        InterlockedIncrement64(&ControllerContext->NotificationEventOverflows);
+        return FALSE;
+    }
+
+    event = &ControllerContext->Notifications[ControllerContext->NotificationTail];
+    RtlZeroMemory(event, sizeof(*event));
+    event->DeviceId = DeviceContext->DeviceId;
+    event->Generation = DeviceContext->Generation;
+    event->Kind = Kind;
+    event->EndpointAddress = EndpointAddress;
+    event->EndpointSequence = (ULONGLONG)InterlockedIncrement64(
+        &DeviceContext->EndpointSequences[EndpointAddress]);
+    ControllerContext->NotificationTail = (ControllerContext->NotificationTail + 1) %
+        VIIPER_UDE_MAX_PENDING_OPERATIONS;
+    ++ControllerContext->NotificationCount;
+    return TRUE;
+}
+
+NTSTATUS
+ViiperQueueEndpointLifecycleEvent(
+    _In_ UDECXUSBENDPOINT Endpoint,
+    _In_ VIIPER_UDE_OPERATION_KIND Kind
+    )
+{
+    VIIPER_UDE_ENDPOINT_CONTEXT *endpointContext = ViiperGetEndpointContext(Endpoint);
+    VIIPER_UDE_DEVICE_CONTEXT *deviceContext = ViiperGetDeviceContext(endpointContext->Device);
+    VIIPER_UDE_CONTROLLER_CONTEXT *controllerContext =
+        ViiperGetControllerContext(deviceContext->Controller);
+    BOOLEAN queued;
+
+    WdfSpinLockAcquire(controllerContext->BrokerLock);
+    queued = ViiperQueueLifecycleEventLocked(
+        controllerContext, deviceContext, endpointContext->Descriptor.bEndpointAddress, Kind);
+    WdfSpinLockRelease(controllerContext->BrokerLock);
+    if (!queued) {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+    ViiperDispatchNotificationEvents(deviceContext->Controller);
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS
+ViiperQueueDeviceLifecycleEvent(
+    _In_ UDECXUSBDEVICE Device,
+    _In_ VIIPER_UDE_OPERATION_KIND Kind
+    )
+{
+    VIIPER_UDE_DEVICE_CONTEXT *deviceContext = ViiperGetDeviceContext(Device);
+    VIIPER_UDE_CONTROLLER_CONTEXT *controllerContext =
+        ViiperGetControllerContext(deviceContext->Controller);
+    BOOLEAN queued;
+
+    WdfSpinLockAcquire(controllerContext->BrokerLock);
+    queued = ViiperQueueLifecycleEventLocked(controllerContext, deviceContext, 0, Kind);
+    WdfSpinLockRelease(controllerContext->BrokerLock);
+    if (!queued) {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+    ViiperDispatchNotificationEvents(deviceContext->Controller);
     return STATUS_SUCCESS;
 }
 
@@ -290,7 +367,7 @@ ViiperEvtUrbCancel(
         InterlockedIncrement64(&controllerContext->OperationsCancelled);
         UdecxUrbCompleteWithNtStatus(Request, STATUS_CANCELLED);
         if (notifyOwner) {
-            ViiperDispatchCancelEvents(requestContext->Controller);
+            ViiperDispatchNotificationEvents(requestContext->Controller);
         }
     }
 }
@@ -594,7 +671,7 @@ ViiperRemovePublishingRequest(
     if (ownsRequest) {
         UdecxUrbCompleteWithNtStatus(Request, Status);
         if (notifyOwner) {
-            ViiperDispatchCancelEvents(ViiperGetRequestContext(Request)->Controller);
+            ViiperDispatchNotificationEvents(ViiperGetRequestContext(Request)->Controller);
         }
     }
 }
@@ -619,7 +696,7 @@ ViiperDispatchAvailable(
         BOOLEAN abortPending = FALSE;
         NTSTATUS abortStatus = STATUS_CANCELLED;
 
-        ViiperDispatchCancelEvents(Controller);
+        ViiperDispatchNotificationEvents(Controller);
         WdfSpinLockAcquire(controllerContext->BrokerLock);
         for (index = 0; index < VIIPER_UDE_MAX_PENDING_OPERATIONS; ++index) {
             ULONG candidate = (controllerContext->NextPendingSlot + index) %

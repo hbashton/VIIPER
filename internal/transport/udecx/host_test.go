@@ -56,12 +56,19 @@ func (d *fakeHostDriver) QueryStats(context.Context) (Stats, error) { return Sta
 
 type recordingProcessor struct {
 	processed chan uint64
+	lifecycle chan uint64
 	resets    chan DeviceIdentity
 }
 
 func (p *recordingProcessor) Process(_ context.Context, _ usb.Device, op Operation) (Completion, error) {
 	p.processed <- op.EndpointSequence
 	return Completion{TransferLength: op.TransferLength}, nil
+}
+func (p *recordingProcessor) Lifecycle(_ context.Context, _ usb.Device, op Operation) error {
+	if p.lifecycle != nil {
+		p.lifecycle <- op.EndpointSequence
+	}
+	return nil
 }
 func (p *recordingProcessor) Reset(_ usb.Device, identity DeviceIdentity) { p.resets <- identity }
 
@@ -76,7 +83,8 @@ func (p *cancellableProcessor) Process(ctx context.Context, _ usb.Device, _ Oper
 	close(p.cancelled)
 	return Completion{}, ctx.Err()
 }
-func (*cancellableProcessor) Reset(usb.Device, DeviceIdentity) {}
+func (*cancellableProcessor) Reset(usb.Device, DeviceIdentity)                       {}
+func (*cancellableProcessor) Lifecycle(context.Context, usb.Device, Operation) error { return nil }
 
 func hostTestDevice() usb.Device {
 	return &snapshotDevice{descriptor: usb.Descriptor{
@@ -135,6 +143,53 @@ func TestHostPreservesEndpointSequenceAcrossDequeueWorkers(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("host did not stop after context cancellation")
 	}
+}
+
+func TestHostOrdersLifecycleBeforeFollowingTransfer(t *testing.T) {
+	driver := newFakeHostDriver()
+	processor := &recordingProcessor{
+		processed: make(chan uint64, 1), lifecycle: make(chan uint64, 1),
+		resets: make(chan DeviceIdentity, 1),
+	}
+	host, err := NewHost(driver, processor, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := host.Register(context.Background(), 10, hostTestDevice())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- host.Serve(ctx) }()
+
+	driver.operations <- Operation{
+		Token: 1, DeviceID: identity.DeviceID, Generation: identity.Generation,
+		EndpointAddress: 0x81, EndpointSequence: 2, Kind: OperationTransfer,
+	}
+	driver.operations <- Operation{
+		DeviceID: identity.DeviceID, Generation: identity.Generation,
+		EndpointAddress: 0x81, EndpointSequence: 1, Kind: OperationEndpointPurge,
+	}
+
+	select {
+	case got := <-processor.lifecycle:
+		if got != 1 {
+			t.Fatalf("lifecycle endpoint sequence=%d want=1", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for lifecycle operation")
+	}
+	select {
+	case got := <-processor.processed:
+		if got != 2 {
+			t.Fatalf("transfer endpoint sequence=%d want=2", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for transfer after lifecycle")
+	}
+	cancel()
+	<-done
 }
 
 func TestHostRegisterFailureRollsBackButAdvancesGeneration(t *testing.T) {

@@ -51,6 +51,37 @@ func (p *NativeProcessor) Reset(dev usbdevice.Device, identity udecx.DeviceIdent
 	p.mu.Unlock()
 }
 
+func (p *NativeProcessor) Lifecycle(_ context.Context, dev usbdevice.Device, op udecx.Operation) error {
+	identity := udecx.DeviceIdentity{DeviceID: op.DeviceID, Generation: op.Generation}
+	key := nativeLaneKey{
+		deviceID: op.DeviceID, generation: op.Generation, endpoint: op.EndpointAddress,
+	}
+
+	switch op.Kind {
+	case udecx.OperationEndpointStart:
+		p.clearLane(key)
+	case udecx.OperationEndpointPurge, udecx.OperationEndpointReset:
+		p.clearLane(key)
+		if resetter, ok := dev.(usbdevice.EndpointResetDevice); ok {
+			resetter.ResetEndpoint(op.EndpointAddress)
+		}
+	case udecx.OperationDeviceReset, udecx.OperationDeviceD0Entry, udecx.OperationDeviceD0Exit:
+		p.Reset(dev, identity)
+	case udecx.OperationSetInterface:
+		p.clearLane(key)
+	default:
+		return fmt.Errorf("unsupported native UDE lifecycle operation %d", op.Kind)
+	}
+	return nil
+}
+
+func (p *NativeProcessor) clearLane(key nativeLaneKey) {
+	p.mu.Lock()
+	delete(p.next, key)
+	delete(p.lastIn, key)
+	p.mu.Unlock()
+}
+
 func (p *NativeProcessor) Process(ctx context.Context, dev usbdevice.Device, op udecx.Operation) (udecx.Completion, error) {
 	if dev == nil {
 		return udecx.Completion{}, errors.New("native UDE operation has no device")

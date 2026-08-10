@@ -152,7 +152,7 @@ func TestIdentityAndStatsLayout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stats.OperationsDequeued != 11 || stats.BytesFromDevice != 29 || stats.CancelEvents != 31 ||
+	if stats.OperationsDequeued != 11 || stats.BytesFromDevice != 29 || stats.NotificationEvents != 31 ||
 		stats.ActiveDevices != 3 || stats.PendingOperations != 5 || stats.WaitingDequeues != 7 {
 		t.Fatalf("unexpected stats: %+v", stats)
 	}

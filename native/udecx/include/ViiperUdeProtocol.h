@@ -189,8 +189,8 @@ typedef struct VIIPER_UDE_STATS {
     VIIPER_UDE_UINT64 IsoPackets;
     VIIPER_UDE_UINT64 BytesToDevice;
     VIIPER_UDE_UINT64 BytesFromDevice;
-    VIIPER_UDE_UINT64 CancelEvents;
-    VIIPER_UDE_UINT64 CancelEventOverflows;
+    VIIPER_UDE_UINT64 NotificationEvents;
+    VIIPER_UDE_UINT64 NotificationEventOverflows;
     VIIPER_UDE_UINT32 ActiveDevices;
     VIIPER_UDE_UINT32 PendingOperations;
     VIIPER_UDE_UINT32 WaitingDequeues;

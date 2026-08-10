@@ -36,12 +36,14 @@ typedef struct VIIPER_UDE_PENDING_SLOT {
     NTSTATUS AbortStatus;
 } VIIPER_UDE_PENDING_SLOT;
 
-typedef struct VIIPER_UDE_CANCEL_EVENT {
+typedef struct VIIPER_UDE_NOTIFICATION {
     ULONGLONG Token;
     ULONGLONG DeviceId;
+    ULONGLONG EndpointSequence;
     ULONG Generation;
+    ULONG Kind;
     UCHAR EndpointAddress;
-} VIIPER_UDE_CANCEL_EVENT;
+} VIIPER_UDE_NOTIFICATION;
 
 typedef struct VIIPER_UDE_REQUEST_CONTEXT {
     WDFDEVICE Controller;
@@ -62,11 +64,11 @@ typedef struct VIIPER_UDE_CONTROLLER_CONTEXT {
     WDFMEMORY PendingStorage;
     VIIPER_UDE_PENDING_SLOT *PendingSlots;
     ULONG NextPendingSlot;
-    WDFMEMORY CancelStorage;
-    VIIPER_UDE_CANCEL_EVENT *CancelEvents;
-    ULONG CancelHead;
-    ULONG CancelTail;
-    ULONG CancelCount;
+    WDFMEMORY NotificationStorage;
+    VIIPER_UDE_NOTIFICATION *Notifications;
+    ULONG NotificationHead;
+    ULONG NotificationTail;
+    ULONG NotificationCount;
     WDFFILEOBJECT OwnerFile;
     WDFQUEUE DefaultQueue;
     WDFQUEUE WaitingDequeues;
@@ -81,8 +83,8 @@ typedef struct VIIPER_UDE_CONTROLLER_CONTEXT {
     volatile LONG64 LateCompletions;
     volatile LONG64 InvalidMessages;
     volatile LONG64 QueueExhaustions;
-    volatile LONG64 CancelEventsDelivered;
-    volatile LONG64 CancelEventOverflows;
+    volatile LONG64 NotificationEventsDelivered;
+    volatile LONG64 NotificationEventOverflows;
     volatile LONG64 IsoPackets;
     volatile LONG64 BytesToDevice;
     volatile LONG64 BytesFromDevice;
@@ -156,3 +158,9 @@ NTSTATUS ViiperCompleteOperation(_In_ WDFQUEUE Queue, _In_ WDFREQUEST Request);
 NTSTATUS ViiperQueueUrb(_In_ WDFQUEUE Queue, _In_ WDFREQUEST Request);
 VOID ViiperPurgeEndpointOperations(_In_ UDECXUSBENDPOINT Endpoint, _In_ NTSTATUS Status);
 VOID ViiperPurgeOwnerOperations(_In_ WDFDEVICE Controller, _In_ NTSTATUS Status);
+NTSTATUS ViiperQueueEndpointLifecycleEvent(
+    _In_ UDECXUSBENDPOINT Endpoint,
+    _In_ VIIPER_UDE_OPERATION_KIND Kind);
+NTSTATUS ViiperQueueDeviceLifecycleEvent(
+    _In_ UDECXUSBDEVICE Device,
+    _In_ VIIPER_UDE_OPERATION_KIND Kind);

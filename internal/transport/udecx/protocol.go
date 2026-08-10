@@ -344,21 +344,21 @@ type Completion struct {
 }
 
 type Stats struct {
-	OperationsDequeued   uint64
-	OperationsCompleted  uint64
-	OperationsCancelled  uint64
-	OperationsPurged     uint64
-	LateCompletions      uint64
-	InvalidMessages      uint64
-	QueueExhaustions     uint64
-	IsoPackets           uint64
-	BytesToDevice        uint64
-	BytesFromDevice      uint64
-	CancelEvents         uint64
-	CancelEventOverflows uint64
-	ActiveDevices        uint32
-	PendingOperations    uint32
-	WaitingDequeues      uint32
+	OperationsDequeued         uint64
+	OperationsCompleted        uint64
+	OperationsCancelled        uint64
+	OperationsPurged           uint64
+	LateCompletions            uint64
+	InvalidMessages            uint64
+	QueueExhaustions           uint64
+	IsoPackets                 uint64
+	BytesToDevice              uint64
+	BytesFromDevice            uint64
+	NotificationEvents         uint64
+	NotificationEventOverflows uint64
+	ActiveDevices              uint32
+	PendingOperations          uint32
+	WaitingDequeues            uint32
 }
 
 func ParseStats(src []byte) (Stats, error) {
@@ -370,21 +370,21 @@ func ParseStats(src []byte) (Stats, error) {
 		return Stats{}, ErrInvalidSize
 	}
 	return Stats{
-		OperationsDequeued:   binary.LittleEndian.Uint64(src[16:24]),
-		OperationsCompleted:  binary.LittleEndian.Uint64(src[24:32]),
-		OperationsCancelled:  binary.LittleEndian.Uint64(src[32:40]),
-		OperationsPurged:     binary.LittleEndian.Uint64(src[40:48]),
-		LateCompletions:      binary.LittleEndian.Uint64(src[48:56]),
-		InvalidMessages:      binary.LittleEndian.Uint64(src[56:64]),
-		QueueExhaustions:     binary.LittleEndian.Uint64(src[64:72]),
-		IsoPackets:           binary.LittleEndian.Uint64(src[72:80]),
-		BytesToDevice:        binary.LittleEndian.Uint64(src[80:88]),
-		BytesFromDevice:      binary.LittleEndian.Uint64(src[88:96]),
-		CancelEvents:         binary.LittleEndian.Uint64(src[96:104]),
-		CancelEventOverflows: binary.LittleEndian.Uint64(src[104:112]),
-		ActiveDevices:        binary.LittleEndian.Uint32(src[112:116]),
-		PendingOperations:    binary.LittleEndian.Uint32(src[116:120]),
-		WaitingDequeues:      binary.LittleEndian.Uint32(src[120:124]),
+		OperationsDequeued:         binary.LittleEndian.Uint64(src[16:24]),
+		OperationsCompleted:        binary.LittleEndian.Uint64(src[24:32]),
+		OperationsCancelled:        binary.LittleEndian.Uint64(src[32:40]),
+		OperationsPurged:           binary.LittleEndian.Uint64(src[40:48]),
+		LateCompletions:            binary.LittleEndian.Uint64(src[48:56]),
+		InvalidMessages:            binary.LittleEndian.Uint64(src[56:64]),
+		QueueExhaustions:           binary.LittleEndian.Uint64(src[64:72]),
+		IsoPackets:                 binary.LittleEndian.Uint64(src[72:80]),
+		BytesToDevice:              binary.LittleEndian.Uint64(src[80:88]),
+		BytesFromDevice:            binary.LittleEndian.Uint64(src[88:96]),
+		NotificationEvents:         binary.LittleEndian.Uint64(src[96:104]),
+		NotificationEventOverflows: binary.LittleEndian.Uint64(src[104:112]),
+		ActiveDevices:              binary.LittleEndian.Uint32(src[112:116]),
+		PendingOperations:          binary.LittleEndian.Uint32(src[116:120]),
+		WaitingDequeues:            binary.LittleEndian.Uint32(src[120:124]),
 	}, nil
 }
 

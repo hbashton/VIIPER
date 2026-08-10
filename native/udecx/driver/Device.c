@@ -457,8 +457,7 @@ ViiperEvtUsbDeviceD0Entry(
     )
 {
     UNREFERENCED_PARAMETER(Controller);
-    UNREFERENCED_PARAMETER(Device);
-    return STATUS_SUCCESS;
+    return ViiperQueueDeviceLifecycleEvent(Device, ViiperUdeOperationDeviceD0Entry);
 }
 
 NTSTATUS
@@ -469,9 +468,8 @@ ViiperEvtUsbDeviceD0Exit(
     )
 {
     UNREFERENCED_PARAMETER(Controller);
-    UNREFERENCED_PARAMETER(Device);
     UNREFERENCED_PARAMETER(WakeSetting);
-    return STATUS_SUCCESS;
+    return ViiperQueueDeviceLifecycleEvent(Device, ViiperUdeOperationDeviceD0Exit);
 }
 
 NTSTATUS
@@ -588,8 +586,11 @@ ViiperEvtEndpointReset(
     _In_ WDFREQUEST Request
     )
 {
-    UNREFERENCED_PARAMETER(Endpoint);
-    WdfRequestComplete(Request, STATUS_SUCCESS);
+    NTSTATUS status;
+
+    ViiperPurgeEndpointOperations(Endpoint, STATUS_DEVICE_NOT_READY);
+    status = ViiperQueueEndpointLifecycleEvent(Endpoint, ViiperUdeOperationEndpointReset);
+    WdfRequestComplete(Request, status);
 }
 
 VOID
@@ -612,6 +613,7 @@ ViiperEvtEndpointPurge(
     VIIPER_UDE_ENDPOINT_CONTEXT *endpointContext = ViiperGetEndpointContext(Endpoint);
     endpointContext->Purging = TRUE;
     ViiperPurgeEndpointOperations(Endpoint, STATUS_DEVICE_NOT_READY);
+    (VOID)ViiperQueueEndpointLifecycleEvent(Endpoint, ViiperUdeOperationEndpointPurge);
     WdfIoQueuePurge(endpointContext->Queue, ViiperEvtEndpointQueuePurged, Endpoint);
 }
 
@@ -620,6 +622,7 @@ ViiperEvtEndpointStart(
     _In_ UDECXUSBENDPOINT Endpoint
     )
 {
+    (VOID)ViiperQueueEndpointLifecycleEvent(Endpoint, ViiperUdeOperationEndpointStart);
     WdfIoQueueStart(ViiperGetEndpointContext(Endpoint)->Queue);
 }
 
