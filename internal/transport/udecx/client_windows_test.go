@@ -141,3 +141,9 @@ func TestCompletionPortRoutesExactOverlappedRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestEnableSkipCompletionPortOnSuccessRejectsInvalidHandle(t *testing.T) {
+	if enableSkipCompletionPortOnSuccess(windows.InvalidHandle) {
+		t.Fatal("SetFileCompletionNotificationModes accepted an invalid handle")
+	}
+}

@@ -35,6 +35,7 @@ const (
 	ioctlQueryStats                         = (fileDeviceUnknown << 16) | (fileReadData << 14) | ((ioctlBase + 5) << 2) | methodBuffered
 	ioctlSubmitInputReport                  = (fileDeviceUnknown << 16) | ((fileReadData | fileWriteData) << 14) | ((ioctlBase + 6) << 2) | methodInDirect
 	completionPortCloseKey          uintptr = ^uintptr(0)
+	fileSkipCompletionPortOnSuccess byte    = 0x1
 	requiredCapabilities                    = CapabilityIsochronous | CapabilityDeviceLifecycle | CapabilityInputReports
 )
 
@@ -48,6 +49,8 @@ var (
 	cfgmgr32                         = windows.NewLazySystemDLL("cfgmgr32.dll")
 	procCMGetDeviceInterfaceListSize = cfgmgr32.NewProc("CM_Get_Device_Interface_List_SizeW")
 	procCMGetDeviceInterfaceList     = cfgmgr32.NewProc("CM_Get_Device_Interface_ListW")
+	kernel32                         = windows.NewLazySystemDLL("kernel32.dll")
+	procSetFileCompletionModes       = kernel32.NewProc("SetFileCompletionNotificationModes")
 )
 
 type Client struct {
@@ -58,9 +61,14 @@ type Client struct {
 	pumpDone       chan struct{}
 	pumpErr        error
 	requestPool    sync.Pool
-	driverNonce    uint64
-	capabilities   Capabilities
-	limits         NegotiateResponse
+	// Windows suppresses IOCP packets only for operations that return success
+	// inline. Pending operations still use the shared completion pump. This
+	// removes a scheduler/channel round trip from direct input without changing
+	// cancellation or lifecycle I/O.
+	skipCompletionPortOnSuccess bool
+	driverNonce                 uint64
+	capabilities                Capabilities
+	limits                      NegotiateResponse
 }
 
 type ioCompletion struct {
@@ -110,9 +118,10 @@ func Open(ctx context.Context) (*Client, error) {
 		return nil, fmt.Errorf("associate native UDE controller with I/O completion port: %w", err)
 	}
 	client := &Client{
-		handle:         handle,
-		completionPort: completionPort,
-		pumpDone:       make(chan struct{}),
+		handle:                      handle,
+		completionPort:              completionPort,
+		pumpDone:                    make(chan struct{}),
+		skipCompletionPortOnSuccess: enableSkipCompletionPortOnSuccess(handle),
 	}
 	client.requestPool.New = func() any {
 		return &ioRequest{done: make(chan ioCompletion, 1)}
@@ -123,6 +132,12 @@ func Open(ctx context.Context) (*Client, error) {
 		return nil, err
 	}
 	return client, nil
+}
+
+func enableSkipCompletionPortOnSuccess(handle windows.Handle) bool {
+	result, _, _ := procSetFileCompletionModes.Call(
+		uintptr(handle), uintptr(fileSkipCompletionPortOnSuccess))
+	return result != 0
 }
 
 func (c *Client) Close() error {
@@ -385,6 +400,13 @@ func (c *Client) ioctl(ctx context.Context, code uint32, input, output []byte) (
 		inputPointer, uint32(len(input)),
 		outputPointer, uint32(len(output)),
 		&immediate, &request.overlapped)
+	if err == nil && c.skipCompletionPortOnSuccess {
+		// FILE_SKIP_COMPLETION_PORT_ON_SUCCESS guarantees that no completion
+		// packet exists for this exact immediate-success operation. Returning
+		// inline mirrors ViGEmBus's report submission path and avoids waking the
+		// completion pump merely to hand the same result back to this goroutine.
+		return immediate, nil
+	}
 	if err != nil && !errors.Is(err, windows.ERROR_IO_PENDING) {
 		return 0, err
 	}

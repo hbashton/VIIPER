@@ -384,6 +384,11 @@ stall an independent pad's registration or removal.
 - DualSense and DualShock 4 media survive concurrent state and feedback traffic.
 - Native latency and CPU are measured against the current USB/IP path and
   ViGEmBus-style virtual input under the same workload.
+- The overlapped owner handle uses Microsoft's
+  `FILE_SKIP_COMPLETION_PORT_ON_SUCCESS` contract. A direct input IOCTL which
+  the kernel completes inline returns on its publisher goroutine without an
+  otherwise redundant IOCP-pump/channel scheduling hop; operations that return
+  `ERROR_IO_PENDING` retain the existing cancellation-safe completion path.
 - Product changes to scheduling, thread priority, DPC behavior, or queue depth
   require a named, bounded-memory WPR capture of the signed live gate. CPU
   sampled/precise, ready-thread, context-switch, WDF DPC, interrupt, and ISR
@@ -424,3 +429,5 @@ validation contract is documented in
   <https://learn.microsoft.com/en-us/windows-hardware/test/wpt/wpr-command-line-options>
 - Microsoft, *CPU Analysis*
   <https://learn.microsoft.com/en-us/windows-hardware/test/wpt/cpu-analysis>
+- Microsoft, `SetFileCompletionNotificationModes`
+  <https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-setfilecompletionnotificationmodes>
