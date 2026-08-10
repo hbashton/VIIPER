@@ -13,7 +13,7 @@ func TestNativeLiveReleaseGateRequiresCompleteEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read native live validator: %v", err)
 	}
-	contract := string(script)
+	contract := strings.ReplaceAll(string(script), "\r\n", "\n")
 	for _, required := range []string{
 		"[switch]$ReleaseGate",
 		"$SignatureValidationMode -ne 'Production'",
@@ -39,7 +39,7 @@ func TestNativeMediaProbeRejectsObservableDiscontinuity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read native media probe: %v", err)
 	}
-	contract := string(source)
+	contract := strings.ReplaceAll(string(source), "\r\n", "\n")
 	for _, required := range []string{
 		"AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY",
 		"AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR",
@@ -62,7 +62,7 @@ func TestNativeLiveSoakKeepsMediaInputAndFeedbackConcurrent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read native live integration test: %v", err)
 	}
-	contract := string(source)
+	contract := strings.ReplaceAll(string(source), "\r\n", "\n")
 	for _, required := range []string{
 		"startLiveProbe(",
 		"mediaCtx, mediaProbe, \"exercise\"",
