@@ -342,16 +342,20 @@ a wedged provider cannot retain the installer mutex indefinitely.
   child cleanup from the PnP cleanup callback. Embedding the mutex in the
   controller context keeps endpoint/device cleanup independent of sibling WDF
   child deletion order.
-- Removal atomically revokes the UDE handle from the device table before
-  `UdecxUsbDevicePlugOutAndDelete`; that slot remains reserved until the
-  asynchronous object cleanup runs. Once that API returns, success or failure,
-  no path dereferences or restores the invalidated UDE handle and the broker
-  owner cannot be released while its reserved removal slot remains.
+- Removal atomically revokes the UDE handle from the device table and retires
+  its logical active count before `UdecxUsbDevicePlugOutAndDelete`. `Devices[]`
+  is the sole slot-ownership table, so a slot can be reused after the consuming
+  UdeCx call returns even when KMDF defers the old child's object cleanup. No
+  path dereferences or restores that invalidated UDE handle.
+- File cleanup first closes create/destroy admission, then joins only those
+  finite UdeCx API calls before removing the owner's remaining logical devices
+  and releasing the exclusive controller owner. Each retired child keeps its
+  own reference on the old file object until `EvtCleanupCallback`; that late
+  physical rundown cannot block a successor owner or clear a reused slot.
 - A post-transfer UdeCx removal failure is terminal for the controller, not
-  retryable for the child. The kernel accepts the broker's removal request,
-  requests a PnP controller restart, and keeps owner cleanup closed until
-  object teardown completes. User mode can retry only failures returned before
-  ownership reached UdeCx.
+  retryable for the child. The kernel accepts the broker's removal request and
+  requests a PnP controller restart; user mode can retry only failures returned
+  before ownership reached UdeCx.
 - Each device has a short-held state lock and independent endpoint queues.
 - User mode serializes controller-engine lifecycle mutations as one complete
   transaction. Endpoint reset cannot overlap an endpoint start/purge, device

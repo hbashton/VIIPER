@@ -21,11 +21,8 @@ DEFINE_GUID(
 #pragma alloc_text(PAGE, ViiperEvtDeviceSelfManagedIoCleanup)
 #pragma alloc_text(PAGE, ViiperEvtFileCreate)
 #pragma alloc_text(PAGE, ViiperEvtFileCleanup)
-#pragma alloc_text(PAGE, ViiperEvtOwnerCleanupRetry)
 #pragma alloc_text(PAGE, ViiperCreateQueues)
 #endif
-
-#define VIIPER_OWNER_CLEANUP_RETRY_MS 100
 
 static
 BOOLEAN
@@ -46,11 +43,22 @@ ViiperFinishOwnerCleanup(
         WdfWaitLockRelease(context->OwnerLock);
         return TRUE;
     }
-    if (InterlockedCompareExchange(&context->ActiveOwnerAdmissions, 0, 0) != 0) {
-        WdfWaitLockRelease(context->OwnerLock);
+    WdfWaitLockRelease(context->OwnerLock);
+
+    // EvtFileCleanup can run while a create/destroy IOCTL is still dispatched.
+    // Closing and CleanupInProgress prevent a successor from entering; join
+    // only those finite UdeCx API calls here. Child EvtCleanup is deliberately
+    // not part of this rundown because PlugOutAndDelete consumes its handle
+    // before KMDF necessarily destroys the object.
+    (VOID)KeWaitForSingleObject(
+        &context->OwnerAdmissionsDrained,
+        Executive,
+        KernelMode,
+        FALSE,
+        NULL);
+    if (InterlockedCompareExchange(&context->ShuttingDown, 0, 0) != 0) {
         return FALSE;
     }
-    WdfWaitLockRelease(context->OwnerLock);
 
     if (!ViiperDestroyOwnedDevices(Device, OwnerFile)) {
         return FALSE;
@@ -67,46 +75,6 @@ ViiperFinishOwnerCleanup(
         WdfObjectDereference(OwnerFile);
     }
     return TRUE;
-}
-
-VOID
-ViiperEvtOwnerCleanupRetry(
-    _In_ WDFTIMER Timer
-    )
-{
-    WDFDEVICE device = (WDFDEVICE)WdfTimerGetParentObject(Timer);
-    VIIPER_UDE_CONTROLLER_CONTEXT *context = ViiperGetControllerContext(device);
-    WDFFILEOBJECT ownerFile = WDF_NO_HANDLE;
-
-    PAGED_CODE();
-    if (InterlockedCompareExchange(&context->ShuttingDown, 0, 0) != 0) {
-        return;
-    }
-    WdfWaitLockAcquire(context->OwnerLock, NULL);
-    if (context->CleanupInProgress && context->OwnerFile != WDF_NO_HANDLE) {
-        ownerFile = context->OwnerFile;
-        // Pin the file object across the unlocked cleanup attempt.  Another
-        // cleanup path can finish device removal and release the controller's
-        // long-lived owner reference immediately after OwnerLock is dropped.
-        // Without this temporary reference the timer could dereference a
-        // deleted WDFFILEOBJECT while retrying process-death cleanup.
-        WdfObjectReference(ownerFile);
-    }
-    WdfWaitLockRelease(context->OwnerLock);
-    if (ownerFile == WDF_NO_HANDLE) {
-        return;
-    }
-
-    if (ViiperFinishOwnerCleanup(device, ownerFile)) {
-        WdfObjectDereference(ownerFile);
-        return;
-    }
-
-    if (InterlockedCompareExchange(&context->ShuttingDown, 0, 0) == 0) {
-        InterlockedIncrement(&context->CleanupRetries);
-        (VOID)WdfTimerStart(Timer, WDF_REL_TIMEOUT_IN_MS(VIIPER_OWNER_CLEANUP_RETRY_MS));
-    }
-    WdfObjectDereference(ownerFile);
 }
 
 NTSTATUS
@@ -151,7 +119,6 @@ ViiperEvtDeviceAdd(
     WDF_OBJECT_ATTRIBUTES fileAttributes;
     WDF_OBJECT_ATTRIBUTES requestAttributes;
     WDF_FILEOBJECT_CONFIG fileConfig;
-    WDF_TIMER_CONFIG timerConfig;
     UDECX_WDF_DEVICE_CONFIG udeConfig;
     WDF_PNPPOWER_EVENT_CALLBACKS pnpCallbacks;
     VIIPER_UDE_CONTROLLER_CONTEXT *context;
@@ -200,6 +167,7 @@ ViiperEvtDeviceAdd(
     RtlZeroMemory(context, sizeof(*context));
     ExInitializeFastMutex(&context->DeviceLock);
     KeInitializeEvent(&context->BrokerOperationsDrained, NotificationEvent, TRUE);
+    KeInitializeEvent(&context->OwnerAdmissionsDrained, NotificationEvent, TRUE);
     KeInitializeEvent(&context->FileCleanupsDrained, NotificationEvent, TRUE);
 
     WDF_OBJECT_ATTRIBUTES_INIT(&attributes);
@@ -209,16 +177,6 @@ ViiperEvtDeviceAdd(
         return status;
     }
     status = ViiperInitializeBroker(device);
-    if (!NT_SUCCESS(status)) {
-        return status;
-    }
-
-    WDF_TIMER_CONFIG_INIT(&timerConfig, ViiperEvtOwnerCleanupRetry);
-    timerConfig.AutomaticSerialization = FALSE;
-    WDF_OBJECT_ATTRIBUTES_INIT(&attributes);
-    attributes.ParentObject = device;
-    attributes.ExecutionLevel = WdfExecutionLevelPassive;
-    status = WdfTimerCreate(&timerConfig, &attributes, &context->OwnerCleanupTimer);
     if (!NT_SUCCESS(status)) {
         return status;
     }
@@ -257,7 +215,7 @@ ViiperEvtControllerCleanup(
 
     context = ViiperGetControllerContext((WDFDEVICE)ControllerObject);
     // Every active operation belongs in SelfManagedIoCleanup, while the
-    // controller's child queues, locks, memory objects, timer, and work item are
+    // controller's child queues, locks, memory objects, and work item are
     // still callable. WDF invokes child cleanup before parent cleanup, so this
     // callback is deliberately limited to invariant checks over context data.
     NT_ASSERT(InterlockedCompareExchange(&context->PendingOperations, 0, 0) == 0);
@@ -305,10 +263,6 @@ ViiperEvtDeviceSelfManagedIoCleanup(
         WdfWaitLockRelease(context->OwnerLock);
     }
 
-    if (context->OwnerCleanupTimer != WDF_NO_HANDLE) {
-        WdfTimerStop(context->OwnerCleanupTimer, TRUE);
-    }
-
     // A file cleanup that crossed OwnerLock before ShuttingDown may still be
     // using the controller's queue and lock children. The gate prevents any
     // successor, so this event is a finite rundown join before those objects
@@ -336,7 +290,7 @@ ViiperEvtDeviceSelfManagedIoCleanup(
         WdfIoQueuePurgeSynchronously(context->WaitingDequeues);
         InterlockedExchange(&context->WaitingDequeueCount, 0);
     }
-    // Create-device owner admissions execute on ControlQueue and therefore
+    // Create/destroy owner admissions execute on ControlQueue and therefore
     // must have returned before its synchronous purge completes.
     NT_ASSERT(InterlockedCompareExchange(&context->ActiveOwnerAdmissions, 0, 0) == 0);
 
@@ -492,13 +446,7 @@ ViiperEvtFileCleanup(
         WdfSpinLockRelease(context->BrokerLock);
     }
     if (ownsController) {
-        if (!ViiperFinishOwnerCleanup(device, FileObject) &&
-            InterlockedCompareExchange(&context->ShuttingDown, 0, 0) == 0) {
-            InterlockedIncrement(&context->CleanupRetries);
-            (VOID)WdfTimerStart(
-                context->OwnerCleanupTimer,
-                WDF_REL_TIMEOUT_IN_MS(VIIPER_OWNER_CLEANUP_RETRY_MS));
-        }
+        (VOID)ViiperFinishOwnerCleanup(device, FileObject);
     }
     if (cleanupAdmitted) {
         WdfWaitLockAcquire(context->OwnerLock, NULL);

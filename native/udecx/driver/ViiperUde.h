@@ -112,8 +112,8 @@ typedef struct VIIPER_UDE_CONTROLLER_CONTEXT {
     WDFQUEUE ControlQueue;
     WDFQUEUE InputQueue;
     WDFQUEUE WaitingDequeues;
-    WDFTIMER OwnerCleanupTimer;
     KEVENT BrokerOperationsDrained;
+    KEVENT OwnerAdmissionsDrained;
     KEVENT FileCleanupsDrained;
     BOOLEAN CleanupInProgress;
     volatile LONG ShuttingDown;
@@ -140,7 +140,6 @@ typedef struct VIIPER_UDE_CONTROLLER_CONTEXT {
     volatile LONG64 BytesToDevice;
     volatile LONG64 BytesFromDevice;
     UDECXUSBDEVICE Devices[VIIPER_UDE_MAX_DEVICES];
-    BOOLEAN RemovingSlots[VIIPER_UDE_MAX_DEVICES];
 } VIIPER_UDE_CONTROLLER_CONTEXT;
 
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(VIIPER_UDE_CONTROLLER_CONTEXT, ViiperGetControllerContext)
@@ -213,7 +212,6 @@ EVT_WDF_DEVICE_SELF_MANAGED_IO_INIT ViiperEvtDeviceSelfManagedIoInit;
 EVT_WDF_DEVICE_SELF_MANAGED_IO_CLEANUP ViiperEvtDeviceSelfManagedIoCleanup;
 EVT_WDF_DEVICE_FILE_CREATE ViiperEvtFileCreate;
 EVT_WDF_FILE_CLEANUP ViiperEvtFileCleanup;
-EVT_WDF_TIMER ViiperEvtOwnerCleanupRetry;
 EVT_WDF_IO_QUEUE_IO_DEVICE_CONTROL ViiperEvtIoDeviceControlRoute;
 EVT_WDF_IO_QUEUE_IO_DEVICE_CONTROL ViiperEvtIoDeviceControl;
 EVT_WDF_IO_QUEUE_IO_DEVICE_CONTROL ViiperEvtInputIoDeviceControl;

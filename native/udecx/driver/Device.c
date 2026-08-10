@@ -265,37 +265,6 @@ ViiperAddDeviceDescriptors(
 
 static
 NTSTATUS
-ViiperValidateOwner(
-    _In_ WDFDEVICE Controller,
-    _In_ WDFREQUEST Request,
-    _Out_ WDFFILEOBJECT *OwnerFile
-    )
-{
-    VIIPER_UDE_CONTROLLER_CONTEXT *controllerContext = ViiperGetControllerContext(Controller);
-    VIIPER_UDE_FILE_CONTEXT *fileContext;
-    WDFFILEOBJECT fileObject = WdfRequestGetFileObject(Request);
-    NTSTATUS status = STATUS_SUCCESS;
-
-    if (fileObject == WDF_NO_HANDLE) {
-        return STATUS_INVALID_HANDLE;
-    }
-    fileContext = ViiperGetFileContext(fileObject);
-    WdfWaitLockAcquire(controllerContext->OwnerLock, NULL);
-    if (InterlockedCompareExchange(&controllerContext->ShuttingDown, 0, 0) != 0 ||
-        controllerContext->OwnerFile != fileObject || controllerContext->CleanupInProgress ||
-        InterlockedCompareExchange(&fileContext->Negotiated, 0, 0) == 0 ||
-        InterlockedCompareExchange(&fileContext->Closing, 0, 0) != 0) {
-        status = STATUS_INVALID_DEVICE_STATE;
-    }
-    WdfWaitLockRelease(controllerContext->OwnerLock);
-    if (NT_SUCCESS(status)) {
-        *OwnerFile = fileObject;
-    }
-    return status;
-}
-
-static
-NTSTATUS
 ViiperBeginOwnerAdmission(
     _In_ WDFDEVICE Controller,
     _In_ WDFREQUEST Request,
@@ -319,10 +288,12 @@ ViiperBeginOwnerAdmission(
         status = STATUS_INVALID_DEVICE_STATE;
     } else {
         // Keep both the owner object and cleanup boundary alive while a child
-        // is being built. UdeCx creation and PlugIn may invoke asynchronous
-        // callbacks, so do not hold OwnerLock across those calls.
+        // is created or destroyed. UdeCx lifecycle calls may invoke callbacks,
+        // so do not hold OwnerLock across them.
         WdfObjectReference(fileObject);
-        InterlockedIncrement(&controllerContext->ActiveOwnerAdmissions);
+        if (InterlockedIncrement(&controllerContext->ActiveOwnerAdmissions) == 1) {
+            KeClearEvent(&controllerContext->OwnerAdmissionsDrained);
+        }
         *OwnerFile = fileObject;
     }
     WdfWaitLockRelease(controllerContext->OwnerLock);
@@ -342,6 +313,9 @@ ViiperEndOwnerAdmission(
     WdfWaitLockAcquire(controllerContext->OwnerLock, NULL);
     remaining = InterlockedDecrement(&controllerContext->ActiveOwnerAdmissions);
     NT_ASSERT(remaining >= 0);
+    if (remaining == 0) {
+        KeSetEvent(&controllerContext->OwnerAdmissionsDrained, IO_NO_INCREMENT, FALSE);
+    }
     WdfWaitLockRelease(controllerContext->OwnerLock);
     WdfObjectDereference(OwnerFile);
 }
@@ -387,8 +361,7 @@ ViiperClaimDeviceSlot(
     for (index = 0; index < VIIPER_UDE_MAX_DEVICES; ++index) {
         UDECXUSBDEVICE current = ControllerContext->Devices[index];
         if (current == WDF_NO_HANDLE) {
-            if (!ControllerContext->RemovingSlots[index] &&
-                freeSlot == VIIPER_UDE_MAX_DEVICES) {
+            if (freeSlot == VIIPER_UDE_MAX_DEVICES) {
                 freeSlot = index;
             }
             continue;
@@ -424,11 +397,24 @@ ViiperReleaseDeviceSlot(
         if (ControllerContext->Devices[Slot] == Device) {
             ControllerContext->Devices[Slot] = WDF_NO_HANDLE;
         }
-        if (ControllerContext->Devices[Slot] == WDF_NO_HANDLE) {
-            ControllerContext->RemovingSlots[Slot] = FALSE;
-        }
     }
     ExReleaseFastMutex(&ControllerContext->DeviceLock);
+}
+
+static
+VOID
+ViiperRetireActiveDevice(
+    _In_ VIIPER_UDE_CONTROLLER_CONTEXT *ControllerContext,
+    _In_ VIIPER_UDE_DEVICE_CONTEXT *DeviceContext
+    )
+{
+    LONG remaining;
+
+    if (InterlockedExchange(&DeviceContext->ActiveCounted, 0) == 0) {
+        return;
+    }
+    remaining = InterlockedDecrement(&ControllerContext->ActiveDevices);
+    NT_ASSERT(remaining >= 0);
 }
 
 NTSTATUS
@@ -591,7 +577,10 @@ ViiperBeginRemoveDevice(
         InterlockedExchange(&deviceContext->Purging, TRUE);
         WdfSpinLockRelease(ControllerContext->BrokerLock);
         ControllerContext->Devices[index] = WDF_NO_HANDLE;
-        ControllerContext->RemovingSlots[index] = TRUE;
+        // Devices[] is the logical ownership table. Retire the slot and its
+        // active count while the UDE handle is still valid; KMDF may defer the
+        // object's cleanup long after PlugOutAndDelete consumes this handle.
+        ViiperRetireActiveDevice(ControllerContext, deviceContext);
         *Device = current;
         status = STATUS_SUCCESS;
         break;
@@ -615,13 +604,13 @@ ViiperDestroyVirtualDevice(
     UDECXUSBDEVICE device;
 
     PAGED_CODE();
-    status = ViiperValidateOwner(controller, Request, &ownerFile);
+    status = ViiperBeginOwnerAdmission(controller, Request, &ownerFile);
     if (!NT_SUCCESS(status)) {
         return status;
     }
     status = WdfRequestRetrieveInputBuffer(Request, sizeof(*input), (PVOID *)&input, &inputLength);
     if (!NT_SUCCESS(status)) {
-        return status;
+        goto ExitAdmission;
     }
     if (inputLength != sizeof(*input) || input->Header.Magic != VIIPER_UDE_MAGIC ||
         input->Header.Major != VIIPER_UDE_ABI_MAJOR ||
@@ -630,13 +619,14 @@ ViiperDestroyVirtualDevice(
         input->Header.Size != sizeof(*input) ||
         input->DeviceId == 0 || input->Generation == 0 || input->Reserved != 0) {
         InterlockedIncrement64(&controllerContext->InvalidMessages);
-        return STATUS_INVALID_PARAMETER;
+        status = STATUS_INVALID_PARAMETER;
+        goto ExitAdmission;
     }
 
     status = ViiperBeginRemoveDevice(
         controllerContext, ownerFile, input->DeviceId, input->Generation, TRUE, &device);
     if (!NT_SUCCESS(status)) {
-        return status;
+        goto ExitAdmission;
     }
     status = UdecxUsbDevicePlugOutAndDelete(device);
     if (!NT_SUCCESS(status)) {
@@ -645,9 +635,12 @@ ViiperDestroyVirtualDevice(
         // attempting to restore or retry this handle would be a use-after-
         // invalidation. Restart the controller so PnP owns final recovery.
         WdfDeviceSetFailed(controller, WdfDeviceFailedAttemptRestart);
-        return STATUS_SUCCESS;
+        status = STATUS_SUCCESS;
     }
-    return STATUS_SUCCESS;
+
+ExitAdmission:
+    ViiperEndOwnerAdmission(controller, ownerFile);
+    return status;
 }
 
 BOOLEAN
@@ -663,7 +656,6 @@ ViiperDestroyOwnedDevices(
         UDECXUSBDEVICE device;
         VIIPER_UDE_DEVICE_CONTEXT *deviceContext;
         ULONGLONG deviceId = 0;
-        BOOLEAN removalPending = FALSE;
         ULONG index;
 
         ExAcquireFastMutex(&controllerContext->DeviceLock);
@@ -676,18 +668,18 @@ ViiperDestroyOwnedDevices(
                 deviceId = ViiperGetDeviceContext(device)->DeviceId;
                 break;
             }
-            if (controllerContext->RemovingSlots[index]) {
-                removalPending = TRUE;
-            }
         }
         ExReleaseFastMutex(&controllerContext->DeviceLock);
         if (deviceId == 0) {
-            return !removalPending;
+            return TRUE;
         }
 
         if (!NT_SUCCESS(ViiperBeginRemoveDevice(
                 controllerContext, OwnerFile, deviceId, 0, FALSE, &device))) {
-            return FALSE;
+            // The logical table is authoritative. A framework-owned deletion
+            // can revoke the snapshot before this claim; rescan instead of
+            // pinning the exclusive owner to an object that is already gone.
+            continue;
         }
         deviceContext = ViiperGetDeviceContext(device);
         if (deviceContext->Plugged) {
@@ -728,7 +720,7 @@ ViiperBeginControllerShutdown(
         InterlockedExchange(&deviceContext->Purging, TRUE);
         WdfSpinLockRelease(controllerContext->BrokerLock);
         controllerContext->Devices[index] = WDF_NO_HANDLE;
-        controllerContext->RemovingSlots[index] = TRUE;
+        ViiperRetireActiveDevice(controllerContext, deviceContext);
         devices[deviceCount++] = device;
     }
     ExReleaseFastMutex(&controllerContext->DeviceLock);
@@ -761,9 +753,9 @@ ViiperEvtVirtualDeviceCleanup(
     }
     controllerContext = ViiperGetControllerContext(deviceContext->Controller);
     ViiperReleaseDeviceSlot(controllerContext, device, deviceContext->Slot);
-    if (InterlockedExchange(&deviceContext->ActiveCounted, 0) != 0) {
-        InterlockedDecrement(&controllerContext->ActiveDevices);
-    }
+    // Normal removal retired the logical count before PlugOutAndDelete. This
+    // is only the fallback for an unexpected framework-owned deletion.
+    ViiperRetireActiveDevice(controllerContext, deviceContext);
     if (InterlockedExchange(&deviceContext->OwnerReferenced, 0) != 0) {
         WdfObjectDereference(deviceContext->OwnerFile);
     }
