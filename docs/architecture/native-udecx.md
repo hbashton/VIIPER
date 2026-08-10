@@ -249,7 +249,7 @@ interface fields are only hints for alternates that contain no endpoints.
   completed. A pipe can therefore never restart or disappear across a live
   request.
 - Endpoint reset and endpoint-configuration callbacks are asynchronous UdeCx
-  management requests, not notifications. ABI 1.7 gives only those lifecycle
+  management requests, not notifications. ABI 1.8 gives only those lifecycle
   operations a generation-bound management token. Windows receives the request
   completion only after the Go controller engine has applied the reset or
   alternate-setting transition. Start, purge, and power notifications remain
