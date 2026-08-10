@@ -117,7 +117,7 @@ typedef struct VIIPER_UDE_DEVICE_CONTEXT {
     ULONG Generation;
     ULONG Slot;
     BOOLEAN Plugged;
-    BOOLEAN Purging;
+    volatile LONG Purging;
     volatile LONG ActiveCounted;
     UDECXUSBENDPOINT DefaultEndpoint;
     volatile LONG64 EndpointSequences[256];
@@ -129,7 +129,7 @@ typedef struct VIIPER_UDE_ENDPOINT_CONTEXT {
     UDECXUSBDEVICE Device;
     WDFQUEUE Queue;
     USB_ENDPOINT_DESCRIPTOR Descriptor;
-    BOOLEAN Purging;
+    volatile LONG Purging;
 } VIIPER_UDE_ENDPOINT_CONTEXT;
 
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(VIIPER_UDE_ENDPOINT_CONTEXT, ViiperGetEndpointContext)
@@ -153,6 +153,7 @@ EVT_UDECX_USB_ENDPOINT_RESET ViiperEvtEndpointReset;
 EVT_UDECX_USB_ENDPOINT_PURGE ViiperEvtEndpointPurge;
 EVT_UDECX_USB_ENDPOINT_START ViiperEvtEndpointStart;
 EVT_WDF_IO_QUEUE_IO_INTERNAL_DEVICE_CONTROL ViiperEvtEndpointIoInternalControl;
+EVT_WDF_IO_QUEUE_STATE ViiperEvtEndpointQueuePurged;
 EVT_WDF_OBJECT_CONTEXT_CLEANUP ViiperEvtVirtualDeviceCleanup;
 
 NTSTATUS ViiperCreateQueues(_In_ WDFDEVICE Device);

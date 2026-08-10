@@ -893,7 +893,8 @@ ViiperQueueUrb(
     BOOLEAN abortPending = FALSE;
     NTSTATUS abortStatus = STATUS_CANCELLED;
 
-    if (deviceContext->Purging || endpointContext->Purging) {
+    if (InterlockedCompareExchange(&deviceContext->Purging, 0, 0) != 0 ||
+        InterlockedCompareExchange(&endpointContext->Purging, 0, 0) != 0) {
         return STATUS_DEVICE_NOT_READY;
     }
     RtlZeroMemory(requestContext, sizeof(*requestContext));

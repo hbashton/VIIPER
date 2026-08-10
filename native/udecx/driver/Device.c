@@ -96,7 +96,7 @@ ViiperValidateCreateDevice(
                 record->Length < sizeof(USB_CONFIGURATION_DESCRIPTOR) ||
                 descriptor[0] != sizeof(USB_CONFIGURATION_DESCRIPTOR) ||
                 descriptor[1] != USB_CONFIGURATION_DESCRIPTOR_TYPE ||
-                ((USHORT)descriptor[2] | ((USHORT)descriptor[3] << 8)) != record->Length) {
+                ((USHORT)descriptor[2] | ((USHORT)descriptor[3] << 8)) != (USHORT)record->Length) {
                 return FALSE;
             }
             foundConfiguration = TRUE;
@@ -689,16 +689,26 @@ ViiperEvtEndpointReset(
 }
 
 VOID
+ViiperEvtEndpointQueuePurged(
+    _In_ WDFQUEUE Queue,
+    _In_ WDFCONTEXT Context
+    )
+{
+    UDECXUSBENDPOINT endpoint = (UDECXUSBENDPOINT)Context;
+    UNREFERENCED_PARAMETER(Queue);
+    UdecxUsbEndpointPurgeComplete(endpoint);
+}
+
+VOID
 ViiperEvtEndpointPurge(
     _In_ UDECXUSBENDPOINT Endpoint
     )
 {
     VIIPER_UDE_ENDPOINT_CONTEXT *endpointContext = ViiperGetEndpointContext(Endpoint);
-    endpointContext->Purging = TRUE;
+    InterlockedExchange(&endpointContext->Purging, TRUE);
     ViiperPurgeEndpointOperations(Endpoint, STATUS_DEVICE_NOT_READY);
     (VOID)ViiperQueueEndpointLifecycleEvent(Endpoint, ViiperUdeOperationEndpointPurge);
-    endpointContext->Purging = FALSE;
-    UdecxUsbEndpointPurgeComplete(Endpoint);
+    WdfIoQueuePurge(endpointContext->Queue, ViiperEvtEndpointQueuePurged, Endpoint);
 }
 
 VOID
@@ -707,6 +717,8 @@ ViiperEvtEndpointStart(
     )
 {
     (VOID)ViiperQueueEndpointLifecycleEvent(Endpoint, ViiperUdeOperationEndpointStart);
+    InterlockedExchange(&ViiperGetEndpointContext(Endpoint)->Purging, FALSE);
+    WdfIoQueueStart(ViiperGetEndpointContext(Endpoint)->Queue);
 }
 
 VOID
