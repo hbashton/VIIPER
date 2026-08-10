@@ -57,7 +57,7 @@ ViiperValidateCreateDevice(
         return FALSE;
     }
 
-    if (Input->DescriptorCount > UINT32_MAX / sizeof(*records)) {
+    if (Input->DescriptorCount > MAXULONG / sizeof(*records)) {
         return FALSE;
     }
     recordsLength = Input->DescriptorCount * sizeof(*records);
