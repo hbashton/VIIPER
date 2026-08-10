@@ -154,6 +154,54 @@ ViiperHandleQueryStats(
 }
 
 VOID
+ViiperEvtIoDeviceControlRoute(
+    _In_ WDFQUEUE Queue,
+    _In_ WDFREQUEST Request,
+    _In_ size_t OutputBufferLength,
+    _In_ size_t InputBufferLength,
+    _In_ ULONG IoControlCode
+    )
+{
+    VIIPER_UDE_CONTROLLER_CONTEXT *context =
+        ViiperGetControllerContext(WdfIoQueueGetDevice(Queue));
+    WDFQUEUE destination = IoControlCode == IOCTL_VIIPER_UDE_SUBMIT_INPUT_REPORT
+        ? context->InputQueue
+        : context->ControlQueue;
+    NTSTATUS status;
+
+    UNREFERENCED_PARAMETER(OutputBufferLength);
+    UNREFERENCED_PARAMETER(InputBufferLength);
+
+    // The default queue performs routing only. Keeping it parallel prevents a
+    // large media completion or lifecycle mutation on the serialized control
+    // queue from delaying an already encoded interrupt-IN report.
+    status = WdfRequestForwardToIoQueue(Request, destination);
+    if (!NT_SUCCESS(status)) {
+        WdfRequestComplete(Request, status);
+    }
+}
+
+VOID
+ViiperEvtInputIoDeviceControl(
+    _In_ WDFQUEUE Queue,
+    _In_ WDFREQUEST Request,
+    _In_ size_t OutputBufferLength,
+    _In_ size_t InputBufferLength,
+    _In_ ULONG IoControlCode
+    )
+{
+    NTSTATUS status;
+
+    UNREFERENCED_PARAMETER(OutputBufferLength);
+    UNREFERENCED_PARAMETER(InputBufferLength);
+
+    status = IoControlCode == IOCTL_VIIPER_UDE_SUBMIT_INPUT_REPORT
+        ? ViiperSubmitInputReport(Queue, Request)
+        : STATUS_INVALID_DEVICE_REQUEST;
+    WdfRequestComplete(Request, status);
+}
+
+VOID
 ViiperEvtIoDeviceControl(
     _In_ WDFQUEUE Queue,
     _In_ WDFREQUEST Request,
@@ -187,7 +235,9 @@ ViiperEvtIoDeviceControl(
         status = ViiperCompleteOperation(Queue, Request);
         break;
     case IOCTL_VIIPER_UDE_SUBMIT_INPUT_REPORT:
-        status = ViiperSubmitInputReport(Queue, Request);
+        // The router sends this IOCTL to the independent parallel input queue.
+        // Reject it here rather than silently restoring head-of-line blocking.
+        status = STATUS_INVALID_DEVICE_REQUEST;
         break;
     default:
         status = UdecxWdfDeviceTryHandleUserIoctl(WdfIoQueueGetDevice(Queue), Request)

@@ -212,6 +212,12 @@ ViiperEvtControllerCleanup(
     if (context->DefaultQueue != WDF_NO_HANDLE) {
         WdfIoQueuePurgeSynchronously(context->DefaultQueue);
     }
+    if (context->ControlQueue != WDF_NO_HANDLE) {
+        WdfIoQueuePurgeSynchronously(context->ControlQueue);
+    }
+    if (context->InputQueue != WDF_NO_HANDLE) {
+        WdfIoQueuePurgeSynchronously(context->InputQueue);
+    }
     if (context->WaitingDequeues != WDF_NO_HANDLE) {
         WdfIoQueuePurgeSynchronously(context->WaitingDequeues);
         InterlockedExchange(&context->WaitingDequeueCount, 0);
@@ -354,11 +360,28 @@ ViiperCreateQueues(
     WDF_OBJECT_ATTRIBUTES_INIT(&attributes);
     attributes.ParentObject = Device;
     attributes.ExecutionLevel = WdfExecutionLevelPassive;
+    attributes.SynchronizationScope = WdfSynchronizationScopeNone;
 
-    WDF_IO_QUEUE_CONFIG_INIT_DEFAULT_QUEUE(&queueConfig, WdfIoQueueDispatchSequential);
+    WDF_IO_QUEUE_CONFIG_INIT_DEFAULT_QUEUE(&queueConfig, WdfIoQueueDispatchParallel);
+    queueConfig.PowerManaged = WdfFalse;
+    queueConfig.EvtIoDeviceControl = ViiperEvtIoDeviceControlRoute;
+    status = WdfIoQueueCreate(Device, &queueConfig, &attributes, &context->DefaultQueue);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+
+    WDF_IO_QUEUE_CONFIG_INIT(&queueConfig, WdfIoQueueDispatchSequential);
     queueConfig.PowerManaged = WdfFalse;
     queueConfig.EvtIoDeviceControl = ViiperEvtIoDeviceControl;
-    status = WdfIoQueueCreate(Device, &queueConfig, &attributes, &context->DefaultQueue);
+    status = WdfIoQueueCreate(Device, &queueConfig, &attributes, &context->ControlQueue);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+
+    WDF_IO_QUEUE_CONFIG_INIT(&queueConfig, WdfIoQueueDispatchParallel);
+    queueConfig.PowerManaged = WdfFalse;
+    queueConfig.EvtIoDeviceControl = ViiperEvtInputIoDeviceControl;
+    status = WdfIoQueueCreate(Device, &queueConfig, &attributes, &context->InputQueue);
     if (!NT_SUCCESS(status)) {
         return status;
     }

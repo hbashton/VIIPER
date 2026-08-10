@@ -132,6 +132,10 @@ unplug all converge on the same idempotent purge path.
 
 - A controller-level lock protects the device table and owner registration.
 - Each device has a short-held state lock and independent endpoint queues.
+- The controller's default KMDF queue only routes requests: interrupt-IN
+  submissions run on an independent parallel queue, while mutation, broker,
+  and lifecycle IOCTLs retain their serialized control queue. Large media
+  completions therefore cannot head-of-line block fresh controller input.
 - Media callbacks do not take the controller lock.
 - Interrupt-IN queues are manual and completed from fresh input snapshots;
   output and media endpoints retain independent ordered queues.

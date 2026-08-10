@@ -83,6 +83,8 @@ typedef struct VIIPER_UDE_CONTROLLER_CONTEXT {
     ULONG NotificationCount;
     WDFFILEOBJECT OwnerFile;
     WDFQUEUE DefaultQueue;
+    WDFQUEUE ControlQueue;
+    WDFQUEUE InputQueue;
     WDFQUEUE WaitingDequeues;
     WDFTIMER OwnerCleanupTimer;
     BOOLEAN CleanupInProgress;
@@ -157,7 +159,9 @@ EVT_WDF_OBJECT_CONTEXT_CLEANUP ViiperEvtControllerCleanup;
 EVT_WDF_DEVICE_FILE_CREATE ViiperEvtFileCreate;
 EVT_WDF_FILE_CLEANUP ViiperEvtFileCleanup;
 EVT_WDF_TIMER ViiperEvtOwnerCleanupRetry;
+EVT_WDF_IO_QUEUE_IO_DEVICE_CONTROL ViiperEvtIoDeviceControlRoute;
 EVT_WDF_IO_QUEUE_IO_DEVICE_CONTROL ViiperEvtIoDeviceControl;
+EVT_WDF_IO_QUEUE_IO_DEVICE_CONTROL ViiperEvtInputIoDeviceControl;
 EVT_UDECX_WDF_DEVICE_QUERY_USB_CAPABILITY ViiperEvtQueryUsbCapability;
 EVT_UDECX_USB_DEVICE_D0_ENTRY ViiperEvtUsbDeviceD0Entry;
 EVT_UDECX_USB_DEVICE_D0_EXIT ViiperEvtUsbDeviceD0Exit;
