@@ -525,7 +525,15 @@ ViiperDestroyVirtualDevice(
         return status;
     }
     status = UdecxUsbDevicePlugOutAndDelete(device);
-    return status;
+    if (!NT_SUCCESS(status)) {
+        // PlugOutAndDelete consumes the UDE handle even when it reports a
+        // failure. The request was nevertheless accepted at our ABI boundary;
+        // attempting to restore or retry this handle would be a use-after-
+        // invalidation. Restart the controller so PnP owns final recovery.
+        WdfDeviceSetFailed(controller, WdfDeviceFailedAttemptRestart);
+        return STATUS_SUCCESS;
+    }
+    return STATUS_SUCCESS;
 }
 
 BOOLEAN
@@ -570,6 +578,7 @@ ViiperDestroyOwnedDevices(
         deviceContext = ViiperGetDeviceContext(device);
         if (deviceContext->Plugged) {
             if (!NT_SUCCESS(UdecxUsbDevicePlugOutAndDelete(device))) {
+                WdfDeviceSetFailed(Controller, WdfDeviceFailedAttemptRestart);
                 return FALSE;
             }
         } else {

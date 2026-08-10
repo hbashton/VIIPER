@@ -24,6 +24,10 @@ const (
 // and stale-generation behavior testable without loading a kernel driver.
 type Driver interface {
 	CreateDevice(context.Context, CreateDevice) error
+	// DestroyDevice returns an error only if removal was rejected before the
+	// kernel transferred ownership to UdeCx. Once accepted, any terminal
+	// UdeCx removal fault is recovered by restarting the controller and the
+	// call succeeds so callers never resurrect an invalid device generation.
 	DestroyDevice(context.Context, DeviceIdentity) error
 	Dequeue(context.Context, []byte) (Operation, error)
 	Complete(context.Context, Completion) error
@@ -210,9 +214,9 @@ func (h *Host) Unregister(ctx context.Context, identity DeviceIdentity) error {
 	activePublishers := h.activeInputEndpoints(entry)
 	h.stopAllInputPublishers(entry)
 
-	// Keep routing live until the driver has transactionally unplugged the
-	// child. If unplug fails, callers can retry without losing the generation,
-	// endpoint lanes, or the ability to complete already-issued Windows URBs.
+	// Keep routing live until the driver has transactionally accepted removal.
+	// Errors occur before UdeCx consumes the device handle, so callers can
+	// retry without losing the generation or its endpoint lanes.
 	if err := h.driver.DestroyDevice(ctx, identity); err != nil {
 		h.mu.Lock()
 		entry.publisherStopping = false

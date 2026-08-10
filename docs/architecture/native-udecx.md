@@ -136,6 +136,11 @@ unplug all converge on the same idempotent purge path.
   asynchronous object cleanup runs. Once that API returns, success or failure,
   no path dereferences or restores the invalidated UDE handle and the broker
   owner cannot be released while its reserved removal slot remains.
+- A post-transfer UdeCx removal failure is terminal for the controller, not
+  retryable for the child. The kernel accepts the broker's removal request,
+  requests a PnP controller restart, and keeps owner cleanup closed until
+  object teardown completes. User mode can retry only failures returned before
+  ownership reached UdeCx.
 - Each device has a short-held state lock and independent endpoint queues.
 - The controller's default KMDF queue only routes requests: interrupt-IN
   submissions run on an independent parallel queue, while mutation, broker,
