@@ -1010,6 +1010,7 @@ ViiperSubmitInputReport(
     size_t payloadLength;
     WDFFILEOBJECT ownerFile;
     UDECXUSBENDPOINT endpoint = WDF_NO_HANDLE;
+    VIIPER_UDE_DEVICE_CONTEXT *deviceContext = NULL;
     VIIPER_UDE_ENDPOINT_CONTEXT *endpointContext;
     WDFREQUEST urbRequest = WDF_NO_HANDLE;
     PURB urb;
@@ -1063,7 +1064,6 @@ ViiperSubmitInputReport(
     WdfWaitLockAcquire(controllerContext->DeviceLock, NULL);
     for (index = 0; index < VIIPER_UDE_MAX_DEVICES; ++index) {
         UDECXUSBDEVICE device = controllerContext->Devices[index];
-        VIIPER_UDE_DEVICE_CONTEXT *deviceContext;
         if (device == WDF_NO_HANDLE) {
             continue;
         }
