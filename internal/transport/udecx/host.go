@@ -82,6 +82,7 @@ type Host struct {
 	lanes       map[laneKey]*operationLane
 	runCtx      context.Context
 	runCancel   context.CancelFunc
+	fatal       chan error
 	running     bool
 	laneWG      sync.WaitGroup
 	operationMu sync.Mutex
@@ -198,7 +199,8 @@ func (h *Host) Serve(ctx context.Context) error {
 		return errors.New("native UDE host is already running")
 	}
 	runCtx, cancel := context.WithCancel(ctx)
-	h.runCtx, h.runCancel, h.running = runCtx, cancel, true
+	fatal := make(chan error, 1)
+	h.runCtx, h.runCancel, h.fatal, h.running = runCtx, cancel, fatal, true
 	h.mu.Unlock()
 	defer func() {
 		cancel()
@@ -207,9 +209,12 @@ func (h *Host) Serve(ctx context.Context) error {
 			lane.cancel()
 			delete(h.lanes, key)
 		}
-		h.running, h.runCtx, h.runCancel = false, nil, nil
 		h.mu.Unlock()
 		h.laneWG.Wait()
+		h.cancelAllOperations()
+		h.mu.Lock()
+		h.running, h.runCtx, h.runCancel, h.fatal = false, nil, nil, nil
+		h.mu.Unlock()
 	}()
 
 	results := make(chan dequeueResult, h.workers*2)
@@ -238,6 +243,10 @@ func (h *Host) Serve(ctx context.Context) error {
 		case <-runCtx.Done():
 			workers.Wait()
 			return nil
+		case err := <-fatal:
+			cancel()
+			workers.Wait()
+			return fmt.Errorf("native UDE host session failed: %w", err)
 		case result := <-results:
 			if result.err != nil {
 				cancel()
@@ -253,13 +262,16 @@ func (h *Host) Serve(ctx context.Context) error {
 			}
 			if !isLifecycleOperation(result.op.Kind) {
 				if err := h.trackOperation(result.op); err != nil {
-					h.completeUntrackedFailure(runCtx, result.op)
+					h.reportFatal(fmt.Errorf("track operation token %d: %w", result.op.Token, err))
 					continue
 				}
 			}
 			if err := h.dispatch(runCtx, result.op); err != nil {
 				if !isLifecycleOperation(result.op.Kind) {
-					h.completeFailure(runCtx, result.op)
+					if completeErr := h.completeFailure(runCtx, result.op); completeErr != nil {
+						h.reportFatal(fmt.Errorf("reject operation token %d after dispatch failure %v: %w",
+							result.op.Token, err, completeErr))
+					}
 				}
 			}
 		}
@@ -317,24 +329,19 @@ func (h *Host) runLane(lane *operationLane, entry *registeredDevice) {
 			return
 		case op := <-lane.input:
 			if op.EndpointSequence < expected {
-				if !isLifecycleOperation(op.Kind) {
-					h.completeFailure(lane.ctx, op)
-				}
-				continue
+				h.reportFatal(fmt.Errorf("endpoint 0x%02x sequence regressed from %d to %d",
+					lane.key.endpoint, expected, op.EndpointSequence))
+				return
 			}
 			if _, duplicate := pending[op.EndpointSequence]; duplicate {
-				if !isLifecycleOperation(op.Kind) {
-					h.completeFailure(lane.ctx, op)
-				}
-				continue
+				h.reportFatal(fmt.Errorf("endpoint 0x%02x repeated pending sequence %d",
+					lane.key.endpoint, op.EndpointSequence))
+				return
 			}
 			pending[op.EndpointSequence] = op
 			if len(pending) > laneQueueDepth {
-				for _, queued := range pending {
-					if !isLifecycleOperation(queued.Kind) {
-						h.completeFailure(lane.ctx, queued)
-					}
-				}
+				h.reportFatal(fmt.Errorf("endpoint 0x%02x exceeded the %d-operation reorder bound while waiting for sequence %d",
+					lane.key.endpoint, laneQueueDepth, expected))
 				return
 			}
 			for {
@@ -344,9 +351,17 @@ func (h *Host) runLane(lane *operationLane, entry *registeredDevice) {
 				}
 				delete(pending, expected)
 				if isLifecycleOperation(current.Kind) {
-					_ = h.processor.Lifecycle(lane.ctx, entry.device, current)
+					if err := h.processor.Lifecycle(lane.ctx, entry.device, current); err != nil {
+						h.reportFatal(fmt.Errorf("endpoint 0x%02x lifecycle sequence %d: %w",
+							lane.key.endpoint, current.EndpointSequence, err))
+						return
+					}
 				} else {
-					h.process(lane.ctx, entry.device, current)
+					if err := h.process(lane.ctx, entry.device, current); err != nil {
+						h.reportFatal(fmt.Errorf("endpoint 0x%02x complete sequence %d: %w",
+							lane.key.endpoint, current.EndpointSequence, err))
+						return
+					}
 				}
 				expected++
 			}
@@ -364,11 +379,11 @@ func isLifecycleOperation(kind OperationKind) bool {
 	}
 }
 
-func (h *Host) process(ctx context.Context, dev usb.Device, op Operation) {
+func (h *Host) process(ctx context.Context, dev usb.Device, op Operation) error {
 	opCtx, cancel, active := h.beginOperation(ctx, op)
 	if !active {
 		h.finishOperation(op.Token)
-		return
+		return nil
 	}
 	defer cancel()
 
@@ -378,32 +393,28 @@ func (h *Host) process(ctx context.Context, dev usb.Device, op Operation) {
 	}
 	if h.operationCancelled(op.Token) {
 		h.finishOperation(op.Token)
-		return
+		return nil
 	}
 	completion.Token = op.Token
 	completion.DeviceID = op.DeviceID
 	completion.Generation = op.Generation
 	completionCtx, completionCancel := context.WithTimeout(ctx, completionTimeout)
 	defer completionCancel()
-	_ = h.driver.Complete(completionCtx, completion)
+	err = h.driver.Complete(completionCtx, completion)
 	h.finishOperation(op.Token)
+	return err
 }
 
-func (h *Host) completeFailure(ctx context.Context, op Operation) {
+func (h *Host) completeFailure(ctx context.Context, op Operation) error {
 	if h.operationCancelled(op.Token) {
 		h.finishOperation(op.Token)
-		return
+		return nil
 	}
 	completionCtx, cancel := context.WithTimeout(ctx, completionTimeout)
 	defer cancel()
-	_ = h.driver.Complete(completionCtx, failureCompletion(op))
+	err := h.driver.Complete(completionCtx, failureCompletion(op))
 	h.finishOperation(op.Token)
-}
-
-func (h *Host) completeUntrackedFailure(ctx context.Context, op Operation) {
-	completionCtx, cancel := context.WithTimeout(ctx, completionTimeout)
-	defer cancel()
-	_ = h.driver.Complete(completionCtx, failureCompletion(op))
+	return err
 }
 
 func (h *Host) trackOperation(op Operation) error {
@@ -424,6 +435,38 @@ func (h *Host) trackOperation(op Operation) error {
 	}
 	state.received = true
 	return nil
+}
+
+func (h *Host) reportFatal(err error) {
+	if err == nil {
+		return
+	}
+	h.mu.RLock()
+	fatal := h.fatal
+	h.mu.RUnlock()
+	if fatal == nil {
+		return
+	}
+	select {
+	case fatal <- err:
+	default:
+	}
+}
+
+func (h *Host) cancelAllOperations() {
+	var cancels []context.CancelFunc
+	h.operationMu.Lock()
+	for _, state := range h.operations {
+		if state.cancel != nil {
+			cancels = append(cancels, state.cancel)
+		}
+	}
+	h.operations = make(map[uint64]*operationState)
+	h.completed = nil
+	h.operationMu.Unlock()
+	for _, cancel := range cancels {
+		cancel()
+	}
 }
 
 func (h *Host) beginOperation(parent context.Context, op Operation) (context.Context, context.CancelFunc, bool) {

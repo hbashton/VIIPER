@@ -3,6 +3,7 @@ package udecx
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -18,6 +19,7 @@ type fakeHostDriver struct {
 	created     []CreateDevice
 	destroyed   []DeviceIdentity
 	destroyErr  error
+	completeErr error
 }
 
 func newFakeHostDriver() *fakeHostDriver {
@@ -46,6 +48,9 @@ func (d *fakeHostDriver) Dequeue(ctx context.Context, _ []byte) (Operation, erro
 	}
 }
 func (d *fakeHostDriver) Complete(ctx context.Context, completion Completion) error {
+	if d.completeErr != nil {
+		return d.completeErr
+	}
 	select {
 	case d.completions <- completion:
 		return nil
@@ -56,9 +61,10 @@ func (d *fakeHostDriver) Complete(ctx context.Context, completion Completion) er
 func (d *fakeHostDriver) QueryStats(context.Context) (Stats, error) { return Stats{}, nil }
 
 type recordingProcessor struct {
-	processed chan uint64
-	lifecycle chan uint64
-	resets    chan DeviceIdentity
+	processed    chan uint64
+	lifecycle    chan uint64
+	resets       chan DeviceIdentity
+	lifecycleErr error
 }
 
 func (p *recordingProcessor) Process(_ context.Context, _ usb.Device, op Operation) (Completion, error) {
@@ -69,7 +75,7 @@ func (p *recordingProcessor) Lifecycle(_ context.Context, _ usb.Device, op Opera
 	if p.lifecycle != nil {
 		p.lifecycle <- op.EndpointSequence
 	}
-	return nil
+	return p.lifecycleErr
 }
 func (p *recordingProcessor) Reset(_ usb.Device, identity DeviceIdentity) { p.resets <- identity }
 
@@ -348,4 +354,123 @@ func TestHostCancelInterruptsActiveProcessor(t *testing.T) {
 	}
 	cancel()
 	<-done
+}
+
+func TestHostDuplicateTokenFailsSessionWithoutCompletingWrongOperation(t *testing.T) {
+	driver := newFakeHostDriver()
+	processor := &recordingProcessor{processed: make(chan uint64, 1), resets: make(chan DeviceIdentity, 1)}
+	host, _ := NewHost(driver, processor, 1)
+	identity, err := host.Register(context.Background(), 12, hostTestDevice())
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- host.Serve(context.Background()) }()
+
+	// Sequence 1 is deliberately absent, so the first token remains a valid,
+	// pending kernel request when the corrupt duplicate arrives.
+	for _, endpoint := range []uint8{0x81, 0x82} {
+		driver.operations <- Operation{
+			Token: 77, DeviceID: identity.DeviceID, Generation: identity.Generation,
+			EndpointAddress: endpoint, EndpointSequence: 2, Kind: OperationTransfer,
+		}
+	}
+
+	select {
+	case err = <-done:
+		if err == nil || !strings.Contains(err.Error(), "reuses a completed or mismatched token") {
+			t.Fatalf("Serve error=%v, want duplicate-token session failure", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("duplicate operation token did not fail the host session")
+	}
+	select {
+	case completion := <-driver.completions:
+		t.Fatalf("duplicate token completed an ambiguous kernel request: %+v", completion)
+	default:
+	}
+}
+
+func TestHostDuplicateEndpointSequenceFailsSession(t *testing.T) {
+	driver := newFakeHostDriver()
+	processor := &recordingProcessor{processed: make(chan uint64, 1), resets: make(chan DeviceIdentity, 1)}
+	host, _ := NewHost(driver, processor, 1)
+	identity, err := host.Register(context.Background(), 13, hostTestDevice())
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- host.Serve(context.Background()) }()
+
+	for token := uint64(1); token <= 2; token++ {
+		driver.operations <- Operation{
+			Token: token, DeviceID: identity.DeviceID, Generation: identity.Generation,
+			EndpointAddress: 0x81, EndpointSequence: 2, Kind: OperationTransfer,
+		}
+	}
+	select {
+	case err = <-done:
+		if err == nil || !strings.Contains(err.Error(), "repeated pending sequence 2") {
+			t.Fatalf("Serve error=%v, want duplicate-sequence session failure", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("duplicate endpoint sequence did not fail the host session")
+	}
+}
+
+func TestHostLifecycleFailureFailsSession(t *testing.T) {
+	driver := newFakeHostDriver()
+	processor := &recordingProcessor{
+		processed: make(chan uint64, 1), lifecycle: make(chan uint64, 1),
+		resets: make(chan DeviceIdentity, 1), lifecycleErr: errors.New("reset rejected"),
+	}
+	host, _ := NewHost(driver, processor, 1)
+	identity, err := host.Register(context.Background(), 14, hostTestDevice())
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- host.Serve(context.Background()) }()
+	driver.operations <- Operation{
+		DeviceID: identity.DeviceID, Generation: identity.Generation,
+		EndpointAddress: 0x81, EndpointSequence: 1, Kind: OperationEndpointReset,
+	}
+	select {
+	case err = <-done:
+		if err == nil || !strings.Contains(err.Error(), "reset rejected") {
+			t.Fatalf("Serve error=%v, want lifecycle session failure", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("lifecycle failure did not fail the host session")
+	}
+}
+
+func TestHostCompletionFailureFailsSession(t *testing.T) {
+	driver := newFakeHostDriver()
+	driver.completeErr = errors.New("completion handle lost")
+	processor := &recordingProcessor{processed: make(chan uint64, 1), resets: make(chan DeviceIdentity, 1)}
+	host, _ := NewHost(driver, processor, 1)
+	identity, err := host.Register(context.Background(), 15, hostTestDevice())
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- host.Serve(context.Background()) }()
+	driver.operations <- Operation{
+		Token: 1, DeviceID: identity.DeviceID, Generation: identity.Generation,
+		EndpointAddress: 0x81, EndpointSequence: 1, Kind: OperationTransfer,
+	}
+	select {
+	case <-processor.processed:
+	case <-time.After(time.Second):
+		t.Fatal("processor did not receive transfer")
+	}
+	select {
+	case err = <-done:
+		if err == nil || !strings.Contains(err.Error(), "completion handle lost") {
+			t.Fatalf("Serve error=%v, want completion session failure", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("completion failure did not fail the host session")
+	}
 }
