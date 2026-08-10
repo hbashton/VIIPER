@@ -386,10 +386,7 @@ func (c *Client) Dequeue(ctx context.Context, buffer []byte) (Operation, error) 
 	if err != nil {
 		return Operation{}, err
 	}
-	if written < OperationSize || written > uint32(len(buffer)) {
-		return Operation{}, ErrInvalidSize
-	}
-	return ParseOperation(buffer[:written])
+	return parseDequeuedOperation(buffer, written)
 }
 
 func (c *Client) Complete(ctx context.Context, completion Completion) error {

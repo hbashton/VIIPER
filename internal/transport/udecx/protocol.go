@@ -313,7 +313,13 @@ func ParseOperation(src []byte) (Operation, error) {
 	if h.Size < OperationSize || h.Size > MaxTransferBytes+OperationSize+MaxIsoPackets*IsoPacketSize {
 		return Operation{}, ErrInvalidSize
 	}
-	src = src[:h.Size]
+	// DeviceIoControl returns an independent byte count. Accepting an embedded
+	// size smaller than that count silently discards an unvalidated tail and can
+	// desynchronize the operation stream. A dequeued operation is one exact
+	// message, never a prefix of one.
+	if uint64(h.Size) != uint64(len(src)) {
+		return Operation{}, ErrInvalidSize
+	}
 	packetCount := binary.LittleEndian.Uint32(src[56:60])
 	transferLength := binary.LittleEndian.Uint32(src[60:64])
 	payloadOffset := binary.LittleEndian.Uint32(src[64:68])
@@ -322,7 +328,15 @@ func ParseOperation(src []byte) (Operation, error) {
 	if packetCount > MaxIsoPackets || transferLength > MaxTransferBytes || payloadLength > MaxTransferBytes {
 		return Operation{}, ErrLimitExceeded
 	}
-	if !validRange(payloadOffset, payloadLength, h.Size) || !validArrayRange(isoOffset, packetCount, IsoPacketSize, h.Size) {
+	isoBytes := packetCount * IsoPacketSize
+	expectedPayloadOffset := uint32(OperationSize) + isoBytes
+	// The kernel serializer emits a single canonical tail: ISO metadata first,
+	// then payload, with neither gaps nor aliases. Rejecting alternate layouts
+	// closes overlap/header-alias ambiguity before any slice is formed.
+	if isoOffset != OperationSize || payloadOffset != expectedPayloadOffset ||
+		uint64(expectedPayloadOffset)+uint64(payloadLength) != uint64(h.Size) ||
+		!validArrayRange(isoOffset, packetCount, IsoPacketSize, h.Size) ||
+		!validRange(payloadOffset, payloadLength, h.Size) {
 		return Operation{}, ErrInvalidRange
 	}
 	op := Operation{
@@ -349,13 +363,32 @@ func ParseOperation(src []byte) (Operation, error) {
 	copy(op.SetupPacket[:], src[76:84])
 	for i := range op.IsoPackets {
 		off := int(isoOffset) + i*IsoPacketSize
-		op.IsoPackets[i] = IsoPacket{
+		packet := IsoPacket{
 			Offset: binary.LittleEndian.Uint32(src[off : off+4]),
 			Length: binary.LittleEndian.Uint32(src[off+4 : off+8]),
 			Status: int32(binary.LittleEndian.Uint32(src[off+8 : off+12])),
 		}
+		if binary.LittleEndian.Uint32(src[off+12:off+16]) != 0 ||
+			!validRange(packet.Offset, packet.Length, transferLength) {
+			return Operation{}, fmt.Errorf("%w: ISO packet %d", ErrInvalidRange, i)
+		}
+		op.IsoPackets[i] = packet
 	}
 	return op, nil
+}
+
+// parseDequeuedOperation binds the kernel's independent bytes-returned value
+// to the embedded wire size before ParseOperation sees the message. Keeping
+// this validation platform-neutral makes malformed completion fixtures
+// deterministic on every CI host.
+func parseDequeuedOperation(buffer []byte, bytesReturned uint32) (Operation, error) {
+	if bytesReturned < OperationSize || uint64(bytesReturned) > uint64(len(buffer)) {
+		return Operation{}, ErrInvalidSize
+	}
+	if binary.LittleEndian.Uint32(buffer[8:12]) != bytesReturned {
+		return Operation{}, ErrInvalidSize
+	}
+	return ParseOperation(buffer[:bytesReturned])
 }
 
 type Completion struct {

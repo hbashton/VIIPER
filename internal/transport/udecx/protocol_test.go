@@ -123,6 +123,145 @@ func TestParseOperationCopiesPayloadAndPackets(t *testing.T) {
 	}
 }
 
+func TestParseOperationRejectsMalformedCanonicalTail(t *testing.T) {
+	valid := dualSenseIsoOperationFixture(1, 4)
+	tests := []struct {
+		name string
+		edit func([]byte) []byte
+		want error
+	}{
+		{
+			name: "bytes after embedded size",
+			edit: func(raw []byte) []byte { return append(raw, 0xaa) },
+			want: ErrInvalidSize,
+		},
+		{
+			name: "embedded size omits returned byte",
+			edit: func(raw []byte) []byte {
+				binary.LittleEndian.PutUint32(raw[8:12], uint32(len(raw)-1))
+				return raw
+			},
+			want: ErrInvalidSize,
+		},
+		{
+			name: "ISO table aliases fixed header",
+			edit: func(raw []byte) []byte {
+				binary.LittleEndian.PutUint32(raw[72:76], OperationSize-4)
+				return raw
+			},
+			want: ErrInvalidRange,
+		},
+		{
+			name: "payload aliases fixed header",
+			edit: func(raw []byte) []byte {
+				binary.LittleEndian.PutUint32(raw[64:68], OperationSize-1)
+				return raw
+			},
+			want: ErrInvalidRange,
+		},
+		{
+			name: "payload overlaps ISO table",
+			edit: func(raw []byte) []byte {
+				binary.LittleEndian.PutUint32(raw[64:68], OperationSize)
+				return raw
+			},
+			want: ErrInvalidRange,
+		},
+		{
+			name: "gap before payload",
+			edit: func(raw []byte) []byte {
+				binary.LittleEndian.PutUint32(raw[64:68], OperationSize+IsoPacketSize+1)
+				return raw
+			},
+			want: ErrInvalidRange,
+		},
+		{
+			name: "gap before ISO table",
+			edit: func(raw []byte) []byte {
+				binary.LittleEndian.PutUint32(raw[72:76], OperationSize+1)
+				return raw
+			},
+			want: ErrInvalidRange,
+		},
+		{
+			name: "unclaimed canonical tail byte",
+			edit: func(raw []byte) []byte {
+				raw = append(raw, 0)
+				binary.LittleEndian.PutUint32(raw[8:12], uint32(len(raw)))
+				return raw
+			},
+			want: ErrInvalidRange,
+		},
+		{
+			name: "nonzero ISO reserved word",
+			edit: func(raw []byte) []byte {
+				binary.LittleEndian.PutUint32(raw[OperationSize+12:OperationSize+16], 1)
+				return raw
+			},
+			want: ErrInvalidRange,
+		},
+		{
+			name: "ISO packet exceeds transfer length",
+			edit: func(raw []byte) []byte {
+				binary.LittleEndian.PutUint32(raw[OperationSize:OperationSize+4], 3)
+				binary.LittleEndian.PutUint32(raw[OperationSize+4:OperationSize+8], 2)
+				return raw
+			},
+			want: ErrInvalidRange,
+		},
+		{
+			name: "ISO packet extent overflows",
+			edit: func(raw []byte) []byte {
+				binary.LittleEndian.PutUint32(raw[OperationSize:OperationSize+4], ^uint32(0))
+				binary.LittleEndian.PutUint32(raw[OperationSize+4:OperationSize+8], 2)
+				return raw
+			},
+			want: ErrInvalidRange,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			raw := append([]byte(nil), valid...)
+			_, err := ParseOperation(test.edit(raw))
+			if !errors.Is(err, test.want) {
+				t.Fatalf("ParseOperation error=%v want=%v", err, test.want)
+			}
+		})
+	}
+}
+
+func TestParseDequeuedOperationRequiresExactBytesReturned(t *testing.T) {
+	valid := dualSenseIsoOperationFixture(1, 4)
+	if _, err := parseDequeuedOperation(valid, uint32(len(valid))); err != nil {
+		t.Fatalf("valid dequeued operation: %v", err)
+	}
+
+	tests := []struct {
+		name    string
+		buffer  []byte
+		written uint32
+	}{
+		{"short return", valid, OperationSize - 1},
+		{"return exceeds buffer", valid, uint32(len(valid) + 1)},
+		{"return truncates embedded size", valid, uint32(len(valid) - 1)},
+		{"return includes trailing byte", append(append([]byte(nil), valid...), 0), uint32(len(valid) + 1)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := parseDequeuedOperation(test.buffer, test.written); !errors.Is(err, ErrInvalidSize) {
+				t.Fatalf("parseDequeuedOperation error=%v want ErrInvalidSize", err)
+			}
+		})
+	}
+
+	headerMismatch := append([]byte(nil), valid...)
+	binary.LittleEndian.PutUint32(headerMismatch[8:12], uint32(len(headerMismatch)-1))
+	if _, err := parseDequeuedOperation(headerMismatch, uint32(len(headerMismatch))); !errors.Is(err, ErrInvalidSize) {
+		t.Fatalf("header/bytes-returned mismatch error=%v want ErrInvalidSize", err)
+	}
+}
+
 func TestCompletionMarshalling(t *testing.T) {
 	raw, err := (Completion{
 		Token: 3, DeviceID: 9, Generation: 4, Status: -1, USBDStatus: 0xc0000001,
@@ -271,8 +410,38 @@ func FuzzParseOperation(f *testing.F) {
 	binary.LittleEndian.PutUint32(valid[64:68], OperationSize)
 	binary.LittleEndian.PutUint32(valid[72:76], OperationSize)
 	f.Add(valid)
+	iso := dualSenseIsoOperationFixture(1, 4)
+	f.Add(iso)
+	trailing := append(append([]byte(nil), iso...), 0xaa)
+	f.Add(trailing)
+	reserved := append([]byte(nil), iso...)
+	binary.LittleEndian.PutUint32(reserved[OperationSize+12:OperationSize+16], 1)
+	f.Add(reserved)
+	extent := append([]byte(nil), iso...)
+	binary.LittleEndian.PutUint32(extent[OperationSize:OperationSize+4], 4)
+	binary.LittleEndian.PutUint32(extent[OperationSize+4:OperationSize+8], 1)
+	f.Add(extent)
 	f.Fuzz(func(t *testing.T, raw []byte) {
-		_, _ = ParseOperation(raw)
+		op, err := ParseOperation(raw)
+		if err != nil {
+			return
+		}
+		if len(raw) != int(binary.LittleEndian.Uint32(raw[8:12])) {
+			t.Fatal("accepted bytes after embedded operation size")
+		}
+		packetCount := binary.LittleEndian.Uint32(raw[56:60])
+		isoOffset := binary.LittleEndian.Uint32(raw[72:76])
+		payloadOffset := binary.LittleEndian.Uint32(raw[64:68])
+		if isoOffset != OperationSize || payloadOffset != OperationSize+packetCount*IsoPacketSize {
+			t.Fatal("accepted noncanonical operation tails")
+		}
+		for index, packet := range op.IsoPackets {
+			offset := int(isoOffset) + index*IsoPacketSize
+			if binary.LittleEndian.Uint32(raw[offset+12:offset+16]) != 0 ||
+				!validRange(packet.Offset, packet.Length, op.TransferLength) {
+				t.Fatalf("accepted invalid ISO packet %d", index)
+			}
+		}
 	})
 }
 
