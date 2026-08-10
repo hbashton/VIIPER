@@ -24,10 +24,14 @@ type fakeHostDriver struct {
 
 type fastInputDriver struct {
 	*fakeHostDriver
-	reports chan InputReport
+	reports   chan InputReport
+	submitErr error
 }
 
 func (d *fastInputDriver) SubmitInputReport(ctx context.Context, report InputReport) error {
+	if d.submitErr != nil {
+		return d.submitErr
+	}
 	report.Payload = append([]byte(nil), report.Payload...)
 	select {
 	case d.reports <- report:
@@ -1270,6 +1274,47 @@ func TestHostCompletionFailureFailsSession(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("completion failure did not fail the host session")
+	}
+}
+
+func TestHostDirectInputFailureFailsSession(t *testing.T) {
+	driver := &fastInputDriver{
+		fakeHostDriver: newFakeHostDriver(),
+		reports:        make(chan InputReport, 1),
+		submitErr:      errors.New("direct input handle lost"),
+	}
+	processor := &recordingProcessor{
+		processed: make(chan uint64, 1), lifecycle: make(chan uint64, 1),
+		resets: make(chan DeviceIdentity, 1),
+	}
+	host, err := NewHost(driver, processor, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	device := newInputPublisherTestDevice()
+	identity, err := host.Register(context.Background(), 16, device)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- host.Serve(context.Background()) }()
+	driver.operations <- Operation{
+		DeviceID: identity.DeviceID, Generation: identity.Generation,
+		EndpointAddress: 0x81, EndpointSequence: 1, Kind: OperationEndpointStart,
+	}
+	select {
+	case <-processor.lifecycle:
+	case <-time.After(time.Second):
+		t.Fatal("endpoint start was not processed")
+	}
+	device.reports <- []byte{1, 2, 3, 4}
+	select {
+	case err = <-done:
+		if err == nil || !strings.Contains(err.Error(), "direct input handle lost") {
+			t.Fatalf("Serve error=%v, want direct-input session failure", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("direct input submission failure did not fail the host session")
 	}
 }
 
