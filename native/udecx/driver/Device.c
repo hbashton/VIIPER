@@ -46,6 +46,7 @@ ViiperValidateCreateDevice(
         InputLength > (size_t)VIIPER_UDE_MAX_DESCRIPTOR_BYTES * 2 + sizeof(*Input) ||
         Input->Header.Magic != VIIPER_UDE_MAGIC ||
         Input->Header.Major != VIIPER_UDE_ABI_MAJOR ||
+        Input->Header.Minor != VIIPER_UDE_ABI_MINOR ||
         Input->Header.Size != InputLength ||
         Input->DeviceId == 0 || Input->Generation == 0 ||
         Input->DescriptorCount == 0 ||
@@ -61,8 +62,12 @@ ViiperValidateCreateDevice(
         return FALSE;
     }
     recordsLength = Input->DescriptorCount * sizeof(*records);
-    if (!ViiperRangeValid(Input->DescriptorRecordsOffset, recordsLength, Input->Header.Size) ||
-        !ViiperRangeValid(Input->DescriptorDataOffset, Input->DescriptorDataLength, Input->Header.Size)) {
+    if (Input->DescriptorRecordsOffset < sizeof(*Input) ||
+        !ViiperRangeValid(Input->DescriptorRecordsOffset, recordsLength, Input->Header.Size) ||
+        !ViiperRangeValid(Input->DescriptorDataOffset, Input->DescriptorDataLength, Input->Header.Size) ||
+        Input->DescriptorDataOffset < Input->DescriptorRecordsOffset ||
+        Input->DescriptorDataOffset - Input->DescriptorRecordsOffset < recordsLength ||
+        Input->DescriptorDataOffset + Input->DescriptorDataLength != Input->Header.Size) {
         return FALSE;
     }
 
@@ -70,18 +75,101 @@ ViiperValidateCreateDevice(
         ((const UCHAR *)Input + Input->DescriptorRecordsOffset);
     for (index = 0; index < Input->DescriptorCount; ++index) {
         const VIIPER_UDE_DESCRIPTOR_RECORD *record = &records[index];
-        if (!ViiperRangeValid(record->Offset, record->Length, Input->DescriptorDataLength)) {
+        const UCHAR *descriptor;
+        if (record->Length < 2 || record->Length > MAXUSHORT ||
+            !ViiperRangeValid(record->Offset, record->Length, Input->DescriptorDataLength)) {
             return FALSE;
         }
-        if (record->Kind == ViiperUdeDescriptorDevice && record->Length >= sizeof(USB_DEVICE_DESCRIPTOR)) {
+        descriptor = (const UCHAR *)Input + Input->DescriptorDataOffset + record->Offset;
+        switch (record->Kind) {
+        case ViiperUdeDescriptorDevice:
+            if (foundDevice || record->Index != 0 ||
+                record->Length != sizeof(USB_DEVICE_DESCRIPTOR) ||
+                descriptor[0] != sizeof(USB_DEVICE_DESCRIPTOR) ||
+                descriptor[1] != USB_DEVICE_DESCRIPTOR_TYPE) {
+                return FALSE;
+            }
             foundDevice = TRUE;
-        }
-        if (record->Kind == ViiperUdeDescriptorConfiguration && record->Length >= sizeof(USB_CONFIGURATION_DESCRIPTOR)) {
+            break;
+        case ViiperUdeDescriptorConfiguration:
+            if (foundConfiguration || record->Index != 0 ||
+                record->Length < sizeof(USB_CONFIGURATION_DESCRIPTOR) ||
+                descriptor[0] != sizeof(USB_CONFIGURATION_DESCRIPTOR) ||
+                descriptor[1] != USB_CONFIGURATION_DESCRIPTOR_TYPE ||
+                ((USHORT)descriptor[2] | ((USHORT)descriptor[3] << 8)) != record->Length) {
+                return FALSE;
+            }
             foundConfiguration = TRUE;
+            break;
+        case ViiperUdeDescriptorBos:
+            if (record->Index != 0 || descriptor[1] != USB_BOS_DESCRIPTOR_TYPE) {
+                return FALSE;
+            }
+            break;
+        case ViiperUdeDescriptorString:
+            if (record->Index > MAXUCHAR || record->Length > MAXUCHAR ||
+                descriptor[0] != record->Length || descriptor[1] != USB_STRING_DESCRIPTOR_TYPE ||
+                (record->Length & 1) != 0 ||
+                (record->Index == 0 && record->LanguageId != 0) ||
+                (record->Index != 0 && record->LanguageId == 0)) {
+                return FALSE;
+            }
+            break;
+        default:
+            return FALSE;
         }
     }
 
     return foundDevice && foundConfiguration;
+}
+
+static
+NTSTATUS
+ViiperAddDeviceDescriptors(
+    _Inout_ PUDECXUSBDEVICE_INIT DeviceInit,
+    _In_ const VIIPER_UDE_CREATE_DEVICE *Input
+    )
+{
+    const VIIPER_UDE_DESCRIPTOR_RECORD *records =
+        (const VIIPER_UDE_DESCRIPTOR_RECORD *)
+        ((const UCHAR *)Input + Input->DescriptorRecordsOffset);
+    const UCHAR *data = (const UCHAR *)Input + Input->DescriptorDataOffset;
+    ULONG index;
+
+    for (index = 0; index < Input->DescriptorCount; ++index) {
+        const VIIPER_UDE_DESCRIPTOR_RECORD *record = &records[index];
+        PUCHAR descriptor = (PUCHAR)(data + record->Offset);
+        NTSTATUS status;
+
+        switch (record->Kind) {
+        case ViiperUdeDescriptorDevice:
+        case ViiperUdeDescriptorConfiguration:
+        case ViiperUdeDescriptorBos:
+            status = UdecxUsbDeviceInitAddDescriptor(
+                DeviceInit, descriptor, (USHORT)record->Length);
+            break;
+        case ViiperUdeDescriptorString:
+            if (record->Index == 0) {
+                status = UdecxUsbDeviceInitAddDescriptorWithIndex(
+                    DeviceInit, descriptor, (USHORT)record->Length, 0);
+            } else {
+                status = UdecxUsbDeviceInitAddStringDescriptorRaw(
+                    DeviceInit,
+                    descriptor,
+                    (USHORT)record->Length,
+                    (UCHAR)record->Index,
+                    record->LanguageId);
+            }
+            break;
+        default:
+            status = STATUS_INVALID_PARAMETER;
+            break;
+        }
+        if (!NT_SUCCESS(status)) {
+            return status;
+        }
+    }
+    return STATUS_SUCCESS;
 }
 
 static
@@ -243,6 +331,11 @@ ViiperCreateVirtualDevice(
     UdecxUsbDeviceInitSetStateChangeCallbacks(deviceInit, &callbacks);
     UdecxUsbDeviceInitSetSpeed(deviceInit, speed);
     UdecxUsbDeviceInitSetEndpointsType(deviceInit, UdecxEndpointTypeDynamic);
+    status = ViiperAddDeviceDescriptors(deviceInit, input);
+    if (!NT_SUCCESS(status)) {
+        UdecxUsbDeviceInitFree(deviceInit);
+        return status;
+    }
 
     WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&attributes, VIIPER_UDE_DEVICE_CONTEXT);
     attributes.ParentObject = controller;
@@ -366,7 +459,9 @@ ViiperDestroyVirtualDevice(
         return status;
     }
     if (inputLength < sizeof(*input) || input->Header.Magic != VIIPER_UDE_MAGIC ||
-        input->Header.Major != VIIPER_UDE_ABI_MAJOR || input->Header.Size != sizeof(*input) ||
+        input->Header.Major != VIIPER_UDE_ABI_MAJOR ||
+        input->Header.Minor != VIIPER_UDE_ABI_MINOR ||
+        input->Header.Size != sizeof(*input) ||
         input->DeviceId == 0 || input->Generation == 0) {
         InterlockedIncrement64(&controllerContext->InvalidMessages);
         return STATUS_INVALID_PARAMETER;

@@ -984,6 +984,7 @@ ViiperCompleteOperation(
     }
     if (inputLength != sizeof(*completion) || completion->Header.Magic != VIIPER_UDE_MAGIC ||
         completion->Header.Major != VIIPER_UDE_ABI_MAJOR ||
+        completion->Header.Minor != VIIPER_UDE_ABI_MINOR ||
         completion->Header.Size < sizeof(*completion) || completion->Token == 0 ||
         completion->DeviceId == 0 || completion->Generation == 0 ||
         completion->TransferLength > VIIPER_UDE_MAX_TRANSFER_BYTES ||

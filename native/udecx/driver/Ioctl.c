@@ -11,6 +11,7 @@ ViiperValidateHeader(
     return BufferLength >= ExpectedSize &&
         Header->Magic == VIIPER_UDE_MAGIC &&
         Header->Major == VIIPER_UDE_ABI_MAJOR &&
+        Header->Minor == VIIPER_UDE_ABI_MINOR &&
         Header->Size == ExpectedSize;
 }
 

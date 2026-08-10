@@ -36,6 +36,7 @@ func TestHeaderRejectsMalformedInput(t *testing.T) {
 		{"short", func(b []byte) []byte { return b[:15] }, ErrShortMessage},
 		{"magic", func(b []byte) []byte { binary.LittleEndian.PutUint32(b, 0); return b }, ErrBadMagic},
 		{"major", func(b []byte) []byte { binary.LittleEndian.PutUint16(b[4:6], ABIMajor+1); return b }, ErrIncompatibleMajor},
+		{"minor", func(b []byte) []byte { binary.LittleEndian.PutUint16(b[6:8], ABIMinor+1); return b }, ErrIncompatibleMinor},
 		{"size below header", func(b []byte) []byte { binary.LittleEndian.PutUint32(b[8:12], 15); return b }, ErrInvalidSize},
 		{"size beyond buffer", func(b []byte) []byte { binary.LittleEndian.PutUint32(b[8:12], 17); return b }, ErrInvalidSize},
 	}

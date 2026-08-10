@@ -37,6 +37,7 @@ var (
 	ErrShortMessage      = errors.New("native UDE message is shorter than its fixed header")
 	ErrBadMagic          = errors.New("native UDE message has an invalid magic value")
 	ErrIncompatibleMajor = errors.New("native UDE ABI major version is incompatible")
+	ErrIncompatibleMinor = errors.New("native UDE ABI minor version is incompatible")
 	ErrInvalidSize       = errors.New("native UDE message size is invalid")
 	ErrInvalidRange      = errors.New("native UDE message contains an invalid range")
 	ErrLimitExceeded     = errors.New("native UDE message exceeds a negotiated limit")
@@ -81,6 +82,9 @@ func ParseHeader(src []byte) (Header, error) {
 	}
 	if h.Major != ABIMajor {
 		return Header{}, fmt.Errorf("%w: driver=%d client=%d", ErrIncompatibleMajor, h.Major, ABIMajor)
+	}
+	if h.Minor != ABIMinor {
+		return Header{}, fmt.Errorf("%w: driver=%d client=%d", ErrIncompatibleMinor, h.Minor, ABIMinor)
 	}
 	if h.Size < HeaderSize || uint64(h.Size) > uint64(len(src)) {
 		return Header{}, ErrInvalidSize
