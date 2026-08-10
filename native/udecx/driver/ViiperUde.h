@@ -24,7 +24,8 @@ typedef enum VIIPER_UDE_PENDING_STATE {
     ViiperUdePendingQueued,
     ViiperUdePendingPublishing,
     ViiperUdePendingInFlight,
-    ViiperUdePendingCompleting
+    ViiperUdePendingCompleting,
+    ViiperUdePendingDpcCompletion
 } VIIPER_UDE_PENDING_STATE;
 
 typedef struct VIIPER_UDE_PENDING_SLOT {
@@ -39,6 +40,9 @@ typedef struct VIIPER_UDE_PENDING_SLOT {
     BOOLEAN PublishedToOwner;
     UCHAR EndpointAddress;
     NTSTATUS AbortStatus;
+    NTSTATUS CompletionStatus;
+    USBD_STATUS CompletionUsbdStatus;
+    BOOLEAN CompleteWithNtStatus;
 } VIIPER_UDE_PENDING_SLOT;
 
 typedef struct VIIPER_UDE_NOTIFICATION {
@@ -73,6 +77,7 @@ typedef struct VIIPER_UDE_CONTROLLER_CONTEXT {
     ULONG NextPendingSlot;
     WDFMEMORY NotificationStorage;
     VIIPER_UDE_NOTIFICATION *Notifications;
+    WDFDPC CompletionDpc;
     ULONG NotificationHead;
     ULONG NotificationTail;
     ULONG NotificationCount;
@@ -154,6 +159,7 @@ EVT_UDECX_USB_ENDPOINT_PURGE ViiperEvtEndpointPurge;
 EVT_UDECX_USB_ENDPOINT_START ViiperEvtEndpointStart;
 EVT_WDF_IO_QUEUE_IO_INTERNAL_DEVICE_CONTROL ViiperEvtEndpointIoInternalControl;
 EVT_WDF_IO_QUEUE_STATE ViiperEvtEndpointQueuePurged;
+EVT_WDF_DPC ViiperEvtCompletionDpc;
 EVT_WDF_OBJECT_CONTEXT_CLEANUP ViiperEvtVirtualDeviceCleanup;
 
 NTSTATUS ViiperCreateQueues(_In_ WDFDEVICE Device);
@@ -164,6 +170,10 @@ VOID ViiperDestroyOwnedDevices(_In_ WDFDEVICE Controller, _In_ WDFFILEOBJECT Own
 NTSTATUS ViiperQueueDequeueOperation(_In_ WDFQUEUE Queue, _In_ WDFREQUEST Request);
 NTSTATUS ViiperCompleteOperation(_In_ WDFQUEUE Queue, _In_ WDFREQUEST Request);
 NTSTATUS ViiperQueueUrb(_In_ WDFQUEUE Queue, _In_ WDFREQUEST Request);
+VOID ViiperCompleteUnownedUrbAsync(
+    _In_ WDFDEVICE Controller,
+    _In_ WDFREQUEST Request,
+    _In_ NTSTATUS Status);
 VOID ViiperPurgeEndpointOperations(_In_ UDECXUSBENDPOINT Endpoint, _In_ NTSTATUS Status);
 VOID ViiperPurgeOwnerOperations(_In_ WDFDEVICE Controller, _In_ NTSTATUS Status);
 NTSTATUS ViiperQueueEndpointLifecycleEvent(

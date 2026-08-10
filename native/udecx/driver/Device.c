@@ -765,7 +765,8 @@ ViiperEvtEndpointIoInternalControl(
     if (IoControlCode == IOCTL_INTERNAL_USB_SUBMIT_URB) {
         NTSTATUS status = ViiperQueueUrb(Queue, Request);
         if (status != STATUS_PENDING) {
-            UdecxUrbCompleteWithNtStatus(Request, status);
+            ViiperCompleteUnownedUrbAsync(
+                WdfIoQueueGetDevice(Queue), Request, status);
         }
     } else {
         WdfRequestComplete(Request, STATUS_INVALID_DEVICE_REQUEST);
