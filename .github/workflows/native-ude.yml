@@ -47,6 +47,19 @@ jobs:
           $tools.DirectoryName | Sort-Object -Unique | Out-File $env:GITHUB_PATH -Append -Encoding utf8
       - name: Build x64 driver
         run: msbuild native/udecx/ViiperUde.sln /m /p:Configuration=Release /p:Platform=x64 /p:SignMode=TestSign /p:InfVerif_AdditionalOptions="/w"
+      - name: Build transactional root-devnode helper
+        shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vs) { throw "Visual C++ toolchain was not found" }
+          $devCmd = Join-Path $vs "Common7\Tools\VsDevCmd.bat"
+          $source = (Resolve-Path "native\udecx\tools\ViiperUdeCtl.cpp").Path
+          $outputDir = Join-Path $PWD "native\udecx\x64\Release"
+          New-Item -ItemType Directory -Force $outputDir | Out-Null
+          $output = Join-Path $outputDir "ViiperUdeCtl.exe"
+          $command = "`"$devCmd`" -arch=x64 -host_arch=x64 && cl.exe /nologo /std:c++20 /EHsc /W4 /WX /O2 /MT /DUNICODE /D_UNICODE `"$source`" /Fe:`"$output`" /link Setupapi.lib Newdev.lib Cfgmgr32.lib"
+          cmd.exe /d /s /c $command
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path $output)) { throw "ViiperUdeCtl build failed" }
       - uses: actions/upload-artifact@v4
         with:
           name: ViiperUde-x64-test-signed

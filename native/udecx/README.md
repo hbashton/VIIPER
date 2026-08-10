@@ -9,8 +9,9 @@ Directory contract:
 - `include/` is the stable C ABI shared by the driver and Go broker.
 - `driver/` is the KMDF/UdeCx controller driver.
 - `package/` contains INF and installation metadata.
+- `tools/ViiperUdeCtl.cpp` installs, verifies, or removes the exact root
+  controller without creating duplicates or leaving a failed devnode behind.
 - `tests/` contains ABI, lifecycle, descriptor, cancellation, and fault tests.
 
 The design and release gates are in
 `docs/architecture/native-udecx.md`.
-
