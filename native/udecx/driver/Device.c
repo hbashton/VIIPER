@@ -675,6 +675,9 @@ ViiperEvtUsbDeviceD0Entry(
     )
 {
     UNREFERENCED_PARAMETER(Controller);
+    // This callback is the exact UdeCx power boundary. Open direct input
+    // admission before publishing the ordered advisory event to user mode.
+    InterlockedExchange(&ViiperGetDeviceContext(Device)->InD0, TRUE);
     (VOID)ViiperQueueDeviceLifecycleEvent(Device, ViiperUdeOperationDeviceD0Entry);
     return STATUS_SUCCESS;
 }
@@ -688,6 +691,10 @@ ViiperEvtUsbDeviceD0Exit(
 {
     UNREFERENCED_PARAMETER(Controller);
     UNREFERENCED_PARAMETER(WakeSetting);
+    // Close direct input admission synchronously. Waiting for the user-mode
+    // notification would leave a scheduler window in which a fresh report
+    // could complete a Windows poll after the child had left D0.
+    InterlockedExchange(&ViiperGetDeviceContext(Device)->InD0, FALSE);
     (VOID)ViiperQueueDeviceLifecycleEvent(Device, ViiperUdeOperationDeviceD0Exit);
     return STATUS_SUCCESS;
 }
@@ -991,7 +998,8 @@ ViiperSubmitInputReport(
             deviceContext->Generation != input->Generation) {
             continue;
         }
-        if (InterlockedCompareExchange(&deviceContext->Purging, 0, 0) != 0) {
+        if (InterlockedCompareExchange(&deviceContext->InD0, 0, 0) == 0 ||
+            InterlockedCompareExchange(&deviceContext->Purging, 0, 0) != 0) {
             lifecycleDrop = TRUE;
             break;
         }

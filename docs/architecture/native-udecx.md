@@ -229,8 +229,10 @@ interface fields are only hints for alternates that contain no endpoints.
   output and media endpoints retain independent ordered queues.
 - A direct input report that was already submitted when D0 exit, unplug, or
   endpoint purge begins is acknowledged and discarded at that exact lifecycle
-  boundary. Stale generations and replayed sequences remain hard failures, so
-  normal teardown cannot fault the exclusive broker session.
+  boundary. The kernel closes D0 admission in the UdeCx callback itself rather
+  than waiting for the advisory user-mode notification. Stale generations and
+  replayed sequences remain hard failures, so normal teardown cannot fault the
+  exclusive broker session.
 - UDE callbacks never wait on user mode while holding a WDF lock.
 - Blocking work is represented by cancelable WDF requests, not sleeping kernel
   threads.
