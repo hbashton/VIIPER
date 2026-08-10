@@ -267,7 +267,17 @@ func (c *Client) negotiate(ctx context.Context) error {
 }
 
 func normalizeNegotiationError(err error) error {
-	if errors.Is(err, windows.ERROR_REVISION_MISMATCH) {
+	// ABI 1.8 is the first driver that reports ERROR_REVISION_MISMATCH. Older
+	// native previews reject this service's otherwise internally generated,
+	// fixed negotiation request as ERROR_INVALID_PARAMETER. A future fixed
+	// request-size change can surface as either length error before the driver
+	// reaches its version check. None of these can be caused by user data, so
+	// they all mean that the service and installed package must be repaired as
+	// one version-locked unit.
+	if errors.Is(err, windows.ERROR_REVISION_MISMATCH) ||
+		errors.Is(err, windows.ERROR_INVALID_PARAMETER) ||
+		errors.Is(err, windows.ERROR_INSUFFICIENT_BUFFER) ||
+		errors.Is(err, windows.ERROR_BAD_LENGTH) {
 		return fmt.Errorf(
 			"%w: service expects ABI %d.%d; install the exact native UDE driver packaged with this VIIPER build: %v",
 			ErrIncompatibleABI, ABIMajor, ABIMinor, err)

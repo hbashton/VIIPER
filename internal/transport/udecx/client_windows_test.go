@@ -12,14 +12,21 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-func TestNegotiationRevisionMismatchExplainsPackageRepair(t *testing.T) {
-	err := normalizeNegotiationError(windows.ERROR_REVISION_MISMATCH)
-	if !errors.Is(err, ErrIncompatibleABI) {
-		t.Fatalf("revision mismatch error = %v, want ErrIncompatibleABI", err)
-	}
-	for _, phrase := range []string{"ABI 1.8", "exact native UDE driver", "VIIPER build"} {
-		if !strings.Contains(err.Error(), phrase) {
-			t.Errorf("revision mismatch error %q does not contain %q", err, phrase)
+func TestNegotiationABIMismatchExplainsPackageRepair(t *testing.T) {
+	for _, transportErr := range []error{
+		windows.ERROR_REVISION_MISMATCH,
+		windows.ERROR_INVALID_PARAMETER, // Native preview before ABI 1.8.
+		windows.ERROR_INSUFFICIENT_BUFFER,
+		windows.ERROR_BAD_LENGTH,
+	} {
+		err := normalizeNegotiationError(transportErr)
+		if !errors.Is(err, ErrIncompatibleABI) {
+			t.Errorf("negotiation error for %v = %v, want ErrIncompatibleABI", transportErr, err)
+		}
+		for _, phrase := range []string{"ABI 1.8", "exact native UDE driver", "VIIPER build"} {
+			if !strings.Contains(err.Error(), phrase) {
+				t.Errorf("negotiation error %q does not contain %q", err, phrase)
+			}
 		}
 	}
 }
