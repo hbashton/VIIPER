@@ -129,6 +129,54 @@ struct EndpointSet {
     std::set<std::wstring> capture;
 };
 
+struct MediaFormat final {
+    DWORD sampleRate = 0;
+    WORD channels = 0;
+};
+
+struct RenderStats final {
+    uint64_t frames = 0;
+    uint64_t bufferFrames = 0;
+    uint64_t events = 0;
+    uint64_t underruns = 0;
+    double maximumEventGapMilliseconds = 0.0;
+    MediaFormat format{};
+};
+
+struct CaptureStats final {
+    uint64_t frames = 0;
+    uint64_t packets = 0;
+    uint64_t discontinuities = 0;
+    uint64_t timestampErrors = 0;
+    uint64_t positionRegressions = 0;
+    uint64_t qpcRegressions = 0;
+    double maximumEventGapMilliseconds = 0.0;
+    MediaFormat format{};
+};
+
+struct ExpectedMediaFormat final {
+    DWORD renderSampleRate = 0;
+    WORD renderChannels = 0;
+    DWORD captureSampleRate = 0;
+    WORD captureChannels = 0;
+};
+
+ExpectedMediaFormat ExpectedFormatFor(const std::wstring& controller) {
+    if (_wcsicmp(controller.c_str(), L"dualsense") == 0 ||
+        _wcsicmp(controller.c_str(), L"dualsenseedge") == 0) {
+        return ExpectedMediaFormat{48000, 4, 48000, 2};
+    }
+    if (_wcsicmp(controller.c_str(), L"dualshock4") == 0) {
+        return ExpectedMediaFormat{32000, 2, 16000, 1};
+    }
+    throw std::runtime_error("unsupported controller media contract: " + WideToUtf8(controller));
+}
+
+double EventGapMilliseconds(std::chrono::steady_clock::time_point previous,
+    std::chrono::steady_clock::time_point current) {
+    return std::chrono::duration<double, std::milli>(current - previous).count();
+}
+
 std::set<std::wstring> Enumerate(EDataFlow flow) {
     ComApartment apartment;
     ComPtr<IMMDeviceEnumerator> enumerator;
@@ -260,7 +308,7 @@ void FillTone(BYTE* data, UINT32 frames, const WAVEFORMATEX* format, double& pha
     }
 }
 
-uint64_t ExerciseRender(const std::wstring& endpointId, std::chrono::seconds duration) {
+RenderStats ExerciseRender(const std::wstring& endpointId, std::chrono::seconds duration) {
     ComApartment apartment;
     auto device = OpenEndpoint(endpointId);
     ComPtr<IAudioClient> client;
@@ -289,26 +337,41 @@ uint64_t ExerciseRender(const std::wstring& endpointId, std::chrono::seconds dur
     CheckHRESULT("IAudioRenderClient::ReleaseBuffer(prime)", render->ReleaseBuffer(bufferFrames, 0));
     CheckHRESULT("IAudioClient::Start(render)", client->Start());
 
-    uint64_t framesWritten = bufferFrames;
+    RenderStats stats{};
+    stats.frames = bufferFrames;
+    stats.bufferFrames = bufferFrames;
+    stats.format = MediaFormat{format->nSamplesPerSec, format->nChannels};
+    auto previousEvent = std::chrono::steady_clock::now();
+    bool warmedUp = false;
     const auto deadline = std::chrono::steady_clock::now() + duration;
     while (std::chrono::steady_clock::now() < deadline) {
         const DWORD wait = WaitForSingleObject(event.get(), 2000);
         if (wait != WAIT_OBJECT_0) throw std::runtime_error("render event timed out");
+        const auto eventTime = std::chrono::steady_clock::now();
+        if (stats.events != 0) {
+            stats.maximumEventGapMilliseconds = std::max(
+                stats.maximumEventGapMilliseconds,
+                EventGapMilliseconds(previousEvent, eventTime));
+        }
+        previousEvent = eventTime;
+        ++stats.events;
         UINT32 padding = 0;
         CheckHRESULT("IAudioClient::GetCurrentPadding", client->GetCurrentPadding(&padding));
         if (padding > bufferFrames) throw std::runtime_error("render padding exceeds buffer size");
+        if (warmedUp && padding == 0) ++stats.underruns;
+        warmedUp = true;
         const UINT32 available = bufferFrames - padding;
         if (available == 0) continue;
         CheckHRESULT("IAudioRenderClient::GetBuffer", render->GetBuffer(available, &data));
         FillTone(data, available, format.get(), phase);
         CheckHRESULT("IAudioRenderClient::ReleaseBuffer", render->ReleaseBuffer(available, 0));
-        framesWritten += available;
+        stats.frames += available;
     }
     CheckHRESULT("IAudioClient::Stop(render)", client->Stop());
-    return framesWritten;
+    return stats;
 }
 
-uint64_t ExerciseCapture(const std::wstring& endpointId, std::chrono::seconds duration) {
+CaptureStats ExerciseCapture(const std::wstring& endpointId, std::chrono::seconds duration) {
     ComApartment apartment;
     auto device = OpenEndpoint(endpointId);
     ComPtr<IAudioClient> client;
@@ -330,28 +393,71 @@ uint64_t ExerciseCapture(const std::wstring& endpointId, std::chrono::seconds du
         __uuidof(IAudioCaptureClient), reinterpret_cast<void**>(capture.put())));
     CheckHRESULT("IAudioClient::Start(capture)", client->Start());
 
-    uint64_t framesRead = 0;
+    CaptureStats stats{};
+    stats.format = MediaFormat{format->nSamplesPerSec, format->nChannels};
+    auto previousEvent = std::chrono::steady_clock::now();
+    uint64_t previousDevicePosition = 0;
+    uint64_t previousQpcPosition = 0;
+    bool havePosition = false;
+    bool firstPacket = true;
     const auto deadline = std::chrono::steady_clock::now() + duration;
     while (std::chrono::steady_clock::now() < deadline) {
         const DWORD wait = WaitForSingleObject(event.get(), 2000);
         if (wait != WAIT_OBJECT_0) throw std::runtime_error("capture event timed out");
+        const auto eventTime = std::chrono::steady_clock::now();
+        if (stats.packets != 0) {
+            stats.maximumEventGapMilliseconds = std::max(
+                stats.maximumEventGapMilliseconds,
+                EventGapMilliseconds(previousEvent, eventTime));
+        }
+        previousEvent = eventTime;
         for (;;) {
             UINT32 packetFrames = 0;
             CheckHRESULT("IAudioCaptureClient::GetNextPacketSize", capture->GetNextPacketSize(&packetFrames));
             if (packetFrames == 0) break;
             BYTE* data = nullptr;
             DWORD flags = 0;
+            uint64_t devicePosition = 0;
+            uint64_t qpcPosition = 0;
             CheckHRESULT("IAudioCaptureClient::GetBuffer", capture->GetBuffer(
-                &data, &packetFrames, &flags, nullptr, nullptr));
-            framesRead += packetFrames;
+                &data, &packetFrames, &flags, &devicePosition, &qpcPosition));
+            if (!firstPacket && (flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY) != 0) {
+                ++stats.discontinuities;
+            }
+            if (!firstPacket && (flags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR) != 0) {
+                ++stats.timestampErrors;
+            }
+            if (havePosition) {
+                if (devicePosition < previousDevicePosition) ++stats.positionRegressions;
+                if (qpcPosition < previousQpcPosition) ++stats.qpcRegressions;
+            }
+            previousDevicePosition = devicePosition;
+            previousQpcPosition = qpcPosition;
+            havePosition = true;
+            firstPacket = false;
+            ++stats.packets;
+            stats.frames += packetFrames;
             CheckHRESULT("IAudioCaptureClient::ReleaseBuffer", capture->ReleaseBuffer(packetFrames));
         }
     }
     CheckHRESULT("IAudioClient::Stop(capture)", client->Stop());
-    return framesRead;
+    return stats;
 }
 
-int Exercise(const std::filesystem::path& snapshotPath, int seconds) {
+void ValidateFrameCount(const char* lane, uint64_t frames, DWORD sampleRate,
+    int seconds, uint64_t allowance) {
+    const uint64_t expected = static_cast<uint64_t>(sampleRate) *
+        static_cast<uint64_t>(seconds);
+    const uint64_t minimum = expected * 95 / 100;
+    const uint64_t maximum = expected * 105 / 100 + allowance;
+    if (frames < minimum || frames > maximum) {
+        throw std::runtime_error(std::string(lane) + " frame cadence is outside the 5% contract: got " +
+            std::to_string(frames) + ", expected approximately " + std::to_string(expected));
+    }
+}
+
+int Exercise(const std::filesystem::path& snapshotPath, int seconds,
+    const std::wstring& controller) {
     const EndpointSet baseline = ReadSnapshot(snapshotPath);
     std::vector<std::wstring> render;
     std::vector<std::wstring> capture;
@@ -372,25 +478,58 @@ int Exercise(const std::filesystem::path& snapshotPath, int seconds) {
 
     std::exception_ptr renderError;
     std::exception_ptr captureError;
-    uint64_t renderFrames = 0;
-    uint64_t captureFrames = 0;
+    RenderStats renderStats{};
+    CaptureStats captureStats{};
     const auto duration = std::chrono::seconds(seconds);
     std::thread renderThread([&] {
-        try { renderFrames = ExerciseRender(render[0], duration); }
+        try { renderStats = ExerciseRender(render[0], duration); }
         catch (...) { renderError = std::current_exception(); }
     });
     std::thread captureThread([&] {
-        try { captureFrames = ExerciseCapture(capture[0], duration); }
+        try { captureStats = ExerciseCapture(capture[0], duration); }
         catch (...) { captureError = std::current_exception(); }
     });
     renderThread.join();
     captureThread.join();
     if (renderError) std::rethrow_exception(renderError);
     if (captureError) std::rethrow_exception(captureError);
-    if (renderFrames == 0 || captureFrames == 0) {
+    if (renderStats.frames == 0 || captureStats.frames == 0) {
         throw std::runtime_error("CoreAudio endpoint completed no frames");
     }
-    std::cout << "renderFrames=" << renderFrames << " captureFrames=" << captureFrames << "\n";
+    const ExpectedMediaFormat expected = ExpectedFormatFor(controller);
+    if (renderStats.format.sampleRate != expected.renderSampleRate ||
+        renderStats.format.channels != expected.renderChannels) {
+        throw std::runtime_error("render mix format does not match the virtual controller descriptor");
+    }
+    if (captureStats.format.sampleRate != expected.captureSampleRate ||
+        captureStats.format.channels != expected.captureChannels) {
+        throw std::runtime_error("capture mix format does not match the virtual controller descriptor");
+    }
+    ValidateFrameCount("render", renderStats.frames, renderStats.format.sampleRate,
+        seconds, renderStats.bufferFrames);
+    ValidateFrameCount("capture", captureStats.frames, captureStats.format.sampleRate,
+        seconds, 0);
+    if (renderStats.underruns != 0) {
+        throw std::runtime_error("render stream exhausted its CoreAudio buffer " +
+            std::to_string(renderStats.underruns) + " time(s)");
+    }
+    if (captureStats.discontinuities != 0 || captureStats.timestampErrors != 0 ||
+        captureStats.positionRegressions != 0 || captureStats.qpcRegressions != 0) {
+        throw std::runtime_error("capture stream reported a discontinuity or non-monotonic clock");
+    }
+    std::cout << "renderFrames=" << renderStats.frames
+              << " renderEvents=" << renderStats.events
+              << " renderBufferFrames=" << renderStats.bufferFrames
+              << " renderUnderruns=" << renderStats.underruns
+              << " renderMaxEventGapMs=" << renderStats.maximumEventGapMilliseconds
+              << " captureFrames=" << captureStats.frames
+              << " capturePackets=" << captureStats.packets
+              << " captureDiscontinuities=" << captureStats.discontinuities
+              << " captureTimestampErrors=" << captureStats.timestampErrors
+              << " capturePositionRegressions=" << captureStats.positionRegressions
+              << " captureQpcRegressions=" << captureStats.qpcRegressions
+              << " captureMaxEventGapMs=" << captureStats.maximumEventGapMilliseconds
+              << "\n";
     return 0;
 }
 
@@ -402,14 +541,14 @@ int wmain(int argc, wchar_t** argv) {
             WriteSnapshot(argv[2], EnumerateEndpoints());
             return 0;
         }
-        if (argc == 4 && _wcsicmp(argv[1], L"exercise") == 0) {
+        if (argc == 5 && _wcsicmp(argv[1], L"exercise") == 0) {
             const int seconds = _wtoi(argv[3]);
-            if (seconds < 1 || seconds > 30) throw std::runtime_error("duration must be 1 through 30 seconds");
-            return Exercise(argv[2], seconds);
+            if (seconds < 1 || seconds > 300) throw std::runtime_error("duration must be 1 through 300 seconds");
+            return Exercise(argv[2], seconds, argv[4]);
         }
         std::wcerr << L"Usage:\n"
                    << L"  ViiperUdeMediaProbe.exe snapshot <snapshot-path>\n"
-                   << L"  ViiperUdeMediaProbe.exe exercise <snapshot-path> <seconds>\n";
+                   << L"  ViiperUdeMediaProbe.exe exercise <snapshot-path> <seconds> <dualsense|dualshock4>\n";
         return 2;
     } catch (const std::exception& error) {
         std::cerr << "VIIPER UDE media probe failed: " << error.what() << "\n";

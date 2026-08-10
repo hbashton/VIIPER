@@ -26,7 +26,12 @@ param(
 
     [switch]$RestartRootDevice,
 
-    [switch]$DisposableTestMachine
+    [switch]$DisposableTestMachine,
+
+    [ValidateRange(1, 300)]
+    [int]$MediaDurationSeconds = 3,
+
+    [switch]$ReleaseGate
 )
 
 Set-StrictMode -Version Latest
@@ -54,6 +59,38 @@ function Resolve-DriverImagePath {
 if ([string]::IsNullOrWhiteSpace($RepositoryRoot)) {
     $RepositoryRoot = Join-Path $PSScriptRoot '..\..\..'
 }
+
+if ($ReleaseGate) {
+    $releaseGateFailures = [Collections.Generic.List[string]]::new()
+    if ($SignatureValidationMode -ne 'Production') {
+        [void]$releaseGateFailures.Add('-SignatureValidationMode must be Production')
+    }
+    if (-not $RequireDriverVerifier) {
+        [void]$releaseGateFailures.Add('-RequireDriverVerifier is required')
+    }
+    if ([string]::IsNullOrWhiteSpace($MediaProbePath)) {
+        [void]$releaseGateFailures.Add('-MediaProbePath is required')
+    }
+    if ([string]::IsNullOrWhiteSpace($InputProbePath)) {
+        [void]$releaseGateFailures.Add('-InputProbePath is required')
+    }
+    if (-not $RestartRootDevice) {
+        [void]$releaseGateFailures.Add('-RestartRootDevice is required')
+    }
+    if (-not $DisposableTestMachine) {
+        [void]$releaseGateFailures.Add('-DisposableTestMachine is required')
+    }
+    if ($Iterations -lt 3) {
+        [void]$releaseGateFailures.Add('-Iterations must be at least 3')
+    }
+    if ($MediaDurationSeconds -lt 180) {
+        [void]$releaseGateFailures.Add('-MediaDurationSeconds must be at least 180')
+    }
+    if ($releaseGateFailures.Count -ne 0) {
+        throw "Release-gate validation is incomplete:`n - $($releaseGateFailures -join "`n - ")"
+    }
+}
+
 $repository = (Resolve-Path -LiteralPath $RepositoryRoot -ErrorAction Stop).Path
 $signatureGate = Join-Path $PSScriptRoot 'Test-ViiperUdeSignedPackage.ps1'
 & $signatureGate `
@@ -134,6 +171,7 @@ $go = Get-Command go.exe -ErrorAction Stop
 $oldLive = [Environment]::GetEnvironmentVariable('VIIPER_UDE_LIVE', 'Process')
 $oldIterations = [Environment]::GetEnvironmentVariable('VIIPER_UDE_LIVE_ITERATIONS', 'Process')
 $oldMediaProbe = [Environment]::GetEnvironmentVariable('VIIPER_UDE_LIVE_MEDIA_PROBE', 'Process')
+$oldMediaSeconds = [Environment]::GetEnvironmentVariable('VIIPER_UDE_LIVE_MEDIA_SECONDS', 'Process')
 $oldInputProbe = [Environment]::GetEnvironmentVariable('VIIPER_UDE_LIVE_INPUT_PROBE', 'Process')
 $oldRestartInstance = [Environment]::GetEnvironmentVariable('VIIPER_UDE_LIVE_RESTART_INSTANCE_ID', 'Process')
 try {
@@ -141,9 +179,11 @@ try {
     $env:VIIPER_UDE_LIVE_ITERATIONS = [string]$Iterations
     if ($null -ne $resolvedMediaProbe) {
         $env:VIIPER_UDE_LIVE_MEDIA_PROBE = $resolvedMediaProbe
+        $env:VIIPER_UDE_LIVE_MEDIA_SECONDS = [string]$MediaDurationSeconds
     }
     else {
         [Environment]::SetEnvironmentVariable('VIIPER_UDE_LIVE_MEDIA_PROBE', $null, 'Process')
+        [Environment]::SetEnvironmentVariable('VIIPER_UDE_LIVE_MEDIA_SECONDS', $null, 'Process')
     }
     if ($null -ne $resolvedInputProbe) {
         $env:VIIPER_UDE_LIVE_INPUT_PROBE = $resolvedInputProbe
@@ -157,7 +197,11 @@ try {
     else {
         [Environment]::SetEnvironmentVariable('VIIPER_UDE_LIVE_RESTART_INSTANCE_ID', $null, 'Process')
     }
-    $timeoutMinutes = ($Iterations * 5) + $(if ($RestartRootDevice) { 5 } else { 2 })
+    $mediaMinutes = if ($null -ne $resolvedMediaProbe) {
+        [Math]::Ceiling(($MediaDurationSeconds * 2) / 60.0)
+    }
+    else { 0 }
+    $timeoutMinutes = ($Iterations * 5) + $mediaMinutes + $(if ($RestartRootDevice) { 5 } else { 2 })
     Push-Location $repository
     try {
         & $go.Source test -count=1 -timeout "${timeoutMinutes}m" `
@@ -174,12 +218,17 @@ finally {
     [Environment]::SetEnvironmentVariable('VIIPER_UDE_LIVE', $oldLive, 'Process')
     [Environment]::SetEnvironmentVariable('VIIPER_UDE_LIVE_ITERATIONS', $oldIterations, 'Process')
     [Environment]::SetEnvironmentVariable('VIIPER_UDE_LIVE_MEDIA_PROBE', $oldMediaProbe, 'Process')
+    [Environment]::SetEnvironmentVariable('VIIPER_UDE_LIVE_MEDIA_SECONDS', $oldMediaSeconds, 'Process')
     [Environment]::SetEnvironmentVariable('VIIPER_UDE_LIVE_INPUT_PROBE', $oldInputProbe, 'Process')
     [Environment]::SetEnvironmentVariable('VIIPER_UDE_LIVE_RESTART_INSTANCE_ID', $oldRestartInstance, 'Process')
 }
 
 $verifierSuffix = if ($RequireDriverVerifier) { ' with Driver Verifier active' } else { '' }
-$mediaSuffix = if ($null -ne $resolvedMediaProbe) { ' with full-duplex CoreAudio media' } else { '' }
+$mediaSuffix = if ($null -ne $resolvedMediaProbe) {
+    " with $MediaDurationSeconds-second full-duplex CoreAudio media per PlayStation controller"
+}
+else { '' }
 $inputSuffix = if ($null -ne $resolvedInputProbe) { ' with end-to-end HID input latency and output feedback' } else { '' }
 $restartSuffix = if ($RestartRootDevice) { ' with active root-device restart recovery' } else { '' }
-Write-Host "VIIPER UDE live lifecycle/HID/media validation passed for $Iterations iteration(s)$verifierSuffix$mediaSuffix$inputSuffix$restartSuffix."
+$releaseSuffix = if ($ReleaseGate) { ' under the complete production release contract' } else { '' }
+Write-Host "VIIPER UDE live lifecycle/HID/media validation passed for $Iterations iteration(s)$verifierSuffix$mediaSuffix$inputSuffix$restartSuffix$releaseSuffix."

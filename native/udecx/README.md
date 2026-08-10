@@ -137,6 +137,7 @@ Microsoft-signed package with:
   -ExpectedSourceRevision 0123456789abcdef0123456789abcdef01234567 `
   -SignatureValidationMode Production `
   -Iterations 10 `
+  -MediaDurationSeconds 30 `
   -MediaProbePath .\native\udecx\x64\Release\ViiperUdeMediaProbe.exe `
   -InputProbePath .\native\udecx\x64\Release\ViiperUdeInputProbe.exe
 ```
@@ -151,10 +152,12 @@ without running cleanup; the driver must remove its child, drain pending URBs,
 release exclusive ownership, and accept a fresh session. Normal CI never opts
 into this live test.
 When `-MediaProbePath` is supplied, the first DualShock 4 and DualSense
-generation must also create one new render/capture endpoint pair; three seconds
-of simultaneous WASAPI render/capture must increase native ISO, host-to-device,
-and device-to-host byte counters. The baseline snapshot prevents a connected
-physical controller from being mistaken for the virtual device.
+generation must also create one new render/capture endpoint pair. Simultaneous
+WASAPI render/capture must preserve the controller's declared format and frame
+cadence, keep the render buffer nonempty, preserve monotonic capture clocks,
+report no capture discontinuity/timestamp flags, and increase native ISO,
+host-to-device, and device-to-host byte counters. The baseline snapshot prevents
+a connected physical controller from being mistaken for the virtual device.
 When `-InputProbePath` is supplied, the first DualShock 4, DualSense, and
 DualSense Edge generations each publish 256 alternating stick markers. QPC is
 sampled immediately before publication and when a continuous HID `ReadFile`
@@ -189,11 +192,21 @@ The Driver Verifier pass is a separate, explicit disposable-machine gate:
   -SubmissionManifestPath C:\ViiperUde\ViiperUde.cab.sha256.json `
   -ExpectedSourceRevision 0123456789abcdef0123456789abcdef01234567 `
   -SignatureValidationMode Production `
-  -Iterations 10 `
+  -Iterations 3 `
+  -ReleaseGate `
   -RequireDriverVerifier `
   -RestartRootDevice `
-  -DisposableTestMachine
+  -DisposableTestMachine `
+  -MediaDurationSeconds 180 `
+  -MediaProbePath .\native\udecx\x64\Release\ViiperUdeMediaProbe.exe `
+  -InputProbePath .\native\udecx\x64\Release\ViiperUdeInputProbe.exe
 ```
+
+`-ReleaseGate` is fail-closed: it requires a production Microsoft signature,
+Driver Verifier, three lifecycle generations, both independent probes, an
+active root-device restart, the disposable-machine acknowledgement, and a
+three-minute clean duplex media run for each PlayStation controller. Omitting
+any one of those inputs cannot print a production-pass result.
 
 Microsoft warns that Driver Verifier can intentionally bugcheck a machine;
 this workflow is never run by ordinary CI, an installer, or DS4Windows.

@@ -35,6 +35,7 @@ const (
 	liveNativeTestIterations  = "VIIPER_UDE_LIVE_ITERATIONS"
 	liveNativeCrashChild      = "VIIPER_UDE_LIVE_CRASH_CHILD"
 	liveNativeMediaProbe      = "VIIPER_UDE_LIVE_MEDIA_PROBE"
+	liveNativeMediaSeconds    = "VIIPER_UDE_LIVE_MEDIA_SECONDS"
 	liveNativeInputProbe      = "VIIPER_UDE_LIVE_INPUT_PROBE"
 	liveNativeRestartInstance = "VIIPER_UDE_LIVE_RESTART_INSTANCE_ID"
 	liveNativeCrashExitCode   = 86
@@ -254,6 +255,31 @@ func liveNativeIterationCount(t *testing.T) int {
 	return iterations
 }
 
+func liveNativeMediaDuration(t *testing.T) time.Duration {
+	t.Helper()
+	raw := os.Getenv(liveNativeMediaSeconds)
+	if raw == "" {
+		return 3 * time.Second
+	}
+	seconds, err := strconv.Atoi(raw)
+	if err != nil || seconds < 1 || seconds > 300 {
+		t.Fatalf("%s must be an integer from 1 through 300, got %q",
+			liveNativeMediaSeconds, raw)
+	}
+	return time.Duration(seconds) * time.Second
+}
+
+func TestNativeLiveMediaDurationContract(t *testing.T) {
+	t.Setenv(liveNativeMediaSeconds, "")
+	if got := liveNativeMediaDuration(t); got != 3*time.Second {
+		t.Fatalf("default native media duration=%s want 3s", got)
+	}
+	t.Setenv(liveNativeMediaSeconds, "180")
+	if got := liveNativeMediaDuration(t); got != 3*time.Minute {
+		t.Fatalf("release native media duration=%s want 3m", got)
+	}
+}
+
 func waitForNativeStats(ctx context.Context, client *udecx.Client, description string,
 	accept func(udecx.Stats) bool) (udecx.Stats, error) {
 	ticker := time.NewTicker(25 * time.Millisecond)
@@ -297,6 +323,20 @@ func runLiveMediaProbe(t *testing.T, ctx context.Context, probe string, argument
 		t.Fatalf("run native CoreAudio probe %v: %v\n%s", arguments, err, output)
 	}
 	return string(output)
+}
+
+type liveProbeResult struct {
+	output string
+	err    error
+}
+
+func startLiveProbe(ctx context.Context, probe string, arguments ...string) <-chan liveProbeResult {
+	done := make(chan liveProbeResult, 1)
+	go func() {
+		output, err := exec.CommandContext(ctx, probe, arguments...).CombinedOutput()
+		done <- liveProbeResult{output: string(output), err: err}
+	}()
+	return done
 }
 
 var queryPerformanceCounter = windows.NewLazySystemDLL("kernel32.dll").
@@ -433,8 +473,9 @@ func TestNativeUDELiveProductionControllers(t *testing.T) {
 	}
 
 	iterations := liveNativeIterationCount(t)
+	mediaDuration := liveNativeMediaDuration(t)
 	testCtx, cancelTest := context.WithTimeout(context.Background(),
-		time.Duration(iterations)*5*time.Minute)
+		time.Duration(iterations)*5*time.Minute+2*mediaDuration+2*time.Minute)
 	defer cancelTest()
 
 	client, err := udecx.Open(testCtx)
@@ -564,29 +605,8 @@ func TestNativeUDELiveProductionControllers(t *testing.T) {
 					t.Fatal(waitErr)
 				}
 
-				if mediaController {
-					mediaBefore, mediaErr := client.QueryStats(testCtx)
-					if mediaErr != nil {
-						t.Fatalf("query %s media baseline: %v", controller.name, mediaErr)
-					}
-					probeOutput := runLiveMediaProbe(
-						t, testCtx, mediaProbe, "exercise", mediaSnapshot, "3")
-					mediaAfter, mediaErr := client.QueryStats(testCtx)
-					if mediaErr != nil {
-						t.Fatalf("query %s media result: %v", controller.name, mediaErr)
-					}
-					if mediaAfter.IsoPackets <= mediaBefore.IsoPackets ||
-						mediaAfter.BytesToDevice <= mediaBefore.BytesToDevice ||
-						mediaAfter.BytesFromDevice <= mediaBefore.BytesFromDevice {
-						t.Fatalf("%s CoreAudio did not exercise full-duplex ISO media: before=%+v after=%+v probe=%s",
-							controller.name, mediaBefore, mediaAfter, probeOutput)
-					}
-				}
-				if inputController {
-					runLiveInputLatencyProbe(
-						t, testCtx, inputProbe, inputSnapshot, controller, publishMarker)
-				}
-				if feedbackController {
+				feedbackVerified := false
+				verifyFeedback := func() {
 					feedbackBefore, feedbackErr := client.QueryStats(testCtx)
 					if feedbackErr != nil {
 						t.Fatalf("query %s feedback baseline: %v", controller.name, feedbackErr)
@@ -597,22 +617,78 @@ func TestNativeUDELiveProductionControllers(t *testing.T) {
 						fmt.Sprintf("0x%04X", controller.productID),
 						controller.feedbackProbeKind, "hid-output-v1")
 					feedbackCtx, cancelFeedback := context.WithTimeout(testCtx, 10*time.Second)
+					defer cancelFeedback()
 					if feedbackErr = waitForFeedback(feedbackCtx); feedbackErr != nil {
-						cancelFeedback()
 						t.Fatalf("%s HID output was not preserved end to end: %v; probe=%s",
 							controller.name, feedbackErr, probeOutput)
 					}
-					feedbackAfter, waitErr := waitForNativeStats(feedbackCtx, client,
+					feedbackAfter, feedbackWaitErr := waitForNativeStats(feedbackCtx, client,
 						controller.name+" HID output completion", func(stats udecx.Stats) bool {
 							return stats.OperationsDequeued > feedbackBefore.OperationsDequeued &&
 								stats.OperationsCompleted > feedbackBefore.OperationsCompleted &&
 								stats.BytesToDevice >= feedbackBefore.BytesToDevice+controller.feedbackReportLen
 						})
-					cancelFeedback()
-					if waitErr != nil {
+					if feedbackWaitErr != nil {
 						t.Fatalf("%s HID output did not complete through the native driver: %v; before=%+v after=%+v probe=%s",
-							controller.name, waitErr, feedbackBefore, feedbackAfter, probeOutput)
+							controller.name, feedbackWaitErr, feedbackBefore, feedbackAfter, probeOutput)
 					}
+					feedbackVerified = true
+				}
+
+				if mediaController {
+					mediaBefore, mediaErr := client.QueryStats(testCtx)
+					if mediaErr != nil {
+						t.Fatalf("query %s media baseline: %v", controller.name, mediaErr)
+					}
+					mediaCtx, cancelMedia := context.WithCancel(testCtx)
+					defer cancelMedia()
+					probeDone := startLiveProbe(
+						mediaCtx, mediaProbe, "exercise", mediaSnapshot,
+						strconv.Itoa(int(mediaDuration/time.Second)),
+						strings.ToLower(controller.name))
+					stressCtx, cancelStress := context.WithCancel(testCtx)
+					defer cancelStress()
+					stressDone := make(chan struct{})
+					go func() {
+						defer close(stressDone)
+						for sequence := uint64(1); ; sequence++ {
+							select {
+							case <-stressCtx.Done():
+								return
+							default:
+								publishInput(sequence)
+								time.Sleep(time.Millisecond)
+							}
+						}
+					}()
+					if feedbackController {
+						verifyFeedback()
+					}
+					probeResult := <-probeDone
+					cancelMedia()
+					cancelStress()
+					<-stressDone
+					if probeResult.err != nil {
+						t.Fatalf("run native CoreAudio probe: %v\n%s",
+							probeResult.err, probeResult.output)
+					}
+					mediaAfter, mediaErr := client.QueryStats(testCtx)
+					if mediaErr != nil {
+						t.Fatalf("query %s media result: %v", controller.name, mediaErr)
+					}
+					if mediaAfter.IsoPackets <= mediaBefore.IsoPackets ||
+						mediaAfter.BytesToDevice <= mediaBefore.BytesToDevice ||
+						mediaAfter.BytesFromDevice <= mediaBefore.BytesFromDevice {
+						t.Fatalf("%s CoreAudio did not exercise full-duplex ISO media: before=%+v after=%+v probe=%s",
+							controller.name, mediaBefore, mediaAfter, probeResult.output)
+					}
+				}
+				if inputController {
+					runLiveInputLatencyProbe(
+						t, testCtx, inputProbe, inputSnapshot, controller, publishMarker)
+				}
+				if feedbackController && !feedbackVerified {
+					verifyFeedback()
 				}
 
 				inputDeadline := time.Now().Add(750 * time.Millisecond)
