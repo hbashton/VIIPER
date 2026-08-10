@@ -2155,7 +2155,15 @@ bool ParseInstallOptions(int argc, wchar_t** argv, InstallOptions* options, Erro
         } else if (_wcsicmp(argument.c_str(), L"--source-revision") == 0 &&
             index + 1 < argc && !revisionSeen) {
             const std::wstring wide = argv[++index];
-            options->sourceRevision.assign(wide.begin(), wide.end());
+            options->sourceRevision.clear();
+            options->sourceRevision.reserve(wide.size());
+            for (const wchar_t value : wide) {
+                if (value > 0x7f) {
+                    return SetError(error, L"arguments", ERROR_INVALID_PARAMETER,
+                        L"source revision must contain ASCII hexadecimal characters");
+                }
+                options->sourceRevision.push_back(static_cast<char>(value));
+            }
             if (!IsHexRevision(options->sourceRevision)) {
                 return SetError(error, L"arguments", ERROR_INVALID_PARAMETER,
                     L"source revision must contain 40 to 64 hexadecimal characters");
