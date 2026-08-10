@@ -198,6 +198,12 @@ unplug all converge on the same idempotent purge path.
   user mode may return only each packet's actual length and status. Sparse IN
   payload span is independent of the completed-byte total, and the kernel
   derives the URB error count from the returned per-packet statuses.
+- Each isochronous endpoint owns a virtual USB frame reservation clock. ASAP
+  URBs reserve the first frame after the current or previously queued window,
+  and the driver returns that actual frame in `StartFrame` as required by the
+  Windows USB contract. Explicit schedules advance the same endpoint clock;
+  reset, purge, and start clear it so an old pipe lifetime cannot skew a new
+  media stream.
 
 This follows the useful ViGEmBus pattern of per-target ownership and manual
 request queues while accounting for UdeCx's endpoint-specific purge contract.

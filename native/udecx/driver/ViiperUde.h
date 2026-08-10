@@ -63,6 +63,7 @@ typedef struct VIIPER_UDE_REQUEST_CONTEXT {
     ULONGLONG Token;
     ULONG TransferLength;
     ULONG IsoPacketCount;
+    ULONG IsoStartFrame;
     BOOLEAN DirectionIn;
 } VIIPER_UDE_REQUEST_CONTEXT;
 
@@ -131,6 +132,7 @@ typedef struct VIIPER_UDE_DEVICE_CONTEXT {
     ULONGLONG DeviceId;
     ULONG Generation;
     ULONG Slot;
+    UDECX_USB_DEVICE_SPEED Speed;
     BOOLEAN Plugged;
     volatile LONG Purging;
     volatile LONG ActiveCounted;
@@ -150,6 +152,7 @@ typedef struct VIIPER_UDE_ENDPOINT_CONTEXT {
     USB_ENDPOINT_DESCRIPTOR Descriptor;
     volatile LONG Purging;
     volatile LONG64 LastInputSequence;
+    volatile LONG64 NextIsoStartFrame;
     ULONGLONG NextAdmissionSequence;
     BOOLEAN FastInput;
 } VIIPER_UDE_ENDPOINT_CONTEXT;

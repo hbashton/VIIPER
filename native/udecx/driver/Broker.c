@@ -682,6 +682,77 @@ ViiperGetTransferBufferLength(
     }
 }
 
+static
+ULONG
+ViiperIsoFrameSpan(
+    _In_ const VIIPER_UDE_ENDPOINT_CONTEXT *EndpointContext,
+    _In_ ULONG PacketCount
+    )
+{
+    UCHAR interval = EndpointContext->Descriptor.bInterval;
+    VIIPER_UDE_DEVICE_CONTEXT *deviceContext =
+        ViiperGetDeviceContext(EndpointContext->Device);
+    ULONGLONG span;
+
+    if (PacketCount == 0 || interval == 0 || interval > 16) {
+        return PacketCount == 0 ? 1 : PacketCount;
+    }
+    if (deviceContext->Speed == UdecxUsbHighSpeed ||
+        deviceContext->Speed == UdecxUsbSuperSpeed) {
+        // High/SuperSpeed bInterval is an exponent in 125-us microframes,
+        // while URB StartFrame is expressed in one-millisecond USB frames.
+        span = (ULONGLONG)PacketCount * (1UL << (interval - 1));
+        span = (span + 7) / 8;
+    } else {
+        span = (ULONGLONG)PacketCount * interval;
+    }
+    if (span == 0) {
+        return 1;
+    }
+    return span > MAXULONG ? MAXULONG : (ULONG)span;
+}
+
+static
+ULONG
+ViiperReserveIsoStartFrame(
+    _In_ VIIPER_UDE_ENDPOINT_CONTEXT *EndpointContext,
+    _In_ ULONG TransferFlags,
+    _In_ ULONG RequestedStartFrame,
+    _In_ ULONG PacketCount
+    )
+{
+    LONG64 observed;
+    ULONG currentFrame;
+    ULONG startFrame;
+    ULONG nextFrame;
+    ULONG span;
+
+    span = ViiperIsoFrameSpan(EndpointContext, PacketCount);
+    if ((TransferFlags & USBD_START_ISO_TRANSFER_ASAP) == 0) {
+        InterlockedExchange64(
+            &EndpointContext->NextIsoStartFrame,
+            (LONG64)(ULONGLONG)(RequestedStartFrame + span));
+        return RequestedStartFrame;
+    }
+
+    currentFrame = (ULONG)(KeQueryInterruptTime() / 10000ULL);
+    for (;;) {
+        observed = InterlockedCompareExchange64(
+            &EndpointContext->NextIsoStartFrame, 0, 0);
+        startFrame = (ULONG)observed;
+        if (observed == 0 || (LONG)(startFrame - currentFrame) <= 0) {
+            startFrame = currentFrame + 1;
+        }
+        nextFrame = startFrame + span;
+        if (InterlockedCompareExchange64(
+                &EndpointContext->NextIsoStartFrame,
+                (LONG64)(ULONGLONG)nextFrame,
+                observed) == observed) {
+            return startFrame;
+        }
+    }
+}
+
 NTSTATUS
 ViiperCopyTransferBuffer(
     _In_ WDFREQUEST Request,
@@ -856,6 +927,10 @@ ViiperSerializeOperation(
     if (!NT_SUCCESS(status)) {
         return status;
     }
+    if (packetCount != 0) {
+        startFrame = ViiperReserveIsoStartFrame(
+            endpointContext, transferFlags, startFrame, packetCount);
+    }
 
     isoBytes = packetCount * sizeof(VIIPER_UDE_ISO_PACKET);
     payloadLength = directionIn ? 0 : transferLength;
@@ -917,6 +992,7 @@ ViiperSerializeOperation(
 
     requestContext->TransferLength = transferLength;
     requestContext->IsoPacketCount = packetCount;
+    requestContext->IsoStartFrame = startFrame;
     requestContext->DirectionIn = directionIn;
     WdfRequestSetInformation(DequeueRequest, totalLength);
     InterlockedIncrement64(&ControllerContext->OperationsDequeued);
@@ -1516,6 +1592,10 @@ ViiperCompleteOperation(
             goto CompleteWithNtStatus;
         }
         urb->UrbIsochronousTransfer.ErrorCount = isoErrorCount;
+        if ((urb->UrbIsochronousTransfer.TransferFlags &
+                USBD_START_ISO_TRANSFER_ASAP) != 0) {
+            urb->UrbIsochronousTransfer.StartFrame = requestContext->IsoStartFrame;
+        }
         InterlockedAdd64(&controllerContext->IsoPackets, completion->IsoPacketCount);
     }
 

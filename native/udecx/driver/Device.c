@@ -416,6 +416,7 @@ ViiperCreateVirtualDevice(
     deviceContext->DeviceId = input->DeviceId;
     deviceContext->Generation = input->Generation;
     deviceContext->Slot = VIIPER_UDE_MAX_DEVICES;
+    deviceContext->Speed = speed;
     WdfObjectReference(ownerFile);
     InterlockedExchange(&deviceContext->OwnerReferenced, 1);
 
@@ -1002,6 +1003,7 @@ ViiperEvtEndpointReset(
 {
     NTSTATUS status;
 
+    InterlockedExchange64(&ViiperGetEndpointContext(Endpoint)->NextIsoStartFrame, 0);
     ViiperPurgeEndpointOperations(Endpoint, STATUS_DEVICE_NOT_READY);
     status = ViiperQueueEndpointLifecycleEvent(Endpoint, ViiperUdeOperationEndpointReset);
     WdfRequestComplete(Request, status);
@@ -1025,6 +1027,7 @@ ViiperEvtEndpointPurge(
 {
     VIIPER_UDE_ENDPOINT_CONTEXT *endpointContext = ViiperGetEndpointContext(Endpoint);
     InterlockedExchange(&endpointContext->Purging, TRUE);
+    InterlockedExchange64(&endpointContext->NextIsoStartFrame, 0);
     ViiperPurgeEndpointOperations(Endpoint, STATUS_DEVICE_NOT_READY);
     (VOID)ViiperQueueEndpointLifecycleEvent(Endpoint, ViiperUdeOperationEndpointPurge);
     WdfIoQueuePurge(endpointContext->Queue, ViiperEvtEndpointQueuePurged, Endpoint);
@@ -1035,9 +1038,11 @@ ViiperEvtEndpointStart(
     _In_ UDECXUSBENDPOINT Endpoint
     )
 {
+    VIIPER_UDE_ENDPOINT_CONTEXT *endpointContext = ViiperGetEndpointContext(Endpoint);
     (VOID)ViiperQueueEndpointLifecycleEvent(Endpoint, ViiperUdeOperationEndpointStart);
-    InterlockedExchange(&ViiperGetEndpointContext(Endpoint)->Purging, FALSE);
-    WdfIoQueueStart(ViiperGetEndpointContext(Endpoint)->Queue);
+    InterlockedExchange64(&endpointContext->NextIsoStartFrame, 0);
+    InterlockedExchange(&endpointContext->Purging, FALSE);
+    WdfIoQueueStart(endpointContext->Queue);
 }
 
 VOID
