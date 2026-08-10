@@ -10,7 +10,17 @@ Directory contract:
 - `driver/` is the KMDF/UdeCx controller driver.
 - `package/` contains INF and installation metadata.
 - `tools/ViiperUdeCtl.cpp` installs, verifies, or removes the exact root
-  controller without creating duplicates or leaving a failed devnode behind.
+  controller as a driver-store transaction. Installation requires the
+  source-revision submission manifest, verifies the catalog signature and
+  four-part `DriverVer`, rejects same-version replacement and implicit
+  downgrade, records the prior published INF, negotiates the broker ABI after
+  start, and restores the prior binding on failure. Removal backs up every
+  exact signed VIIPER package before deleting only exact owned devnodes and
+  packages; unrelated driver-store entries are never force-deleted.
+- `tools/Test-ViiperUdeCtlTransaction.ps1` deterministically guards the
+  transaction, rollback, ownership, downgrade, and structured-reboot source
+  contracts. Passing a compiled tool through `-BinaryPath` also runs its pure
+  parser/version self-test without changing driver state.
 - `tools/New-ViiperUdeAttestationPackage.ps1` creates and hash-verifies the
   exact controlled-test Hardware Dev Center CAB structure and requires an
   explicit testing-only acknowledgement. Microsoft currently restricts
@@ -83,6 +93,26 @@ never manufacture multiple completions.
 The design and release gates are in
 `docs/architecture/native-udecx.md`. The Microsoft signing boundary is in
 `docs/architecture/native-udecx-signing.md`.
+
+Install a validated package only after stopping the broker that owns the native
+interface. Production mode accepts only a release-eligible `HLK/WHCP` manifest;
+controlled-test attestation must be named explicitly:
+
+```powershell
+.\ViiperUdeCtl.exe install C:\ViiperUde\Signed\ViiperUde.inf `
+  --manifest C:\ViiperUde\ViiperUde.cab.sha256.json `
+  --source-revision 0123456789abcdef0123456789abcdef01234567 `
+  --validation-mode production
+```
+
+The only forced selection available to an operator is an intentional downgrade
+guarded by the exact currently installed version, for example
+`--allow-controlled-downgrade 0.2.0.0`. Rollback may internally force the exact
+previously captured signed INF because returning to that known state is the
+transaction's recovery operation. Exit `0` means verified success, `3010`
+means verified installation/removal requires a restart, `4` is a preflight
+rejection, and `3` means rollback itself failed. Every command emits one final
+key/value result line including `rebootRequired` and rollback status.
 
 After a Microsoft-signed native driver package has been installed and verified,
 the developer-only standalone registration can persist the preview transport:
