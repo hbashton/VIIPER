@@ -2,28 +2,51 @@ name: Native UdeCx bus
 
 on:
   push:
-    branches: [feature/native-udecx-bus]
+    branches: [main, feature/native-udecx-bus]
     paths:
+      - "go.mod"
+      - "go.sum"
       - "native/udecx/**"
       - "internal/transport/udecx/**"
       - "internal/server/usb/**"
+      - "internal/server/api/**"
       - "internal/cmd/**"
+      - "internal/configpaths/**"
+      - "viipertypes/**"
       - "device/**"
       - "usb/**"
+      - "scripts/**"
       - "_testing/e2e/**"
       - "docs/testing/e2e_latency.md"
+      - ".github/workflows/build_base.yml"
       - ".github/workflows/native-ude.yml"
+      - ".github/workflows/release.yml"
   pull_request:
     paths:
+      - "go.mod"
+      - "go.sum"
       - "native/udecx/**"
       - "internal/transport/udecx/**"
       - "internal/server/usb/**"
+      - "internal/server/api/**"
       - "internal/cmd/**"
+      - "internal/configpaths/**"
+      - "viipertypes/**"
       - "device/**"
       - "usb/**"
+      - "scripts/**"
       - "_testing/e2e/**"
       - "docs/testing/e2e_latency.md"
+      - ".github/workflows/build_base.yml"
       - ".github/workflows/native-ude.yml"
+      - ".github/workflows/release.yml"
+  workflow_call:
+    inputs:
+      upload_artifacts:
+        description: Upload the test-signed native package for controlled testing.
+        required: false
+        type: boolean
+        default: false
   workflow_dispatch:
 
 permissions:
@@ -118,7 +141,17 @@ jobs:
           if (-not $stampInf) { throw "Restored WDK package did not contain stampinf.exe" }
           $tools.DirectoryName | Sort-Object -Unique | Out-File $env:GITHUB_PATH -Append -Encoding utf8
       - name: Build x64 driver
-        run: msbuild native/udecx/ViiperUde.sln /m /p:Configuration=Release /p:Platform=x64 /p:SignMode=TestSign /p:InfVerif_AdditionalOptions="/w"
+        run: msbuild native/udecx/ViiperUde.sln /m /p:Configuration=Release /p:Platform=x64 /p:SignMode=TestSign
+      - name: Enforce WHQL-aligned and Universal INF rules
+        shell: pwsh
+        run: |
+          $inf = (Resolve-Path ./native/udecx/x64/Release/ViiperUde.inf).Path
+          foreach ($mode in @('/h', '/u')) {
+            & infverif.exe $mode $inf
+            if ($LASTEXITCODE -ne 0) {
+              throw "InfVerif $mode rejected the stamped native INF (exit $LASTEXITCODE)."
+            }
+          }
       - name: Verify stamped KMDF and DriverVer contract
         shell: pwsh
         run: >-
@@ -175,6 +208,7 @@ jobs:
         with:
           category: /language:c-cpp
       - uses: actions/upload-artifact@v4
+        if: ${{ github.event_name != 'workflow_call' || inputs.upload_artifacts }}
         with:
           name: ViiperUde-x64-test-signed
           path: |

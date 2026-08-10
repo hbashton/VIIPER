@@ -6,10 +6,18 @@ on:
             - "v*.*.*"
 
 permissions:
+    actions: read
     contents: write
     id-token: write
+    security-events: write
 
 jobs:
+    native-validation:
+        name: Native UdeCx release gate
+        uses: ./.github/workflows/native-ude.yml
+        with:
+            upload_artifacts: false
+
     build:
         uses: ./.github/workflows/build_base.yml
         secrets: inherit
@@ -35,7 +43,7 @@ jobs:
 
     create-release:
         name: Create Release
-        needs: [build, generate-changelog, client-libraries]
+        needs: [native-validation, build, generate-changelog, client-libraries]
         runs-on: ubuntu-latest
         steps:
             - name: Checkout code
