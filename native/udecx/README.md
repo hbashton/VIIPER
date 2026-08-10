@@ -21,6 +21,12 @@ Directory contract:
   production controller through the real UdeCx host, direct interrupt-input
   path, generation teardown, and driver fault counters. It never installs or
   changes a driver.
+- `tools/Invoke-ViiperUdePerformanceValidation.ps1` wraps that exact signed
+  live gate in a uniquely named, bounded-memory Windows Performance Recorder
+  session. It preserves an ETL on success or workload failure without stopping
+  another recorder instance, enabling CPU sampled/precise, ready-thread,
+  context-switch, WDF DPC, interrupt, and ISR analysis before performance code
+  is changed.
 - `tools/Enable-ViiperUdeVerifierForNextBoot.ps1` stages Microsoft standard
   Driver Verifier checks for `ViiperUde.sys` for exactly one boot. It refuses
   daily-use machines unless the disposable-machine acknowledgement is given,
@@ -130,3 +136,19 @@ The Driver Verifier pass is a separate, explicit disposable-machine gate:
 
 Microsoft warns that Driver Verifier can intentionally bugcheck a machine;
 this workflow is never run by ordinary CI, an installer, or DS4Windows.
+
+For evidence-based CPU and scheduler analysis, run the same signed workload
+inside WPR's bounded `GeneralProfile.Light` memory profile:
+
+```powershell
+.\native\udecx\tools\Invoke-ViiperUdePerformanceValidation.ps1 `
+  -SignedPackageDirectory C:\ViiperUde\MicrosoftSigned `
+  -OutputPath C:\ViiperUde\Traces\native-ude.etl `
+  -MediaProbePath .\native\udecx\x64\Release\ViiperUdeMediaProbe.exe `
+  -InputProbePath .\native\udecx\x64\Release\ViiperUdeInputProbe.exe
+```
+
+Open the ETL in Windows Performance Analyzer and inspect CPU Usage (Sampled),
+CPU Usage (Precise), and DPC/ISR by module and stack. The script never uses
+WPR file mode, which Microsoft documents as unbounded, and never mutates an
+unnamed or foreign recording session.

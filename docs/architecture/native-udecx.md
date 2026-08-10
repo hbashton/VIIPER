@@ -373,6 +373,11 @@ stall an independent pad's registration or removal.
 - DualSense and DualShock 4 media survive concurrent state and feedback traffic.
 - Native latency and CPU are measured against the current USB/IP path and
   ViGEmBus-style virtual input under the same workload.
+- Product changes to scheduling, thread priority, DPC behavior, or queue depth
+  require a named, bounded-memory WPR capture of the signed live gate. CPU
+  sampled/precise, ready-thread, context-switch, WDF DPC, interrupt, and ISR
+  evidence must identify the actual critical path; a polling benchmark or Task
+  Manager percentage alone is not a valid basis for such a change.
 - Signed live input validation discovers the exact newly created HID gamepad,
   continuously reads reports through HIDClass, and correlates 256 unique
   publication markers with cross-process QPC timestamps. DualShock 4,
@@ -404,3 +409,7 @@ validation contract is documented in
   <https://learn.microsoft.com/en-us/windows-hardware/drivers/hid/obtaining-hid-reports>
 - Microsoft, *Acquiring high-resolution time stamps*
   <https://learn.microsoft.com/en-us/windows/win32/sysinfo/acquiring-high-resolution-time-stamps>
+- Microsoft, *WPR Command-Line Options*
+  <https://learn.microsoft.com/en-us/windows-hardware/test/wpt/wpr-command-line-options>
+- Microsoft, *CPU Analysis*
+  <https://learn.microsoft.com/en-us/windows-hardware/test/wpt/cpu-analysis>
