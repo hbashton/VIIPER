@@ -24,6 +24,7 @@
 #pragma comment(lib, "Cfgmgr32.lib")
 #pragma comment(lib, "Newdev.lib")
 #pragma comment(lib, "Setupapi.lib")
+#pragma comment(lib, "Advapi32.lib")
 
 namespace {
 

@@ -57,7 +57,7 @@ jobs:
           $outputDir = Join-Path $PWD "native\udecx\x64\Release"
           New-Item -ItemType Directory -Force $outputDir | Out-Null
           $output = Join-Path $outputDir "ViiperUdeCtl.exe"
-          $command = "`"$devCmd`" -arch=x64 -host_arch=x64 && cl.exe /nologo /std:c++20 /EHsc /W4 /WX /O2 /MT /DUNICODE /D_UNICODE `"$source`" /Fe:`"$output`" /link Setupapi.lib Newdev.lib Cfgmgr32.lib"
+          $command = "`"$devCmd`" -arch=x64 -host_arch=x64 && cl.exe /nologo /std:c++20 /EHsc /W4 /WX /O2 /MT /DUNICODE /D_UNICODE `"$source`" /Fe:`"$output`" /link Setupapi.lib Newdev.lib Cfgmgr32.lib Advapi32.lib"
           cmd.exe /d /s /c $command
           if ($LASTEXITCODE -ne 0 -or -not (Test-Path $output)) { throw "ViiperUdeCtl build failed" }
       - uses: actions/upload-artifact@v4
