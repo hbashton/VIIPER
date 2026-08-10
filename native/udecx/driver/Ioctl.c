@@ -50,12 +50,19 @@ ViiperHandleNegotiate(
     if (!NT_SUCCESS(status)) {
         return status;
     }
-    if (!ViiperValidateHeader(&input->Header, inputLength, sizeof(*input)) ||
+    if (inputLength != sizeof(*input) ||
+        input->Header.Magic != VIIPER_UDE_MAGIC ||
+        input->Header.Flags != 0 ||
+        input->Header.Size != sizeof(*input) ||
         input->ClientNonce == 0 || input->Reserved != 0 ||
         (input->RequestedCapabilities & ~(VIIPER_UDE_CAP_ISOCHRONOUS |
             VIIPER_UDE_CAP_STREAMS | VIIPER_UDE_CAP_DEVICE_LIFECYCLE |
             VIIPER_UDE_CAP_INPUT_REPORTS)) != 0) {
         return STATUS_INVALID_PARAMETER;
+    }
+    if (input->Header.Major != VIIPER_UDE_ABI_MAJOR ||
+        input->Header.Minor != VIIPER_UDE_ABI_MINOR) {
+        return STATUS_REVISION_MISMATCH;
     }
 
     fileObject = WdfRequestGetFileObject(Request);

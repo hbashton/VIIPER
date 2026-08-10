@@ -40,6 +40,7 @@ var (
 	ErrBadMagic          = errors.New("native UDE message has an invalid magic value")
 	ErrIncompatibleMajor = errors.New("native UDE ABI major version is incompatible")
 	ErrIncompatibleMinor = errors.New("native UDE ABI minor version is incompatible")
+	ErrIncompatibleABI   = errors.New("native UDE service and driver ABIs are incompatible")
 	ErrInvalidSize       = errors.New("native UDE message size is invalid")
 	ErrInvalidRange      = errors.New("native UDE message contains an invalid range")
 	ErrLimitExceeded     = errors.New("native UDE message exceeds a negotiated limit")

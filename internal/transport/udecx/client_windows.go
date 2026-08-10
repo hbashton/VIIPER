@@ -248,7 +248,7 @@ func (c *Client) negotiate(ctx context.Context) error {
 	response := make([]byte, NegotiateResponseSize)
 	written, err := c.ioctl(ctx, ioctlNegotiate, request, response)
 	if err != nil {
-		return fmt.Errorf("negotiate native UDE ABI: %w", err)
+		return normalizeNegotiationError(err)
 	}
 	if written != NegotiateResponseSize {
 		return fmt.Errorf("negotiate native UDE ABI: response bytes=%d want=%d", written, NegotiateResponseSize)
@@ -264,6 +264,15 @@ func (c *Client) negotiate(ctx context.Context) error {
 	c.capabilities = negotiated.Capabilities
 	c.limits = negotiated
 	return nil
+}
+
+func normalizeNegotiationError(err error) error {
+	if errors.Is(err, windows.ERROR_REVISION_MISMATCH) {
+		return fmt.Errorf(
+			"%w: service expects ABI %d.%d; install the exact native UDE driver packaged with this VIIPER build: %v",
+			ErrIncompatibleABI, ABIMajor, ABIMinor, err)
+	}
+	return fmt.Errorf("negotiate native UDE ABI: %w", err)
 }
 
 func validateNegotiation(negotiated NegotiateResponse, nonce uint64) error {

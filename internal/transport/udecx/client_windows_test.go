@@ -5,11 +5,24 @@ package udecx
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"golang.org/x/sys/windows"
 )
+
+func TestNegotiationRevisionMismatchExplainsPackageRepair(t *testing.T) {
+	err := normalizeNegotiationError(windows.ERROR_REVISION_MISMATCH)
+	if !errors.Is(err, ErrIncompatibleABI) {
+		t.Fatalf("revision mismatch error = %v, want ErrIncompatibleABI", err)
+	}
+	for _, phrase := range []string{"ABI 1.8", "exact native UDE driver", "VIIPER build"} {
+		if !strings.Contains(err.Error(), phrase) {
+			t.Errorf("revision mismatch error %q does not contain %q", err, phrase)
+		}
+	}
+}
 
 func TestCompletionAfterCancelPreservesKernelOutcome(t *testing.T) {
 	t.Parallel()

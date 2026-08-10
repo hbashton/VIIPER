@@ -67,6 +67,8 @@ The kernel driver owns only Windows USB presentation and transfer lifecycle.
    state never share mutable buffers.
 9. No raw user pointer crosses the ABI.
 10. The ABI is size- and version-negotiated before any mutating operation.
+    A revision mismatch has a distinct status that directs the service or
+    installer to the exact matching native-driver package.
 11. Every packed wire structure has a compiler-independent size guard. The
     72-byte completion header carries two explicit reserved words; its size
     never depends on compiler tail padding.
