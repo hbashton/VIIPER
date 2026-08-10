@@ -4,10 +4,12 @@ package usb_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"strconv"
 	"sync"
 	"testing"
@@ -25,6 +27,8 @@ import (
 const (
 	liveNativeTestEnvironment = "VIIPER_UDE_LIVE"
 	liveNativeTestIterations  = "VIIPER_UDE_LIVE_ITERATIONS"
+	liveNativeCrashChild      = "VIIPER_UDE_LIVE_CRASH_CHILD"
+	liveNativeCrashExitCode   = 86
 )
 
 type liveNativeController struct {
@@ -401,4 +405,138 @@ func TestNativeUDELiveProductionControllers(t *testing.T) {
 		}
 		assertCleanNativeStatsDelta(t, before, after)
 	})
+}
+
+// TestNativeUDELiveOwnerCrashRecovery proves the kernel owner's file cleanup
+// contract with an actual process death. The child intentionally bypasses all
+// Go defers; the parent must be able to reacquire the exclusive broker only
+// after the driver has removed its children and drained forwarded URBs.
+func TestNativeUDELiveOwnerCrashRecovery(t *testing.T) {
+	if os.Getenv(liveNativeTestEnvironment) != "1" {
+		t.Skipf("set %s=1 after installing a verified Microsoft-signed native UDE package",
+			liveNativeTestEnvironment)
+	}
+	if os.Getenv(liveNativeCrashChild) == "1" {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		client, err := udecx.Open(ctx)
+		if err != nil {
+			t.Fatalf("crash child open native UDE controller: %v", err)
+		}
+		logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+		server := serverusb.New(serverusb.ServerConfig{ConnectionTimeout: 5 * time.Second}, logger, nil)
+		processor, err := serverusb.NewNativeProcessor(server)
+		if err != nil {
+			t.Fatal(err)
+		}
+		host, err := udecx.NewHost(client, processor, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		serveDone := make(chan error, 1)
+		go func() { serveDone <- host.Serve(ctx) }()
+
+		dev, publishInput, err := liveNativeControllers()[2].new()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = host.Register(ctx, 0x5649495043524153, dev); err != nil {
+			t.Fatalf("crash child register DualSense: %v", err)
+		}
+		enumerateCtx, cancelEnumerate := context.WithTimeout(ctx, 20*time.Second)
+		_, err = waitForNativeStats(enumerateCtx, client,
+			"crash child enumeration", func(stats udecx.Stats) bool {
+				return stats.ActiveDevices == 1
+			})
+		cancelEnumerate()
+		if err != nil {
+			t.Fatal(err)
+		}
+		inputDeadline := time.Now().Add(time.Second)
+		for sequence := uint64(1); time.Now().Before(inputDeadline); sequence++ {
+			publishInput(sequence)
+			time.Sleep(time.Millisecond)
+		}
+		inputCtx, cancelInput := context.WithTimeout(ctx, 20*time.Second)
+		_, err = waitForNativeStats(inputCtx, client,
+			"crash child direct input", func(stats udecx.Stats) bool {
+				return stats.InputReportsCompleted != 0
+			})
+		cancelInput()
+		if err != nil {
+			t.Fatal(err)
+		}
+		os.Exit(liveNativeCrashExitCode)
+	}
+
+	command := exec.Command(os.Args[0],
+		"-test.run=^TestNativeUDELiveOwnerCrashRecovery$", "-test.timeout=90s")
+	command.Env = append(os.Environ(), liveNativeCrashChild+"=1")
+	output, err := command.CombinedOutput()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != liveNativeCrashExitCode {
+		t.Fatalf("crash child exit=%v want %d; output:\n%s",
+			err, liveNativeCrashExitCode, output)
+	}
+
+	recoveryCtx, cancelRecovery := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancelRecovery()
+	var recovered *udecx.Client
+	for recovered == nil {
+		candidate, openErr := udecx.Open(recoveryCtx)
+		if openErr == nil {
+			stats, queryErr := candidate.QueryStats(recoveryCtx)
+			if queryErr == nil && stats.ActiveDevices == 0 && stats.PendingOperations == 0 {
+				recovered = candidate
+				break
+			}
+			_ = candidate.Close()
+		}
+		select {
+		case <-recoveryCtx.Done():
+			t.Fatalf("native UDE owner/child cleanup did not recover after broker death: %v",
+				recoveryCtx.Err())
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	defer func() {
+		if closeErr := recovered.Close(); closeErr != nil {
+			t.Errorf("close recovered native UDE controller: %v", closeErr)
+		}
+	}()
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	server := serverusb.New(serverusb.ServerConfig{ConnectionTimeout: 5 * time.Second}, logger, nil)
+	processor, err := serverusb.NewNativeProcessor(server)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host, err := udecx.NewHost(recovered, processor, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serveCtx, cancelServe := context.WithCancel(recoveryCtx)
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- host.Serve(serveCtx) }()
+	dev, _, err := liveNativeControllers()[2].new()
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := host.Register(recoveryCtx, 0x5649495043524153, dev)
+	if err != nil {
+		t.Fatalf("register controller after broker-death recovery: %v", err)
+	}
+	if err = host.Unregister(recoveryCtx, identity); err != nil {
+		t.Fatalf("unregister controller after broker-death recovery: %v", err)
+	}
+	cancelServe()
+	host.Close()
+	select {
+	case err = <-serveDone:
+		if err != nil {
+			t.Fatalf("recovered native UDE host shutdown: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("recovered native UDE host did not stop within 5 seconds")
+	}
 }

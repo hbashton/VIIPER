@@ -72,7 +72,10 @@ DualSense, DualSense Edge, and Switch 2 Pro production descriptors. Every
 generation must enumerate, complete direct interrupt-input reports, tear down
 to zero active devices and pending operations, and leave all protocol/fault
 counters unchanged. The script does not install a driver or enable Driver
-Verifier; those remain explicit disposable-machine operations.
+Verifier. It also kills a subprocess that owns an enumerated DualSense and
+requires kernel file cleanup to remove the child, drain pending operations,
+release exclusive ownership, and accept a fresh session. Driver Verifier
+remains an explicit disposable-machine operation.
 
 ## Primary Microsoft references
 

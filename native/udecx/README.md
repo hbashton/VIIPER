@@ -55,5 +55,7 @@ non-Microsoft root devnode, a dirty driver session, or any increase in invalid
 messages, queue exhaustion, notification overflow, late completion, or cleanup
 retry counters. After validating each controller and repeated generation
 rollover independently, it enumerates the complete production controller set,
-publishes input, and removes every child concurrently. Normal CI never opts
+publishes input, and removes every child concurrently. A subprocess then exits
+without running cleanup; the driver must remove its child, drain pending URBs,
+release exclusive ownership, and accept a fresh session. Normal CI never opts
 into this live test.

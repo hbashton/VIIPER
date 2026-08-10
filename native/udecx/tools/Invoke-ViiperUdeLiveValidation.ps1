@@ -81,7 +81,7 @@ try {
     Push-Location $repository
     try {
         & $go.Source test -count=1 -timeout "${timeoutMinutes}m" `
-            -run '^TestNativeUDELiveProductionControllers$' ./internal/server/usb
+            -run '^TestNativeUDELive(ProductionControllers|OwnerCrashRecovery)$' ./internal/server/usb
         if ($LASTEXITCODE -ne 0) {
             throw "Native UDE live validation failed with exit code $LASTEXITCODE."
         }
