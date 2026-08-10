@@ -54,7 +54,7 @@ ViiperEvtDeviceAdd(
     UDECX_WDF_DEVICE_CONFIG udeConfig;
     VIIPER_UDE_CONTROLLER_CONTEXT *context;
     UNICODE_STRING sddl = RTL_CONSTANT_STRING(L"D:P(A;;GA;;;SY)(A;;GA;;;BA)");
-    UNICODE_STRING hostControllerReference;
+    UNICODE_STRING brokerReference;
 
     PAGED_CODE();
     UNREFERENCED_PARAMETER(Driver);
@@ -106,15 +106,16 @@ ViiperEvtDeviceAdd(
         return status;
     }
 
-    status = WdfDeviceCreateDeviceInterface(device, &GUID_DEVINTERFACE_VIIPER_UDE, NULL);
+    RtlInitUnicodeString(&brokerReference, VIIPER_UDE_BROKER_REFERENCE_STRING);
+    status = WdfDeviceCreateDeviceInterface(
+        device, &GUID_DEVINTERFACE_VIIPER_UDE, &brokerReference);
     if (!NT_SUCCESS(status)) {
         return status;
     }
-    RtlInitUnicodeString(&hostControllerReference, VIIPER_UDE_HOST_REFERENCE_STRING);
     status = WdfDeviceCreateDeviceInterface(
         device,
         (LPGUID)&GUID_DEVINTERFACE_USB_HOST_CONTROLLER,
-        &hostControllerReference);
+        NULL);
     if (!NT_SUCCESS(status)) {
         return status;
     }
@@ -166,8 +167,8 @@ ViiperEvtFileCreate(
     VIIPER_UDE_CONTROLLER_CONTEXT *context;
     VIIPER_UDE_FILE_CONTEXT *fileContext;
     PUNICODE_STRING fileName;
-    UNICODE_STRING hostControllerReference;
-    BOOLEAN isHostControllerClient = FALSE;
+    UNICODE_STRING brokerReference;
+    BOOLEAN isBrokerClient = FALSE;
     NTSTATUS status = STATUS_SUCCESS;
 
     PAGED_CODE();
@@ -176,18 +177,18 @@ ViiperEvtFileCreate(
     RtlZeroMemory(fileContext, sizeof(*fileContext));
 
     fileName = WdfFileObjectGetFileName(FileObject);
-    RtlInitUnicodeString(&hostControllerReference, VIIPER_UDE_HOST_REFERENCE_STRING);
+    RtlInitUnicodeString(&brokerReference, VIIPER_UDE_BROKER_REFERENCE_STRING);
     if (fileName != NULL &&
-        fileName->Length == hostControllerReference.Length + sizeof(WCHAR) &&
+        fileName->Length == brokerReference.Length + sizeof(WCHAR) &&
         fileName->Buffer[0] == L'\\' &&
         RtlEqualMemory(
             fileName->Buffer + 1,
-            hostControllerReference.Buffer,
-            hostControllerReference.Length)) {
-        isHostControllerClient = TRUE;
+            brokerReference.Buffer,
+            brokerReference.Length)) {
+        isBrokerClient = TRUE;
     }
 
-    if (isHostControllerClient) {
+    if (!isBrokerClient) {
         WdfRequestComplete(Request, STATUS_SUCCESS);
         return;
     }
