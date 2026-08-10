@@ -101,6 +101,7 @@ func TestParseOperationCopiesPayloadAndPackets(t *testing.T) {
 	binary.LittleEndian.PutUint32(raw[68:72], uint32(len(payload)))
 	binary.LittleEndian.PutUint32(raw[72:76], OperationSize)
 	binary.LittleEndian.PutUint64(raw[88:96], 17)
+	binary.LittleEndian.PutUint64(raw[96:104], 23)
 	binary.LittleEndian.PutUint32(raw[OperationSize:OperationSize+4], 0)
 	binary.LittleEndian.PutUint32(raw[OperationSize+4:OperationSize+8], uint32(len(payload)))
 	copy(raw[OperationSize+IsoPacketSize:], payload)
@@ -110,7 +111,7 @@ func TestParseOperationCopiesPayloadAndPackets(t *testing.T) {
 		t.Fatal(err)
 	}
 	if op.Token != 99 || op.DeviceID != 4 || op.Generation != 8 ||
-		op.EndpointSequence != 17 || op.InterfaceNumber != 2 ||
+		op.EndpointSequence != 17 || op.DeviceSequence != 23 || op.InterfaceNumber != 2 ||
 		op.InterfaceSetting != 1 || op.EndpointAttributes != 0x05 ||
 		op.EndpointInterval != 4 || op.EndpointMaxPacketSize != 196 ||
 		len(op.IsoPackets) != 1 {

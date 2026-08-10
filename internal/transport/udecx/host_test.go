@@ -391,7 +391,8 @@ func TestHostRestartsInputPublisherAcrossD0WithoutResettingSequence(t *testing.T
 
 	driver.operations <- Operation{
 		DeviceID: identity.DeviceID, Generation: identity.Generation,
-		EndpointAddress: 0, EndpointSequence: 1, Kind: OperationDeviceD0Exit,
+		EndpointAddress: 0, EndpointSequence: 1, DeviceSequence: 2,
+		Kind: OperationDeviceD0Exit,
 	}
 	select {
 	case <-processor.lifecycle:
@@ -407,7 +408,8 @@ func TestHostRestartsInputPublisherAcrossD0WithoutResettingSequence(t *testing.T
 
 	driver.operations <- Operation{
 		DeviceID: identity.DeviceID, Generation: identity.Generation,
-		EndpointAddress: 0, EndpointSequence: 2, Kind: OperationDeviceD0Entry,
+		EndpointAddress: 0, EndpointSequence: 2, DeviceSequence: 3,
+		Kind: OperationDeviceD0Entry,
 	}
 	select {
 	case <-processor.lifecycle:
@@ -421,6 +423,82 @@ func TestHostRestartsInputPublisherAcrossD0WithoutResettingSequence(t *testing.T
 		}
 	case <-time.After(time.Second):
 		t.Fatal("publisher did not resume after D0 entry")
+	}
+
+	cancel()
+	select {
+	case err = <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("host did not stop")
+	}
+}
+
+func TestHostDoesNotResurrectInputFromPreD0ExitEndpointStart(t *testing.T) {
+	driver := &fastInputDriver{fakeHostDriver: newFakeHostDriver(), reports: make(chan InputReport, 4)}
+	processor := &recordingProcessor{
+		processed: make(chan uint64, 1), lifecycle: make(chan uint64, 3),
+		resets: make(chan DeviceIdentity, 1),
+	}
+	host, _ := NewHost(driver, processor, 4)
+	device := newInputPublisherTestDevice()
+	identity, err := host.Register(context.Background(), 47, device)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- host.Serve(ctx) }()
+
+	// Multiple dequeue workers may deliver the device-wide D0 exit before an
+	// older endpoint-start notification. DeviceSequence must prevent that old
+	// start from resurrecting the publisher while the child is outside D0.
+	driver.operations <- Operation{
+		DeviceID: identity.DeviceID, Generation: identity.Generation,
+		EndpointAddress: 0, EndpointSequence: 1, DeviceSequence: 2,
+		Kind: OperationDeviceD0Exit,
+	}
+	select {
+	case <-processor.lifecycle:
+	case <-time.After(time.Second):
+		t.Fatal("D0 exit was not processed")
+	}
+	driver.operations <- Operation{
+		DeviceID: identity.DeviceID, Generation: identity.Generation,
+		EndpointAddress: 0x81, EndpointSequence: 1, DeviceSequence: 1,
+		Kind: OperationEndpointStart,
+	}
+	select {
+	case <-processor.lifecycle:
+	case <-time.After(time.Second):
+		t.Fatal("older endpoint start was not processed")
+	}
+	device.reports <- []byte{1}
+	select {
+	case report := <-driver.reports:
+		t.Fatalf("stale endpoint start resurrected input outside D0: %+v", report)
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	driver.operations <- Operation{
+		DeviceID: identity.DeviceID, Generation: identity.Generation,
+		EndpointAddress: 0, EndpointSequence: 2, DeviceSequence: 3,
+		Kind: OperationDeviceD0Entry,
+	}
+	select {
+	case <-processor.lifecycle:
+	case <-time.After(time.Second):
+		t.Fatal("D0 entry was not processed")
+	}
+	select {
+	case report := <-driver.reports:
+		if report.Sequence != 1 || string(report.Payload) != string([]byte{1}) {
+			t.Fatalf("D0-restored publisher report=%+v", report)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("publisher did not resume after the ordered D0 entry")
 	}
 
 	cancel()

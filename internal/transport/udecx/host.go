@@ -61,6 +61,8 @@ type registeredDevice struct {
 	publishers        map[uint8]*inputPublisher
 	activeInput       map[uint8]bool
 	inputSequences    map[uint8]uint64
+	inD0              bool
+	powerSequence     uint64
 }
 
 type inputPublisher struct {
@@ -182,7 +184,7 @@ func (h *Host) Register(ctx context.Context, deviceID uint64, dev usb.Device) (D
 	entry := &registeredDevice{
 		identity: identity, device: dev, ctx: deviceCtx, cancel: cancel,
 		fastInput: fastInputEndpoints(dev), publishers: make(map[uint8]*inputPublisher),
-		activeInput: make(map[uint8]bool), inputSequences: make(map[uint8]uint64),
+		activeInput: make(map[uint8]bool), inputSequences: make(map[uint8]uint64), inD0: true,
 	}
 	h.devices[deviceID] = entry
 	h.generations[deviceID] = generation
@@ -282,7 +284,8 @@ func (h *Host) startInputPublisher(entry *registeredDevice, endpoint uint8) {
 		return
 	}
 	h.mu.Lock()
-	if !h.running || entry.stopping || entry.publisherStopping || h.devices[entry.identity.DeviceID] != entry {
+	if !h.running || entry.stopping || entry.publisherStopping || !entry.inD0 ||
+		h.devices[entry.identity.DeviceID] != entry {
 		h.mu.Unlock()
 		return
 	}
@@ -572,6 +575,7 @@ func (h *Host) runLane(lane *operationLane, entry *registeredDevice) {
 				}
 				delete(pending, expected)
 				if isLifecycleOperation(current.Kind) {
+					applyPowerTransition := false
 					switch current.Kind {
 					case OperationEndpointPurge:
 						h.mu.Lock()
@@ -579,7 +583,16 @@ func (h *Host) runLane(lane *operationLane, entry *registeredDevice) {
 						h.mu.Unlock()
 						h.stopInputPublisher(entry, current.EndpointAddress)
 					case OperationDeviceD0Exit:
-						h.stopAllInputPublishers(entry)
+						h.mu.Lock()
+						if current.DeviceSequence > entry.powerSequence {
+							entry.powerSequence = current.DeviceSequence
+							entry.inD0 = false
+							applyPowerTransition = true
+						}
+						h.mu.Unlock()
+						if applyPowerTransition {
+							h.stopAllInputPublishers(entry)
+						}
 					}
 					lifecycleErr := h.processor.Lifecycle(lane.ctx, entry.device, current)
 					if current.Token != 0 {
@@ -605,8 +618,17 @@ func (h *Host) runLane(lane *operationLane, entry *registeredDevice) {
 						h.mu.Unlock()
 						h.startInputPublisher(entry, current.EndpointAddress)
 					case OperationDeviceD0Entry:
-						for _, endpoint := range h.activeInputEndpoints(entry) {
-							h.startInputPublisher(entry, endpoint)
+						h.mu.Lock()
+						if current.DeviceSequence > entry.powerSequence {
+							entry.powerSequence = current.DeviceSequence
+							entry.inD0 = true
+							applyPowerTransition = true
+						}
+						h.mu.Unlock()
+						if applyPowerTransition {
+							for _, endpoint := range h.activeInputEndpoints(entry) {
+								h.startInputPublisher(entry, endpoint)
+							}
 						}
 					}
 				} else {

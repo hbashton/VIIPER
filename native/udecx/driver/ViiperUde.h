@@ -51,6 +51,7 @@ typedef struct VIIPER_UDE_NOTIFICATION {
     ULONGLONG Token;
     ULONGLONG DeviceId;
     ULONGLONG EndpointSequence;
+    ULONGLONG DeviceSequence;
     ULONG Generation;
     ULONG Kind;
     UCHAR EndpointAddress;
@@ -161,6 +162,7 @@ typedef struct VIIPER_UDE_DEVICE_CONTEXT {
     UDECXUSBENDPOINT Endpoints[256];
     BOOLEAN RetiredEndpoints[256];
     volatile LONG64 EndpointSequences[256];
+    volatile LONG64 DeviceSequence;
 } VIIPER_UDE_DEVICE_CONTEXT;
 
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(VIIPER_UDE_DEVICE_CONTEXT, ViiperGetDeviceContext)

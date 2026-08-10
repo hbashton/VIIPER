@@ -197,7 +197,7 @@ interface fields are only hints for alternates that contain no endpoints.
   completed. A pipe can therefore never restart or disappear across a live
   request.
 - Endpoint reset and endpoint-configuration callbacks are asynchronous UdeCx
-  management requests, not notifications. ABI 1.6 gives only those lifecycle
+  management requests, not notifications. ABI 1.7 gives only those lifecycle
   operations a generation-bound management token. Windows receives the request
   completion only after the Go controller engine has applied the reset or
   alternate-setting transition. Start, purge, and power notifications remain
@@ -209,6 +209,11 @@ interface fields are only hints for alternates that contain no endpoints.
 - Each fast interrupt-IN endpoint has its own passive lock. Different
   controllers publish concurrently, while accidental concurrent submissions
   for one endpoint cannot reorder reports or replay a coalesced sequence.
+- Every published operation also carries a per-device publication sequence.
+  Endpoint lanes remain independent, but device-wide D0 transitions use that
+  sequence to reject a delayed pre-exit start notification. Multiple overlapped
+  dequeue workers therefore cannot resurrect an input publisher outside D0 or
+  consume a physical state snapshot behind a power boundary.
 - Parallel media callbacks receive a per-endpoint admission sequence under the
   broker lock. An URB cannot publish ahead of an earlier live unpublished
   admission; cancellation retires the admission before dispatch resumes, so

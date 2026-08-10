@@ -13,7 +13,7 @@ import (
 const (
 	Magic    uint32 = 0x45445556
 	ABIMajor uint16 = 1
-	ABIMinor uint16 = 6
+	ABIMinor uint16 = 7
 
 	HeaderSize            = 16
 	NegotiateRequestSize  = 32
@@ -22,7 +22,7 @@ const (
 	CreateDeviceSize      = 56
 	DeviceIdentitySize    = 32
 	IsoPacketSize         = 16
-	OperationSize         = 96
+	OperationSize         = 104
 	CompletionSize        = 72
 	InputReportSize       = 48
 	StatsSize             = 144
@@ -296,6 +296,7 @@ type Operation struct {
 	IsoPackets            []IsoPacket
 	Payload               []byte
 	EndpointSequence      uint64
+	DeviceSequence        uint64
 }
 
 func ParseOperation(src []byte) (Operation, error) {
@@ -335,6 +336,7 @@ func ParseOperation(src []byte) (Operation, error) {
 		StartFrame:            binary.LittleEndian.Uint32(src[52:56]),
 		TransferLength:        transferLength,
 		EndpointSequence:      binary.LittleEndian.Uint64(src[88:96]),
+		DeviceSequence:        binary.LittleEndian.Uint64(src[96:104]),
 		IsoPackets:            make([]IsoPacket, int(packetCount)),
 		Payload:               append([]byte(nil), src[payloadOffset:payloadOffset+payloadLength]...),
 	}

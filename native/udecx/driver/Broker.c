@@ -136,6 +136,7 @@ ViiperQueueCancelEventLocked(
     event->Token = Pending->Token;
     event->DeviceId = Pending->DeviceId;
     event->EndpointSequence = 0;
+    event->DeviceSequence = 0;
     event->Generation = Pending->DeviceGeneration;
     event->Kind = ViiperUdeOperationCancel;
     event->EndpointAddress = Pending->EndpointAddress;
@@ -217,6 +218,7 @@ ViiperDispatchNotificationEvents(
         operation->EndpointInterval = event.EndpointInterval;
         operation->EndpointMaxPacketSize = event.EndpointMaxPacketSize;
         operation->EndpointSequence = event.EndpointSequence;
+        operation->DeviceSequence = event.DeviceSequence;
         WdfRequestSetInformation(dequeueRequest, sizeof(*operation));
         InterlockedIncrement64(&controllerContext->NotificationEventsDelivered);
         WdfRequestComplete(dequeueRequest, STATUS_SUCCESS);
@@ -508,6 +510,8 @@ ViiperQueueLifecycleEventLocked(
     event->InterfaceSetting = InterfaceSetting;
     event->EndpointSequence = (ULONGLONG)InterlockedIncrement64(
         &DeviceContext->EndpointSequences[event->EndpointAddress]);
+    event->DeviceSequence = (ULONGLONG)InterlockedIncrement64(
+        &DeviceContext->DeviceSequence);
     ControllerContext->NotificationTail = (ControllerContext->NotificationTail + 1) %
         VIIPER_UDE_MAX_PENDING_OPERATIONS;
     ++ControllerContext->NotificationCount;
@@ -1461,6 +1465,10 @@ ViiperDispatchAvailable(
                             &ViiperGetDeviceContext(
                                 ViiperGetEndpointContext(endpoint)->Device)->EndpointSequences[
                                     ViiperGetEndpointContext(endpoint)->Descriptor.bEndpointAddress]);
+                    serializedOperation->DeviceSequence =
+                        (ULONGLONG)InterlockedIncrement64(
+                            &ViiperGetDeviceContext(
+                                ViiperGetEndpointContext(endpoint)->Device)->DeviceSequence);
                     pending->PublishedToOwner = TRUE;
                 }
             }
