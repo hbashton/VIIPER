@@ -30,6 +30,13 @@ const (
 
 func install(logger *slog.Logger, transport, targetUserSID string) error {
 	if transport == "native-ude" {
+		release, err := acquireNamedNativePackageMutex(
+			nativePackageMutexName, nativePackageTransactionTimeout,
+		)
+		if err != nil {
+			return err
+		}
+		defer release()
 		return installNativeBroker(logger, targetUserSID)
 	}
 	if targetUserSID != "" {
@@ -128,6 +135,13 @@ func requireNativeUDEBroker() error {
 }
 
 func uninstall(logger *slog.Logger, targetUserSID string) error {
+	release, err := acquireNamedNativePackageMutex(
+		nativePackageMutexName, nativePackageTransactionTimeout,
+	)
+	if err != nil {
+		return err
+	}
+	defer release()
 	return uninstallNativeBroker(logger, targetUserSID)
 }
 

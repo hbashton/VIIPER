@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"sort"
 	"strconv"
@@ -405,6 +406,37 @@ func installNativeBroker(logger *slog.Logger, explicitUserSID string) error {
 		return err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), nativeServiceInstallTimeout)
+	defer cancel()
+	return installNativeBrokerTransaction(ctx, logger, executable, productionNativeInstallDependencies(userSID))
+}
+
+// installNativeBrokerUntil is reserved for the nested native-package commit.
+// It shares the outer transaction's absolute deadline rather than granting a
+// fresh service-install budget after the driver has already been mutated.
+func installNativeBrokerUntil(
+	logger *slog.Logger, explicitUserSID string, deadline time.Time,
+) error {
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		return context.DeadlineExceeded
+	}
+	if remaining > nativeServiceInstallTimeout {
+		remaining = nativeServiceInstallTimeout
+	}
+	release, err := acquireNativeInstallMutex(remaining)
+	if err != nil {
+		return err
+	}
+	defer release()
+	userSID, err := resolveNativeInstallingUserSID(explicitUserSID)
+	if err != nil {
+		return err
+	}
+	executable, err := currentExecutable()
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
 	defer cancel()
 	return installNativeBrokerTransaction(ctx, logger, executable, productionNativeInstallDependencies(userSID))
 }
@@ -1254,12 +1286,18 @@ func waitContext(ctx context.Context, delay time.Duration) error {
 }
 
 func acquireNativeInstallMutex(timeout time.Duration) (func(), error) {
+	// Win32 mutexes are owned by OS threads. Keep this goroutine pinned through
+	// its deferred release so the Go scheduler cannot move ReleaseMutex to a
+	// non-owner thread and leave service installation permanently serialized.
+	runtime.LockOSThread()
 	name, err := windows.UTF16PtrFromString(nativeInstallMutexName)
 	if err != nil {
+		runtime.UnlockOSThread()
 		return nil, err
 	}
 	descriptor, err := windows.SecurityDescriptorFromString("D:P(A;;GA;;;SY)(A;;GA;;;BA)")
 	if err != nil {
+		runtime.UnlockOSThread()
 		return nil, fmt.Errorf("create native install mutex security descriptor: %w", err)
 	}
 	attributes := windows.SecurityAttributes{
@@ -1268,20 +1306,24 @@ func acquireNativeInstallMutex(timeout time.Duration) (func(), error) {
 	}
 	handle, err := windows.CreateMutex(&attributes, false, name)
 	if err != nil {
+		runtime.UnlockOSThread()
 		return nil, fmt.Errorf("create native install mutex: %w", err)
 	}
 	status, err := windows.WaitForSingleObject(handle, uint32(timeout/time.Millisecond))
 	if err != nil {
 		windows.CloseHandle(handle) //nolint:errcheck
+		runtime.UnlockOSThread()
 		return nil, fmt.Errorf("wait for native install mutex: %w", err)
 	}
 	if status != windows.WAIT_OBJECT_0 && status != windows.WAIT_ABANDONED {
 		windows.CloseHandle(handle) //nolint:errcheck
+		runtime.UnlockOSThread()
 		return nil, errors.New("another VIIPER native install, update, or uninstall is still running")
 	}
 	return func() {
 		windows.ReleaseMutex(handle) //nolint:errcheck
 		windows.CloseHandle(handle)  //nolint:errcheck
+		runtime.UnlockOSThread()
 	}, nil
 }
 

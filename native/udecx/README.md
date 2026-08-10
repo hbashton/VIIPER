@@ -94,15 +94,20 @@ The design and release gates are in
 `docs/architecture/native-udecx.md`. The Microsoft signing boundary is in
 `docs/architecture/native-udecx-signing.md`.
 
-Install a validated package only after stopping the broker that owns the native
-interface. Production mode accepts only a release-eligible `HLK/WHCP` manifest;
-controlled-test attestation must be named explicitly:
+Production installation is intentionally available only through the signed
+package orchestrator, which binds the broker/helper/manifest hashes and keeps
+the driver rollback snapshot alive through authenticated broker health. An
+operator can run the same read-only production preflight without mutation:
 
 ```powershell
-.\ViiperUdeCtl.exe install C:\ViiperUde\Signed\ViiperUde.inf `
-  --manifest C:\ViiperUde\ViiperUde.cab.sha256.json `
+$manifest = 'C:\ViiperUde\ViiperUde.cab.sha256.json'
+$deadline = [DateTimeOffset]::UtcNow.AddMinutes(4).ToUnixTimeMilliseconds()
+.\ViiperUdeCtl.exe verify C:\ViiperUde\Signed\ViiperUde.inf `
+  --manifest $manifest `
+  --manifest-sha256 (Get-FileHash -Algorithm SHA256 -LiteralPath $manifest).Hash `
   --source-revision 0123456789abcdef0123456789abcdef01234567 `
-  --validation-mode production
+  --validation-mode production `
+  --transaction-deadline-unix-ms $deadline
 ```
 
 The only forced selection available to an operator is an intentional downgrade

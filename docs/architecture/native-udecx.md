@@ -543,6 +543,9 @@ stall an independent pad's registration or removal.
 The exact attestation/HLK boundary, CAB construction, and Microsoft-signature
 validation contract is documented in
 [`native-udecx-signing.md`](native-udecx-signing.md).
+The protected broker staging, cross-component driver/service rollback, and
+authenticated commit order are documented in
+[`native-udecx-package-install.md`](native-udecx-package-install.md).
 
 ## Primary documentation
 

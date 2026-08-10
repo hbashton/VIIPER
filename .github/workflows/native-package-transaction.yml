@@ -1,0 +1,53 @@
+name: Native package transaction
+
+on:
+  push:
+    paths:
+      - "internal/cmd/native_package*"
+      - "internal/cmd/native_service_install_windows*"
+      - "native/udecx/tools/ViiperUdeCtl.cpp"
+      - "native/udecx/tools/Test-ViiperUdeCtlTransaction.ps1"
+      - ".github/workflows/native-package-transaction.yml"
+  pull_request:
+    paths:
+      - "internal/cmd/native_package*"
+      - "internal/cmd/native_service_install_windows*"
+      - "native/udecx/tools/ViiperUdeCtl.cpp"
+      - "native/udecx/tools/Test-ViiperUdeCtlTransaction.ps1"
+      - ".github/workflows/native-package-transaction.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fail-closed-simulation:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: "1.26.5"
+          cache: true
+      - name: Run deterministic package transaction simulations
+        shell: pwsh
+        run: go test -count=1 -run '^TestNativePackage' ./internal/cmd
+      - name: Enforce package helper source contract
+        shell: pwsh
+        run: ./native/udecx/tools/Test-ViiperUdeCtlTransaction.ps1
+      - name: Compile and self-test package helper
+        shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vs) { throw "Visual C++ toolchain was not found" }
+          $devCmd = Join-Path $vs "Common7\Tools\VsDevCmd.bat"
+          $source = (Resolve-Path "native\udecx\tools\ViiperUdeCtl.cpp").Path
+          $output = Join-Path $env:RUNNER_TEMP "ViiperUdeCtl.exe"
+          $command = "`"$devCmd`" -arch=x64 -host_arch=x64 && cl.exe /nologo /std:c++20 /EHsc /W4 /WX /O2 /MT /DUNICODE /D_UNICODE `"$source`" /Fe:`"$output`" /link Setupapi.lib Newdev.lib Cfgmgr32.lib Advapi32.lib Crypt32.lib Wintrust.lib"
+          cmd.exe /d /s /c $command
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $output)) {
+            throw "ViiperUdeCtl build failed"
+          }
+          & $output self-test
+          if ($LASTEXITCODE -ne 0) { throw "ViiperUdeCtl self-test failed" }

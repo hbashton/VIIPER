@@ -10,24 +10,34 @@
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
+#ifndef _WIN32_WINNT
+#define _WIN32_WINNT 0x0A00
+#endif
 #include <windows.h>
 #include <cfgmgr32.h>
 #include <devguid.h>
 #include <initguid.h>
 #include <devpkey.h>
 #include <newdev.h>
-#include <setupapi.h>
 #include <wincrypt.h>
+#include <mscat.h>
+#include <setupapi.h>
+#include <sddl.h>
+#include <softpub.h>
+#include <wintrust.h>
 
 #include "../include/ViiperUdeProtocol.h"
 
 #include <algorithm>
 #include <array>
+#include <cerrno>
 #include <cctype>
 #include <cstdint>
+#include <cstring>
 #include <cwchar>
 #include <filesystem>
 #include <iomanip>
+#include <initializer_list>
 #include <iostream>
 #include <iterator>
 #include <map>
@@ -56,6 +66,8 @@ BOOL WINAPI DiUninstallDriverW(HWND, LPCWSTR, DWORD, PBOOL);
 #pragma comment(lib, "Newdev.lib")
 #pragma comment(lib, "Setupapi.lib")
 #pragma comment(lib, "Advapi32.lib")
+#pragma comment(lib, "Crypt32.lib")
+#pragma comment(lib, "Wintrust.lib")
 
 namespace {
 
@@ -67,8 +79,19 @@ constexpr wchar_t kCatalogName[] = L"ViiperUde.cat";
 constexpr wchar_t kDriverFileName[] = L"ViiperUde.sys";
 constexpr wchar_t kModelSection[] = L"Standard.NTamd64.10.0...17763";
 constexpr wchar_t kInstallSection[] = L"ViiperUde_Install";
-constexpr wchar_t kTransactionMutex[] = L"Global\\VIIPER_UDE_DRIVER_TRANSACTION_V1";
+constexpr wchar_t kTransactionNamespace[] = L"VIIPER_UDE_DRIVER_TRANSACTION_NAMESPACE_V1";
+constexpr wchar_t kTransactionBoundary[] = L"VIIPER_UDE_DRIVER_TRANSACTION_BOUNDARY_V1";
+constexpr wchar_t kTransactionMutex[] = L"VIIPER_UDE_DRIVER_TRANSACTION_V1";
+constexpr wchar_t kTransactionObjectSecurity[] =
+    L"D:P(A;;GA;;;SY)(A;;GA;;;BA)";
 constexpr size_t kMaximumManifestBytes = 1024U * 1024U;
+constexpr uint64_t kMaximumTransactionDurationMs = 4ULL * 60ULL * 1000ULL;
+constexpr uint64_t kBrokerRollbackCeilingMs = 60ULL * 1000ULL;
+constexpr DWORD kCancelledIoDrainMs = 5000;
+constexpr std::string_view kHardwareVerificationOid = "1.3.6.1.4.1.311.10.3.5";
+constexpr std::string_view kAttestationVerificationOid = "1.3.6.1.4.1.311.10.3.5.1";
+
+uint64_t CurrentUnixMilliseconds();
 
 constexpr GUID kViiperInterfaceGuid = {
     0x32d03f48, 0x725b, 0x4baa, {0x97, 0x0f, 0x7f, 0x5d, 0xe6, 0xc4, 0x46, 0x87}};
@@ -228,21 +251,85 @@ private:
 
 class TransactionMutex final {
 public:
+    ~TransactionMutex() {
+        if (owned_ && mutex_) {
+            ReleaseMutex(mutex_.get());
+        }
+        mutex_.reset();
+        if (namespace_ != nullptr) {
+            ClosePrivateNamespace(namespace_, 0);
+        }
+        if (boundary_ != nullptr) {
+            DeleteBoundaryDescriptor(boundary_);
+        }
+    }
+
     bool Acquire(Error* error) {
-        WinHandle handle(CreateMutexW(nullptr, FALSE, kTransactionMutex));
-        if (!handle) {
+        BYTE administratorsBuffer[SECURITY_MAX_SID_SIZE]{};
+        DWORD administratorsSize = sizeof(administratorsBuffer);
+        if (!CreateWellKnownSid(WinBuiltinAdministratorsSid, nullptr,
+                administratorsBuffer, &administratorsSize)) {
+            return SetLastErrorDetail(error, L"transaction-boundary-sid");
+        }
+        boundary_ = CreateBoundaryDescriptorW(kTransactionBoundary, 0);
+        if (boundary_ == nullptr ||
+            !AddSIDToBoundaryDescriptor(&boundary_, administratorsBuffer)) {
+            return SetLastErrorDetail(error, L"transaction-boundary");
+        }
+
+        PSECURITY_DESCRIPTOR descriptor = nullptr;
+        if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                kTransactionObjectSecurity, SDDL_REVISION_1, &descriptor, nullptr)) {
+            return SetLastErrorDetail(error, L"transaction-security");
+        }
+        SECURITY_ATTRIBUTES security{};
+        security.nLength = sizeof(security);
+        security.lpSecurityDescriptor = descriptor;
+        security.bInheritHandle = FALSE;
+
+        namespace_ = CreatePrivateNamespaceW(&security, boundary_, kTransactionNamespace);
+        DWORD namespaceError = GetLastError();
+        if (namespace_ == nullptr && namespaceError == ERROR_ALREADY_EXISTS) {
+            namespace_ = OpenPrivateNamespaceW(boundary_, kTransactionNamespace);
+            namespaceError = GetLastError();
+        }
+        if (namespace_ == nullptr) {
+            LocalFree(descriptor);
+            SetLastError(namespaceError);
+            return SetLastErrorDetail(error, L"transaction-namespace");
+        }
+
+        const std::wstring mutexName =
+            std::wstring(kTransactionNamespace) + L"\\" + kTransactionMutex;
+        mutex_.reset(CreateMutexExW(&security, mutexName.c_str(), 0, MUTEX_ALL_ACCESS));
+        const DWORD mutexError = GetLastError();
+        LocalFree(descriptor);
+        if (!mutex_) {
+            SetLastError(mutexError);
             return SetLastErrorDetail(error, L"transaction-mutex");
         }
-        if (GetLastError() == ERROR_ALREADY_EXISTS) {
+        const DWORD wait = WaitForSingleObject(mutex_.get(), 0);
+        if (wait == WAIT_OBJECT_0 || wait == WAIT_ABANDONED) {
+            // WAIT_ABANDONED is safe here: all mutable state is inventoried
+            // again before the first SetupAPI operation, so no prior process
+            // state is trusted merely because the lock changed owners.
+            owned_ = true;
+            abandoned_ = wait == WAIT_ABANDONED;
+            return true;
+        }
+        if (wait == WAIT_TIMEOUT) {
             return SetError(error, L"transaction-mutex", ERROR_INSTALL_ALREADY_RUNNING,
                 L"another VIIPER native driver transaction is active");
         }
-        handle_ = std::move(handle);
-        return true;
+        return SetLastErrorDetail(error, L"transaction-mutex-wait");
     }
 
 private:
-    WinHandle handle_;
+    HANDLE namespace_ = nullptr;
+    HANDLE boundary_ = nullptr;
+    WinHandle mutex_;
+    bool owned_ = false;
+    bool abandoned_ = false;
 };
 
 bool IsElevated() {
@@ -607,14 +694,13 @@ const JsonValue* ObjectField(const JsonValue::Object& object, const char* name) 
     return iterator == object.end() ? nullptr : &iterator->second;
 }
 
-bool ReadSmallFile(const std::filesystem::path& path, std::string* contents, Error* error) {
-    WinHandle file(CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
-        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, nullptr));
-    if (!file) {
-        return SetLastErrorDetail(error, L"manifest-open");
+bool ReadSmallHandle(HANDLE file, std::string* contents, Error* error) {
+    LARGE_INTEGER beginning{};
+    if (!SetFilePointerEx(file, beginning, nullptr, FILE_BEGIN)) {
+        return SetLastErrorDetail(error, L"manifest-seek");
     }
     LARGE_INTEGER size{};
-    if (!GetFileSizeEx(file.get(), &size)) {
+    if (!GetFileSizeEx(file, &size)) {
         return SetLastErrorDetail(error, L"manifest-size");
     }
     if (size.QuadPart <= 0 || static_cast<uint64_t>(size.QuadPart) > kMaximumManifestBytes) {
@@ -623,7 +709,7 @@ bool ReadSmallFile(const std::filesystem::path& path, std::string* contents, Err
     }
     contents->assign(static_cast<size_t>(size.QuadPart), '\0');
     DWORD read = 0;
-    if (!ReadFile(file.get(), contents->data(), static_cast<DWORD>(contents->size()), &read, nullptr) ||
+    if (!ReadFile(file, contents->data(), static_cast<DWORD>(contents->size()), &read, nullptr) ||
         static_cast<size_t>(read) != contents->size()) {
         return SetLastErrorDetail(error, L"manifest-read");
     }
@@ -636,7 +722,7 @@ bool ReadSmallFile(const std::filesystem::path& path, std::string* contents, Err
     return true;
 }
 
-bool Sha256File(const std::filesystem::path& path, std::string* digest, Error* error) {
+bool Sha256Handle(HANDLE file, std::string* digest, Error* error) {
     HCRYPTPROV provider = 0;
     HCRYPTHASH hash = 0;
     if (!CryptAcquireContextW(&provider, nullptr, nullptr, PROV_RSA_AES, CRYPT_VERIFYCONTEXT)) {
@@ -648,18 +734,17 @@ bool Sha256File(const std::filesystem::path& path, std::string* digest, Error* e
         releaseProvider();
         return SetError(error, L"sha256-create", code);
     }
-    WinHandle file(CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
-        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, nullptr));
-    if (!file) {
+    LARGE_INTEGER beginning{};
+    if (!SetFilePointerEx(file, beginning, nullptr, FILE_BEGIN)) {
         const DWORD code = GetLastError();
         CryptDestroyHash(hash);
         releaseProvider();
-        return SetError(error, L"sha256-open", code);
+        return SetError(error, L"sha256-seek", code);
     }
     std::array<BYTE, 64 * 1024> buffer{};
     for (;;) {
         DWORD read = 0;
-        if (!ReadFile(file.get(), buffer.data(), static_cast<DWORD>(buffer.size()), &read, nullptr)) {
+        if (!ReadFile(file, buffer.data(), static_cast<DWORD>(buffer.size()), &read, nullptr)) {
             const DWORD code = GetLastError();
             CryptDestroyHash(hash);
             releaseProvider();
@@ -695,6 +780,15 @@ bool Sha256File(const std::filesystem::path& path, std::string* digest, Error* e
     return true;
 }
 
+bool Sha256File(const std::filesystem::path& path, std::string* digest, Error* error) {
+    WinHandle file(CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, nullptr));
+    if (!file) {
+        return SetLastErrorDetail(error, L"sha256-open");
+    }
+    return Sha256Handle(file.get(), digest, error);
+}
+
 bool FileLength(const std::filesystem::path& path, uint64_t* length, Error* error) {
     std::error_code fileError;
     const uintmax_t size = std::filesystem::file_size(path, fileError);
@@ -706,14 +800,16 @@ bool FileLength(const std::filesystem::path& path, uint64_t* length, Error* erro
 }
 
 bool ValidateManifest(
-    const std::filesystem::path& manifestPath,
+    const std::string& rawManifest,
     const std::string& expectedRevision,
     bool production,
     const std::filesystem::path& packageDirectory,
     Error* error) {
-    std::string raw;
-    if (!ReadSmallFile(manifestPath, &raw, error)) {
-        return false;
+    std::string raw = rawManifest;
+    if (raw.size() >= 3 && static_cast<unsigned char>(raw[0]) == 0xefU &&
+        static_cast<unsigned char>(raw[1]) == 0xbbU &&
+        static_cast<unsigned char>(raw[2]) == 0xbfU) {
+        raw.erase(0, 3);
     }
     JsonValue root;
     std::string parseMessage;
@@ -924,6 +1020,231 @@ bool VerifyInfSignature(
     }
     if (catalogPath != nullptr) {
         *catalogPath = signer.CatalogFile;
+    }
+    return true;
+}
+
+bool IsProductionHardwareVerificationUsage(const std::vector<std::string_view>& usages) {
+    const bool hardware = std::find(usages.begin(), usages.end(),
+        kHardwareVerificationOid) != usages.end();
+    const bool attestation = std::find(usages.begin(), usages.end(),
+        kAttestationVerificationOid) != usages.end();
+    return hardware && !attestation;
+}
+
+template <typename Function>
+bool LoadWinTrustFunction(
+    HMODULE module,
+    const char* name,
+    Function* function,
+    Error* error) {
+    const FARPROC address = GetProcAddress(module, name);
+    if (address == nullptr) {
+        return SetLastErrorDetail(error, L"catalog-policy-api",
+            L"required Windows catalog policy API is unavailable");
+    }
+    static_assert(sizeof(address) == sizeof(*function));
+    std::memcpy(function, &address, sizeof(address));
+    return true;
+}
+
+bool VerifyDriverCatalogMember(
+    const std::filesystem::path& catalogPath,
+    const std::filesystem::path& memberPath,
+    Error* error) {
+    WinHandle member(CreateFileW(memberPath.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+    if (!member) {
+        return SetLastErrorDetail(error, L"catalog-member-open");
+    }
+    FILE_ATTRIBUTE_TAG_INFO attributes{};
+    if (!GetFileInformationByHandleEx(member.get(), FileAttributeTagInfo,
+            &attributes, sizeof(attributes)) ||
+        (attributes.FileAttributes &
+            (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0) {
+        return SetError(error, L"catalog-member-open", ERROR_REPARSE_TAG_MISMATCH,
+            L"catalog member must be a regular non-reparse file");
+    }
+    using AcquireContext2 = BOOL (WINAPI*)(
+        HCATADMIN*, const GUID*, PCWSTR, PCCERT_STRONG_SIGN_PARA, DWORD);
+    using CalculateHash2 = BOOL (WINAPI*)(HCATADMIN, HANDLE, DWORD*, BYTE*, DWORD);
+    using ReleaseContext = BOOL (WINAPI*)(HCATADMIN, DWORD);
+    HMODULE winTrust = LoadLibraryExW(
+        L"wintrust.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    if (winTrust == nullptr) {
+        return SetLastErrorDetail(error, L"catalog-policy-library");
+    }
+    AcquireContext2 acquireContext = nullptr;
+    CalculateHash2 calculateHash = nullptr;
+    ReleaseContext releaseContext = nullptr;
+    if (!LoadWinTrustFunction(winTrust, "CryptCATAdminAcquireContext2",
+            &acquireContext, error) ||
+        !LoadWinTrustFunction(winTrust, "CryptCATAdminCalcHashFromFileHandle2",
+            &calculateHash, error) ||
+        !LoadWinTrustFunction(winTrust, "CryptCATAdminReleaseContext",
+            &releaseContext, error)) {
+        FreeLibrary(winTrust);
+        return false;
+    }
+    HCATADMIN administrator = nullptr;
+    // Let Windows select the catalog's approved hash algorithm. Microsoft
+    // explicitly recommends this over hard-coding an algorithm that policy may
+    // retire; the returned context is also supplied to WinVerifyTrust below.
+    if (!acquireContext(&administrator, nullptr, nullptr, nullptr, 0)) {
+        const DWORD code = GetLastError();
+        FreeLibrary(winTrust);
+        return SetError(error, L"catalog-admin", code);
+    }
+    const auto releasePolicy = [&]() {
+        releaseContext(administrator, 0);
+        FreeLibrary(winTrust);
+    };
+    DWORD hashSize = 0;
+    if (!calculateHash(
+            administrator, member.get(), &hashSize, nullptr, 0) || hashSize == 0) {
+        const DWORD code = GetLastError();
+        releasePolicy();
+        return SetError(error, L"catalog-member-hash", code);
+    }
+    std::vector<BYTE> hash(hashSize);
+    if (!calculateHash(
+            administrator, member.get(), &hashSize, hash.data(), 0)) {
+        const DWORD code = GetLastError();
+        releasePolicy();
+        return SetError(error, L"catalog-member-hash", code);
+    }
+    hash.resize(hashSize);
+    static constexpr wchar_t digits[] = L"0123456789ABCDEF";
+    std::wstring memberTag;
+    memberTag.reserve(hash.size() * 2);
+    for (BYTE value : hash) {
+        memberTag.push_back(digits[value >> 4U]);
+        memberTag.push_back(digits[value & 0x0fU]);
+    }
+    WINTRUST_CATALOG_INFO catalog{};
+    catalog.cbStruct = sizeof(catalog);
+    catalog.pcwszCatalogFilePath = catalogPath.c_str();
+    catalog.pcwszMemberTag = memberTag.c_str();
+    catalog.pcwszMemberFilePath = memberPath.c_str();
+    catalog.hMemberFile = member.get();
+    catalog.pbCalculatedFileHash = hash.data();
+    catalog.cbCalculatedFileHash = static_cast<DWORD>(hash.size());
+    catalog.hCatAdmin = administrator;
+    WINTRUST_DATA trust{};
+    trust.cbStruct = sizeof(trust);
+    trust.dwUIChoice = WTD_UI_NONE;
+    trust.fdwRevocationChecks = WTD_REVOKE_NONE;
+    trust.dwUnionChoice = WTD_CHOICE_CATALOG;
+    trust.pCatalog = &catalog;
+    trust.dwStateAction = WTD_STATEACTION_VERIFY;
+    trust.dwProvFlags = WTD_CACHE_ONLY_URL_RETRIEVAL;
+    GUID action = DRIVER_ACTION_VERIFY;
+    const LONG status = WinVerifyTrust(reinterpret_cast<HWND>(INVALID_HANDLE_VALUE), &action, &trust);
+    trust.dwStateAction = WTD_STATEACTION_CLOSE;
+    WinVerifyTrust(reinterpret_cast<HWND>(INVALID_HANDLE_VALUE), &action, &trust);
+    releasePolicy();
+    if (status != ERROR_SUCCESS) {
+        return SetError(error, L"catalog-member-policy", static_cast<DWORD>(status),
+            L"package file is not a valid member of the exact Microsoft driver catalog");
+    }
+    return true;
+}
+
+bool VerifyMicrosoftHardwareInfSigner(
+    const std::filesystem::path& infPath,
+    Error* error) {
+    SP_INF_SIGNER_INFO_W signer{};
+    signer.cbSize = sizeof(signer);
+    if (!SetupVerifyInfFileW(infPath.c_str(), nullptr, &signer)) {
+        return SetLastErrorDetail(error, L"inf-microsoft-signature");
+    }
+    if (_wcsicmp(signer.DigitalSigner,
+            L"Microsoft Windows Hardware Compatibility Publisher") != 0) {
+        return SetError(error, L"inf-microsoft-signature", ERROR_INVALID_DATA,
+            L"driver catalog signer is not Microsoft Windows Hardware Compatibility Publisher");
+    }
+
+    DWORD encoding = 0;
+    HCERTSTORE store = nullptr;
+    HCRYPTMSG message = nullptr;
+    const std::filesystem::path catalogPath = infPath.parent_path() / kCatalogName;
+    if (!VerifyDriverCatalogMember(catalogPath, infPath, error) ||
+        !VerifyDriverCatalogMember(catalogPath,
+            infPath.parent_path() / kDriverFileName, error)) {
+        return false;
+    }
+    if (!CryptQueryObject(CERT_QUERY_OBJECT_FILE, catalogPath.c_str(),
+            CERT_QUERY_CONTENT_FLAG_PKCS7_SIGNED | CERT_QUERY_CONTENT_FLAG_PKCS7_SIGNED_EMBED,
+            CERT_QUERY_FORMAT_FLAG_BINARY, 0, &encoding, nullptr, nullptr,
+            &store, &message, nullptr)) {
+        return SetLastErrorDetail(error, L"catalog-signature-open");
+    }
+    const auto closeCatalog = [&]() {
+        if (message != nullptr) {
+            CryptMsgClose(message);
+        }
+        if (store != nullptr) {
+            CertCloseStore(store, 0);
+        }
+    };
+    DWORD signerSize = 0;
+    if (!CryptMsgGetParam(message, CMSG_SIGNER_INFO_PARAM, 0, nullptr, &signerSize) ||
+        signerSize < sizeof(CMSG_SIGNER_INFO)) {
+        const DWORD code = GetLastError();
+        closeCatalog();
+        return SetError(error, L"catalog-signer-info", code);
+    }
+    std::vector<BYTE> signerBytes(signerSize);
+    if (!CryptMsgGetParam(message, CMSG_SIGNER_INFO_PARAM, 0,
+            signerBytes.data(), &signerSize)) {
+        const DWORD code = GetLastError();
+        closeCatalog();
+        return SetError(error, L"catalog-signer-info", code);
+    }
+    const auto* signerInfo = reinterpret_cast<const CMSG_SIGNER_INFO*>(signerBytes.data());
+    CERT_INFO certificateIdentity{};
+    certificateIdentity.Issuer = signerInfo->Issuer;
+    certificateIdentity.SerialNumber = signerInfo->SerialNumber;
+    PCCERT_CONTEXT certificate = CertFindCertificateInStore(store, encoding, 0,
+        CERT_FIND_SUBJECT_CERT, &certificateIdentity, nullptr);
+    if (certificate == nullptr) {
+        const DWORD code = GetLastError();
+        closeCatalog();
+        return SetError(error, L"catalog-signer-certificate", code);
+    }
+    DWORD usageSize = 0;
+    if (!CertGetEnhancedKeyUsage(certificate, CERT_FIND_EXT_ONLY_ENHKEY_USAGE_FLAG,
+            nullptr, &usageSize) ||
+        usageSize < sizeof(CERT_ENHKEY_USAGE)) {
+        const DWORD code = GetLastError();
+        CertFreeCertificateContext(certificate);
+        closeCatalog();
+        return SetError(error, L"catalog-signer-eku", code,
+            L"production catalog signer must declare Windows Hardware Driver Verification EKU");
+    }
+    std::vector<BYTE> usageBytes(usageSize);
+    auto* usage = reinterpret_cast<CERT_ENHKEY_USAGE*>(usageBytes.data());
+    if (!CertGetEnhancedKeyUsage(certificate, CERT_FIND_EXT_ONLY_ENHKEY_USAGE_FLAG,
+            usage, &usageSize)) {
+        const DWORD code = GetLastError();
+        CertFreeCertificateContext(certificate);
+        closeCatalog();
+        return SetError(error, L"catalog-signer-eku", code);
+    }
+    std::vector<std::string_view> usages;
+    usages.reserve(usage->cUsageIdentifier);
+    for (DWORD index = 0; index < usage->cUsageIdentifier; ++index) {
+        const char* oid = usage->rgpszUsageIdentifier[index];
+        if (oid != nullptr) {
+            usages.emplace_back(oid);
+        }
+    }
+    const bool productionUsage = IsProductionHardwareVerificationUsage(usages);
+    CertFreeCertificateContext(certificate);
+    closeCatalog();
+    if (!productionUsage) {
+        return SetError(error, L"catalog-signer-eku", ERROR_INVALID_DATA,
+            L"production requires HLK/WHCP hardware verification and rejects attestation EKU");
     }
     return true;
 }
@@ -1410,7 +1731,45 @@ bool RegisterRootDevice(
     return true;
 }
 
-bool VerifyAbiHealth(Error* error) {
+bool RegisterRootDeviceExact(
+    const GUID& classGuid,
+    const std::wstring& instanceId,
+    DeviceInfoSet* set,
+    SP_DEVINFO_DATA* data,
+    Error* error) {
+    const std::wstring expectedPrefix = std::wstring(kHardwareId) + L"\\";
+    if (instanceId.size() <= expectedPrefix.size() ||
+        _wcsnicmp(instanceId.c_str(), expectedPrefix.c_str(), expectedPrefix.size()) != 0) {
+        return SetError(error, L"rollback-instance-id", ERROR_INVALID_DATA,
+            L"captured root devnode identity is outside the exact VIIPER hardware namespace");
+    }
+    *set = DeviceInfoSet(SetupDiCreateDeviceInfoList(&classGuid, nullptr));
+    if (!*set) {
+        return SetLastErrorDetail(error, L"rollback-create-device-info-list");
+    }
+    *data = SP_DEVINFO_DATA{};
+    data->cbSize = sizeof(*data);
+    // With DICD_GENERATE_ID absent, SetupAPI treats DeviceName as the complete
+    // device instance ID. Rollback must never substitute a fresh ROOT instance.
+    if (!SetupDiCreateDeviceInfoW(set->get(), instanceId.c_str(), &classGuid,
+            nullptr, nullptr, 0, data)) {
+        return SetLastErrorDetail(error, L"rollback-create-exact-root-devnode");
+    }
+    const size_t idCharacters = std::size(kHardwareId) + 1;
+    std::vector<wchar_t> identifiers(idCharacters, L'\0');
+    std::copy(std::begin(kHardwareId), std::end(kHardwareId), identifiers.begin());
+    if (!SetupDiSetDeviceRegistryPropertyW(set->get(), data, SPDRP_HARDWAREID,
+            reinterpret_cast<const BYTE*>(identifiers.data()),
+            static_cast<DWORD>(identifiers.size() * sizeof(wchar_t)))) {
+        return SetLastErrorDetail(error, L"rollback-set-root-hardware-id");
+    }
+    if (!SetupDiCallClassInstaller(DIF_REGISTERDEVICE, set->get(), data)) {
+        return SetLastErrorDetail(error, L"rollback-register-exact-root-devnode");
+    }
+    return true;
+}
+
+bool VerifyAbiHealth(uint64_t deadlineUnixMs, Error* error) {
     DeviceInfoSet set(SetupDiGetClassDevsW(
         &kViiperInterfaceGuid, nullptr, nullptr, DIGCF_PRESENT | DIGCF_DEVICEINTERFACE));
     if (!set) {
@@ -1460,7 +1819,7 @@ bool VerifyAbiHealth(Error* error) {
             exactCount == 0 ? ERROR_DEVICE_NOT_AVAILABLE : ERROR_DUPLICATE_SERVICE_NAME);
     }
     WinHandle device(CreateFileW(interfacePath.c_str(), GENERIC_READ | GENERIC_WRITE,
-        0, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
+        0, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED, nullptr));
     if (!device) {
         return SetLastErrorDetail(error, L"abi-interface-open",
             L"native broker interface is unavailable or still owned by another process");
@@ -1479,9 +1838,71 @@ bool VerifyAbiHealth(Error* error) {
         VIIPER_UDE_CAP_INPUT_REPORTS;
     VIIPER_UDE_NEGOTIATE_RESPONSE response{};
     DWORD returned = 0;
-    if (!DeviceIoControl(device.get(), IOCTL_VIIPER_UDE_NEGOTIATE,
-            &request, sizeof(request), &response, sizeof(response), &returned, nullptr)) {
+    WinHandle event(CreateEventW(nullptr, TRUE, FALSE, nullptr));
+    if (!event) {
+        return SetLastErrorDetail(error, L"abi-negotiate-event");
+    }
+    OVERLAPPED overlapped{};
+    overlapped.hEvent = event.get();
+    const BOOL completed = DeviceIoControl(device.get(), IOCTL_VIIPER_UDE_NEGOTIATE,
+        &request, sizeof(request), &response, sizeof(response), &returned, &overlapped);
+    if (!completed && GetLastError() != ERROR_IO_PENDING) {
         return SetLastErrorDetail(error, L"abi-negotiate");
+    }
+    if (!completed) {
+        const uint64_t now = CurrentUnixMilliseconds();
+        if (deadlineUnixMs <= now) {
+            const BOOL cancelled = CancelIoEx(device.get(), &overlapped);
+            const DWORD cancelError = cancelled ? ERROR_SUCCESS : GetLastError();
+            const DWORD drain = WaitForSingleObject(event.get(), kCancelledIoDrainMs);
+            if ((!cancelled && cancelError != ERROR_NOT_FOUND) || drain != WAIT_OBJECT_0) {
+                return SetError(error, L"abi-negotiate-drain",
+                    !cancelled && cancelError != ERROR_NOT_FOUND
+                        ? cancelError : ERROR_OPERATION_ABORTED,
+                    L"expired native ABI negotiation could not be cancelled and drained safely");
+            }
+            DWORD ignored = 0;
+            GetOverlappedResult(device.get(), &overlapped, &ignored, FALSE);
+            return SetError(error, L"abi-negotiate-timeout", ERROR_TIMEOUT,
+                L"native ABI negotiation exceeded the package transaction deadline");
+        }
+        const uint64_t remaining = deadlineUnixMs - now;
+        const DWORD waitMilliseconds = static_cast<DWORD>(
+            std::min<uint64_t>(remaining, static_cast<uint64_t>(MAXDWORD - 1)));
+        const DWORD wait = WaitForSingleObject(event.get(), waitMilliseconds);
+        if (wait == WAIT_TIMEOUT) {
+            const BOOL cancelled = CancelIoEx(device.get(), &overlapped);
+            const DWORD cancelError = cancelled ? ERROR_SUCCESS : GetLastError();
+            const DWORD drain = WaitForSingleObject(event.get(), kCancelledIoDrainMs);
+            if (drain == WAIT_OBJECT_0) {
+                DWORD ignored = 0;
+                GetOverlappedResult(device.get(), &overlapped, &ignored, FALSE);
+            }
+            if (!cancelled && cancelError != ERROR_NOT_FOUND) {
+                return SetError(error, L"abi-negotiate-cancel", cancelError,
+                    L"timed-out native ABI negotiation could not be cancelled");
+            }
+            if (drain != WAIT_OBJECT_0) {
+                return SetError(error, L"abi-negotiate-drain", ERROR_OPERATION_ABORTED,
+                    L"timed-out native ABI negotiation did not complete cancellation within the rollback ceiling");
+            }
+            return SetError(error, L"abi-negotiate-timeout", ERROR_TIMEOUT,
+                L"native ABI negotiation exceeded the package transaction deadline");
+        }
+        if (wait != WAIT_OBJECT_0) {
+            const DWORD waitError = GetLastError();
+            CancelIoEx(device.get(), &overlapped);
+            const DWORD drain = WaitForSingleObject(event.get(), kCancelledIoDrainMs);
+            if (drain != WAIT_OBJECT_0) {
+                return SetError(error, L"abi-negotiate-drain", ERROR_OPERATION_ABORTED,
+                    L"failed native ABI wait could not be drained safely");
+            }
+            SetLastError(waitError);
+            return SetLastErrorDetail(error, L"abi-negotiate-wait");
+        }
+        if (!GetOverlappedResult(device.get(), &overlapped, &returned, FALSE)) {
+            return SetLastErrorDetail(error, L"abi-negotiate-result");
+        }
     }
     const VIIPER_UDE_UINT32 requiredCapabilities = VIIPER_UDE_CAP_ISOCHRONOUS |
         VIIPER_UDE_CAP_DEVICE_LIFECYCLE | VIIPER_UDE_CAP_INPUT_REPORTS;
@@ -1506,6 +1927,7 @@ bool VerifyInstalled(
     const PackageInfo& candidate,
     const std::wstring& publishedName,
     bool allowStopped,
+    uint64_t healthDeadlineUnixMs,
     Error* error) {
     Snapshot snapshot;
     if (!CaptureSnapshot(&snapshot, error)) {
@@ -1522,7 +1944,7 @@ bool VerifyInstalled(
         return SetError(error, L"install-start", ERROR_DEVICE_NOT_AVAILABLE,
             L"installed driver did not start; problem=" + std::to_wstring(snapshot.devices[0].problem));
     }
-    return allowStopped || VerifyAbiHealth(error);
+    return allowStopped || VerifyAbiHealth(healthDeadlineUnixMs, error);
 }
 
 bool UninstallPackage(const PackageInfo& package, bool* rebootRequired, Error* error) {
@@ -1564,25 +1986,71 @@ std::vector<size_t> NewPackageIndices(
 }
 
 bool RestorePriorBinding(const Snapshot& prior, bool* rebootRequired, Error* error) {
-    bool ignored = false;
-    if (!RemoveAllExactDevices(&ignored, error)) {
+    if (prior.devices.size() > 1) {
+        return SetError(error, L"rollback-topology", ERROR_DUPLICATE_SERVICE_NAME,
+            L"rollback refuses an unsupported multi-devnode native topology");
+    }
+
+    Snapshot current;
+    if (!CaptureSnapshot(&current, error) || current.devices.size() > 1) {
+        if (error->code == ERROR_SUCCESS) {
+            SetError(error, L"rollback-topology", ERROR_DUPLICATE_SERVICE_NAME,
+                L"rollback observed an unexpected multi-devnode native topology");
+        }
         return false;
     }
-    *rebootRequired = *rebootRequired || ignored;
+    const auto sameIdentity = [](const std::wstring& left, const std::wstring& right) {
+        return _wcsicmp(left.c_str(), right.c_str()) == 0;
+    };
+    const bool keepCurrent = !prior.devices.empty() && !current.devices.empty() &&
+        sameIdentity(prior.devices[0].instanceId, current.devices[0].instanceId);
+
+    if (!current.devices.empty() && !keepCurrent) {
+        DeviceInfoSet set = OpenRootDevices();
+        if (!set) {
+            return SetLastErrorDetail(error, L"rollback-open-root-devices");
+        }
+        std::vector<std::pair<SP_DEVINFO_DATA, DeviceState>> matches;
+        if (!FindExactDevices(set.get(), &matches, error) || matches.size() != 1) {
+            if (error->code == ERROR_SUCCESS) {
+                SetError(error, L"rollback-topology", ERROR_REVISION_MISMATCH);
+            }
+            return false;
+        }
+        bool removalReboot = false;
+        if (!RemoveDevice(set.get(), matches[0].first, &removalReboot, error)) {
+            return false;
+        }
+        *rebootRequired = *rebootRequired || removalReboot;
+    }
     if (prior.devices.empty()) {
+        Snapshot restored;
+        if (!CaptureSnapshot(&restored, error) || !restored.devices.empty()) {
+            if (error->code == ERROR_SUCCESS) {
+                SetError(error, L"rollback-identity-verification", ERROR_REVISION_MISMATCH,
+                    L"rollback did not restore the captured empty devnode topology");
+            }
+            return false;
+        }
         return true;
     }
-    const PackageInfo& package = prior.devices[0].package;
-    GUID classGuid{};
-    wchar_t className[MAX_CLASS_NAME_LEN]{};
-    if (!SetupDiGetINFClassW(package.infPath.c_str(), &classGuid, className, MAX_CLASS_NAME_LEN, nullptr)) {
-        return SetLastErrorDetail(error, L"rollback-inf-class");
-    }
-    DeviceInfoSet created;
-    SP_DEVINFO_DATA createdData{};
-    createdData.cbSize = sizeof(createdData);
-    if (!RegisterRootDevice(classGuid, className, &created, &createdData, error)) {
-        return false;
+
+    const DeviceState& expected = prior.devices[0];
+    const PackageInfo& package = expected.package;
+    if (!keepCurrent) {
+        GUID classGuid{};
+        wchar_t className[MAX_CLASS_NAME_LEN]{};
+        if (!SetupDiGetINFClassW(package.infPath.c_str(), &classGuid, className,
+                MAX_CLASS_NAME_LEN, nullptr)) {
+            return SetLastErrorDetail(error, L"rollback-inf-class");
+        }
+        DeviceInfoSet created;
+        SP_DEVINFO_DATA createdData{};
+        createdData.cbSize = sizeof(createdData);
+        if (!RegisterRootDeviceExact(classGuid, expected.instanceId,
+                &created, &createdData, error)) {
+            return false;
+        }
     }
     BOOL reboot = FALSE;
     if (!UpdateDriverForPlugAndPlayDevicesW(
@@ -1590,6 +2058,17 @@ bool RestorePriorBinding(const Snapshot& prior, bool* rebootRequired, Error* err
         return SetLastErrorDetail(error, L"rollback-bind-prior");
     }
     *rebootRequired = *rebootRequired || reboot != FALSE;
+
+    Snapshot restored;
+    if (!CaptureSnapshot(&restored, error) || restored.devices.size() != 1 ||
+        !sameIdentity(restored.devices[0].instanceId, expected.instanceId) ||
+        restored.devices[0].package.infSha256 != expected.package.infSha256) {
+        if (error->code == ERROR_SUCCESS) {
+            SetError(error, L"rollback-identity-verification", ERROR_REVISION_MISMATCH,
+                L"rollback did not restore the exact captured devnode identity and package binding");
+        }
+        return false;
+    }
     return true;
 }
 
@@ -1608,7 +2087,8 @@ bool RollbackInstall(const Snapshot& prior, bool* rebootRequired, Error* error) 
     }
     if (!prior.devices.empty() && !*rebootRequired) {
         return VerifyInstalled(
-            prior.devices[0].package, prior.devices[0].publishedInf, false, error);
+            prior.devices[0].package, prior.devices[0].publishedInf, false,
+            CurrentUnixMilliseconds() + 15000, error);
     }
     return true;
 }
@@ -1620,12 +2100,49 @@ bool LockPackageFiles(
     locks->clear();
     for (const wchar_t* name : {L"ViiperUde.inf", L"ViiperUde.sys", L"ViiperUde.pdb", L"ViiperUde.cat"}) {
         WinHandle file(CreateFileW((directory / name).c_str(), GENERIC_READ, FILE_SHARE_READ,
-            nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
+            nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
         if (!file) {
             return SetLastErrorDetail(error, L"package-lock",
                 L"all four package files must exist and remain immutable during installation");
         }
+        FILE_ATTRIBUTE_TAG_INFO attributes{};
+        if (!GetFileInformationByHandleEx(file.get(), FileAttributeTagInfo,
+                &attributes, sizeof(attributes)) ||
+            (attributes.FileAttributes &
+                (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0) {
+            return SetError(error, L"package-lock", ERROR_REPARSE_TAG_MISMATCH,
+                L"package inputs must be regular non-reparse files");
+        }
         locks->push_back(std::move(file));
+    }
+    return true;
+}
+
+bool ValidateExactPackageDirectory(const std::filesystem::path& directory, Error* error) {
+    static const std::set<std::wstring> expected = {
+        L"ViiperUde.inf", L"ViiperUde.sys", L"ViiperUde.pdb", L"ViiperUde.cat"};
+    const DWORD attributes = GetFileAttributesW(directory.c_str());
+    if (attributes == INVALID_FILE_ATTRIBUTES ||
+        (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0 ||
+        (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+        return SetError(error, L"package-directory", ERROR_REPARSE_TAG_MISMATCH,
+            L"signed package path must be a regular non-reparse directory");
+    }
+    std::set<std::wstring> seen;
+    std::error_code enumerationError;
+    for (std::filesystem::directory_iterator iterator(directory, enumerationError), end;
+         !enumerationError && iterator != end; iterator.increment(enumerationError)) {
+        std::error_code typeError;
+        if (!iterator->is_regular_file(typeError) || typeError ||
+            !expected.contains(iterator->path().filename().wstring()) ||
+            !seen.insert(iterator->path().filename().wstring()).second) {
+            return SetError(error, L"package-directory", ERROR_INVALID_DATA,
+                L"signed package directory must contain only the four exact regular VIIPER files");
+        }
+    }
+    if (enumerationError || seen != expected) {
+        return SetError(error, L"package-directory", ERROR_INVALID_DATA,
+            L"signed package directory changed or is incomplete");
     }
     return true;
 }
@@ -1633,10 +2150,253 @@ bool LockPackageFiles(
 struct InstallOptions {
     std::filesystem::path infPath;
     std::filesystem::path manifestPath;
+    std::string manifestSha256;
     std::string sourceRevision;
     bool production = true;
     std::optional<Version> expectedDowngradeFrom;
+    std::filesystem::path brokerExecutable;
+    std::string brokerSha256;
+    std::filesystem::path brokerToken;
+    std::string brokerTokenSha256;
+    std::wstring targetUserSid;
+    uint64_t transactionDeadlineUnixMs = 0;
 };
+
+uint64_t CurrentUnixMilliseconds() {
+    FILETIME now{};
+    GetSystemTimeAsFileTime(&now);
+    ULARGE_INTEGER ticks{};
+    ticks.LowPart = now.dwLowDateTime;
+    ticks.HighPart = now.dwHighDateTime;
+    constexpr uint64_t windowsToUnixEpochTicks = 116444736000000000ULL;
+    return ticks.QuadPart <= windowsToUnixEpochTicks
+        ? 0 : (ticks.QuadPart - windowsToUnixEpochTicks) / 10000ULL;
+}
+
+bool CheckTransactionDeadline(const InstallOptions& options, const wchar_t* phase, Error* error) {
+    if (options.transactionDeadlineUnixMs == 0 ||
+        CurrentUnixMilliseconds() >= options.transactionDeadlineUnixMs) {
+        return SetError(error, phase, ERROR_TIMEOUT,
+            L"native package transaction deadline expired before the next mutation");
+    }
+    return true;
+}
+
+bool ValidateTransactionDeadlineBudget(const InstallOptions& options, Error* error) {
+    const uint64_t now = CurrentUnixMilliseconds();
+    if (options.transactionDeadlineUnixMs <= now ||
+        options.transactionDeadlineUnixMs - now > kMaximumTransactionDurationMs) {
+        return SetError(error, L"transaction-deadline", ERROR_INVALID_PARAMETER,
+            L"transaction deadline is expired or exceeds the four-minute package budget");
+    }
+    return true;
+}
+
+bool ValidateCandidateInputs(
+    const InstallOptions& options,
+    std::filesystem::path* packageDirectory,
+    std::vector<WinHandle>* packageLocks,
+    PackageInfo* candidate,
+    Error* error) {
+    if (!ValidateTransactionDeadlineBudget(options, error)) {
+        return false;
+    }
+    std::error_code candidatePathError;
+    const std::filesystem::path lockedInfPath =
+        std::filesystem::canonical(options.infPath, candidatePathError);
+    if (candidatePathError || lockedInfPath.filename().wstring() != L"ViiperUde.inf") {
+        return SetError(error, L"package-path", ERROR_FILE_NOT_FOUND);
+    }
+    *packageDirectory = lockedInfPath.parent_path();
+    if (!ValidateExactPackageDirectory(*packageDirectory, error) ||
+        !LockPackageFiles(*packageDirectory, packageLocks, error)) {
+        return false;
+    }
+    bool owned = false;
+    if (!LoadOwnedPackage(lockedInfPath, true, candidate, &owned, error) || !owned ||
+        (options.production && !VerifyMicrosoftHardwareInfSigner(lockedInfPath, error))) {
+        return false;
+    }
+    WinHandle manifest(CreateFileW(options.manifestPath.c_str(), GENERIC_READ, FILE_SHARE_READ,
+        nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+    if (!manifest) {
+        error->phase = L"manifest-installer-open";
+        return SetLastErrorDetail(error, L"manifest-installer-open");
+    }
+    FILE_ATTRIBUTE_TAG_INFO manifestAttributes{};
+    if (!GetFileInformationByHandleEx(manifest.get(), FileAttributeTagInfo,
+            &manifestAttributes, sizeof(manifestAttributes)) ||
+        (manifestAttributes.FileAttributes &
+            (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0) {
+        return SetError(error, L"manifest-installer-open", ERROR_REPARSE_TAG_MISMATCH,
+            L"source-bound manifest must be a regular non-reparse file");
+    }
+    std::string actualManifestSha256;
+    if (!Sha256Handle(manifest.get(), &actualManifestSha256, error)) {
+        error->phase = L"manifest-installer-hash";
+        return false;
+    }
+    if (_stricmp(actualManifestSha256.c_str(), options.manifestSha256.c_str()) != 0) {
+        return SetError(error, L"manifest-installer-hash", ERROR_CRC,
+            L"source-bound manifest does not match the installer-embedded SHA-256");
+    }
+    std::string manifestContents;
+    if (!ReadSmallHandle(manifest.get(), &manifestContents, error)) {
+        return false;
+    }
+    return ValidateManifest(manifestContents, options.sourceRevision, options.production,
+        *packageDirectory, error) &&
+        CheckTransactionDeadline(options, L"transaction-deadline-preflight", error);
+}
+
+Outcome Verify(const InstallOptions& options) {
+    Outcome outcome;
+    std::filesystem::path packageDirectory;
+    std::vector<WinHandle> packageLocks;
+    PackageInfo candidate;
+    if (!ValidateCandidateInputs(
+            options, &packageDirectory, &packageLocks, &candidate, &outcome.error)) {
+        outcome.exitCode = ExitCode::PreflightRejected;
+        return outcome;
+    }
+    outcome.success = true;
+    outcome.exitCode = ExitCode::Success;
+    return outcome;
+}
+
+bool IsSafeTargetUserSid(const std::wstring& sid) {
+    return sid.size() >= 5 && sid.size() <= 184 &&
+        (sid.starts_with(L"S-") || sid.starts_with(L"s-")) &&
+        std::all_of(sid.begin() + 2, sid.end(), [](wchar_t value) {
+            return (value >= L'0' && value <= L'9') || value == L'-';
+        });
+}
+
+std::wstring QuoteWindowsArgument(const std::wstring& value) {
+    std::wstring quoted(1, L'"');
+    size_t backslashes = 0;
+    for (const wchar_t character : value) {
+        if (character == L'\\') {
+            ++backslashes;
+            continue;
+        }
+        if (character == L'"') {
+            quoted.append(backslashes * 2 + 1, L'\\');
+            quoted.push_back(L'"');
+            backslashes = 0;
+            continue;
+        }
+        quoted.append(backslashes, L'\\');
+        backslashes = 0;
+        quoted.push_back(character);
+    }
+    quoted.append(backslashes * 2, L'\\');
+    quoted.push_back(L'"');
+    return quoted;
+}
+
+bool RunBrokerInstall(const InstallOptions& options, bool* transactionSettled, Error* error) {
+    *transactionSettled = false;
+    if (options.brokerExecutable.empty() || !options.brokerExecutable.is_absolute() ||
+        options.brokerExecutable.filename().wstring() != L"viiper.exe" ||
+        options.brokerToken.empty() || !options.brokerToken.is_absolute() ||
+        options.brokerToken.extension().wstring() != L".token" ||
+        options.brokerTokenSha256.size() != 64 ||
+        !std::all_of(options.brokerTokenSha256.begin(), options.brokerTokenSha256.end(),
+            [](unsigned char value) { return std::isxdigit(value) != 0; }) ||
+        !IsSafeTargetUserSid(options.targetUserSid)) {
+        return SetError(error, L"broker-arguments", ERROR_INVALID_PARAMETER,
+            L"broker executable, protected transaction token, and target SID do not match the native package contract");
+    }
+    WinHandle broker(CreateFileW(options.brokerExecutable.c_str(),
+        GENERIC_READ | FILE_READ_ATTRIBUTES, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+        FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+    if (!broker) {
+        return SetLastErrorDetail(error, L"broker-open");
+    }
+    FILE_ATTRIBUTE_TAG_INFO attributes{};
+    if (!GetFileInformationByHandleEx(broker.get(), FileAttributeTagInfo,
+            &attributes, sizeof(attributes)) ||
+        (attributes.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0 ||
+        (attributes.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+        return SetError(error, L"broker-path", ERROR_REPARSE_TAG_MISMATCH,
+            L"broker executable must be a regular non-reparse file");
+    }
+    std::array<unsigned char, 2> header{};
+    DWORD read = 0;
+    if (!ReadFile(broker.get(), header.data(), static_cast<DWORD>(header.size()), &read, nullptr) ||
+        read != static_cast<DWORD>(header.size()) || header[0] != 'M' || header[1] != 'Z') {
+        return SetError(error, L"broker-image", ERROR_BAD_EXE_FORMAT,
+            L"broker executable is not a Windows PE image");
+    }
+    std::string actualBrokerSha256;
+    if (!Sha256Handle(broker.get(), &actualBrokerSha256, error)) {
+        error->phase = L"broker-hash";
+        return false;
+    }
+    if (_stricmp(actualBrokerSha256.c_str(), options.brokerSha256.c_str()) != 0) {
+        return SetError(error, L"broker-hash", ERROR_CRC,
+            L"staged native broker does not match the installer-bound SHA-256");
+    }
+
+    std::wstring commandLine = QuoteWindowsArgument(options.brokerExecutable.wstring()) +
+        L" native-package-broker-commit --token-file " +
+        QuoteWindowsArgument(options.brokerToken.wstring()) +
+        L" --expected-token-sha256 " +
+        QuoteWindowsArgument(std::wstring(
+            options.brokerTokenSha256.begin(), options.brokerTokenSha256.end())) +
+        L" --target-user-sid " +
+        QuoteWindowsArgument(options.targetUserSid) +
+        L" --transaction-deadline-unix-ms " +
+        QuoteWindowsArgument(std::to_wstring(options.transactionDeadlineUnixMs));
+    std::vector<wchar_t> mutableCommand(commandLine.begin(), commandLine.end());
+    mutableCommand.push_back(L'\0');
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    PROCESS_INFORMATION process{};
+    if (!CreateProcessW(options.brokerExecutable.c_str(), mutableCommand.data(), nullptr, nullptr,
+            FALSE, CREATE_NO_WINDOW, nullptr, options.brokerExecutable.parent_path().c_str(),
+            &startup, &process)) {
+        return SetLastErrorDetail(error, L"broker-start");
+    }
+    WinHandle processHandle(process.hProcess);
+    WinHandle threadHandle(process.hThread);
+    // The child shares the exact outer deadline and owns a separately bounded
+    // rollback. Poll rather than hard-terminate: cancellation is cooperative,
+    // and the helper retains its driver snapshot until that rollback settles.
+    const uint64_t brokerCeiling =
+        options.transactionDeadlineUnixMs + kBrokerRollbackCeilingMs;
+    for (;;) {
+        const uint64_t now = CurrentUnixMilliseconds();
+        if (now >= brokerCeiling) {
+            // Never terminate a mutating installer child. Its independently
+            // bounded rollback owns reconciliation; the parent reports an
+            // indeterminate transaction and deliberately does not race it by
+            // attempting driver rollback in parallel.
+            return SetError(error, L"broker-wait-ceiling", ERROR_TIMEOUT,
+                L"native broker exceeded its transaction deadline and rollback ceiling; external reconciliation is required");
+        }
+        const DWORD waitSlice = static_cast<DWORD>(
+            std::min<uint64_t>(250, brokerCeiling - now));
+        const DWORD wait = WaitForSingleObject(processHandle.get(), waitSlice);
+        if (wait == WAIT_OBJECT_0) {
+            *transactionSettled = true;
+            break;
+        }
+        if (wait != WAIT_TIMEOUT) {
+            return SetLastErrorDetail(error, L"broker-wait");
+        }
+    }
+    DWORD exitCode = ERROR_GEN_FAILURE;
+    if (!GetExitCodeProcess(processHandle.get(), &exitCode)) {
+        return SetLastErrorDetail(error, L"broker-exit");
+    }
+    if (exitCode != ERROR_SUCCESS) {
+        return SetError(error, L"broker-health", exitCode,
+            L"native broker transaction did not reach authenticated healthy state");
+    }
+    return true;
+}
 
 Outcome Install(const InstallOptions& options) {
     Outcome outcome;
@@ -1650,25 +2410,16 @@ Outcome Install(const InstallOptions& options) {
         outcome.exitCode = ExitCode::PreflightRejected;
         return outcome;
     }
-    std::error_code candidatePathError;
-    const std::filesystem::path lockedInfPath =
-        std::filesystem::canonical(options.infPath, candidatePathError);
-    if (candidatePathError || lockedInfPath.filename().wstring() != L"ViiperUde.inf") {
-        SetError(&outcome.error, L"package-path", ERROR_FILE_NOT_FOUND);
-        outcome.exitCode = ExitCode::PreflightRejected;
-        return outcome;
-    }
-    const std::filesystem::path packageDirectory = lockedInfPath.parent_path();
+    std::filesystem::path packageDirectory;
     std::vector<WinHandle> packageLocks;
-    if (!LockPackageFiles(packageDirectory, &packageLocks, &outcome.error)) {
+    PackageInfo candidate;
+    if (!ValidateCandidateInputs(
+            options, &packageDirectory, &packageLocks, &candidate, &outcome.error)) {
         outcome.exitCode = ExitCode::PreflightRejected;
         return outcome;
     }
-    PackageInfo candidate;
-    bool owned = false;
-    if (!LoadOwnedPackage(lockedInfPath, true, &candidate, &owned, &outcome.error) || !owned ||
-        !ValidateManifest(options.manifestPath, options.sourceRevision, options.production,
-            packageDirectory, &outcome.error)) {
+    if (!ValidateExactPackageDirectory(packageDirectory, &outcome.error) ||
+        !CheckTransactionDeadline(options, L"transaction-deadline-before-driver", &outcome.error)) {
         outcome.exitCode = ExitCode::PreflightRejected;
         return outcome;
     }
@@ -1723,6 +2474,13 @@ Outcome Install(const InstallOptions& options) {
         return outcome;
     }
 
+    // Re-enumerate at the last possible point before SetupAPI reopens the
+    // package paths. The four leaf handles already deny write/delete sharing.
+    if (!ValidateExactPackageDirectory(packageDirectory, &outcome.error) ||
+        !CheckTransactionDeadline(options, L"transaction-deadline-before-driver", &outcome.error)) {
+        outcome.exitCode = ExitCode::PreflightRejected;
+        return outcome;
+    }
     outcome.changed = true;
     BOOL installReboot = FALSE;
     const DWORD installFlags = downgrade ? DIIRFLAG_FORCE_INF : 0;
@@ -1775,8 +2533,12 @@ Outcome Install(const InstallOptions& options) {
         !FindPublishedCandidate(candidate, &publishedCandidate, &outcome.error)) {
         // Candidate inventory recorded the exact failure.
     }
+    if (outcome.error.code == ERROR_SUCCESS) {
+        CheckTransactionDeadline(options, L"transaction-deadline-before-verify", &outcome.error);
+    }
     if (outcome.error.code == ERROR_SUCCESS &&
-        !VerifyInstalled(candidate, publishedCandidate.publishedName, outcome.rebootRequired, &outcome.error)) {
+        !VerifyInstalled(candidate, publishedCandidate.publishedName, outcome.rebootRequired,
+            options.transactionDeadlineUnixMs, &outcome.error)) {
         // Verification recorded the exact failure.
     }
     if (outcome.error.code != ERROR_SUCCESS) {
@@ -1804,6 +2566,54 @@ Outcome Install(const InstallOptions& options) {
         outcome.error = std::move(rollbackError);
         outcome.exitCode = ExitCode::RollbackFailed;
         return outcome;
+    }
+
+    if (!options.brokerExecutable.empty()) {
+        Error brokerError;
+        bool brokerTransactionSettled = true;
+        if (outcome.rebootRequired) {
+            SetError(&brokerError, L"broker-reboot-boundary", ERROR_SUCCESS_REBOOT_REQUIRED,
+                L"driver activation requires a restart; legacy ownership remains active and broker migration was not attempted");
+        } else if (!CheckTransactionDeadline(
+                options, L"transaction-deadline-before-broker", &brokerError) ||
+            !RunBrokerInstall(options, &brokerTransactionSettled, &brokerError)) {
+            // The broker command includes authenticated health verification and
+            // rolls back its own SCM/credential/legacy transaction. Keep the
+            // driver snapshot alive in this process until that proof succeeds.
+        }
+        if (brokerError.code != ERROR_SUCCESS) {
+            if (!brokerTransactionSettled) {
+                outcome.rollback = L"failed";
+                outcome.error = std::move(brokerError);
+                outcome.exitCode = ExitCode::RollbackFailed;
+                return outcome;
+            }
+            Error rollbackError;
+            bool rollbackReboot = outcome.rebootRequired;
+            if (createdHere) {
+                Error cleanupError;
+                if (!RemoveDevice(created.get(), createdData, &rollbackReboot, &cleanupError)) {
+                    outcome.rollback = L"failed";
+                    outcome.rebootRequired = rollbackReboot;
+                    outcome.error = std::move(cleanupError);
+                    outcome.exitCode = ExitCode::RollbackFailed;
+                    return outcome;
+                }
+            }
+            if (RollbackInstall(prior, &rollbackReboot, &rollbackError)) {
+                outcome.rollback = L"succeeded";
+                outcome.rebootRequired = rollbackReboot;
+                outcome.error = std::move(brokerError);
+                outcome.exitCode = outcome.error.code == ERROR_SUCCESS_REBOOT_REQUIRED
+                    ? ExitCode::RebootRequired : ExitCode::Failure;
+                return outcome;
+            }
+            outcome.rollback = L"failed";
+            outcome.rebootRequired = rollbackReboot;
+            outcome.error = std::move(rollbackError);
+            outcome.exitCode = ExitCode::RollbackFailed;
+            return outcome;
+        }
     }
 
     outcome.success = true;
@@ -1941,62 +2751,53 @@ bool RollbackRemove(
         }
         *rebootRequired = *rebootRequired || reboot != FALSE;
     }
-    bool removalReboot = false;
-    if (!RemoveAllExactDevices(&removalReboot, error)) {
+    Snapshot restorablePrior = prior;
+    std::vector<PackageInfo> reinstalledPackages;
+    if (!EnumerateOwnedPackages(&reinstalledPackages, error)) {
         return false;
     }
-    *rebootRequired = *rebootRequired || removalReboot;
-    if (!prior.devices.empty()) {
-        const auto iterator = std::find_if(backups.begin(), backups.end(), [&](const PackageBackup& backup) {
-            return _wcsicmp(backup.original.publishedName.c_str(),
-                prior.devices[0].publishedInf.c_str()) == 0;
-        });
-        if (iterator == backups.end()) {
-            return SetError(error, L"remove-rollback-binding", ERROR_NOT_FOUND);
+    for (DeviceState& device : restorablePrior.devices) {
+        const auto package = std::find_if(reinstalledPackages.begin(), reinstalledPackages.end(),
+            [&](const PackageInfo& candidate) {
+                return candidate.infSha256 == device.package.infSha256 &&
+                    candidate.version == device.package.version;
+            });
+        if (package == reinstalledPackages.end()) {
+            return SetError(error, L"remove-rollback-package-identity", ERROR_NOT_FOUND,
+                L"the exact captured package was not republished for devnode restoration");
         }
-        GUID classGuid{};
-        wchar_t className[MAX_CLASS_NAME_LEN]{};
-        if (!SetupDiGetINFClassW(iterator->infPath.c_str(), &classGuid, className, MAX_CLASS_NAME_LEN, nullptr)) {
-            return SetLastErrorDetail(error, L"remove-rollback-inf-class");
-        }
-        DeviceInfoSet created;
-        SP_DEVINFO_DATA createdData{};
-        createdData.cbSize = sizeof(createdData);
-        if (!RegisterRootDevice(classGuid, className, &created, &createdData, error)) {
-            return false;
-        }
-        BOOL reboot = FALSE;
-        if (!UpdateDriverForPlugAndPlayDevicesW(
-                nullptr, kHardwareId, iterator->infPath.c_str(), INSTALLFLAG_FORCE, &reboot)) {
-            return SetLastErrorDetail(error, L"remove-rollback-binding");
-        }
-        *rebootRequired = *rebootRequired || reboot != FALSE;
+        device.package = *package;
+        device.publishedInf = package->publishedName;
     }
-    if (!*rebootRequired) {
-        Snapshot restored;
-        if (!CaptureSnapshot(&restored, error)) {
-            return false;
-        }
-        std::multiset<std::pair<Version, std::string>> expectedPackages;
-        std::multiset<std::pair<Version, std::string>> actualPackages;
-        for (const PackageInfo& package : prior.packages) {
-            expectedPackages.emplace(package.version, package.infSha256);
-        }
-        for (const PackageInfo& package : restored.packages) {
-            actualPackages.emplace(package.version, package.infSha256);
-        }
-        if (expectedPackages != actualPackages || restored.devices.size() != prior.devices.size()) {
+    if (!RestorePriorBinding(restorablePrior, rebootRequired, error)) {
+        return false;
+    }
+
+    Snapshot restored;
+    if (!CaptureSnapshot(&restored, error)) {
+        return false;
+    }
+    std::multiset<std::pair<Version, std::string>> expectedPackages;
+    std::multiset<std::pair<Version, std::string>> actualPackages;
+    for (const PackageInfo& package : prior.packages) {
+        expectedPackages.emplace(package.version, package.infSha256);
+    }
+    for (const PackageInfo& package : restored.packages) {
+        actualPackages.emplace(package.version, package.infSha256);
+    }
+    if (expectedPackages != actualPackages || restored.devices.size() != prior.devices.size()) {
+        return SetError(error, L"remove-rollback-verification", ERROR_REVISION_MISMATCH,
+            L"rollback did not restore the exact prior package and devnode topology");
+    }
+    if (!prior.devices.empty()) {
+        if (_wcsicmp(restored.devices[0].instanceId.c_str(), prior.devices[0].instanceId.c_str()) != 0 ||
+            restored.devices[0].package.infSha256 != prior.devices[0].package.infSha256) {
             return SetError(error, L"remove-rollback-verification", ERROR_REVISION_MISMATCH,
-                L"rollback did not restore the exact prior package and devnode set");
+                L"rollback restored a different devnode identity or active package");
         }
-        if (!prior.devices.empty()) {
-            if (restored.devices[0].package.infSha256 != prior.devices[0].package.infSha256) {
-                return SetError(error, L"remove-rollback-verification", ERROR_REVISION_MISMATCH,
-                    L"rollback restored a different active package");
-            }
-            if (!VerifyAbiHealth(error)) {
-                return false;
-            }
+        if (!*rebootRequired && prior.devices[0].started &&
+            !VerifyAbiHealth(CurrentUnixMilliseconds() + 15000, error)) {
+            return false;
         }
     }
     return true;
@@ -2016,6 +2817,13 @@ Outcome Remove() {
     }
     Snapshot prior;
     if (!CaptureSnapshot(&prior, &outcome.error)) {
+        outcome.exitCode = ExitCode::PreflightRejected;
+        return outcome;
+    }
+    if (prior.devices.size() > 1 ||
+        (!prior.devices.empty() && !prior.devices[0].present)) {
+        SetError(&outcome.error, L"remove-topology", ERROR_DUPLICATE_SERVICE_NAME,
+            L"removal requires zero devices or one present exact owned root devnode");
         outcome.exitCode = ExitCode::PreflightRejected;
         return outcome;
     }
@@ -2135,6 +2943,22 @@ Outcome SelfTest() {
         SetError(&outcome.error, L"self-test-rollback-cleanup", ERROR_INVALID_DATA);
         return outcome;
     }
+    if (!IsSafeTargetUserSid(L"S-1-5-21-1-2-3-1001") ||
+        IsSafeTargetUserSid(L"S-1-5-21-bad") ||
+        QuoteWindowsArgument(LR"(C:\Program Files\VIIPER\viiper.exe)") !=
+            LR"("C:\Program Files\VIIPER\viiper.exe")" ||
+        QuoteWindowsArgument(LR"(value\"quoted)") != LR"("value\\\"quoted")") {
+        SetError(&outcome.error, L"self-test-broker-command", ERROR_INVALID_DATA);
+        return outcome;
+    }
+    if (!IsProductionHardwareVerificationUsage({kHardwareVerificationOid}) ||
+        IsProductionHardwareVerificationUsage(
+            {kHardwareVerificationOid, kAttestationVerificationOid}) ||
+        IsProductionHardwareVerificationUsage({kAttestationVerificationOid}) ||
+        IsProductionHardwareVerificationUsage({})) {
+        SetError(&outcome.error, L"self-test-production-eku", ERROR_INVALID_DATA);
+        return outcome;
+    }
     outcome.success = true;
     outcome.exitCode = ExitCode::Success;
     return outcome;
@@ -2146,13 +2970,39 @@ bool ParseInstallOptions(int argc, wchar_t** argv, InstallOptions* options, Erro
     }
     options->infPath = argv[2];
     bool manifestSeen = false;
+    bool manifestHashSeen = false;
     bool revisionSeen = false;
     bool modeSeen = false;
+    bool brokerSeen = false;
+    bool brokerHashSeen = false;
+    bool brokerTokenSeen = false;
+    bool brokerTokenHashSeen = false;
+    bool targetUserSeen = false;
+    bool transactionDeadlineSeen = false;
     for (int index = 3; index < argc; ++index) {
         const std::wstring argument = argv[index];
         if (_wcsicmp(argument.c_str(), L"--manifest") == 0 && index + 1 < argc && !manifestSeen) {
             options->manifestPath = argv[++index];
             manifestSeen = true;
+        } else if (_wcsicmp(argument.c_str(), L"--manifest-sha256") == 0 &&
+            index + 1 < argc && !manifestHashSeen) {
+            const std::wstring wide = argv[++index];
+            options->manifestSha256.clear();
+            options->manifestSha256.reserve(wide.size());
+            for (const wchar_t value : wide) {
+                if (value > 0x7f) {
+                    return SetError(error, L"arguments", ERROR_INVALID_PARAMETER,
+                        L"manifest SHA-256 must contain ASCII hexadecimal characters");
+                }
+                options->manifestSha256.push_back(static_cast<char>(value));
+            }
+            if (options->manifestSha256.size() != 64 ||
+                !std::all_of(options->manifestSha256.begin(), options->manifestSha256.end(),
+                    [](unsigned char value) { return std::isxdigit(value) != 0; })) {
+                return SetError(error, L"arguments", ERROR_INVALID_PARAMETER,
+                    L"manifest SHA-256 must contain exactly 64 hexadecimal characters");
+            }
+            manifestHashSeen = true;
         } else if (_wcsicmp(argument.c_str(), L"--source-revision") == 0 &&
             index + 1 < argc && !revisionSeen) {
             const std::wstring wide = argv[++index];
@@ -2190,14 +3040,87 @@ bool ParseInstallOptions(int argc, wchar_t** argv, InstallOptions* options, Erro
                     L"controlled downgrade requires the exact installed four-part version");
             }
             options->expectedDowngradeFrom = expected;
+        } else if (_wcsicmp(argument.c_str(), L"--broker-executable") == 0 &&
+            index + 1 < argc && !brokerSeen) {
+            options->brokerExecutable = argv[++index];
+            brokerSeen = true;
+        } else if (_wcsicmp(argument.c_str(), L"--broker-sha256") == 0 &&
+            index + 1 < argc && !brokerHashSeen) {
+            const std::wstring wide = argv[++index];
+            options->brokerSha256.clear();
+            options->brokerSha256.reserve(wide.size());
+            for (const wchar_t value : wide) {
+                if (value > 0x7f) {
+                    return SetError(error, L"arguments", ERROR_INVALID_PARAMETER,
+                        L"broker SHA-256 must contain ASCII hexadecimal characters");
+                }
+                options->brokerSha256.push_back(static_cast<char>(value));
+            }
+            if (options->brokerSha256.size() != 64 ||
+                !std::all_of(options->brokerSha256.begin(), options->brokerSha256.end(),
+                    [](unsigned char value) { return std::isxdigit(value) != 0; })) {
+                return SetError(error, L"arguments", ERROR_INVALID_PARAMETER,
+                    L"broker SHA-256 must contain exactly 64 hexadecimal characters");
+            }
+            brokerHashSeen = true;
+        } else if (_wcsicmp(argument.c_str(), L"--target-user-sid") == 0 &&
+            index + 1 < argc && !targetUserSeen) {
+            options->targetUserSid = argv[++index];
+            targetUserSeen = true;
+        } else if (_wcsicmp(argument.c_str(), L"--broker-token") == 0 &&
+            index + 1 < argc && !brokerTokenSeen) {
+            options->brokerToken = argv[++index];
+            brokerTokenSeen = true;
+        } else if (_wcsicmp(argument.c_str(), L"--broker-token-sha256") == 0 &&
+            index + 1 < argc && !brokerTokenHashSeen) {
+            const std::wstring wide = argv[++index];
+            options->brokerTokenSha256.clear();
+            options->brokerTokenSha256.reserve(wide.size());
+            for (const wchar_t value : wide) {
+                if (value > 0x7f) {
+                    return SetError(error, L"arguments", ERROR_INVALID_PARAMETER,
+                        L"broker token SHA-256 must contain ASCII hexadecimal characters");
+                }
+                options->brokerTokenSha256.push_back(static_cast<char>(value));
+            }
+            if (options->brokerTokenSha256.size() != 64 ||
+                !std::all_of(options->brokerTokenSha256.begin(), options->brokerTokenSha256.end(),
+                    [](unsigned char value) { return std::isxdigit(value) != 0; })) {
+                return SetError(error, L"arguments", ERROR_INVALID_PARAMETER,
+                    L"broker token SHA-256 must contain exactly 64 hexadecimal characters");
+            }
+            brokerTokenHashSeen = true;
+        } else if (_wcsicmp(argument.c_str(), L"--transaction-deadline-unix-ms") == 0 &&
+            index + 1 < argc && !transactionDeadlineSeen) {
+            const std::wstring value = argv[++index];
+            if (value.empty() || value.size() > 20 ||
+                !std::all_of(value.begin(), value.end(), [](wchar_t character) {
+                    return character >= L'0' && character <= L'9';
+                })) {
+                return SetError(error, L"arguments", ERROR_INVALID_PARAMETER,
+                    L"transaction deadline must contain only Unix-millisecond digits");
+            }
+            const wchar_t* begin = value.data();
+            wchar_t* end = nullptr;
+            errno = 0;
+            const unsigned long long parsed = std::wcstoull(begin, &end, 10);
+            if (errno == ERANGE || end == begin || end != begin + value.size() || parsed == 0) {
+                return SetError(error, L"arguments", ERROR_INVALID_PARAMETER,
+                    L"transaction deadline must be positive Unix milliseconds");
+            }
+            options->transactionDeadlineUnixMs = static_cast<uint64_t>(parsed);
+            transactionDeadlineSeen = true;
         } else {
             return SetError(error, L"arguments", ERROR_INVALID_PARAMETER,
                 L"unknown, duplicate, or incomplete install option");
         }
     }
-    if (!manifestSeen || !revisionSeen || !modeSeen) {
+    if (!manifestSeen || !manifestHashSeen || !revisionSeen || !modeSeen ||
+        !transactionDeadlineSeen ||
+        brokerSeen != targetUserSeen || brokerSeen != brokerHashSeen ||
+        brokerSeen != brokerTokenSeen || brokerSeen != brokerTokenHashSeen) {
         return SetError(error, L"arguments", ERROR_INVALID_PARAMETER,
-            L"manifest, source revision, and validation mode are all required");
+            L"manifest, its installer hash, source revision, and validation mode are required; broker executable, hashes, protected token, and target SID must be supplied together");
     }
     return true;
 }
@@ -2205,9 +3128,16 @@ bool ParseInstallOptions(int argc, wchar_t** argv, InstallOptions* options, Erro
 void Usage() {
     std::wcerr
         << L"usage:\n"
-        << L"  ViiperUdeCtl.exe install <ViiperUde.inf> --manifest <submission.json> "
+        << L"  ViiperUdeCtl.exe install <ViiperUde.inf> --manifest <submission.json> --manifest-sha256 <64 hex> "
            L"--source-revision <40-64 hex> --validation-mode <production|controlled-test> "
-           L"[--allow-controlled-downgrade <exact-installed-version>]\n"
+           L"--transaction-deadline-unix-ms <positive integer> "
+           L"[--allow-controlled-downgrade <exact-installed-version>] "
+           L"--broker-executable <managed-viiper.exe> --broker-sha256 <64 hex> "
+           L"--broker-token <protected-token> --broker-token-sha256 <64 hex> "
+           L"--target-user-sid <SID>\n"
+        << L"  ViiperUdeCtl.exe verify <ViiperUde.inf> --manifest <submission.json> --manifest-sha256 <64 hex> "
+           L"--source-revision <40-64 hex> --validation-mode <production|controlled-test> "
+           L"--transaction-deadline-unix-ms <positive integer>\n"
         << L"  ViiperUdeCtl.exe remove\n"
         << L"  ViiperUdeCtl.exe status\n"
         << L"  ViiperUdeCtl.exe self-test\n";
@@ -2216,7 +3146,8 @@ void Usage() {
 } // namespace
 
 int wmain(int argc, wchar_t** argv) {
-    if (argc >= 3 && _wcsicmp(argv[1], L"install") == 0) {
+    if (argc >= 3 &&
+        (_wcsicmp(argv[1], L"install") == 0 || _wcsicmp(argv[1], L"verify") == 0)) {
         InstallOptions options;
         Error argumentError;
         if (!ParseInstallOptions(argc, argv, &options, &argumentError)) {
@@ -2224,11 +3155,20 @@ int wmain(int argc, wchar_t** argv) {
             Outcome outcome;
             outcome.error = std::move(argumentError);
             outcome.exitCode = ExitCode::Usage;
-            EmitOutcome(L"install", outcome);
+            EmitOutcome(argv[1], outcome);
             return static_cast<int>(outcome.exitCode);
         }
-        Outcome outcome = Install(options);
-        EmitOutcome(L"install", outcome);
+        if (_wcsicmp(argv[1], L"install") == 0 && options.production &&
+            options.brokerExecutable.empty()) {
+            Outcome outcome;
+            SetError(&outcome.error, L"broker-required", ERROR_INVALID_PARAMETER,
+                L"production driver installation requires the authenticated broker transaction");
+            outcome.exitCode = ExitCode::PreflightRejected;
+            EmitOutcome(argv[1], outcome);
+            return static_cast<int>(outcome.exitCode);
+        }
+        Outcome outcome = _wcsicmp(argv[1], L"verify") == 0 ? Verify(options) : Install(options);
+        EmitOutcome(argv[1], outcome);
         return static_cast<int>(outcome.exitCode);
     }
     if (argc == 2 && _wcsicmp(argv[1], L"remove") == 0) {
