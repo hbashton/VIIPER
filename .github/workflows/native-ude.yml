@@ -6,16 +6,26 @@ on:
     paths:
       - "native/udecx/**"
       - "internal/transport/udecx/**"
+      - "internal/server/usb/**"
+      - "internal/cmd/**"
+      - "device/**"
+      - "usb/**"
       - ".github/workflows/native-ude.yml"
   pull_request:
     paths:
       - "native/udecx/**"
       - "internal/transport/udecx/**"
+      - "internal/server/usb/**"
+      - "internal/cmd/**"
+      - "device/**"
+      - "usb/**"
       - ".github/workflows/native-ude.yml"
   workflow_dispatch:
 
 permissions:
+  actions: read
   contents: read
+  security-events: write
 
 jobs:
   protocol:
@@ -31,10 +41,26 @@ jobs:
       - name: Vet complete VIIPER tree
         run: go vet ./...
 
+  race:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.5"
+          cache: true
+      - name: Race-test native host and USB processor
+        run: go test -race -count=5 ./internal/transport/udecx ./internal/server/usb
+
   driver:
     runs-on: windows-2025-vs2026
     steps:
       - uses: actions/checkout@v4
+      - uses: github/codeql-action/init@v4
+        with:
+          languages: c-cpp
+          build-mode: manual
+          queries: security-extended
       - uses: microsoft/setup-msbuild@v2
         with:
           msbuild-architecture: x64
@@ -65,6 +91,10 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or -not (Test-Path $output)) { throw "ViiperUdeCtl build failed" }
           & $output status
           if ($LASTEXITCODE -ne 0) { throw "ViiperUdeCtl status smoke test failed" }
+      - name: Analyze native driver and setup helper
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: /language:c-cpp
       - uses: actions/upload-artifact@v4
         with:
           name: ViiperUde-x64-test-signed
