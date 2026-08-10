@@ -80,6 +80,10 @@ The transport is intentionally split by USB semantics:
   notification schedules one preallocated passive work item, which completes
   one later poll from that cache. The ready callback itself never completes an
   URB because KMDF can invoke it synchronously on UdeCx's submitter thread.
+  The Go publisher allocates one buffer from the endpoint's descriptor at
+  publisher startup and supported controller engines encode directly into it.
+  The serial overlapped IOCTL copies the report before that buffer is reused,
+  eliminating per-sample Go heap work without shared-memory lifetime hazards.
   Input timing is therefore host-poll-driven rather than dependent on a second
   physical report arriving after the poll;
 - control, interrupt-OUT, isochronous speaker/microphone/haptics, feedback, and

@@ -59,7 +59,7 @@ type registeredDevice struct {
 	cancel            context.CancelFunc
 	stopping          bool
 	publisherStopping bool
-	fastInput         map[uint8]struct{}
+	fastInput         map[uint8]int
 	publishers        map[uint8]*inputPublisher
 	activeInput       map[uint8]bool
 	resettingInput    map[uint8]bool
@@ -70,10 +70,11 @@ type registeredDevice struct {
 }
 
 type inputPublisher struct {
-	endpoint uint8
-	sequence *atomic.Uint64
-	cancel   context.CancelFunc
-	done     chan struct{}
+	endpoint   uint8
+	reportSize int
+	sequence   *atomic.Uint64
+	cancel     context.CancelFunc
+	done       chan struct{}
 }
 
 type laneKey struct {
@@ -175,15 +176,24 @@ func (h *Host) lockDeviceLifecycle(deviceID uint64) func() {
 	}
 }
 
-func fastInputEndpoints(dev usb.Device) map[uint8]struct{} {
-	result := make(map[uint8]struct{})
+func fastInputEndpoints(dev usb.Device) map[uint8]int {
+	result := make(map[uint8]int)
 	if dev == nil || dev.GetDescriptor() == nil {
 		return result
 	}
 	for _, iface := range dev.GetDescriptor().Interfaces {
 		for _, endpoint := range iface.Endpoints {
 			if endpoint.BEndpointAddress&0x80 != 0 && endpoint.BMAttributes&0x03 == 0x03 {
-				result[endpoint.BEndpointAddress] = struct{}{}
+				// USB 2.0 wMaxPacketSize uses bits 0..10 for bytes and bits
+				// 11..12 for additional high-bandwidth transactions. Allocate
+				// the complete service opportunity while enforcing the native
+				// ABI's hard report bound.
+				packetBytes := int(endpoint.WMaxPacketSize & 0x07ff)
+				transactions := 1 + int((endpoint.WMaxPacketSize>>11)&0x03)
+				reportSize := packetBytes * transactions
+				if reportSize > 0 && reportSize <= MaxInputReportBytes {
+					result[endpoint.BEndpointAddress] = reportSize
+				}
 			}
 		}
 	}
@@ -365,7 +375,8 @@ func (h *Host) startInputPublisher(entry *registeredDevice, endpoint uint8) {
 		h.mu.Unlock()
 		return
 	}
-	if _, fast := entry.fastInput[endpoint]; !fast || entry.publishers[endpoint] != nil {
+	reportSize, fast := entry.fastInput[endpoint]
+	if !fast || entry.publishers[endpoint] != nil {
 		h.mu.Unlock()
 		return
 	}
@@ -376,7 +387,8 @@ func (h *Host) startInputPublisher(entry *registeredDevice, endpoint uint8) {
 	}
 	ctx, cancel := context.WithCancel(entry.ctx)
 	publisher := &inputPublisher{
-		endpoint: endpoint, sequence: sequence, cancel: cancel, done: make(chan struct{}),
+		endpoint: endpoint, reportSize: reportSize, sequence: sequence,
+		cancel: cancel, done: make(chan struct{}),
 	}
 	entry.publishers[endpoint] = publisher
 	h.mu.Unlock()
@@ -426,9 +438,36 @@ func (h *Host) activeInputEndpoints(entry *registeredDevice) []uint8 {
 
 func (h *Host) runInputPublisher(ctx context.Context, entry *registeredDevice, publisher *inputPublisher) {
 	defer close(publisher.done)
+	reader, direct := entry.device.(usb.InterruptInputDevice)
+	var reportBuffer []byte
+	if direct {
+		reportBuffer = make([]byte, publisher.reportSize)
+	}
 	for {
-		payload := entry.device.HandleTransfer(
-			ctx, uint32(publisher.endpoint&0x0f), usbip.DirIn, nil)
+		var payload []byte
+		if direct {
+			written, err := reader.ReadInterruptInput(
+				ctx, uint32(publisher.endpoint&0x0f), reportBuffer)
+			if err != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				h.reportFatal(fmt.Errorf(
+					"encode native UDE input report for device %d endpoint 0x%02x: %w",
+					entry.identity.DeviceID, publisher.endpoint, err))
+				return
+			}
+			if written <= 0 || written > len(reportBuffer) {
+				h.reportFatal(fmt.Errorf(
+					"device %d encoded invalid interrupt-IN length %d for endpoint 0x%02x (capacity %d)",
+					entry.identity.DeviceID, written, publisher.endpoint, len(reportBuffer)))
+				return
+			}
+			payload = reportBuffer[:written]
+		} else {
+			payload = entry.device.HandleTransfer(
+				ctx, uint32(publisher.endpoint&0x0f), usbip.DirIn, nil)
+		}
 		if ctx.Err() != nil {
 			return
 		}

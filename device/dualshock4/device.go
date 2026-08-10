@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -335,6 +336,31 @@ func (d *DualShock4) HandleTransfer(ctx context.Context, ep uint32, dir uint32, 
 	}
 
 	return nil
+}
+
+// ReadInterruptInput implements usb.InterruptInputDevice for native UDE. It
+// writes the controller's next HID sample into caller-owned storage; USB/IP
+// continues to use HandleTransfer and its independently owned report slice.
+func (d *DualShock4) ReadInterruptInput(ctx context.Context, ep uint32, dst []byte) (int, error) {
+	if ep&0x0f != EndpointIn&0x0f {
+		return 0, fmt.Errorf("DualShock 4 interrupt-IN endpoint %d is unsupported", ep)
+	}
+	var is InputState
+	select {
+	case <-ctx.Done():
+		if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return 0, ctx.Err()
+		}
+		d.mtx.Lock()
+		is = *d.inputState
+		d.mtx.Unlock()
+	case next := <-d.inputCh:
+		is = *next
+	}
+	d.mtx.Lock()
+	ms := *d.metaState
+	d.mtx.Unlock()
+	return d.buildUSBInputReportInto(&is, &ms, dst)
 }
 
 func (d *DualShock4) QueueMicrophonePCMFrame(frame []byte) {
@@ -734,6 +760,16 @@ func (d *DualShock4) buildCalibrationReport(id byte) []byte {
 
 func (d *DualShock4) buildUSBInputReport(s *InputState, m *MetaState) []byte {
 	b := make([]byte, InputReportSize)
+	_, _ = d.buildUSBInputReportInto(s, m, b)
+	return b
+}
+
+func (d *DualShock4) buildUSBInputReportInto(s *InputState, m *MetaState, dst []byte) (int, error) {
+	if len(dst) < InputReportSize {
+		return 0, io.ErrShortBuffer
+	}
+	b := dst[:InputReportSize]
+	clear(b)
 
 	b[0] = ReportIDInput
 
@@ -809,7 +845,7 @@ func (d *DualShock4) buildUSBInputReport(s *InputState, m *MetaState) []byte {
 	b[39] = touch2Counter
 	encodeTouchCoords(b[40:43], s.Touch2X, s.Touch2Y)
 
-	return b
+	return InputReportSize, nil
 }
 
 func (d *DualShock4) nextReportTimestamp() uint32 {

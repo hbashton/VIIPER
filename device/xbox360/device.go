@@ -126,6 +126,25 @@ func (x *Xbox360) HandleTransfer(ctx context.Context, ep uint32, dir uint32, out
 	return nil
 }
 
+// ReadInterruptInput implements usb.InterruptInputDevice for the native UDE
+// input lane without changing the USB/IP report ownership contract.
+func (x *Xbox360) ReadInterruptInput(ctx context.Context, ep uint32, dst []byte) (int, error) {
+	if ep != 1 {
+		return 0, fmt.Errorf("Xbox 360 interrupt-IN endpoint %d is unsupported", ep)
+	}
+	select {
+	case <-ctx.Done():
+		if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return 0, ctx.Err()
+		}
+	case <-x.inputSignal:
+	}
+	x.inputMu.RLock()
+	st := x.inputState
+	x.inputMu.RUnlock()
+	return st.BuildReportInto(dst)
+}
+
 func (x *Xbox360) emitRumble(rumble XRumbleState) {
 	x.rumbleDispatchMu.Lock()
 	defer x.rumbleDispatchMu.Unlock()

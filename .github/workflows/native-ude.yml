@@ -59,8 +59,14 @@ jobs:
         with:
           go-version: "1.26.5"
           cache: true
-      - name: Race-test native host and USB processor
-        run: go test -race -count=5 ./internal/transport/udecx ./internal/server/usb
+      - name: Race-test native host, USB processor, and realtime controller encoders
+        run: >-
+          go test -race -count=5
+          ./internal/transport/udecx
+          ./internal/server/usb
+          ./device/dualsense
+          ./device/dualshock4
+          ./device/xbox360
 
   driver:
     runs-on: windows-2025-vs2026

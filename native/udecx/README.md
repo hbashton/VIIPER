@@ -58,6 +58,12 @@ Reset, purge, D0 exit, and device reset invalidate both the cache and token
 behind the same admission barriers used by the direct producer. This removes
 the old lost-rendezvous window and never requires an extra feeder update to wake
 the first already-posted host poll.
+The Go publisher likewise owns one descriptor-sized buffer per active endpoint.
+DualSense, DualShock 4, and Xbox 360 encode directly into that buffer, which is
+reused only after the overlapped IOCTL has completed and the kernel has copied
+the report. Allocation gates enforce zero heap allocations in those report
+encoders; USB/IP and unconverted device engines retain their existing ownership
+contract through the optional interface.
 `InputReportsSubmitted` counts accepted state publications and
 `InputReportsCompleted` counts host polls served from them. Multiple publications
 can coalesce into one latest state before Windows polls, but one publication can

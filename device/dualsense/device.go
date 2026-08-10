@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"math"
 	"net"
@@ -96,7 +97,8 @@ type DualSense struct {
 	hapticsPCMStartedAt time.Time
 	timestampBase       time.Time
 
-	mtx sync.Mutex
+	inputReportMu sync.Mutex
+	mtx           sync.Mutex
 }
 
 func New(o *device.CreateOptions) (*DualSense, error) {
@@ -433,6 +435,31 @@ func (d *DualSense) HandleTransfer(ctx context.Context, ep uint32, dir uint32, o
 	}
 
 	return nil
+}
+
+// ReadInterruptInput implements usb.InterruptInputDevice for the native UDE
+// fast path. The caller owns dst and reuses it only after SubmitInputReport has
+// completed, so encoding here removes the per-sample report allocation without
+// changing USB/IP behavior.
+func (d *DualSense) ReadInterruptInput(ctx context.Context, ep uint32, dst []byte) (int, error) {
+	if ep&0x0f != EndpointIn&0x0f {
+		return 0, fmt.Errorf("DualSense interrupt-IN endpoint %d is unsupported", ep)
+	}
+	var is InputState
+	select {
+	case <-ctx.Done():
+		if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return 0, ctx.Err()
+		}
+		d.mtx.Lock()
+		is = d.inputState
+		d.mtx.Unlock()
+	case is = <-d.inputCh:
+	}
+	d.mtx.Lock()
+	ms := *d.metaState
+	d.mtx.Unlock()
+	return d.buildUSBInputReportInto(&is, &ms, dst)
 }
 
 func (d *DualSense) QueueMicrophonePCMFrame(frame []byte) {
@@ -1096,6 +1123,23 @@ func (d *DualSense) featureReportCommandResponse() []byte {
 
 func (d *DualSense) buildUSBInputReport(s *InputState, m *MetaState) []byte {
 	b := make([]byte, InputReportSize)
+	_, _ = d.buildUSBInputReportInto(s, m, b)
+	return b
+}
+
+func (d *DualSense) buildUSBInputReportInto(s *InputState, m *MetaState, dst []byte) (int, error) {
+	if len(dst) < InputReportSize {
+		return 0, io.ErrShortBuffer
+	}
+	b := dst[:InputReportSize]
+	clear(b)
+
+	// HID GET_REPORT and the native interrupt publisher can encode
+	// concurrently. Sequence and corruption telemetry are one ordered report
+	// stream, so serialize only encoding rather than the controller state or
+	// media paths.
+	d.inputReportMu.Lock()
+	defer d.inputReportMu.Unlock()
 	b[0] = ReportIDInput
 
 	b[1] = uint8(int16(s.LX) + 128)
@@ -1173,7 +1217,7 @@ func (d *DualSense) buildUSBInputReport(s *InputState, m *MetaState) []byte {
 		resetUSBInputReportToNeutral(b, d.seqCounter, ts, battery)
 	}
 
-	return b
+	return InputReportSize, nil
 }
 
 func inputStateControlsInvalid(s *InputState) bool {

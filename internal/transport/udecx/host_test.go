@@ -436,9 +436,40 @@ type inputPublisherTestDevice struct {
 	reports    chan []byte
 }
 
+type directInputPublisherTestDevice struct {
+	*inputPublisherTestDevice
+	buffers chan *byte
+}
+
 func newInputPublisherTestDevice() *inputPublisherTestDevice {
 	base := hostTestDevice().GetDescriptor()
 	return &inputPublisherTestDevice{descriptor: *base, reports: make(chan []byte, 4)}
+}
+
+func newDirectInputPublisherTestDevice() *directInputPublisherTestDevice {
+	return &directInputPublisherTestDevice{
+		inputPublisherTestDevice: newInputPublisherTestDevice(),
+		buffers:                  make(chan *byte, 4),
+	}
+}
+
+func (d *directInputPublisherTestDevice) ReadInterruptInput(
+	ctx context.Context, _ uint32, dst []byte,
+) (int, error) {
+	if len(dst) == 0 {
+		return 0, errors.New("empty native input buffer")
+	}
+	select {
+	case report := <-d.reports:
+		if len(report) > len(dst) {
+			return 0, errors.New("native input buffer is too short")
+		}
+		d.buffers <- &dst[0]
+		copy(dst, report)
+		return len(report), nil
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	}
 }
 
 func (d *inputPublisherTestDevice) HandleTransfer(
@@ -505,6 +536,63 @@ func TestHostPublishesInterruptInputDirectlyAfterEndpointStart(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("endpoint purge was not processed")
 	}
+	cancel()
+	select {
+	case err = <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("host did not stop")
+	}
+}
+
+func TestHostReusesOneDescriptorSizedDirectInputBuffer(t *testing.T) {
+	driver := &fastInputDriver{fakeHostDriver: newFakeHostDriver(), reports: make(chan InputReport, 4)}
+	processor := &recordingProcessor{
+		processed: make(chan uint64, 1), lifecycle: make(chan uint64, 2),
+		resets: make(chan DeviceIdentity, 1),
+	}
+	host, err := NewHost(driver, processor, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	device := newDirectInputPublisherTestDevice()
+	identity, err := host.Register(context.Background(), 45, device)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- host.Serve(ctx) }()
+	driver.operations <- Operation{
+		DeviceID: identity.DeviceID, Generation: identity.Generation,
+		EndpointAddress: 0x81, EndpointSequence: 1, Kind: OperationEndpointStart,
+	}
+	select {
+	case <-processor.lifecycle:
+	case <-time.After(time.Second):
+		t.Fatal("endpoint start was not processed")
+	}
+
+	device.reports <- []byte{1, 2, 3, 4}
+	first := <-driver.reports
+	firstBuffer := <-device.buffers
+	device.reports <- []byte{5, 6}
+	second := <-driver.reports
+	secondBuffer := <-device.buffers
+	if firstBuffer != secondBuffer {
+		t.Fatal("direct input publisher allocated a replacement endpoint buffer")
+	}
+	if string(first.Payload) != string([]byte{1, 2, 3, 4}) ||
+		string(second.Payload) != string([]byte{5, 6}) {
+		t.Fatalf("direct input payloads first=%v second=%v", first.Payload, second.Payload)
+	}
+	if first.Sequence != 1 || second.Sequence != 2 {
+		t.Fatalf("direct input sequences first=%d second=%d", first.Sequence, second.Sequence)
+	}
+
 	cancel()
 	select {
 	case err = <-done:

@@ -14,6 +14,20 @@ type Device interface {
 	GetDeviceSpecificArgs() map[string]any
 }
 
+// InterruptInputDevice is an optional allocation-free interrupt-IN contract.
+// Native transports may keep one endpoint-sized buffer and ask the device to
+// encode directly into it instead of allocating a new report for every input
+// sample. Implementations must block until input is available or ctx is
+// cancelled, must not retain dst, and must be safe when different endpoints
+// are read concurrently. A successful call returns the number of bytes written
+// to dst; zero-length successful reports are invalid.
+//
+// HandleTransfer remains the compatibility contract for USB/IP and for devices
+// which do not implement this interface.
+type InterruptInputDevice interface {
+	ReadInterruptInput(ctx context.Context, ep uint32, dst []byte) (int, error)
+}
+
 // ControlDevice is an optional interface for devices that need to handle
 // control transfers on endpoint 0 (EP0).
 //
