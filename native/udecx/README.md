@@ -16,6 +16,11 @@ Directory contract:
   unsigned CI artifact is a production driver.
 - `tools/Test-ViiperUdeSignedPackage.ps1` validates the Microsoft-returned
   driver and catalog against kernel signing policy.
+- `tools/Invoke-ViiperUdeLiveValidation.ps1` hash-binds that verified package
+  to the installed service image and root devnode, then exercises every
+  production controller through the real UdeCx host, direct interrupt-input
+  path, generation teardown, and driver fault counters. It never installs or
+  changes a driver.
 - ABI, lifecycle, descriptor, cancellation, and fault tests live beside the Go
   broker packages and in the native-driver CI gates.
 
@@ -35,3 +40,17 @@ This skips the USB/IP runtime prerequisite and records
 `server --transport native-ude` in the startup command. It does not install or
 trust an unsigned kernel driver. The default remains `usbip` until the signed
 live-driver gates in the architecture document pass.
+
+On a disposable elevated test machine, validate an already-installed
+Microsoft-signed package with:
+
+```powershell
+.\native\udecx\tools\Invoke-ViiperUdeLiveValidation.ps1 `
+  -SignedPackageDirectory C:\ViiperUde\MicrosoftSigned `
+  -Iterations 10
+```
+
+The command refuses an unsigned package, a package/service hash mismatch, a
+non-Microsoft root devnode, a dirty driver session, or any increase in invalid
+messages, queue exhaustion, notification overflow, late completion, or cleanup
+retry counters. Normal CI never opts into this live test.

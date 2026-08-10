@@ -63,6 +63,17 @@ passes Driver Verifier, HLK or the scoped attestation test matrix, repeated
 install/update/rollback, process crash, sleep/resume, and multi-controller
 media soak on a disposable test machine.
 
+The first repeatable signed-driver gate is
+`native/udecx/tools/Invoke-ViiperUdeLiveValidation.ps1`. It validates the
+Microsoft-returned package, requires the installed service image to have the
+same SHA-256 hash, requires exactly one Microsoft-signed root devnode, and then
+runs the opt-in Windows integration test against Xbox 360, DualShock 4,
+DualSense, DualSense Edge, and Switch 2 Pro production descriptors. Every
+generation must enumerate, complete direct interrupt-input reports, tear down
+to zero active devices and pending operations, and leave all protocol/fault
+counters unchanged. The script does not install a driver or enable Driver
+Verifier; those remain explicit disposable-machine operations.
+
 ## Primary Microsoft references
 
 - [Driver code-signing requirements](https://learn.microsoft.com/windows-hardware/drivers/dashboard/code-signing-reqs)
