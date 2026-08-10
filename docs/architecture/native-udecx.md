@@ -215,6 +215,11 @@ interface fields are only hints for alternates that contain no endpoints.
   the public endpoint sequence remains contiguous without limiting media to
   one in-flight URB.
 - Media callbacks do not take the controller lock.
+- Transfer buffers obey both dimensions of the Windows USB contract: the URB
+  declares the total transfer length, while a pointer returned by
+  `UdecxUrbRetrieveBuffer` is used only within its separately reported mapped
+  span. Chained or short mappings fall through to a bounded MDL-chain walk;
+  the driver never treats the URB length as permission to overrun one mapping.
 - Interrupt-IN queues are manual and completed from fresh input snapshots;
   output and media endpoints retain independent ordered queues.
 - A direct input report that was already submitted when D0 exit, unplug, or
@@ -232,6 +237,10 @@ interface fields are only hints for alternates that contain no endpoints.
   manual inverted-call queue share the owner lock with file cleanup. No close
   can finish purging that queue and then have an already-validated request
   appear behind the purge boundary.
+- The process-death cleanup timer takes its own temporary reference to the
+  owner file object before dropping the owner lock. Concurrent cleanup can
+  release the controller's long-lived reference without leaving the retry path
+  with a stale WDF handle.
 - Completion lookup is keyed by `(device ID, generation, token)`.
 - Failed transfers do not need to fabricate a successful ISO packet table.
   Successful completions are canonical: OUT replies carry no payload, every

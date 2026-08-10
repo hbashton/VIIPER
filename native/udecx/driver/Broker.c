@@ -1012,10 +1012,13 @@ ViiperCopyTransferBuffer(
     }
 
     status = UdecxUrbRetrieveBuffer(Request, &contiguous, &contiguousLength);
-    if (NT_SUCCESS(status) && contiguous != NULL) {
-        // UdeCx can report a mapped span smaller than the URB's declared
-        // TransferBufferLength.  The URB field is the authoritative transfer
-        // capacity for this request; usbip-win2 follows the same rule.
+    if (NT_SUCCESS(status) && contiguous != NULL && contiguousLength >= Length) {
+        // The pointer returned by UdecxUrbRetrieveBuffer is valid for exactly
+        // the reported span.  A chained MDL can legitimately expose a first
+        // mapped segment that is shorter than the URB's total transfer length;
+        // in that case use the MDL walk below instead of copying beyond this
+        // mapping.  The URB length remains the transfer contract, but it does
+        // not enlarge an individual mapped buffer.
         if (ToUrb) {
             RtlCopyMemory(contiguous, Buffer, Length);
         } else {

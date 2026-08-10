@@ -57,14 +57,26 @@ ViiperEvtOwnerCleanupRetry(
     WdfWaitLockAcquire(context->OwnerLock, NULL);
     if (context->CleanupInProgress && context->OwnerFile != WDF_NO_HANDLE) {
         ownerFile = context->OwnerFile;
+        // Pin the file object across the unlocked cleanup attempt.  Another
+        // cleanup path can finish device removal and release the controller's
+        // long-lived owner reference immediately after OwnerLock is dropped.
+        // Without this temporary reference the timer could dereference a
+        // deleted WDFFILEOBJECT while retrying process-death cleanup.
+        WdfObjectReference(ownerFile);
     }
     WdfWaitLockRelease(context->OwnerLock);
-    if (ownerFile == WDF_NO_HANDLE || ViiperFinishOwnerCleanup(device, ownerFile)) {
+    if (ownerFile == WDF_NO_HANDLE) {
+        return;
+    }
+
+    if (ViiperFinishOwnerCleanup(device, ownerFile)) {
+        WdfObjectDereference(ownerFile);
         return;
     }
 
     InterlockedIncrement(&context->CleanupRetries);
     (VOID)WdfTimerStart(Timer, WDF_REL_TIMEOUT_IN_MS(VIIPER_OWNER_CLEANUP_RETRY_MS));
+    WdfObjectDereference(ownerFile);
 }
 
 NTSTATUS
