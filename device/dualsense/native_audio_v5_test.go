@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"net"
 	"testing"
+	"time"
 
 	"github.com/Alia5/VIIPER/usbip"
 )
@@ -290,6 +291,93 @@ func TestDualSenseV5EndpointResetIsHardBoundaryForBothMediaClocks(t *testing.T) 
 		speakerRemaining != 0 {
 		t.Fatalf("wrong post-reset remainders: haptics=%d speaker=%d",
 			hapticsRemaining, speakerRemaining)
+	}
+}
+
+func TestDualSenseV5RejectsPublicationFromPreResetRevision(t *testing.T) {
+	device, err := New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	device.SetInterfaceAltSetting(InterfaceHapticsAudio, 1)
+	published := 0
+	device.setV5MediaCallbacks(func(OutputState, []byte) {
+		published++
+	}, nil, nil)
+
+	device.mtx.Lock()
+	revision := device.mediaRevision
+	device.mtx.Unlock()
+	pending := pendingBluetoothHapticsReport{
+		revision:   revision,
+		feedback:   OutputState{BluetoothCombinedOutputReport: [BluetoothCombinedHapticsReportSize]byte{BluetoothCombinedHapticsReportID}},
+		speakerPCM: make([]byte, dualSenseV5SpeakerPayloadSize),
+	}
+
+	device.ResetEndpoint(EndpointHapticsAudioOut)
+	if device.publishV5Media(pending) {
+		t.Fatal("pre-reset media revision was published")
+	}
+	if published != 0 {
+		t.Fatalf("pre-reset media callback count=%d", published)
+	}
+}
+
+func TestDualSenseV5ResetWaitsForInFlightDevicePublication(t *testing.T) {
+	device, err := New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	device.SetInterfaceAltSetting(InterfaceHapticsAudio, 1)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	callbackDone := make(chan struct{})
+	resetCalls := 0
+	device.setV5MediaCallbacks(func(OutputState, []byte) {
+		close(entered)
+		<-release
+		close(callbackDone)
+	}, nil, func() {
+		resetCalls++
+	})
+
+	pcm := makeV5USBPCM(0, dualSenseV5SpeakerFrames, 12000)
+	transferDone := make(chan struct{})
+	go func() {
+		device.HandleTransfer(context.Background(), EndpointHapticsAudioOut,
+			usbip.DirOut, pcm)
+		close(transferDone)
+	}()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("media callback did not start")
+	}
+
+	resetDone := make(chan struct{})
+	go func() {
+		device.ResetEndpoint(EndpointHapticsAudioOut)
+		close(resetDone)
+	}()
+	select {
+	case <-resetDone:
+		t.Fatal("endpoint reset crossed an in-flight device publication")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case <-callbackDone:
+	case <-time.After(time.Second):
+		t.Fatal("media callback did not finish")
+	}
+	select {
+	case <-resetDone:
+	case <-time.After(time.Second):
+		t.Fatal("endpoint reset did not finish after publication")
+	}
+	<-transferDone
+	if resetCalls != 1 {
+		t.Fatalf("transport reset calls=%d want=1", resetCalls)
 	}
 }
 

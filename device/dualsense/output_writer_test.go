@@ -113,6 +113,46 @@ func TestDualSenseV5WriterAlternatesControlAndMedia(t *testing.T) {
 	_ = client.Close()
 }
 
+func TestDualSenseV5WriterRetainsNewestFinalControlState(t *testing.T) {
+	writer := newDualSenseOutputWriter(nil, nil, nil)
+	for marker := 0; marker < dualSenseOutputControlQueueCapacity; marker++ {
+		writer.EnqueueControl(StreamFrameOutputState, []byte{byte(marker)})
+	}
+	writer.EnqueueControl(StreamFrameOutputState, []byte{0xFF})
+	if len(writer.control) != dualSenseOutputControlQueueCapacity {
+		t.Fatalf("control depth=%d want=%d", len(writer.control),
+			dualSenseOutputControlQueueCapacity)
+	}
+	for index := 0; index < dualSenseOutputControlQueueCapacity; index++ {
+		frame := <-writer.control
+		want := byte(index + 1)
+		if index == dualSenseOutputControlQueueCapacity-1 {
+			want = 0xFF
+		}
+		if len(frame.payload) != 1 || frame.payload[0] != want {
+			t.Fatalf("control[%d]=% x want=%02x", index, frame.payload, want)
+		}
+	}
+}
+
+func TestDualSenseV5WriterRetainsNewestRealtimeHapticsState(t *testing.T) {
+	writer := newDualSenseOutputWriter(nil, nil, nil)
+	for marker := 0; marker < dualSenseOutputControlQueueCapacity; marker++ {
+		writer.EnqueueRealtimeHaptics([]byte{byte(marker)})
+	}
+	writer.EnqueueRealtimeHaptics([]byte{0xFF})
+	for index := 0; index < dualSenseOutputControlQueueCapacity; index++ {
+		frame := <-writer.realtimeHaptics
+		want := byte(index + 1)
+		if index == dualSenseOutputControlQueueCapacity-1 {
+			want = 0xFF
+		}
+		if len(frame.payload) != 1 || frame.payload[0] != want {
+			t.Fatalf("realtime[%d]=% x want=%02x", index, frame.payload, want)
+		}
+	}
+}
+
 func TestDualSenseV5WriterShutdownReturnsEveryMediaBuffer(t *testing.T) {
 	server, client := net.Pipe()
 	writer := newDualSenseOutputWriter(server, nil, nil)

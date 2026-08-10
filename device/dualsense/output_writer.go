@@ -119,6 +119,8 @@ type dualSenseOutputWriter struct {
 	done            chan struct{}
 	stopOnce        sync.Once
 	enqueueLock     sync.RWMutex
+	controlEnqueue  sync.Mutex
+	realtimeEnqueue sync.Mutex
 	audioEnqueue    sync.Mutex
 	audioWrite      sync.Mutex
 	stopped         bool
@@ -171,7 +173,9 @@ func (w *dualSenseOutputWriter) EnqueueRealtimeHaptics(payload []byte) {
 	if w.stopped {
 		return
 	}
-	w.enqueueFrameLocked(w.realtimeHaptics, dualSenseOutputFrame{
+	w.realtimeEnqueue.Lock()
+	defer w.realtimeEnqueue.Unlock()
+	w.enqueueNewestFrameLocked(w.realtimeHaptics, dualSenseOutputFrame{
 		frameType: StreamFrameRealtimeHaptics,
 		payload:   append([]byte(nil), payload...),
 	})
@@ -186,10 +190,38 @@ func (w *dualSenseOutputWriter) EnqueueControl(frameType byte, payload []byte) {
 	if w.stopped {
 		return
 	}
-	w.enqueueFrameLocked(w.control, dualSenseOutputFrame{
+	w.controlEnqueue.Lock()
+	defer w.controlEnqueue.Unlock()
+	w.enqueueNewestFrameLocked(w.control, dualSenseOutputFrame{
 		frameType: frameType,
 		payload:   append([]byte(nil), payload...),
 	})
+}
+
+// enqueueNewestFrameLocked makes bounded state lanes latest-state preserving.
+// A release/zero-rumble/lightbar update must not be discarded merely because
+// older state filled the queue. The per-lane producer mutex makes eviction and
+// replacement atomic with respect to other callback producers; the sole
+// consumer may only create more room.
+func (w *dualSenseOutputWriter) enqueueNewestFrameLocked(
+	queue chan dualSenseOutputFrame, frame dualSenseOutputFrame,
+) {
+	select {
+	case queue <- frame:
+		return
+	default:
+	}
+	select {
+	case <-queue:
+	default:
+	}
+	// With producers serialized, either the eviction above or a concurrent
+	// consumer has made room. Keep a defensive nonblocking send so an output
+	// callback can never inherit socket backpressure.
+	select {
+	case queue <- frame:
+	default:
+	}
 }
 
 // EnqueueAtomicAudioHaptics publishes one V5 generation. A little-endian

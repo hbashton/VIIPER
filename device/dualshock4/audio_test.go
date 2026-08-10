@@ -286,6 +286,83 @@ func TestEndpointResetDropsSpeakerAndMicrophoneWithoutChangingAlt(t *testing.T) 
 	writer.Stop()
 }
 
+func TestSpeakerRejectsPublicationFromPreResetRevision(t *testing.T) {
+	device, err := New(nil)
+	require.NoError(t, err)
+	device.SetInterfaceAltSetting(InterfaceSpeaker, 1)
+	published := 0
+	device.SetSpeakerCallback(func([]byte) { published++ })
+
+	device.mtx.Lock()
+	revision := device.speakerRevision
+	device.mtx.Unlock()
+	device.ResetEndpoint(EndpointAudioOut)
+	assert.False(t, device.publishSpeakerPCM(revision, []byte{1, 2, 3, 4}))
+	assert.Equal(t, 0, published)
+}
+
+func TestSpeakerResetWaitsForInFlightDevicePublication(t *testing.T) {
+	device, err := New(nil)
+	require.NoError(t, err)
+	device.SetInterfaceAltSetting(InterfaceSpeaker, 1)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	device.SetSpeakerCallback(func([]byte) {
+		close(entered)
+		<-release
+	})
+	resetCalls := 0
+	device.SetSpeakerResetCallback(func() { resetCalls++ })
+
+	transferDone := make(chan struct{})
+	go func() {
+		device.HandleTransfer(context.Background(), EndpointAudioOut,
+			usbip.DirOut, []byte{1, 2, 3, 4})
+		close(transferDone)
+	}()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("speaker callback did not start")
+	}
+	resetDone := make(chan struct{})
+	go func() {
+		device.ResetEndpoint(EndpointAudioOut)
+		close(resetDone)
+	}()
+	select {
+	case <-resetDone:
+		t.Fatal("endpoint reset crossed an in-flight speaker publication")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case <-resetDone:
+	case <-time.After(time.Second):
+		t.Fatal("endpoint reset did not finish after speaker publication")
+	}
+	<-transferDone
+	assert.Equal(t, 1, resetCalls)
+}
+
+func TestDualShock4WriterRetainsNewestFinalControlState(t *testing.T) {
+	writer := newDualShock4OutputWriter(nil, StreamFrameVersionV3)
+	for marker := 0; marker < cap(writer.control); marker++ {
+		writer.EnqueueControl(StreamFrameOutputState, []byte{byte(marker)})
+	}
+	writer.EnqueueControl(StreamFrameOutputState, []byte{0xFF})
+	depth := cap(writer.control)
+	require.Len(t, writer.control, depth)
+	for index := 0; index < depth; index++ {
+		frame := <-writer.control
+		want := byte(index + 1)
+		if index == depth-1 {
+			want = 0xFF
+		}
+		require.Equal(t, []byte{want}, frame.payload)
+	}
+}
+
 type dualShock4WriteGateConn struct {
 	net.Conn
 	started chan struct{}

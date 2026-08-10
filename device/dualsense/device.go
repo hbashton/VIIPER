@@ -66,11 +66,21 @@ type DualSense struct {
 	inputPublishMu sync.Mutex
 	metaState      *MetaState
 
+	// Output and media publication use independent gates. HID state remains
+	// valid across an audio-pipe reset, while speaker/haptics data does not.
+	// Keeping the gates separate prevents an audio reconfiguration from
+	// discarding the game's final lightbar/trigger/rumble update.
+	outputPublishMu sync.RWMutex
+	mediaPublishMu  sync.RWMutex
+
 	atomicAudioHapticsFunc func(OutputState, []byte)
 	realtimeHapticsFunc    func(OutputState)
 	speakerResetFunc       func()
 	outputFunc             func(OutputState)
 	outputState            OutputState
+	latestOutputState      OutputState
+	outputSeen             bool
+	mediaRevision          uint64
 	descriptor             usb.Descriptor
 
 	subcommand [2]byte
@@ -210,9 +220,25 @@ func (d *DualSense) SetMetaState(meta MetaState) {
 }
 
 func (d *DualSense) SetOutputCallback(f func(OutputState)) {
+	d.outputPublishMu.Lock()
+	defer d.outputPublishMu.Unlock()
+
+	var latest OutputState
+	var replay bool
 	d.mtx.Lock()
 	d.outputFunc = f
+	if f != nil && d.outputSeen {
+		latest = d.latestOutputState
+		replay = true
+	}
 	d.mtx.Unlock()
+
+	// A newly attached stream must observe the last explicit game update even
+	// if it arrived just before callback registration. The publication gate
+	// orders this replay against live SET_REPORT callbacks.
+	if replay {
+		f(latest)
+	}
 }
 
 // SetAtomicAudioHapticsCallback installs the V5 transport consumer. Each
@@ -221,27 +247,61 @@ func (d *DualSense) SetOutputCallback(f func(OutputState)) {
 // raw 48 kHz speaker frames and consumes one independently completed rear
 // haptics sample, or silence when that 512-frame lane has not completed yet.
 func (d *DualSense) SetAtomicAudioHapticsCallback(f func(OutputState, []byte)) {
-	d.mtx.Lock()
-	d.atomicAudioHapticsFunc = f
-	d.mtx.Unlock()
+	d.replaceMediaCallbacks(func() {
+		d.atomicAudioHapticsFunc = f
+	})
 }
 
 // SetRealtimeHapticsCallback installs the V5 rear-channel consumer. A
 // callback is issued as soon as one complete 512-frame haptics interval is
 // available, independently of the 480-frame speaker clock.
 func (d *DualSense) SetRealtimeHapticsCallback(f func(OutputState)) {
-	d.mtx.Lock()
-	d.realtimeHapticsFunc = f
-	d.mtx.Unlock()
+	d.replaceMediaCallbacks(func() {
+		d.realtimeHapticsFunc = f
+	})
 }
 
 // SetSpeakerResetCallback installs the transport-side queue reset paired with
 // SetAtomicAudioHapticsCallback. USB interface close/reopen and endpoint reset
 // must discard queued speaker PCM from the previous presentation generation.
 func (d *DualSense) SetSpeakerResetCallback(f func()) {
+	d.replaceMediaCallbacks(func() {
+		d.speakerResetFunc = f
+	})
+}
+
+// setV5MediaCallbacks replaces the three coupled V5 media callbacks as one
+// transport generation. The stream handler uses this instead of exposing a
+// partially installed callback set between three independent setter calls.
+func (d *DualSense) setV5MediaCallbacks(
+	atomic func(OutputState, []byte),
+	realtime func(OutputState),
+	reset func(),
+) {
+	d.replaceMediaCallbacks(func() {
+		d.atomicAudioHapticsFunc = atomic
+		d.realtimeHapticsFunc = realtime
+		d.speakerResetFunc = reset
+	})
+}
+
+// replaceMediaCallbacks is a hard lifecycle boundary. A callback already in
+// progress finishes before the old transport is flushed; a callback assembled
+// before this revision can never publish into the replacement transport.
+func (d *DualSense) replaceMediaCallbacks(update func()) {
+	d.mediaPublishMu.Lock()
+	defer d.mediaPublishMu.Unlock()
+
 	d.mtx.Lock()
-	d.speakerResetFunc = f
+	resetSpeaker := d.speakerResetFunc
+	d.mediaRevision++
+	d.resetSpeakerAudioLocked()
+	update()
 	d.mtx.Unlock()
+
+	if resetSpeaker != nil {
+		resetSpeaker()
+	}
 }
 
 // beginSpeakerStream gives each stream generation independent telemetry. An
@@ -342,37 +402,53 @@ func (d *DualSense) GetDeviceSpecificArgs() map[string]any {
 }
 
 func (d *DualSense) SetInterfaceAltSetting(iface, alt uint8) {
+	if iface == InterfaceHapticsAudio {
+		d.resetSpeakerPresentation(func() {
+			d.speakerInterfaceActive = alt != 0
+		})
+		return
+	}
+
 	d.mtx.Lock()
-	var resetSpeaker func()
 	switch iface {
-	case InterfaceHapticsAudio:
-		d.speakerInterfaceActive = alt != 0
-		d.resetSpeakerAudioLocked()
-		resetSpeaker = d.speakerResetFunc
 	case InterfaceMicrophone:
 		d.microphoneInterfaceActive = alt != 0
 		d.resetMicrophoneAudioLocked()
 	}
 	d.mtx.Unlock()
-
-	if resetSpeaker != nil {
-		resetSpeaker()
-	}
 }
 
 // ResetEndpoint implements usb.EndpointResetDevice. A standard endpoint pipe
 // reset preserves the selected alternate setting and feature controls while
 // discarding all transport data from the previous endpoint generation.
 func (d *DualSense) ResetEndpoint(endpoint uint8) {
+	if endpoint == EndpointHapticsAudioOut {
+		d.resetSpeakerPresentation(nil)
+		return
+	}
+
 	d.mtx.Lock()
-	var resetSpeaker func()
 	switch endpoint {
-	case EndpointHapticsAudioOut:
-		d.resetSpeakerAudioLocked()
-		resetSpeaker = d.speakerResetFunc
 	case EndpointMicrophoneIn:
 		d.resetMicrophoneAudioLocked()
 	}
+	d.mtx.Unlock()
+}
+
+// resetSpeakerPresentation advances the device-owned revision and the framed
+// writer generation under one publication barrier. The optional state update
+// applies before the revision is visible to new media callbacks.
+func (d *DualSense) resetSpeakerPresentation(update func()) {
+	d.mediaPublishMu.Lock()
+	defer d.mediaPublishMu.Unlock()
+
+	d.mtx.Lock()
+	d.mediaRevision++
+	if update != nil {
+		update()
+	}
+	d.resetSpeakerAudioLocked()
+	resetSpeaker := d.speakerResetFunc
 	d.mtx.Unlock()
 
 	if resetSpeaker != nil {
@@ -578,46 +654,51 @@ func (d *DualSense) handleHapticsAudioOut(out []byte) {
 	}
 
 	processed, release := d.speakerAudioFeature.applyPCM(out, USBHapticsAudioChannels)
+	revision := d.mediaRevision
 	reports := d.consumeDualSenseV5AudioLocked(processed, receivedAt)
-	// The callback is deliberately completed under the device lock. This makes
-	// an alternate-setting or endpoint reset a hard generation barrier: once the
-	// reset acquires the lock, no pre-reset callback can enqueue stale PCM after
-	// the transport queue has been flushed.
+	for index := range reports {
+		reports[index].revision = revision
+	}
 	d.mtx.Unlock()
 	if release != nil {
 		release()
 	}
 
 	for _, pending := range reports {
-		report := pending.feedback.BluetoothCombinedOutputReport[:]
-		if len(report) == 0 {
-			continue
-		}
-
-		d.mtx.Lock()
-		outputFunc := d.outputFunc
-		atomicAudioHapticsFunc := d.atomicAudioHapticsFunc
-		realtimeHapticsFunc := d.realtimeHapticsFunc
-		if pending.hapticsOnly {
-			feedback := pending.feedback
-			d.mtx.Unlock()
-			if realtimeHapticsFunc != nil {
-				realtimeHapticsFunc(feedback)
-			}
-			continue
-		}
-		if outputFunc != nil || atomicAudioHapticsFunc != nil {
-			feedback := pending.feedback
-			d.mtx.Unlock()
-			if atomicAudioHapticsFunc != nil {
-				atomicAudioHapticsFunc(feedback, pending.speakerPCM)
-			} else {
-				outputFunc(feedback)
-			}
-		} else {
-			d.mtx.Unlock()
-		}
+		d.publishV5Media(pending)
 	}
+}
+
+func (d *DualSense) publishV5Media(pending pendingBluetoothHapticsReport) bool {
+	d.mediaPublishMu.RLock()
+	defer d.mediaPublishMu.RUnlock()
+
+	d.mtx.Lock()
+	if pending.revision != d.mediaRevision || !d.speakerInterfaceActive {
+		d.mtx.Unlock()
+		return false
+	}
+	outputFunc := d.outputFunc
+	atomicAudioHapticsFunc := d.atomicAudioHapticsFunc
+	realtimeHapticsFunc := d.realtimeHapticsFunc
+	d.mtx.Unlock()
+
+	if pending.hapticsOnly {
+		if realtimeHapticsFunc == nil {
+			return false
+		}
+		realtimeHapticsFunc(pending.feedback)
+		return true
+	}
+	if atomicAudioHapticsFunc != nil {
+		atomicAudioHapticsFunc(pending.feedback, pending.speakerPCM)
+		return true
+	}
+	if outputFunc != nil {
+		outputFunc(pending.feedback)
+		return true
+	}
+	return false
 }
 
 type pendingBluetoothHapticsReport struct {
@@ -625,6 +706,7 @@ type pendingBluetoothHapticsReport struct {
 	assemblyDelay time.Duration
 	feedback      OutputState
 	hapticsOnly   bool
+	revision      uint64
 }
 
 type dualSenseV5HapticsGeneration struct {
@@ -856,14 +938,17 @@ func (d *DualSense) handleOutputReport(out []byte) bool {
 	if !ok {
 		return false
 	}
+	d.outputPublishMu.RLock()
+	defer d.outputPublishMu.RUnlock()
+
 	d.mtx.Lock()
+	feedback := d.mergeOutputReport(report)
+	d.latestOutputState = feedback
+	d.outputSeen = true
 	outputFunc := d.outputFunc
+	d.mtx.Unlock()
 	if outputFunc != nil {
-		feedback := d.mergeOutputReport(report)
-		d.mtx.Unlock()
 		outputFunc(feedback)
-	} else {
-		d.mtx.Unlock()
 	}
 	return true
 }

@@ -29,11 +29,15 @@ type DualShock4 struct {
 	inputPublishMu sync.Mutex
 	metaState      *MetaState
 
+	outputPublishMu  sync.RWMutex
+	speakerPublishMu sync.RWMutex
+
 	outputFunc       func(OutputState)
 	speakerFunc      func([]byte)
 	speakerResetFunc func()
 	outputState      OutputState
 	outputSeen       bool
+	speakerRevision  uint64
 	descriptor       usb.Descriptor
 
 	probeSelector       [3]byte
@@ -132,6 +136,9 @@ func (d *DualShock4) SetMetaState(meta MetaState) {
 }
 
 func (d *DualShock4) SetOutputCallback(f func(OutputState)) {
+	d.outputPublishMu.Lock()
+	defer d.outputPublishMu.Unlock()
+
 	var latest OutputState
 	var replay bool
 
@@ -149,18 +156,36 @@ func (d *DualShock4) SetOutputCallback(f func(OutputState)) {
 }
 
 func (d *DualShock4) SetSpeakerCallback(f func([]byte)) {
-	d.mtx.Lock()
-	d.speakerFunc = f
-	d.mtx.Unlock()
+	d.replaceSpeakerCallbacks(func() { d.speakerFunc = f })
 }
 
 // SetSpeakerResetCallback installs the transport-side queue reset paired with
 // SetSpeakerCallback. Interface transitions and endpoint pipe resets must drop
 // speaker PCM from the previous USB presentation generation.
 func (d *DualShock4) SetSpeakerResetCallback(f func()) {
+	d.replaceSpeakerCallbacks(func() { d.speakerResetFunc = f })
+}
+
+func (d *DualShock4) setSpeakerCallbacks(speaker func([]byte), reset func()) {
+	d.replaceSpeakerCallbacks(func() {
+		d.speakerFunc = speaker
+		d.speakerResetFunc = reset
+	})
+}
+
+func (d *DualShock4) replaceSpeakerCallbacks(update func()) {
+	d.speakerPublishMu.Lock()
+	defer d.speakerPublishMu.Unlock()
+
 	d.mtx.Lock()
-	d.speakerResetFunc = f
+	resetSpeaker := d.speakerResetFunc
+	d.speakerRevision++
+	update()
 	d.mtx.Unlock()
+
+	if resetSpeaker != nil {
+		resetSpeaker()
+	}
 }
 
 func (d *DualShock4) UpdateInputState(state *InputState) {
@@ -232,15 +257,15 @@ func (d *DualShock4) GetDeviceSpecificArgs() map[string]any {
 }
 
 func (d *DualShock4) SetInterfaceAltSetting(iface, alt uint8) {
+	if iface == InterfaceSpeaker {
+		d.resetSpeakerPresentation(func() {
+			d.speakerInterfaceActive = alt != 0
+		})
+		return
+	}
+
 	d.mtx.Lock()
-	var resetSpeaker func()
 	switch iface {
-	case InterfaceSpeaker:
-		wasActive := d.speakerInterfaceActive
-		d.speakerInterfaceActive = alt != 0
-		if wasActive != d.speakerInterfaceActive {
-			resetSpeaker = d.speakerResetFunc
-		}
 	case InterfaceMicrophone:
 		wasActive := d.microphoneInterfaceActive
 		d.microphoneInterfaceActive = alt != 0
@@ -250,28 +275,40 @@ func (d *DualShock4) SetInterfaceAltSetting(iface, alt uint8) {
 		}
 	}
 	d.mtx.Unlock()
-
-	// The transport reset may wait for an in-flight socket write. Never hold the
-	// device mutex across that wait: output and USB teardown callbacks also need
-	// to acquire it before the writer can finish shutting down.
-	if resetSpeaker != nil {
-		resetSpeaker()
-	}
 }
 
 // ResetEndpoint implements usb.EndpointResetDevice. CLEAR_FEATURE(HALT)
 // preserves the selected alternate setting while establishing a hard data
 // generation boundary for the affected audio pipe.
 func (d *DualShock4) ResetEndpoint(endpoint uint8) {
+	if endpoint == EndpointAudioOut {
+		d.resetSpeakerPresentation(nil)
+		return
+	}
+
 	d.mtx.Lock()
-	var resetSpeaker func()
 	switch endpoint {
-	case EndpointAudioOut:
-		resetSpeaker = d.speakerResetFunc
 	case EndpointMicrophoneIn:
 		d.microphoneBuffer.Reset()
 		d.drainMicrophoneSignal()
 	}
+	d.mtx.Unlock()
+}
+
+// resetSpeakerPresentation orders the device revision and the framed-writer
+// generation as one hard barrier. A callback already publishing completes
+// before the queue is flushed; any older callback that has not entered the
+// gate observes the new revision and is rejected.
+func (d *DualShock4) resetSpeakerPresentation(update func()) {
+	d.speakerPublishMu.Lock()
+	defer d.speakerPublishMu.Unlock()
+
+	d.mtx.Lock()
+	d.speakerRevision++
+	if update != nil {
+		update()
+	}
+	resetSpeaker := d.speakerResetFunc
 	d.mtx.Unlock()
 
 	if resetSpeaker != nil {
@@ -310,6 +347,7 @@ func (d *DualShock4) HandleTransfer(ctx context.Context, ep uint32, dir uint32, 
 	if dir == usbip.DirOut && epNumber == EndpointOut&0x0F {
 		if len(out) >= 11 && out[0] == ReportIDOutput {
 			feedback := parseOutputReport(out)
+			d.outputPublishMu.RLock()
 			d.mtx.Lock()
 			d.outputState = feedback
 			d.outputSeen = true
@@ -318,6 +356,7 @@ func (d *DualShock4) HandleTransfer(ctx context.Context, ep uint32, dir uint32, 
 			if outputFunc != nil {
 				outputFunc(feedback)
 			}
+			d.outputPublishMu.RUnlock()
 		}
 	}
 	if dir == usbip.DirOut && epNumber == EndpointAudioOut&0x0F {
@@ -325,17 +364,38 @@ func (d *DualShock4) HandleTransfer(ctx context.Context, ep uint32, dir uint32, 
 		if d.speakerInterfaceActive && d.speakerFunc != nil && len(out) > 0 {
 			// The USB/IP receive buffer is owned by the transfer handler. Give the
 			// device-stream writer an immutable copy; its owned enqueue path then
-			// forwards this same allocation without making a second copy. Complete
-			// the synchronous enqueue under the device lock so a subsequent
-			// interface or endpoint reset cannot flush the queue and then be raced
-			// by a pre-reset callback publishing stale PCM afterward.
-			d.speakerFunc(append([]byte(nil), out...))
+			// forwards this same allocation without making a second copy.
+			pcm := append([]byte(nil), out...)
+			revision := d.speakerRevision
+			d.mtx.Unlock()
+			d.publishSpeakerPCM(revision, pcm)
+			return nil
 		}
 		d.mtx.Unlock()
 		return nil
 	}
 
 	return nil
+}
+
+func (d *DualShock4) publishSpeakerPCM(revision uint64, pcm []byte) bool {
+	if len(pcm) == 0 {
+		return false
+	}
+	d.speakerPublishMu.RLock()
+	defer d.speakerPublishMu.RUnlock()
+
+	d.mtx.Lock()
+	if revision != d.speakerRevision || !d.speakerInterfaceActive ||
+		d.speakerFunc == nil {
+		d.mtx.Unlock()
+		return false
+	}
+	speakerFunc := d.speakerFunc
+	d.mtx.Unlock()
+
+	speakerFunc(pcm)
+	return true
 }
 
 // ReadInterruptInput implements usb.InterruptInputDevice for native UDE. It

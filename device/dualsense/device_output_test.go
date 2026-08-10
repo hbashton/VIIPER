@@ -624,6 +624,43 @@ func TestDualSenseOutputSnapshotKeepsIndependentGameFieldsAtomic(t *testing.T) {
 	}
 }
 
+func TestDualSenseLateOutputConsumerReceivesFinalExplicitState(t *testing.T) {
+	device, err := New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report := make([]byte, OutputReportSize)
+	report[0] = ReportIDOutput
+	report[1] = outputFlag0RumbleMask
+	report[3] = 0
+	report[4] = 0
+	report[2] = outputFlag1Lightbar | outputFlag1PlayerLeds
+	report[outputPlayerLedsOffset] = 0x04
+	report[outputLightbarOffset] = 0x12
+	report[outputLightbarOffset+1] = 0x34
+	report[outputLightbarOffset+2] = 0x56
+	if !device.handleOutputReport(report) {
+		t.Fatal("final output report was rejected")
+	}
+
+	var replayed []OutputState
+	device.SetOutputCallback(func(state OutputState) {
+		replayed = append(replayed, state)
+	})
+	if len(replayed) != 1 {
+		t.Fatalf("late consumer replay count=%d want=1", len(replayed))
+	}
+	state := replayed[0]
+	if state.RumbleSmall != 0 || state.RumbleLarge != 0 ||
+		state.PlayerLeds != 0x04 || state.LedRed != 0x12 ||
+		state.LedGreen != 0x34 || state.LedBlue != 0x56 {
+		t.Fatalf("late consumer received wrong final state: %+v", state)
+	}
+	if !bytes.Equal(state.RawOutputReport[:], report) {
+		t.Fatal("late consumer did not receive the exact final report")
+	}
+}
+
 func TestDualSenseTouchTrackingBytes(t *testing.T) {
 	state := &InputState{}
 	data, err := state.MarshalBinary()

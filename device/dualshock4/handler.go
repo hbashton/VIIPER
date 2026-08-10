@@ -140,15 +140,14 @@ func (h *handler) StreamHandler() api.StreamHandlerFunc {
 				}
 				writer.EnqueueControl(StreamFrameOutputState, data)
 			})
-			ds4.SetSpeakerCallback(func(pcm []byte) {
+			speakerCallback := func(pcm []byte) {
 				writer.EnqueueAudioOwned(StreamFrameSpeakerPCM, pcm)
-			})
-			ds4.SetSpeakerResetCallback(writer.ResetSpeaker)
+			}
+			ds4.setSpeakerCallbacks(speakerCallback, writer.ResetSpeaker)
 			go writer.Run()
 			defer func() {
 				ds4.SetOutputCallback(nil)
-				ds4.SetSpeakerCallback(nil)
-				ds4.SetSpeakerResetCallback(nil)
+				ds4.setSpeakerCallbacks(nil, nil)
 				writer.Stop()
 			}()
 		} else {
@@ -196,6 +195,7 @@ type dualShock4OutputWriter struct {
 	done            chan struct{}
 	stopOnce        sync.Once
 	enqueueLock     sync.RWMutex
+	controlEnqueue  sync.Mutex
 	audioWrite      sync.Mutex
 	stopped         bool
 	audioGeneration atomic.Uint64
@@ -222,10 +222,33 @@ func (w *dualShock4OutputWriter) EnqueueControl(frameType byte, payload []byte) 
 	if w.stopped {
 		return
 	}
-	w.enqueueFrameLocked(w.control, dualShock4OutputFrame{
+	w.controlEnqueue.Lock()
+	defer w.controlEnqueue.Unlock()
+	w.enqueueNewestControlLocked(dualShock4OutputFrame{
 		frameType: frameType,
 		payload:   append([]byte(nil), payload...),
 	})
+}
+
+// enqueueNewestControlLocked preserves an explicit final controller state
+// when the bounded feedback lane is saturated. Old intermediate feedback can
+// be coalesced; the newest release/LED/rumble state cannot be silently lost.
+func (w *dualShock4OutputWriter) enqueueNewestControlLocked(
+	frame dualShock4OutputFrame,
+) {
+	select {
+	case w.control <- frame:
+		return
+	default:
+	}
+	select {
+	case <-w.control:
+	default:
+	}
+	select {
+	case w.control <- frame:
+	default:
+	}
 }
 
 func (w *dualShock4OutputWriter) EnqueueAudio(frameType byte, payload []byte) {
