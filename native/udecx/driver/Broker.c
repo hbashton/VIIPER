@@ -927,6 +927,7 @@ ViiperCompleteOperation(
     size_t tailLength = 0;
     ULONG slot;
     ULONG index;
+    ULONG isoPayloadLimit;
     NTSTATUS status;
     BOOLEAN slotRemoved = FALSE;
 
@@ -1044,9 +1045,12 @@ ViiperCompleteOperation(
         InterlockedAdd64(&controllerContext->BytesFromDevice, completion->TransferLength);
     }
     if (completion->IsoPacketCount != 0) {
+        isoPayloadLimit = requestContext->DirectionIn
+            ? completion->PayloadLength
+            : requestContext->TransferLength;
         for (index = 0; index < completion->IsoPacketCount; ++index) {
-            if (packets[index].Offset > completion->PayloadLength ||
-                packets[index].Length > completion->PayloadLength - packets[index].Offset) {
+            if (packets[index].Offset > isoPayloadLimit ||
+                packets[index].Length > isoPayloadLimit - packets[index].Offset) {
                 status = STATUS_INVALID_PARAMETER;
                 goto CompleteWithNtStatus;
             }
