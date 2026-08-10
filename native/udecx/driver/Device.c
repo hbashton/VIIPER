@@ -497,7 +497,7 @@ ViiperDestroyVirtualDevice(
     return status;
 }
 
-VOID
+BOOLEAN
 ViiperDestroyOwnedDevices(
     _In_ WDFDEVICE Controller,
     _In_ WDFFILEOBJECT OwnerFile
@@ -525,18 +525,18 @@ ViiperDestroyOwnedDevices(
         }
         WdfWaitLockRelease(controllerContext->DeviceLock);
         if (deviceId == 0) {
-            break;
+            return TRUE;
         }
 
         if (!NT_SUCCESS(ViiperBeginRemoveDevice(
                 controllerContext, OwnerFile, deviceId, 0, FALSE, &device))) {
-            continue;
+            return FALSE;
         }
         deviceContext = ViiperGetDeviceContext(device);
         if (deviceContext->Plugged) {
             if (!NT_SUCCESS(UdecxUsbDevicePlugOutAndDelete(device))) {
                 ViiperCancelRemoveDevice(controllerContext, device);
-                break;
+                return FALSE;
             }
         } else {
             WdfObjectDelete(device);

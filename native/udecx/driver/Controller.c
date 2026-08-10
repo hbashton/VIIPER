@@ -10,8 +10,62 @@ DEFINE_GUID(
 #pragma alloc_text(PAGE, ViiperEvtControllerCleanup)
 #pragma alloc_text(PAGE, ViiperEvtFileCreate)
 #pragma alloc_text(PAGE, ViiperEvtFileCleanup)
+#pragma alloc_text(PAGE, ViiperEvtOwnerCleanupRetry)
 #pragma alloc_text(PAGE, ViiperCreateQueues)
 #endif
+
+#define VIIPER_OWNER_CLEANUP_RETRY_MS 100
+
+static
+BOOLEAN
+ViiperFinishOwnerCleanup(
+    _In_ WDFDEVICE Device,
+    _In_ WDFFILEOBJECT OwnerFile
+    )
+{
+    VIIPER_UDE_CONTROLLER_CONTEXT *context = ViiperGetControllerContext(Device);
+    BOOLEAN releaseOwner = FALSE;
+
+    PAGED_CODE();
+    if (!ViiperDestroyOwnedDevices(Device, OwnerFile)) {
+        return FALSE;
+    }
+
+    WdfWaitLockAcquire(context->OwnerLock, NULL);
+    if (context->OwnerFile == OwnerFile && context->CleanupInProgress) {
+        context->OwnerFile = WDF_NO_HANDLE;
+        context->CleanupInProgress = FALSE;
+        releaseOwner = InterlockedExchange(&context->OwnerReferenced, FALSE) != FALSE;
+    }
+    WdfWaitLockRelease(context->OwnerLock);
+    if (releaseOwner) {
+        WdfObjectDereference(OwnerFile);
+    }
+    return TRUE;
+}
+
+VOID
+ViiperEvtOwnerCleanupRetry(
+    _In_ WDFTIMER Timer
+    )
+{
+    WDFDEVICE device = (WDFDEVICE)WdfTimerGetParentObject(Timer);
+    VIIPER_UDE_CONTROLLER_CONTEXT *context = ViiperGetControllerContext(device);
+    WDFFILEOBJECT ownerFile = WDF_NO_HANDLE;
+
+    PAGED_CODE();
+    WdfWaitLockAcquire(context->OwnerLock, NULL);
+    if (context->CleanupInProgress && context->OwnerFile != WDF_NO_HANDLE) {
+        ownerFile = context->OwnerFile;
+    }
+    WdfWaitLockRelease(context->OwnerLock);
+    if (ownerFile == WDF_NO_HANDLE || ViiperFinishOwnerCleanup(device, ownerFile)) {
+        return;
+    }
+
+    InterlockedIncrement(&context->CleanupRetries);
+    (VOID)WdfTimerStart(Timer, WDF_REL_TIMEOUT_IN_MS(VIIPER_OWNER_CLEANUP_RETRY_MS));
+}
 
 NTSTATUS
 ViiperEvtQueryUsbCapability(
@@ -51,6 +105,7 @@ ViiperEvtDeviceAdd(
     WDF_OBJECT_ATTRIBUTES fileAttributes;
     WDF_OBJECT_ATTRIBUTES requestAttributes;
     WDF_FILEOBJECT_CONFIG fileConfig;
+    WDF_TIMER_CONFIG timerConfig;
     UDECX_WDF_DEVICE_CONFIG udeConfig;
     VIIPER_UDE_CONTROLLER_CONTEXT *context;
     UNICODE_STRING sddl = RTL_CONSTANT_STRING(L"D:P(A;;GA;;;SY)(A;;GA;;;BA)");
@@ -106,6 +161,16 @@ ViiperEvtDeviceAdd(
         return status;
     }
 
+    WDF_TIMER_CONFIG_INIT(&timerConfig, ViiperEvtOwnerCleanupRetry);
+    timerConfig.AutomaticSerialization = FALSE;
+    WDF_OBJECT_ATTRIBUTES_INIT(&attributes);
+    attributes.ParentObject = device;
+    attributes.ExecutionLevel = WdfExecutionLevelPassive;
+    status = WdfTimerCreate(&timerConfig, &attributes, &context->OwnerCleanupTimer);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+
     RtlInitUnicodeString(&brokerReference, VIIPER_UDE_BROKER_REFERENCE_STRING);
     status = WdfDeviceCreateDeviceInterface(
         device, &GUID_DEVINTERFACE_VIIPER_UDE, &brokerReference);
@@ -140,6 +205,9 @@ ViiperEvtControllerCleanup(
 
     PAGED_CODE();
     context = ViiperGetControllerContext((WDFDEVICE)ControllerObject);
+    if (context->OwnerCleanupTimer != WDF_NO_HANDLE) {
+        WdfTimerStop(context->OwnerCleanupTimer, TRUE);
+    }
     ViiperPurgeOwnerOperations((WDFDEVICE)ControllerObject, STATUS_DEVICE_REMOVED);
     if (context->DefaultQueue != WDF_NO_HANDLE) {
         WdfIoQueuePurgeSynchronously(context->DefaultQueue);
@@ -155,6 +223,20 @@ ViiperEvtControllerCleanup(
         context->NotificationCount = 0;
         InterlockedExchange(&context->BrokerFaulted, FALSE);
         WdfSpinLockRelease(context->BrokerLock);
+    }
+    if (context->OwnerLock != WDF_NO_HANDLE) {
+        WDFFILEOBJECT ownerFile = WDF_NO_HANDLE;
+        BOOLEAN releaseOwner = FALSE;
+
+        WdfWaitLockAcquire(context->OwnerLock, NULL);
+        ownerFile = context->OwnerFile;
+        context->OwnerFile = WDF_NO_HANDLE;
+        context->CleanupInProgress = FALSE;
+        releaseOwner = InterlockedExchange(&context->OwnerReferenced, FALSE) != FALSE;
+        WdfWaitLockRelease(context->OwnerLock);
+        if (releaseOwner && ownerFile != WDF_NO_HANDLE) {
+            WdfObjectDereference(ownerFile);
+        }
     }
 }
 
@@ -199,6 +281,8 @@ ViiperEvtFileCreate(
         status = STATUS_SHARING_VIOLATION;
     } else {
         fileContext->BrokerOwner = TRUE;
+        WdfObjectReference(FileObject);
+        InterlockedExchange(&context->OwnerReferenced, TRUE);
         context->OwnerFile = FileObject;
         InterlockedExchange(&context->BrokerFaulted, FALSE);
         WdfIoQueueStart(context->WaitingDequeues);
@@ -247,14 +331,12 @@ ViiperEvtFileCleanup(
         WdfSpinLockRelease(context->BrokerLock);
     }
     if (ownsController) {
-        ViiperDestroyOwnedDevices(device, FileObject);
-    }
-
-    if (ownsController) {
-        WdfWaitLockAcquire(context->OwnerLock, NULL);
-        context->OwnerFile = WDF_NO_HANDLE;
-        context->CleanupInProgress = FALSE;
-        WdfWaitLockRelease(context->OwnerLock);
+        if (!ViiperFinishOwnerCleanup(device, FileObject)) {
+            InterlockedIncrement(&context->CleanupRetries);
+            (VOID)WdfTimerStart(
+                context->OwnerCleanupTimer,
+                WDF_REL_TIMEOUT_IN_MS(VIIPER_OWNER_CLEANUP_RETRY_MS));
+        }
     }
 }
 

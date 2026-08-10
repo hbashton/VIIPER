@@ -142,6 +142,7 @@ ViiperHandleQueryStats(
     output->ActiveDevices = (ULONG)InterlockedCompareExchange(&context->ActiveDevices, 0, 0);
     output->PendingOperations = (ULONG)InterlockedCompareExchange(&context->PendingOperations, 0, 0);
     output->WaitingDequeues = (ULONG)InterlockedCompareExchange(&context->WaitingDequeueCount, 0, 0);
+    output->CleanupRetries = (ULONG)InterlockedCompareExchange(&context->CleanupRetries, 0, 0);
     WdfRequestSetInformation(Request, sizeof(*output));
     return STATUS_SUCCESS;
 }

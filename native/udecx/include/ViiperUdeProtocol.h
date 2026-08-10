@@ -196,7 +196,7 @@ typedef struct VIIPER_UDE_STATS {
     VIIPER_UDE_UINT32 ActiveDevices;
     VIIPER_UDE_UINT32 PendingOperations;
     VIIPER_UDE_UINT32 WaitingDequeues;
-    VIIPER_UDE_UINT32 Reserved;
+    VIIPER_UDE_UINT32 CleanupRetries;
 } VIIPER_UDE_STATS;
 
 #pragma pack(pop)

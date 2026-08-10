@@ -368,6 +368,7 @@ type Stats struct {
 	ActiveDevices              uint32
 	PendingOperations          uint32
 	WaitingDequeues            uint32
+	CleanupRetries             uint32
 }
 
 func ParseStats(src []byte) (Stats, error) {
@@ -394,6 +395,7 @@ func ParseStats(src []byte) (Stats, error) {
 		ActiveDevices:              binary.LittleEndian.Uint32(src[112:116]),
 		PendingOperations:          binary.LittleEndian.Uint32(src[116:120]),
 		WaitingDequeues:            binary.LittleEndian.Uint32(src[120:124]),
+		CleanupRetries:             binary.LittleEndian.Uint32(src[124:128]),
 	}, nil
 }
 
