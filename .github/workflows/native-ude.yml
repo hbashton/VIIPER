@@ -95,7 +95,7 @@ jobs:
           $tools.DirectoryName | Sort-Object -Unique | Out-File $env:GITHUB_PATH -Append -Encoding utf8
       - name: Build x64 driver
         run: msbuild native/udecx/ViiperUde.sln /m /p:Configuration=Release /p:Platform=x64 /p:SignMode=TestSign /p:InfVerif_AdditionalOptions="/w"
-      - name: Build transactional root-devnode helper
+      - name: Build transactional root-devnode and live-media helpers
         shell: pwsh
         run: |
           $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
@@ -110,6 +110,13 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or -not (Test-Path $output)) { throw "ViiperUdeCtl build failed" }
           & $output status
           if ($LASTEXITCODE -ne 0) { throw "ViiperUdeCtl status smoke test failed" }
+          $mediaSource = (Resolve-Path "native\udecx\tools\ViiperUdeMediaProbe.cpp").Path
+          $mediaOutput = Join-Path $outputDir "ViiperUdeMediaProbe.exe"
+          $mediaCommand = "`"$devCmd`" -arch=x64 -host_arch=x64 && cl.exe /nologo /std:c++20 /EHsc /W4 /WX /O2 /MT /D_WIN32_WINNT=0x0A00 `"$mediaSource`" /Fe:`"$mediaOutput`" /link Ole32.lib Ksuser.lib"
+          cmd.exe /d /s /c $mediaCommand
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path $mediaOutput)) { throw "ViiperUdeMediaProbe build failed" }
+          & $mediaOutput
+          if ($LASTEXITCODE -ne 2) { throw "ViiperUdeMediaProbe usage smoke test failed" }
       - name: Validate Hardware Dev Center CAB structure
         shell: pwsh
         run: |

@@ -8,7 +8,9 @@ param(
 
     [string]$RepositoryRoot,
 
-    [switch]$RequireDriverVerifier
+    [switch]$RequireDriverVerifier,
+
+    [string]$MediaProbePath
 )
 
 Set-StrictMode -Version Latest
@@ -83,12 +85,27 @@ if ($RequireDriverVerifier) {
     }
 }
 
+$resolvedMediaProbe = $null
+if (-not [string]::IsNullOrWhiteSpace($MediaProbePath)) {
+    $resolvedMediaProbe = (Resolve-Path -LiteralPath $MediaProbePath -ErrorAction Stop).Path
+    if ([IO.Path]::GetExtension($resolvedMediaProbe) -ine '.exe') {
+        throw "The native CoreAudio probe must be an executable: '$resolvedMediaProbe'."
+    }
+}
+
 $go = Get-Command go.exe -ErrorAction Stop
 $oldLive = [Environment]::GetEnvironmentVariable('VIIPER_UDE_LIVE', 'Process')
 $oldIterations = [Environment]::GetEnvironmentVariable('VIIPER_UDE_LIVE_ITERATIONS', 'Process')
+$oldMediaProbe = [Environment]::GetEnvironmentVariable('VIIPER_UDE_LIVE_MEDIA_PROBE', 'Process')
 try {
     $env:VIIPER_UDE_LIVE = '1'
     $env:VIIPER_UDE_LIVE_ITERATIONS = [string]$Iterations
+    if ($null -ne $resolvedMediaProbe) {
+        $env:VIIPER_UDE_LIVE_MEDIA_PROBE = $resolvedMediaProbe
+    }
+    else {
+        [Environment]::SetEnvironmentVariable('VIIPER_UDE_LIVE_MEDIA_PROBE', $null, 'Process')
+    }
     $timeoutMinutes = ($Iterations * 5) + 2
     Push-Location $repository
     try {
@@ -105,7 +122,9 @@ try {
 finally {
     [Environment]::SetEnvironmentVariable('VIIPER_UDE_LIVE', $oldLive, 'Process')
     [Environment]::SetEnvironmentVariable('VIIPER_UDE_LIVE_ITERATIONS', $oldIterations, 'Process')
+    [Environment]::SetEnvironmentVariable('VIIPER_UDE_LIVE_MEDIA_PROBE', $oldMediaProbe, 'Process')
 }
 
 $verifierSuffix = if ($RequireDriverVerifier) { ' with Driver Verifier active' } else { '' }
-Write-Host "VIIPER UDE live lifecycle/input validation passed for $Iterations iteration(s)$verifierSuffix."
+$mediaSuffix = if ($null -ne $resolvedMediaProbe) { ' with full-duplex CoreAudio media' } else { '' }
+Write-Host "VIIPER UDE live lifecycle/input validation passed for $Iterations iteration(s)$verifierSuffix$mediaSuffix."

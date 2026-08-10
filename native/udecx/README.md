@@ -26,6 +26,11 @@ Directory contract:
   daily-use machines unless the disposable-machine acknowledgement is given,
   refuses to replace another driver's verifier configuration, and never
   restarts the machine.
+- `tools/ViiperUdeMediaProbe.cpp` is a dependency-free CoreAudio live probe.
+  It snapshots active endpoints before a virtual PlayStation controller is
+  created, opens exactly the new render/capture pair concurrently through
+  WASAPI, and lets the signed-driver test require real ISO traffic and bytes in
+  both directions rather than treating endpoint enumeration as media success.
 - ABI, lifecycle, descriptor, cancellation, and fault tests live beside the Go
   broker packages and in the native-driver CI gates.
 
@@ -52,7 +57,8 @@ Microsoft-signed package with:
 ```powershell
 .\native\udecx\tools\Invoke-ViiperUdeLiveValidation.ps1 `
   -SignedPackageDirectory C:\ViiperUde\MicrosoftSigned `
-  -Iterations 10
+  -Iterations 10 `
+  -MediaProbePath .\native\udecx\x64\Release\ViiperUdeMediaProbe.exe
 ```
 
 The command refuses an unsigned package, a package/service hash mismatch, a
@@ -64,6 +70,11 @@ publishes input, and removes every child concurrently. A subprocess then exits
 without running cleanup; the driver must remove its child, drain pending URBs,
 release exclusive ownership, and accept a fresh session. Normal CI never opts
 into this live test.
+When `-MediaProbePath` is supplied, the first DualShock 4 and DualSense
+generation must also create one new render/capture endpoint pair; three seconds
+of simultaneous WASAPI render/capture must increase native ISO, host-to-device,
+and device-to-host byte counters. The baseline snapshot prevents a connected
+physical controller from being mistaken for the virtual device.
 
 The Driver Verifier pass is a separate, explicit disposable-machine gate:
 

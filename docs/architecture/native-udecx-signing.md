@@ -82,6 +82,13 @@ driver, and stages Microsoft's standard checks for `ViiperUde.sys` in
 `oneboot` mode. After the restart, live validation with
 `-RequireDriverVerifier` refuses to run unless `verifier /query` proves the
 driver is actually being verified. Neither script restarts the computer.
+The optional `ViiperUdeMediaProbe.exe` gate snapshots active CoreAudio endpoints
+before enumeration, requires exactly one newly-active render/capture pair for
+DualShock 4 and DualSense, drives both simultaneously through event-mode WASAPI,
+and requires the driver's ISO packet, OUT-byte, and IN-byte counters all to
+advance. This distinguishes a visible-but-nonfunctional audio endpoint from a
+working full-duplex bus and avoids confusing an already-connected physical pad
+with the newly-created virtual one.
 
 ## Primary Microsoft references
 

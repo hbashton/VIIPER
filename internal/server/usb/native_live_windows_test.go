@@ -28,6 +28,7 @@ const (
 	liveNativeTestEnvironment = "VIIPER_UDE_LIVE"
 	liveNativeTestIterations  = "VIIPER_UDE_LIVE_ITERATIONS"
 	liveNativeCrashChild      = "VIIPER_UDE_LIVE_CRASH_CHILD"
+	liveNativeMediaProbe      = "VIIPER_UDE_LIVE_MEDIA_PROBE"
 	liveNativeCrashExitCode   = 86
 )
 
@@ -130,6 +131,16 @@ func assertCleanNativeStatsDelta(t *testing.T, before, after udecx.Stats) {
 	}
 }
 
+func runLiveMediaProbe(t *testing.T, ctx context.Context, probe string, arguments ...string) string {
+	t.Helper()
+	command := exec.CommandContext(ctx, probe, arguments...)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run native CoreAudio probe %v: %v\n%s", arguments, err, output)
+	}
+	return string(output)
+}
+
 // TestNativeUDELiveProductionControllers is deliberately inert in normal CI.
 // It opens an already-installed native controller and never installs, updates,
 // enables, or removes a kernel driver. Release validation must first verify the
@@ -191,6 +202,7 @@ func TestNativeUDELiveProductionControllers(t *testing.T) {
 	}()
 
 	const deviceIDBase uint64 = 0x5649495000000000
+	mediaProbe := os.Getenv(liveNativeMediaProbe)
 	for iteration := 1; iteration <= iterations; iteration++ {
 		for controllerIndex, controller := range liveNativeControllers() {
 			controller := controller
@@ -199,6 +211,21 @@ func TestNativeUDELiveProductionControllers(t *testing.T) {
 				dev, publishInput, createErr := controller.new()
 				if createErr != nil {
 					t.Fatalf("construct %s: %v", controller.name, createErr)
+				}
+				mediaSnapshot := ""
+				mediaController := iteration == 1 && mediaProbe != "" &&
+					(controller.name == "DualShock4" || controller.name == "DualSense")
+				if mediaController {
+					snapshot, snapshotErr := os.CreateTemp("", "viiper-ude-media-*.snapshot")
+					if snapshotErr != nil {
+						t.Fatalf("create media endpoint snapshot: %v", snapshotErr)
+					}
+					mediaSnapshot = snapshot.Name()
+					if closeErr := snapshot.Close(); closeErr != nil {
+						t.Fatalf("close media endpoint snapshot: %v", closeErr)
+					}
+					defer os.Remove(mediaSnapshot)
+					runLiveMediaProbe(t, testCtx, mediaProbe, "snapshot", mediaSnapshot)
 				}
 				before, queryErr := client.QueryStats(testCtx)
 				if queryErr != nil {
@@ -231,6 +258,25 @@ func TestNativeUDELiveProductionControllers(t *testing.T) {
 				cancelEnumerate()
 				if waitErr != nil {
 					t.Fatal(waitErr)
+				}
+
+				if mediaController {
+					mediaBefore, mediaErr := client.QueryStats(testCtx)
+					if mediaErr != nil {
+						t.Fatalf("query %s media baseline: %v", controller.name, mediaErr)
+					}
+					probeOutput := runLiveMediaProbe(
+						t, testCtx, mediaProbe, "exercise", mediaSnapshot, "3")
+					mediaAfter, mediaErr := client.QueryStats(testCtx)
+					if mediaErr != nil {
+						t.Fatalf("query %s media result: %v", controller.name, mediaErr)
+					}
+					if mediaAfter.IsoPackets <= mediaBefore.IsoPackets ||
+						mediaAfter.BytesToDevice <= mediaBefore.BytesToDevice ||
+						mediaAfter.BytesFromDevice <= mediaBefore.BytesFromDevice {
+						t.Fatalf("%s CoreAudio did not exercise full-duplex ISO media: before=%+v after=%+v probe=%s",
+							controller.name, mediaBefore, mediaAfter, probeOutput)
+					}
 				}
 
 				inputDeadline := time.Now().Add(750 * time.Millisecond)
