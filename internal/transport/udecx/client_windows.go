@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"runtime"
 	"sync"
+	"time"
 	"unicode/utf16"
 	"unsafe"
 
@@ -37,7 +38,63 @@ const (
 	completionPortCloseKey          uintptr = ^uintptr(0)
 	fileSkipCompletionPortOnSuccess byte    = 0x1
 	requiredCapabilities                    = CapabilityIsochronous | CapabilityDeviceLifecycle | CapabilityInputReports
+	// The kernel rechecks asynchronous UdeCx owner cleanup every 100 ms. Match
+	// that cadence for at most 1.9 seconds, rediscovering the interface before
+	// every exclusive CreateFile rather than spinning on a stale symbolic link.
+	nativeAcquisitionAttempts      = 20
+	nativeAcquisitionRetryInterval = 100 * time.Millisecond
+	nativeBrokerShareMode          = 0
 )
+
+// AcquisitionErrorKind identifies the only two controller-open failures that
+// can resolve without repairing or reconfiguring the installed driver. Keep
+// this set deliberately narrow: permission, ABI, ambiguity, and device faults
+// must reach the caller immediately rather than being hidden by reconnect
+// polling.
+type AcquisitionErrorKind uint8
+
+const (
+	AcquisitionInterfaceUnavailable AcquisitionErrorKind = iota + 1
+	AcquisitionOwnerCleanupInProgress
+)
+
+// AcquisitionError reports a transient native-controller acquisition state.
+// Temporary always returns true; every other Open error is terminal.
+type AcquisitionError struct {
+	Kind     AcquisitionErrorKind
+	Attempts int
+	Err      error
+}
+
+func (e *AcquisitionError) Error() string {
+	switch e.Kind {
+	case AcquisitionInterfaceUnavailable:
+		return fmt.Sprintf("VIIPER native UDE interface is temporarily unavailable after %d attempt(s): %v", e.Attempts, e.Err)
+	case AcquisitionOwnerCleanupInProgress:
+		return fmt.Sprintf("VIIPER native UDE controller ownership cleanup is still in progress after %d attempt(s): %v", e.Attempts, e.Err)
+	default:
+		return fmt.Sprintf("VIIPER native UDE controller acquisition failed after %d attempt(s): %v", e.Attempts, e.Err)
+	}
+}
+
+func (e *AcquisitionError) Unwrap() error { return e.Err }
+
+func (e *AcquisitionError) Temporary() bool {
+	return e != nil && (e.Kind == AcquisitionInterfaceUnavailable ||
+		e.Kind == AcquisitionOwnerCleanupInProgress)
+}
+
+type nativeAcquisitionPolicy struct {
+	attempts int
+	interval time.Duration
+}
+
+type nativeAcquisitionOps struct {
+	discover func(context.Context) ([]string, error)
+	open     func(context.Context, string) (windows.Handle, error)
+	close    func(windows.Handle) error
+	wait     func(context.Context, time.Duration) error
+}
 
 var (
 	interfaceGUID = windows.GUID{
@@ -97,31 +154,17 @@ type ioRequest struct {
 }
 
 func Open(ctx context.Context) (*Client, error) {
-	paths, err := discoverInterfacePaths()
+	handle, err := acquireNativeController(ctx, nativeAcquisitionOps{
+		discover: discoverNativeInterfacePaths,
+		open:     openNativeController,
+		close:    windows.CloseHandle,
+		wait:     waitForNativeAcquisition,
+	}, nativeAcquisitionPolicy{
+		attempts: nativeAcquisitionAttempts,
+		interval: nativeAcquisitionRetryInterval,
+	})
 	if err != nil {
 		return nil, err
-	}
-	if len(paths) == 0 {
-		return nil, errors.New("VIIPER native UDE interface is not present")
-	}
-	if len(paths) != 1 {
-		return nil, fmt.Errorf("refusing ambiguous native UDE ownership: found %d controller interfaces", len(paths))
-	}
-
-	path, err := windows.UTF16PtrFromString(paths[0])
-	if err != nil {
-		return nil, fmt.Errorf("encode native UDE interface path: %w", err)
-	}
-	handle, err := windows.CreateFile(
-		path,
-		windows.GENERIC_READ|windows.GENERIC_WRITE,
-		0,
-		nil,
-		windows.OPEN_EXISTING,
-		windows.FILE_ATTRIBUTE_NORMAL|windows.FILE_FLAG_OVERLAPPED,
-		0)
-	if err != nil {
-		return nil, fmt.Errorf("open native UDE controller: %w", err)
 	}
 
 	completionPort, err := windows.CreateIoCompletionPort(handle, 0, 0, 0)
@@ -149,6 +192,139 @@ func Open(ctx context.Context) (*Client, error) {
 		return nil, err
 	}
 	return client, nil
+}
+
+func acquireNativeController(
+	ctx context.Context,
+	ops nativeAcquisitionOps,
+	policy nativeAcquisitionPolicy,
+) (windows.Handle, error) {
+	if err := ctx.Err(); err != nil {
+		return windows.InvalidHandle, err
+	}
+	if policy.attempts <= 0 {
+		return windows.InvalidHandle, errors.New("native UDE acquisition policy has no attempts")
+	}
+	if policy.interval <= 0 {
+		return windows.InvalidHandle, errors.New("native UDE acquisition retry interval must be positive")
+	}
+
+	var lastTransient *AcquisitionError
+	for attempt := 1; attempt <= policy.attempts; attempt++ {
+		paths, err := ops.discover(ctx)
+		if err != nil {
+			return windows.InvalidHandle, fmt.Errorf("discover native UDE controller: %w", err)
+		}
+		if err := ctx.Err(); err != nil {
+			return windows.InvalidHandle, err
+		}
+
+		if len(paths) > 1 {
+			return windows.InvalidHandle, fmt.Errorf(
+				"refusing ambiguous native UDE ownership: found %d controller interfaces", len(paths))
+		}
+		if len(paths) == 0 {
+			lastTransient = &AcquisitionError{
+				Kind:     AcquisitionInterfaceUnavailable,
+				Attempts: attempt,
+				Err:      windows.ERROR_FILE_NOT_FOUND,
+			}
+		} else {
+			handle, openErr := ops.open(ctx, paths[0])
+			if openErr == nil && isUsableNativeHandle(handle) {
+				if err := ctx.Err(); err != nil {
+					if closeErr := ops.close(handle); closeErr != nil {
+						return windows.InvalidHandle, errors.Join(err,
+							fmt.Errorf("close canceled native UDE controller handle: %w", closeErr))
+					}
+					return windows.InvalidHandle, err
+				}
+				return handle, nil
+			}
+			if isUsableNativeHandle(handle) {
+				if closeErr := ops.close(handle); closeErr != nil {
+					return windows.InvalidHandle, errors.Join(openErr,
+						fmt.Errorf("close failed native UDE controller handle: %w", closeErr))
+				}
+			}
+			if openErr == nil {
+				openErr = windows.ERROR_INVALID_HANDLE
+			}
+			lastTransient = classifyNativeAcquisitionError(openErr, attempt)
+			if lastTransient == nil {
+				return windows.InvalidHandle, fmt.Errorf("open native UDE controller: %w", openErr)
+			}
+		}
+
+		if attempt == policy.attempts {
+			return windows.InvalidHandle, lastTransient
+		}
+		if err := ops.wait(ctx, policy.interval); err != nil {
+			return windows.InvalidHandle, err
+		}
+	}
+
+	panic("unreachable native UDE acquisition state")
+}
+
+func classifyNativeAcquisitionError(err error, attempt int) *AcquisitionError {
+	switch {
+	case errors.Is(err, windows.ERROR_FILE_NOT_FOUND):
+		return &AcquisitionError{
+			Kind:     AcquisitionInterfaceUnavailable,
+			Attempts: attempt,
+			Err:      err,
+		}
+	case errors.Is(err, windows.ERROR_SHARING_VIOLATION):
+		return &AcquisitionError{
+			Kind:     AcquisitionOwnerCleanupInProgress,
+			Attempts: attempt,
+			Err:      err,
+		}
+	default:
+		return nil
+	}
+}
+
+func isUsableNativeHandle(handle windows.Handle) bool {
+	return handle != 0 && handle != windows.InvalidHandle
+}
+
+func discoverNativeInterfacePaths(ctx context.Context) ([]string, error) {
+	return discoverInterfacePaths(ctx)
+}
+
+func openNativeController(ctx context.Context, interfacePath string) (windows.Handle, error) {
+	if err := ctx.Err(); err != nil {
+		return windows.InvalidHandle, err
+	}
+	path, err := windows.UTF16PtrFromString(interfacePath)
+	if err != nil {
+		return windows.InvalidHandle, fmt.Errorf("encode native UDE interface path: %w", err)
+	}
+	handle, err := windows.CreateFile(
+		path,
+		windows.GENERIC_READ|windows.GENERIC_WRITE,
+		nativeBrokerShareMode, // One broker owns the driver session; never weaken exclusive sharing.
+		nil,
+		windows.OPEN_EXISTING,
+		windows.FILE_ATTRIBUTE_NORMAL|windows.FILE_FLAG_OVERLAPPED,
+		0)
+	if err != nil {
+		return handle, err
+	}
+	return handle, nil
+}
+
+func waitForNativeAcquisition(ctx context.Context, interval time.Duration) error {
+	timer := time.NewTimer(interval)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func enableSkipCompletionPortOnSuccess(handle windows.Handle) bool {
@@ -533,8 +709,11 @@ func (c *Client) ioctl(ctx context.Context, code uint32, input, output []byte) (
 	}
 }
 
-func discoverInterfacePaths() ([]string, error) {
+func discoverInterfacePaths(ctx context.Context) ([]string, error) {
 	for attempt := 0; attempt < 4; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		var required uint32
 		ret, _, _ := procCMGetDeviceInterfaceListSize.Call(
 			uintptr(unsafe.Pointer(&required)),
@@ -543,6 +722,9 @@ func discoverInterfacePaths() ([]string, error) {
 			cmGetDeviceInterfaceListPresent)
 		if uint32(ret) != crSuccess {
 			return nil, fmt.Errorf("CM_Get_Device_Interface_List_SizeW returned CONFIGRET %#x", uint32(ret))
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
 		if required <= 1 {
 			return nil, nil
@@ -559,6 +741,9 @@ func discoverInterfacePaths() ([]string, error) {
 		}
 		if uint32(ret) != crSuccess {
 			return nil, fmt.Errorf("CM_Get_Device_Interface_ListW returned CONFIGRET %#x", uint32(ret))
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
 		return parseMultiSZ(buffer), nil
 	}
