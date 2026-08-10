@@ -43,6 +43,7 @@ type registeredDevice struct {
 	device   usb.Device
 	ctx      context.Context
 	cancel   context.CancelFunc
+	stopping bool
 }
 
 type laneKey struct {
@@ -155,7 +156,7 @@ func (h *Host) Unregister(ctx context.Context, identity DeviceIdentity) error {
 
 	h.mu.RLock()
 	entry := h.devices[identity.DeviceID]
-	if entry == nil || entry.identity.Generation != identity.Generation {
+	if entry == nil || entry.stopping || entry.identity.Generation != identity.Generation {
 		h.mu.RUnlock()
 		return fmt.Errorf("native UDE device %d generation %d is not registered",
 			identity.DeviceID, identity.Generation)
@@ -174,7 +175,7 @@ func (h *Host) Unregister(ctx context.Context, identity DeviceIdentity) error {
 		h.mu.Unlock()
 		return errors.New("native UDE device changed during serialized removal")
 	}
-	delete(h.devices, identity.DeviceID)
+	entry.stopping = true
 	stoppingLanes := make([]*operationLane, 0, 4)
 	for key, lane := range h.lanes {
 		if key.deviceID == identity.DeviceID && key.generation == identity.Generation {
@@ -201,6 +202,11 @@ func (h *Host) Unregister(ctx context.Context, identity DeviceIdentity) error {
 			return ctx.Err()
 		}
 	}
+	h.mu.Lock()
+	if h.devices[identity.DeviceID] == entry {
+		delete(h.devices, identity.DeviceID)
+	}
+	h.mu.Unlock()
 	h.processor.Reset(entry.device, identity)
 	return nil
 }
@@ -313,7 +319,7 @@ func (h *Host) dispatch(ctx context.Context, op Operation) error {
 
 	h.mu.Lock()
 	entry := h.devices[op.DeviceID]
-	if entry == nil || entry.identity.Generation != op.Generation {
+	if entry == nil || entry.stopping || entry.identity.Generation != op.Generation {
 		h.mu.Unlock()
 		return errors.New("native UDE operation targets a stale device generation")
 	}

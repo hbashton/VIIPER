@@ -115,6 +115,19 @@ func (p *unregisterProcessor) Reset(usb.Device, DeviceIdentity) {
 }
 func (*unregisterProcessor) Lifecycle(context.Context, usb.Device, Operation) error { return nil }
 
+type stubbornProcessor struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (p *stubbornProcessor) Process(context.Context, usb.Device, Operation) (Completion, error) {
+	close(p.started)
+	<-p.release
+	return Completion{}, context.Canceled
+}
+func (*stubbornProcessor) Reset(usb.Device, DeviceIdentity)                       {}
+func (*stubbornProcessor) Lifecycle(context.Context, usb.Device, Operation) error { return nil }
+
 func hostTestDevice() usb.Device {
 	return &snapshotDevice{descriptor: usb.Descriptor{
 		Device: usb.DeviceDescriptor{
@@ -426,6 +439,45 @@ func TestHostUnregisterCancelsAndJoinsLanesBeforeReset(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("host did not stop")
+	}
+}
+
+func TestHostUnregisterTimeoutKeepsStoppingTombstone(t *testing.T) {
+	driver := newFakeHostDriver()
+	processor := &stubbornProcessor{started: make(chan struct{}), release: make(chan struct{})}
+	host, _ := NewHost(driver, processor, 1)
+	identity, err := host.Register(context.Background(), 17, hostTestDevice())
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- host.Serve(context.Background()) }()
+	driver.operations <- Operation{
+		Token: 1, DeviceID: identity.DeviceID, Generation: identity.Generation,
+		EndpointAddress: 0x81, EndpointSequence: 1, Kind: OperationTransfer,
+	}
+	select {
+	case <-processor.started:
+	case <-time.After(time.Second):
+		t.Fatal("processor did not start")
+	}
+	unregisterCtx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	err = host.Unregister(unregisterCtx, identity)
+	cancel()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Unregister error=%v want deadline", err)
+	}
+	if _, err = host.Register(context.Background(), identity.DeviceID, hostTestDevice()); err == nil {
+		t.Fatal("stopping device ID was reused after irreversible plug-out")
+	}
+	close(processor.release)
+	select {
+	case err = <-done:
+		if err == nil || !strings.Contains(err.Error(), "stop native UDE device") {
+			t.Fatalf("Serve error=%v want teardown-timeout session failure", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("teardown timeout did not fail the host session")
 	}
 }
 
