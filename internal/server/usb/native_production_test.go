@@ -3,7 +3,10 @@ package usb_test
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"log/slog"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/Alia5/VIIPER/device/dualsense"
@@ -178,6 +181,163 @@ func TestNativeProcessorPreservesPlayStationIsochronousMedia(t *testing.T) {
 			t.Fatal("DualShock 4 microphone PCM changed across native transport")
 		}
 	})
+}
+
+func TestNativeProcessorRunsDualSenseHIDSpeakerAndMicrophoneConcurrently(t *testing.T) {
+	const iterations = 12
+	dev, err := dualsense.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	processor := newProductionProcessor(t)
+	startNativeEndpoint(t, processor, dev, dualsense.EndpointHapticsAudioOut)
+	startNativeEndpoint(t, processor, dev, dualsense.EndpointMicrophoneIn)
+
+	var outputReports atomic.Uint64
+	var speakerFrames atomic.Uint64
+	var callbackFailure atomic.Value
+	dev.SetOutputCallback(func(dualsense.OutputState) {
+		outputReports.Add(1)
+	})
+	dev.SetAtomicAudioHapticsCallback(func(_ dualsense.OutputState, pcm []byte) {
+		if len(pcm) != 480*4 {
+			callbackFailure.CompareAndSwap(nil, fmt.Errorf(
+				"atomic speaker callback length=%d want=%d", len(pcm), 480*4))
+			return
+		}
+		speakerFrames.Add(1)
+	})
+
+	microphoneFrame := make([]byte, dualsense.USBMicrophoneClientFrameSize)
+	for index := range microphoneFrame {
+		microphoneFrame[index] = byte(index*17 + 3)
+	}
+	// The production microphone contract deliberately primes six 10 ms source
+	// frames before serving its first 1 ms USB packet.
+	for range 6 {
+		dev.QueueMicrophonePCMFrame(microphoneFrame)
+	}
+
+	errors := make(chan error, 3)
+	var workers sync.WaitGroup
+	workers.Add(3)
+
+	go func() {
+		defer workers.Done()
+		for iteration := range iterations {
+			report := make([]byte, dualsense.OutputReportSize)
+			report[0], report[1] = dualsense.ReportIDOutput, 0x03
+			report[3], report[4] = byte(iteration+1), byte(0x80+iteration)
+			_, processErr := processor.Process(context.Background(), dev, udecx.Operation{
+				Token: uint64(1000 + iteration), DeviceID: 1, Generation: 1,
+				Kind: udecx.OperationTransfer, EndpointAddress: dualsense.EndpointOut,
+				TransferLength: uint32(len(report)), Payload: report,
+			})
+			if processErr != nil {
+				errors <- fmt.Errorf("HID output iteration %d: %w", iteration, processErr)
+				return
+			}
+		}
+	}()
+
+	go func() {
+		defer workers.Done()
+		packetCount := 10
+		packetLength := uint32(dualsense.USBHapticsAudioPacketSize)
+		payload := make([]byte, packetCount*int(packetLength))
+		for index := range payload {
+			payload[index] = byte(index*29 + 5)
+		}
+		for iteration := range iterations {
+			op := productionIsoOperation(
+				uint64(2000+iteration), dualsense.EndpointHapticsAudioOut,
+				false, payload, packetCount, packetLength)
+			populateProductionEndpointMetadata(dev, &op)
+			completion, processErr := processor.Process(context.Background(), dev, op)
+			if processErr != nil {
+				errors <- fmt.Errorf("speaker iteration %d: %w", iteration, processErr)
+				return
+			}
+			if completion.TransferLength != uint32(len(payload)) ||
+				len(completion.IsoPackets) != packetCount {
+				errors <- fmt.Errorf("speaker iteration %d malformed completion: %+v",
+					iteration, completion)
+				return
+			}
+		}
+	}()
+
+	go func() {
+		defer workers.Done()
+		packetCount := 10
+		packetLength := uint32(dualsense.USBMicrophonePacketSize)
+		for iteration := range iterations {
+			dev.QueueMicrophonePCMFrame(microphoneFrame)
+			op := productionIsoOperation(
+				uint64(3000+iteration), dualsense.EndpointMicrophoneIn,
+				true, nil, packetCount, packetLength)
+			populateProductionEndpointMetadata(dev, &op)
+			completion, processErr := processor.Process(context.Background(), dev, op)
+			if processErr != nil {
+				errors <- fmt.Errorf("microphone iteration %d: %w", iteration, processErr)
+				return
+			}
+			if completion.TransferLength == 0 || len(completion.Payload) != packetCount*int(packetLength) ||
+				len(completion.IsoPackets) != packetCount {
+				errors <- fmt.Errorf("microphone iteration %d malformed completion: %+v",
+					iteration, completion)
+				return
+			}
+		}
+	}()
+
+	workers.Wait()
+	close(errors)
+	for workerErr := range errors {
+		t.Error(workerErr)
+	}
+	if failure := callbackFailure.Load(); failure != nil {
+		t.Error(failure)
+	}
+	if got := outputReports.Load(); got != iterations {
+		t.Errorf("DualSense output callbacks=%d want=%d", got, iterations)
+	}
+	if got := speakerFrames.Load(); got != iterations {
+		t.Errorf("DualSense atomic speaker callbacks=%d want=%d", got, iterations)
+	}
+}
+
+func productionIsoOperation(token uint64, endpoint uint8, input bool, payload []byte,
+	packetCount int, packetLength uint32) udecx.Operation {
+	packets := make([]udecx.IsoPacket, packetCount)
+	for index := range packets {
+		packets[index] = udecx.IsoPacket{
+			Offset: uint32(index) * packetLength, Length: packetLength,
+		}
+	}
+	op := udecx.Operation{
+		Token: token, DeviceID: 1, Generation: 1, Kind: udecx.OperationTransfer,
+		EndpointAddress: endpoint, TransferLength: uint32(packetCount) * packetLength,
+		IsoPackets: packets, Payload: payload,
+	}
+	if input {
+		op.Direction = 1
+	}
+	return op
+}
+
+func populateProductionEndpointMetadata(dev usbdevice.Device, op *udecx.Operation) {
+	for _, iface := range dev.GetDescriptor().Interfaces {
+		for _, endpoint := range iface.Endpoints {
+			if endpoint.BEndpointAddress != op.EndpointAddress {
+				continue
+			}
+			op.EndpointAttributes = endpoint.BMAttributes
+			op.EndpointInterval = endpoint.BInterval
+			op.EndpointMaxPacketSize = endpoint.WMaxPacketSize
+			return
+		}
+	}
 }
 
 func newProductionProcessor(t *testing.T) *serverusb.NativeProcessor {
