@@ -653,6 +653,7 @@ ViiperGetTransferMdl(
     case URB_FUNCTION_ISOCH_TRANSFER_USING_CHAINED_MDL:
         return Urb->UrbIsochronousTransfer.TransferBufferMDL;
     case URB_FUNCTION_CONTROL_TRANSFER:
+        return Urb->UrbControlTransfer.TransferBufferMDL;
     case URB_FUNCTION_CONTROL_TRANSFER_EX:
         return Urb->UrbControlTransferEx.TransferBufferMDL;
     default:

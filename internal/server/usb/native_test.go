@@ -37,6 +37,26 @@ func TestNativeProcessorServesControlDescriptor(t *testing.T) {
 	}
 }
 
+func TestNativeProcessorServesSwitchMicrosoftOS10FeatureDescriptor(t *testing.T) {
+	msOS := &usbdevice.MicrosoftOS10Descriptor{
+		VendorCode: 0x20, InterfaceNumber: 1, CompatibleID: "WINUSB",
+	}
+	dev := &altSettingTestDevice{desc: &usbdevice.Descriptor{MicrosoftOS10: msOS}}
+	op := udecx.Operation{
+		Token: 2, DeviceID: 1, Generation: 1, Kind: udecx.OperationControl,
+		Direction: 1, TransferLength: 40,
+		SetupPacket: [8]byte{0xC0, msOS.EffectiveVendorCode(), 0, 0, 4, 0, 40, 0},
+	}
+	completion, err := nativeProcessorForTest(t).Process(context.Background(), dev, op)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := msOS.CompatibleIDDescriptor()
+	if completion.TransferLength != uint32(len(want)) || !bytes.Equal(completion.Payload, want) {
+		t.Fatalf("native Microsoft OS feature response=%x want=%x", completion.Payload, want)
+	}
+}
+
 func TestNativeProcessorAppliesUdeCxInterfaceSettingLifecycle(t *testing.T) {
 	desc := &usbdevice.Descriptor{
 		Device: usbdevice.DeviceDescriptor{Speed: uint32(udecx.DeviceSpeedHigh)},
