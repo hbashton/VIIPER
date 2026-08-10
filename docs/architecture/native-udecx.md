@@ -310,6 +310,10 @@ request queues while accounting for UdeCx's endpoint-specific purge contract.
 Host-side create/remove gates are keyed by stable device ID: generations of
 one controller cannot cross, while a slow PnP transition for one pad cannot
 stall an independent pad's registration or removal.
+- PnP creation is revalidated after the overlapped kernel transaction. If a
+  one-shot host session stopped while creation was in flight, that exact child
+  generation is transactionally destroyed and cannot be published into the
+  terminal host.
 
 ## Delivery checkpoints
 

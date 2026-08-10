@@ -12,11 +12,12 @@ import (
 )
 
 const (
-	defaultDequeueWorkers = 8
-	laneQueueDepth        = 128
-	completionTimeout     = 2 * time.Second
-	completedTokenHistory = MaxPendingOperations * 2
-	statusUnsuccessful    = int32(-1073741823) // STATUS_UNSUCCESSFUL
+	defaultDequeueWorkers  = 8
+	laneQueueDepth         = 128
+	completionTimeout      = 2 * time.Second
+	terminalCleanupTimeout = 30 * time.Second
+	completedTokenHistory  = MaxPendingOperations * 2
+	statusUnsuccessful     = int32(-1073741823) // STATUS_UNSUCCESSFUL
 )
 
 // Driver is the narrow host-side contract implemented by the overlapped
@@ -238,6 +239,39 @@ func (h *Host) Register(ctx context.Context, deviceID uint64, dev usb.Device) (D
 		h.mu.Unlock()
 		cancel()
 		return DeviceIdentity{}, err
+	}
+
+	// CreateDevice is an overlapped PnP transaction and can outlive a fatal or
+	// cancelled one-shot Serve session. Revalidate after the kernel commits the
+	// child. Reporting success here would publish a controller into a host that
+	// can never service its USB requests. Roll the exact generation back while
+	// the per-device lifecycle gate is still held.
+	h.mu.RLock()
+	terminal := h.started && (!h.running || h.runCtx == nil || h.runCtx.Err() != nil)
+	h.mu.RUnlock()
+	if terminal {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), terminalCleanupTimeout)
+		cleanupErr := h.driver.DestroyDevice(cleanupCtx, identity)
+		cleanupCancel()
+		h.mu.Lock()
+		if h.devices[deviceID] == entry {
+			entry.stopping = true
+			entry.publisherStopping = true
+			if cleanupErr == nil {
+				delete(h.devices, deviceID)
+			}
+		}
+		h.mu.Unlock()
+		cancel()
+		if cleanupErr == nil {
+			h.processor.Reset(dev, identity)
+			return DeviceIdentity{}, errors.New(
+				"native UDE host session stopped while controller registration was in flight")
+		}
+		return DeviceIdentity{}, errors.Join(
+			errors.New("native UDE host session stopped while controller registration was in flight"),
+			fmt.Errorf("rollback native UDE device %d generation %d: %w",
+				identity.DeviceID, identity.Generation, cleanupErr))
 	}
 	return identity, nil
 }

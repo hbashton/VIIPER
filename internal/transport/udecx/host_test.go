@@ -341,6 +341,59 @@ func TestHostSerializesSameControllerRegistration(t *testing.T) {
 	}
 }
 
+func TestHostRollsBackRegistrationThatOutlivesServe(t *testing.T) {
+	driver := &independentlyBlockingCreateDriver{
+		fakeHostDriver: newFakeHostDriver(), blockedDevice: 84,
+		started: make(chan struct{}), release: make(chan struct{}),
+	}
+	host, err := NewHost(driver, &noopProcessor{}, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serveCtx, cancelServe := context.WithCancel(context.Background())
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- host.Serve(serveCtx) }()
+
+	registerDone := make(chan error, 1)
+	go func() {
+		_, registerErr := host.Register(context.Background(), 84, hostTestDevice())
+		registerDone <- registerErr
+	}()
+	select {
+	case <-driver.started:
+	case <-time.After(time.Second):
+		t.Fatal("registration did not reach blocking PnP create")
+	}
+	cancelServe()
+	select {
+	case serveErr := <-serveDone:
+		if serveErr != nil {
+			t.Fatalf("Serve shutdown: %v", serveErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Serve did not stop around in-flight registration")
+	}
+	close(driver.release)
+	select {
+	case registerErr := <-registerDone:
+		if registerErr == nil || !strings.Contains(registerErr.Error(), "registration was in flight") {
+			t.Fatalf("registration error=%v, want terminal-session rollback", registerErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("registration did not finish after PnP create was released")
+	}
+
+	host.mu.RLock()
+	_, leaked := host.devices[84]
+	host.mu.RUnlock()
+	driver.mu.Lock()
+	created, destroyed := len(driver.created), len(driver.destroyed)
+	driver.mu.Unlock()
+	if leaked || created != 1 || destroyed != 1 {
+		t.Fatalf("terminal registration leaked=%t created=%d destroyed=%d", leaked, created, destroyed)
+	}
+}
+
 func TestHostRepeatedCreateRemoveLeavesOnlyGenerationHistory(t *testing.T) {
 	driver := newFakeHostDriver()
 	host, err := NewHost(driver, &noopProcessor{}, 4)
