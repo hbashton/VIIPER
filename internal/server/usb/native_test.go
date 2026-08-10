@@ -180,6 +180,71 @@ func TestNativeProcessorPreservesAlternateSettingAcrossLinkPower(t *testing.T) {
 	}
 }
 
+func TestNativeProcessorSetConfigurationRetiresGenerationTransportState(t *testing.T) {
+	desc := &usbdevice.Descriptor{
+		Device: usbdevice.DeviceDescriptor{Speed: uint32(udecx.DeviceSpeedHigh)},
+		Interfaces: []usbdevice.InterfaceConfig{
+			{Descriptor: usbdevice.InterfaceDescriptor{BInterfaceNumber: 2, BAlternateSetting: 0}},
+			{Descriptor: usbdevice.InterfaceDescriptor{
+				BInterfaceNumber: 2, BAlternateSetting: 1, BNumEndpoints: 1,
+			}, Endpoints: []usbdevice.EndpointDescriptor{{
+				BEndpointAddress: 0x02, BMAttributes: 0x05,
+				WMaxPacketSize: 196, BInterval: 4,
+			}}},
+		},
+	}
+	dev := &altSettingTestDevice{desc: desc}
+	processor := nativeProcessorForTest(t)
+	identity := udecx.DeviceIdentity{DeviceID: 5, Generation: 9}
+	endpoint := udecx.Operation{
+		DeviceID: identity.DeviceID, Generation: identity.Generation,
+		Kind:            udecx.OperationEndpointStart,
+		EndpointAddress: 0x02, EndpointAttributes: 0x05,
+		EndpointInterval: 4, EndpointMaxPacketSize: 196,
+	}
+	if err := processor.Lifecycle(context.Background(), dev, endpoint); err != nil {
+		t.Fatal(err)
+	}
+	key := nativeLaneKey{
+		deviceID: identity.DeviceID, generation: identity.Generation, endpoint: endpoint.EndpointAddress,
+	}
+	processor.mu.Lock()
+	processor.next[key] = time.Now()
+	processor.lastIn[key] = []byte{1, 2, 3}
+	processor.mu.Unlock()
+
+	_, err := processor.Process(context.Background(), dev, udecx.Operation{
+		Token: 2, DeviceID: identity.DeviceID, Generation: identity.Generation,
+		Kind: udecx.OperationControl, EndpointAddress: 0,
+		SetupPacket: [8]byte{usbReqTypeStandardToDevice, usbReqSetConfiguration, 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := processor.server.getInterfaceAlt(dev, 2); got != 0 {
+		t.Fatalf("SET_CONFIGURATION left interface 2 at alternate %d", got)
+	}
+	processor.mu.Lock()
+	_, hasClock := processor.next[key]
+	_, hasCachedInput := processor.lastIn[key]
+	session := processor.sessions[nativeSessionKey{
+		deviceID: identity.DeviceID, generation: identity.Generation,
+	}]
+	processor.mu.Unlock()
+	if hasClock || hasCachedInput {
+		t.Fatalf("SET_CONFIGURATION retained clock=%v cachedInput=%v", hasClock, hasCachedInput)
+	}
+	if session == nil {
+		t.Fatal("SET_CONFIGURATION lost the registered generation session")
+	}
+	session.mu.Lock()
+	activeEndpoints := len(session.active)
+	session.mu.Unlock()
+	if activeEndpoints != 0 {
+		t.Fatalf("SET_CONFIGURATION retained %d active endpoint signatures", activeEndpoints)
+	}
+}
+
 func TestNativeProcessorPreservesSparseIsoInLayout(t *testing.T) {
 	desc := &usbdevice.Descriptor{
 		Device: usbdevice.DeviceDescriptor{Speed: uint32(udecx.DeviceSpeedHigh)},

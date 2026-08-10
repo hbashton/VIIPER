@@ -249,6 +249,100 @@ func (*cancellationOnlyCompletionDriver) Complete(ctx context.Context, _ Complet
 	return ctx.Err()
 }
 
+type deviceBarrierCompletionDriver struct {
+	*fakeHostDriver
+	started  chan struct{}
+	canceled chan struct{}
+	release  chan struct{}
+}
+
+type managementBarrierDriver struct {
+	*fakeHostDriver
+	management chan Completion
+	release    chan struct{}
+}
+
+func (d *managementBarrierDriver) Complete(ctx context.Context, completion Completion) error {
+	if completion.Token != 1 {
+		return d.fakeHostDriver.Complete(ctx, completion)
+	}
+	select {
+	case d.management <- completion:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	select {
+	case <-d.release:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (d *deviceBarrierCompletionDriver) Complete(ctx context.Context, completion Completion) error {
+	if completion.Token != 1 {
+		return d.fakeHostDriver.Complete(ctx, completion)
+	}
+	close(d.started)
+	<-ctx.Done()
+	close(d.canceled)
+	<-d.release
+	return ctx.Err()
+}
+
+type deviceBarrierProcessor struct {
+	targetDevice    uint64
+	speakerStarted  chan struct{}
+	speakerCanceled chan struct{}
+	speakerRelease  chan struct{}
+	barrierStarted  chan Operation
+	barrierRelease  chan struct{}
+	processed       chan Operation
+	speakerOnce     sync.Once
+}
+
+func (p *deviceBarrierProcessor) Process(
+	ctx context.Context, _ usb.Device, op Operation,
+) (Completion, error) {
+	if op.DeviceID != p.targetDevice {
+		p.processed <- op
+		return Completion{TransferLength: op.TransferLength}, nil
+	}
+	if isDeviceBarrierOperation(op) {
+		p.barrierStarted <- op
+		select {
+		case <-p.barrierRelease:
+			return Completion{TransferLength: op.TransferLength}, nil
+		case <-ctx.Done():
+			return Completion{}, ctx.Err()
+		}
+	}
+	if op.EndpointAddress == 0x02 {
+		p.speakerOnce.Do(func() { close(p.speakerStarted) })
+		<-ctx.Done()
+		close(p.speakerCanceled)
+		<-p.speakerRelease
+		return Completion{}, ctx.Err()
+	}
+	p.processed <- op
+	return Completion{TransferLength: op.TransferLength}, nil
+}
+
+func (p *deviceBarrierProcessor) Lifecycle(ctx context.Context, _ usb.Device, op Operation) error {
+	if isDeviceBarrierOperation(op) {
+		p.barrierStarted <- op
+		select {
+		case <-p.barrierRelease:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	p.processed <- op
+	return nil
+}
+func (*deviceBarrierProcessor) Reset(usb.Device, DeviceIdentity) {}
+
 type resetGateProcessor struct {
 	started chan struct{}
 	release chan struct{}
@@ -275,6 +369,37 @@ func (p *resetGateProcessor) Lifecycle(ctx context.Context, _ usb.Device, op Ope
 	}
 }
 func (*resetGateProcessor) Reset(usb.Device, DeviceIdentity) {}
+
+type supersededManagementProcessor struct {
+	endpointStarted  chan struct{}
+	endpointCanceled chan struct{}
+	endpointRelease  chan struct{}
+	barrierStarted   chan struct{}
+}
+
+func (*supersededManagementProcessor) Process(
+	context.Context, usb.Device, Operation,
+) (Completion, error) {
+	return Completion{}, nil
+}
+
+func (p *supersededManagementProcessor) Lifecycle(
+	ctx context.Context, _ usb.Device, op Operation,
+) error {
+	switch op.Kind {
+	case OperationEndpointReset:
+		close(p.endpointStarted)
+		<-ctx.Done()
+		close(p.endpointCanceled)
+		<-p.endpointRelease
+		return ctx.Err()
+	case OperationDeviceReset:
+		close(p.barrierStarted)
+	}
+	return nil
+}
+
+func (*supersededManagementProcessor) Reset(usb.Device, DeviceIdentity) {}
 
 func hostTestDevice() usb.Device {
 	return &snapshotDevice{descriptor: usb.Descriptor{
@@ -581,7 +706,8 @@ func TestHostPublishesInterruptInputDirectlyAfterEndpointStart(t *testing.T) {
 	go func() { done <- host.Serve(ctx) }()
 	driver.operations <- Operation{
 		DeviceID: identity.DeviceID, Generation: identity.Generation,
-		EndpointAddress: 0x81, EndpointSequence: 1, Kind: OperationEndpointStart,
+		EndpointAddress: 0x81, EndpointSequence: 1, DeviceSequence: 1,
+		Kind: OperationEndpointStart,
 	}
 	select {
 	case <-processor.lifecycle:
@@ -641,7 +767,8 @@ func TestHostReusesOneDescriptorSizedDirectInputBuffer(t *testing.T) {
 	go func() { done <- host.Serve(ctx) }()
 	driver.operations <- Operation{
 		DeviceID: identity.DeviceID, Generation: identity.Generation,
-		EndpointAddress: 0x81, EndpointSequence: 1, Kind: OperationEndpointStart,
+		EndpointAddress: 0x81, EndpointSequence: 1, DeviceSequence: 1,
+		Kind: OperationEndpointStart,
 	}
 	select {
 	case <-processor.lifecycle:
@@ -833,7 +960,8 @@ func TestHostRestartsInputPublisherAcrossD0WithoutResettingSequence(t *testing.T
 
 	driver.operations <- Operation{
 		DeviceID: identity.DeviceID, Generation: identity.Generation,
-		EndpointAddress: 0x81, EndpointSequence: 1, Kind: OperationEndpointStart,
+		EndpointAddress: 0x81, EndpointSequence: 1, DeviceSequence: 1,
+		Kind: OperationEndpointStart,
 	}
 	select {
 	case <-processor.lifecycle:
@@ -914,17 +1042,13 @@ func TestHostDoesNotResurrectInputFromPreD0ExitEndpointStart(t *testing.T) {
 	go func() { done <- host.Serve(ctx) }()
 
 	// Multiple dequeue workers may deliver the device-wide D0 exit before an
-	// older endpoint-start notification. DeviceSequence must prevent that old
-	// start from resurrecting the publisher while the child is outside D0.
+	// older endpoint-start notification. The announced barrier must retire that
+	// pre-D0 callback without applying it, then process the exit once the device
+	// sequence is contiguous.
 	driver.operations <- Operation{
 		DeviceID: identity.DeviceID, Generation: identity.Generation,
 		EndpointAddress: 0, EndpointSequence: 1, DeviceSequence: 2,
 		Kind: OperationDeviceD0Exit,
-	}
-	select {
-	case <-processor.lifecycle:
-	case <-time.After(time.Second):
-		t.Fatal("D0 exit was not processed")
 	}
 	driver.operations <- Operation{
 		DeviceID: identity.DeviceID, Generation: identity.Generation,
@@ -934,7 +1058,12 @@ func TestHostDoesNotResurrectInputFromPreD0ExitEndpointStart(t *testing.T) {
 	select {
 	case <-processor.lifecycle:
 	case <-time.After(time.Second):
-		t.Fatal("older endpoint start was not processed")
+		t.Fatal("D0 exit was not processed after the older sequence was retired")
+	}
+	select {
+	case sequence := <-processor.lifecycle:
+		t.Fatalf("superseded endpoint start reached lifecycle processor as sequence %d", sequence)
+	default:
 	}
 	device.reports <- []byte{1}
 	select {
@@ -1035,6 +1164,99 @@ func TestHostPausesDirectInputAcrossAcknowledgedDeviceReset(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("publisher did not resume after device reset acknowledgement")
+	}
+
+	cancel()
+	select {
+	case err = <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("host did not stop")
+	}
+}
+
+func TestHostPausesDirectInputAcrossSetConfigurationBarrier(t *testing.T) {
+	driver := &fastInputDriver{fakeHostDriver: newFakeHostDriver(), reports: make(chan InputReport, 4)}
+	processor := &deviceBarrierProcessor{
+		targetDevice:    50,
+		speakerStarted:  make(chan struct{}),
+		speakerCanceled: make(chan struct{}),
+		speakerRelease:  make(chan struct{}),
+		barrierStarted:  make(chan Operation, 1),
+		barrierRelease:  make(chan struct{}),
+		processed:       make(chan Operation, 2),
+	}
+	host, _ := NewHost(driver, processor, 4)
+	device := newInputPublisherTestDevice()
+	identity, err := host.Register(context.Background(), processor.targetDevice, device)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- host.Serve(ctx) }()
+
+	driver.operations <- Operation{
+		DeviceID: identity.DeviceID, Generation: identity.Generation,
+		EndpointAddress: 0x81, EndpointSequence: 1, DeviceSequence: 1,
+		Kind: OperationEndpointStart,
+	}
+	select {
+	case op := <-processor.processed:
+		if op.Kind != OperationEndpointStart {
+			t.Fatalf("processed %+v before endpoint start", op)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("endpoint start was not processed")
+	}
+	device.reports <- []byte{1}
+	select {
+	case report := <-driver.reports:
+		if report.Sequence != 1 {
+			t.Fatalf("first sequence=%d want=1", report.Sequence)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("first input report was not submitted")
+	}
+
+	driver.operations <- Operation{
+		Token: 2, DeviceID: identity.DeviceID, Generation: identity.Generation,
+		EndpointAddress: 0, EndpointSequence: 1, DeviceSequence: 2,
+		Kind: OperationControl,
+		SetupPacket: [8]byte{
+			usbRequestTypeStandardToDevice, usbRequestSetConfiguration, 1,
+		},
+	}
+	select {
+	case <-processor.barrierStarted:
+	case <-time.After(time.Second):
+		t.Fatal("SET_CONFIGURATION did not reach the processor")
+	}
+	device.reports <- []byte{2}
+	select {
+	case report := <-driver.reports:
+		t.Fatalf("input crossed an active SET_CONFIGURATION barrier: %+v", report)
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	close(processor.barrierRelease)
+	select {
+	case completion := <-driver.completions:
+		if completion.Token != 2 || completion.Status != 0 {
+			t.Fatalf("SET_CONFIGURATION completion=%+v", completion)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("SET_CONFIGURATION was not completed")
+	}
+	select {
+	case report := <-driver.reports:
+		if report.Sequence != 2 || string(report.Payload) != string([]byte{2}) {
+			t.Fatalf("configuration-restored publisher report=%+v", report)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("publisher did not resume after SET_CONFIGURATION")
 	}
 
 	cancel()
@@ -1206,6 +1428,443 @@ func trackAndDispatch(host *Host, op Operation) error {
 		return fmt.Errorf("track token %d: %w", op.Token, err)
 	}
 	return host.dispatch(context.Background(), op)
+}
+
+func TestHostDeviceBarriersJoinBlockedSpeakerBeforeLaterMicAndHID(t *testing.T) {
+	tests := []struct {
+		name    string
+		kind    OperationKind
+		control bool
+	}{
+		{name: "device_reset", kind: OperationDeviceReset},
+		{name: "D0_exit", kind: OperationDeviceD0Exit},
+		{name: "D0_entry", kind: OperationDeviceD0Entry},
+		{name: "set_configuration", kind: OperationControl, control: true},
+	}
+
+	for index, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			driver := newFakeHostDriver()
+			processor := &deviceBarrierProcessor{
+				targetDevice:    uint64(96 + index*2),
+				speakerStarted:  make(chan struct{}),
+				speakerCanceled: make(chan struct{}),
+				speakerRelease:  make(chan struct{}),
+				barrierStarted:  make(chan Operation, 1),
+				barrierRelease:  make(chan struct{}),
+				processed:       make(chan Operation, 4),
+			}
+			host, err := NewHost(driver, processor, 4)
+			if err != nil {
+				t.Fatal(err)
+			}
+			target, err := host.Register(context.Background(), processor.targetDevice, hostTestDevice())
+			if err != nil {
+				t.Fatal(err)
+			}
+			independent, err := host.Register(context.Background(), processor.targetDevice+1, hostTestDevice())
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				host.cancelAllOperations()
+				_ = host.Unregister(context.Background(), target)
+				_ = host.Unregister(context.Background(), independent)
+			})
+
+			speaker := Operation{
+				Token: 1, DeviceID: target.DeviceID, Generation: target.Generation,
+				EndpointAddress: 0x02, EndpointSequence: 1, DeviceSequence: 1,
+				Kind: OperationTransfer,
+			}
+			if err = trackAndDispatch(host, speaker); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case <-processor.speakerStarted:
+			case <-time.After(time.Second):
+				t.Fatal("speaker callback did not start")
+			}
+
+			// Multiple dequeue workers may deliver later endpoint work before the
+			// device-wide boundary. These lanes must remain parked at the global
+			// device sequence instead of overtaking the reset/configuration change.
+			for _, op := range []Operation{
+				{
+					Token: 3, DeviceID: target.DeviceID, Generation: target.Generation,
+					EndpointAddress: 0x83, EndpointSequence: 1, DeviceSequence: 3,
+					Kind: OperationTransfer,
+				},
+				{
+					Token: 4, DeviceID: target.DeviceID, Generation: target.Generation,
+					EndpointAddress: 0x04, EndpointSequence: 1, DeviceSequence: 4,
+					Kind: OperationTransfer,
+				},
+			} {
+				if err = trackAndDispatch(host, op); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			barrier := Operation{
+				DeviceID: target.DeviceID, Generation: target.Generation,
+				EndpointAddress: 0, EndpointSequence: 1, DeviceSequence: 2,
+				Kind: test.kind,
+			}
+			if test.control {
+				barrier.Token = 2
+				barrier.SetupPacket = [8]byte{
+					usbRequestTypeStandardToDevice, usbRequestSetConfiguration, 1,
+				}
+				err = trackAndDispatch(host, barrier)
+			} else {
+				err = host.dispatch(context.Background(), barrier)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case <-processor.speakerCanceled:
+			case <-time.After(time.Second):
+				t.Fatal("device barrier did not cancel the older speaker callback")
+			}
+			select {
+			case op := <-processor.barrierStarted:
+				t.Fatalf("barrier sequence %d ran before the older callback joined", op.DeviceSequence)
+			case <-time.After(25 * time.Millisecond):
+			}
+
+			if err = trackAndDispatch(host, Operation{
+				Token: 100, DeviceID: independent.DeviceID, Generation: independent.Generation,
+				EndpointAddress: 0x02, EndpointSequence: 1, DeviceSequence: 1,
+				Kind: OperationTransfer,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case op := <-processor.processed:
+				if op.DeviceID != independent.DeviceID {
+					t.Fatalf("device barrier leaked target operation %+v before release", op)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("blocked target device serialized an independent controller")
+			}
+
+			close(processor.speakerRelease)
+			select {
+			case op := <-processor.barrierStarted:
+				if op.DeviceSequence != barrier.DeviceSequence {
+					t.Fatalf("started barrier sequence=%d want=%d", op.DeviceSequence, barrier.DeviceSequence)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("device barrier did not start after the older callback joined")
+			}
+			select {
+			case op := <-processor.processed:
+				t.Fatalf("later endpoint 0x%02x overtook the active device barrier", op.EndpointAddress)
+			case <-time.After(25 * time.Millisecond):
+			}
+
+			close(processor.barrierRelease)
+			seen := make(map[uint8]bool)
+			for len(seen) != 2 {
+				select {
+				case op := <-processor.processed:
+					if op.DeviceID != target.DeviceID || (op.EndpointAddress != 0x83 && op.EndpointAddress != 0x04) {
+						t.Fatalf("unexpected post-barrier operation %+v", op)
+					}
+					seen[op.EndpointAddress] = true
+				case <-time.After(time.Second):
+					t.Fatalf("post-barrier endpoints processed=%v want mic 0x83 and HID 0x04", seen)
+				}
+			}
+
+			wantCompletions := 3
+			if test.control {
+				wantCompletions++
+			}
+			for range wantCompletions {
+				select {
+				case completion := <-driver.completions:
+					if completion.Token == speaker.Token {
+						t.Fatal("canceled pre-barrier speaker callback published after the boundary")
+					}
+				case <-time.After(time.Second):
+					t.Fatal("expected post-barrier completion was not published")
+				}
+			}
+			select {
+			case completion := <-driver.completions:
+				if completion.Token == speaker.Token {
+					t.Fatal("canceled pre-barrier speaker callback published late")
+				}
+				t.Fatalf("unexpected extra completion %+v", completion)
+			case <-time.After(25 * time.Millisecond):
+			}
+		})
+	}
+}
+
+func TestHostDeviceBarrierCancelsAndJoinsBlockedCompletion(t *testing.T) {
+	driver := &deviceBarrierCompletionDriver{
+		fakeHostDriver: newFakeHostDriver(),
+		started:        make(chan struct{}),
+		canceled:       make(chan struct{}),
+		release:        make(chan struct{}),
+	}
+	processor := &resetGateProcessor{started: make(chan struct{}), release: make(chan struct{})}
+	host, err := NewHost(driver, processor, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := host.Register(context.Background(), 105, hostTestDevice())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		host.cancelAllOperations()
+		_ = host.Unregister(context.Background(), identity)
+	})
+
+	if err = trackAndDispatch(host, Operation{
+		Token: 1, DeviceID: identity.DeviceID, Generation: identity.Generation,
+		EndpointAddress: 0x02, EndpointSequence: 1, DeviceSequence: 1,
+		Kind: OperationTransfer,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-driver.started:
+	case <-time.After(time.Second):
+		t.Fatal("pre-reset driver completion did not start")
+	}
+	if err = host.dispatch(context.Background(), Operation{
+		DeviceID: identity.DeviceID, Generation: identity.Generation,
+		EndpointAddress: 0, EndpointSequence: 1, DeviceSequence: 2,
+		Kind: OperationDeviceReset,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-driver.canceled:
+	case <-time.After(time.Second):
+		t.Fatal("device reset did not cancel the older blocked completion")
+	}
+	select {
+	case <-processor.started:
+		t.Fatal("device reset ran before the canceled completion callback joined")
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	close(driver.release)
+	select {
+	case <-processor.started:
+	case <-time.After(time.Second):
+		t.Fatal("device reset did not run after the completion callback joined")
+	}
+	close(processor.release)
+	select {
+	case completion := <-driver.completions:
+		t.Fatalf("canceled pre-reset completion was published: %+v", completion)
+	case <-time.After(25 * time.Millisecond):
+	}
+}
+
+func TestHostDeviceBarrierCompletesSupersededManagementRequest(t *testing.T) {
+	driver := &managementBarrierDriver{
+		fakeHostDriver: newFakeHostDriver(),
+		management:     make(chan Completion, 1),
+		release:        make(chan struct{}),
+	}
+	processor := &supersededManagementProcessor{
+		endpointStarted:  make(chan struct{}),
+		endpointCanceled: make(chan struct{}),
+		endpointRelease:  make(chan struct{}),
+		barrierStarted:   make(chan struct{}),
+	}
+	host, err := NewHost(driver, processor, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := host.Register(context.Background(), 106, hostTestDevice())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		host.cancelAllOperations()
+		_ = host.Unregister(context.Background(), identity)
+	})
+
+	if err = host.dispatch(context.Background(), Operation{
+		Token: 1, DeviceID: identity.DeviceID, Generation: identity.Generation,
+		EndpointAddress: 0x02, EndpointSequence: 1, DeviceSequence: 1,
+		Kind: OperationEndpointReset,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-processor.endpointStarted:
+	case <-time.After(time.Second):
+		t.Fatal("token-bearing endpoint reset did not start")
+	}
+	if err = host.dispatch(context.Background(), Operation{
+		DeviceID: identity.DeviceID, Generation: identity.Generation,
+		EndpointAddress: 0, EndpointSequence: 1, DeviceSequence: 2,
+		Kind: OperationDeviceReset,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-processor.endpointCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("device reset did not cancel the older endpoint reset callback")
+	}
+	select {
+	case <-processor.barrierStarted:
+		t.Fatal("device reset ran before the older endpoint reset callback joined")
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	close(processor.endpointRelease)
+	select {
+	case completion := <-driver.management:
+		if completion.Token != 1 || completion.Status != statusUnsuccessful {
+			t.Fatalf("superseded management completion=%+v", completion)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("superseded endpoint reset left its UdeCx management token stranded")
+	}
+	select {
+	case <-processor.barrierStarted:
+		t.Fatal("device reset ran before the management completion joined")
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	close(driver.release)
+	select {
+	case <-processor.barrierStarted:
+	case <-time.After(time.Second):
+		t.Fatal("device reset did not run after the superseded management request completed")
+	}
+}
+
+func TestHostDeviceBarrierJoinsQueuedSupersededManagementRequest(t *testing.T) {
+	driver := &managementBarrierDriver{
+		fakeHostDriver: newFakeHostDriver(),
+		management:     make(chan Completion, 1),
+		release:        make(chan struct{}),
+	}
+	processor := &supersededManagementProcessor{
+		endpointStarted:  make(chan struct{}),
+		endpointCanceled: make(chan struct{}),
+		endpointRelease:  make(chan struct{}),
+		barrierStarted:   make(chan struct{}),
+	}
+	host, err := NewHost(driver, processor, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := host.Register(context.Background(), 108, hostTestDevice())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		host.cancelAllOperations()
+		_ = host.Unregister(context.Background(), identity)
+	})
+
+	// A multi-worker dequeue may announce the later device reset before the
+	// earlier endpoint reset reaches its endpoint lane.
+	if err = host.dispatch(context.Background(), Operation{
+		DeviceID: identity.DeviceID, Generation: identity.Generation,
+		EndpointAddress: 0, EndpointSequence: 1, DeviceSequence: 2,
+		Kind: OperationDeviceReset,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err = host.dispatch(context.Background(), Operation{
+		Token: 1, DeviceID: identity.DeviceID, Generation: identity.Generation,
+		EndpointAddress: 0x02, EndpointSequence: 1, DeviceSequence: 1,
+		Kind: OperationEndpointReset,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case completion := <-driver.management:
+		if completion.Token != 1 || completion.Status != statusUnsuccessful {
+			t.Fatalf("queued superseded management completion=%+v", completion)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("queued superseded endpoint reset left its management token stranded")
+	}
+	select {
+	case <-processor.endpointStarted:
+		t.Fatal("queued pre-barrier endpoint reset reached the processor")
+	default:
+	}
+	select {
+	case <-processor.barrierStarted:
+		t.Fatal("device reset ran before queued management cancellation joined")
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	close(driver.release)
+	select {
+	case <-processor.barrierStarted:
+	case <-time.After(time.Second):
+		t.Fatal("device reset did not run after queued management cancellation joined")
+	}
+}
+
+func TestHostWithdrawsAnnouncedBarrierWhenLaneAdmissionFails(t *testing.T) {
+	driver := newFakeHostDriver()
+	host, err := NewHost(driver, &noopProcessor{}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := host.Register(context.Background(), 107, hostTestDevice())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	host.mu.RLock()
+	entry := host.devices[identity.DeviceID]
+	host.mu.RUnlock()
+	laneCtx, cancelLane := context.WithCancel(entry.ctx)
+	key := laneKey{deviceID: identity.DeviceID, generation: identity.Generation, endpoint: 0}
+	lane := &operationLane{
+		key: key, ctx: laneCtx, cancel: cancelLane,
+		input: make(chan Operation, 1), done: make(chan struct{}),
+		terminalErr: errors.New("injected terminal lane"),
+	}
+	host.mu.Lock()
+	host.lanes[key] = lane
+	host.mu.Unlock()
+
+	err = host.dispatch(context.Background(), Operation{
+		DeviceID: identity.DeviceID, Generation: identity.Generation,
+		EndpointAddress: 0, EndpointSequence: 1, DeviceSequence: 1,
+		Kind: OperationDeviceReset,
+	})
+	if err == nil || !strings.Contains(err.Error(), "injected terminal lane") {
+		t.Fatalf("barrier admission error=%v want injected terminal lane", err)
+	}
+	entry.sequence.mu.Lock()
+	pendingBarriers := len(entry.sequence.pendingBarriers)
+	entry.sequence.mu.Unlock()
+	if pendingBarriers != 0 {
+		t.Fatalf("failed barrier admission retained %d pending barriers", pendingBarriers)
+	}
+
+	host.mu.Lock()
+	if host.lanes[key] == lane {
+		delete(host.lanes, key)
+	}
+	host.mu.Unlock()
+	cancelLane()
+	if err = host.Unregister(context.Background(), identity); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestHostSaturatedLaneDoesNotBlockIndependentController(t *testing.T) {

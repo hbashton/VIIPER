@@ -59,6 +59,7 @@ type OperationProcessor interface {
 type registeredDevice struct {
 	identity          DeviceIdentity
 	device            usb.Device
+	sequence          *deviceSequenceBarrier
 	ctx               context.Context
 	cancel            context.CancelFunc
 	stopping          bool
@@ -238,7 +239,8 @@ func (h *Host) Register(ctx context.Context, deviceID uint64, dev usb.Device) (D
 	identity := DeviceIdentity{DeviceID: deviceID, Generation: generation}
 	deviceCtx, cancel := context.WithCancel(context.Background())
 	entry := &registeredDevice{
-		identity: identity, device: dev, ctx: deviceCtx, cancel: cancel,
+		identity: identity, device: dev, sequence: newDeviceSequenceBarrier(),
+		ctx: deviceCtx, cancel: cancel,
 		fastInput: fastInputEndpoints(dev), publishers: make(map[uint8]*inputPublisher),
 		activeInput: make(map[uint8]bool), resettingInput: make(map[uint8]bool),
 		inputSequences: make(map[uint8]*atomic.Uint64), inD0: true,
@@ -707,6 +709,20 @@ func (h *Host) dispatch(ctx context.Context, op Operation) error {
 		go h.runLane(lane, entry)
 	}
 	h.mu.Unlock()
+	announcedBarrier := false
+	if isDeviceBarrierOperation(op) {
+		if err := entry.sequence.announce(op.DeviceSequence); err != nil {
+			h.failLane(lane, err)
+			return err
+		}
+		announcedBarrier = op.DeviceSequence != 0
+	}
+	withdrawBarrier := func() {
+		if announcedBarrier {
+			entry.sequence.withdraw(op.DeviceSequence)
+			announcedBarrier = false
+		}
+	}
 
 	// Admission is deliberately nonblocking. A queue at the full kernel
 	// pending-operation contract means either an ABI/driver contract violation
@@ -716,14 +732,17 @@ func (h *Host) dispatch(ctx context.Context, op Operation) error {
 	if lane.terminalErr != nil {
 		err := lane.terminalErr
 		lane.stateMu.Unlock()
+		withdrawBarrier()
 		return err
 	}
 	if err := lane.ctx.Err(); err != nil {
 		lane.stateMu.Unlock()
+		withdrawBarrier()
 		return err
 	}
 	if err := ctx.Err(); err != nil {
 		lane.stateMu.Unlock()
+		withdrawBarrier()
 		return err
 	}
 	select {
@@ -737,6 +756,7 @@ func (h *Host) dispatch(ctx context.Context, op Operation) error {
 		lane.terminalErr = err
 		lane.cancel()
 		lane.stateMu.Unlock()
+		withdrawBarrier()
 		h.removeFailedLane(lane, err)
 		h.reportFatal(err)
 		return err
@@ -829,98 +849,13 @@ func (h *Host) runLane(lane *operationLane, entry *registeredDevice) {
 				}
 				delete(pending, expected)
 				if isLifecycleOperation(current.Kind) {
-					applyPowerTransition := false
-					applyDeviceReset := false
-					switch current.Kind {
-					case OperationEndpointPurge:
-						h.mu.Lock()
-						entry.activeInput[current.EndpointAddress] = false
-						delete(entry.resettingInput, current.EndpointAddress)
-						h.mu.Unlock()
-						h.stopInputPublisher(entry, current.EndpointAddress)
-					case OperationEndpointReset:
-						h.mu.Lock()
-						entry.resettingInput[current.EndpointAddress] = true
-						h.mu.Unlock()
-						h.stopInputPublisher(entry, current.EndpointAddress)
-					case OperationDeviceD0Exit:
-						h.mu.Lock()
-						if current.DeviceSequence > entry.powerSequence {
-							entry.powerSequence = current.DeviceSequence
-							entry.inD0 = false
-							applyPowerTransition = true
-						}
-						h.mu.Unlock()
-						if applyPowerTransition {
-							h.stopAllInputPublishers(entry)
-						}
-					case OperationDeviceReset:
-						h.mu.Lock()
-						if !entry.resetting {
-							entry.resetting = true
-							applyDeviceReset = true
-						}
-						h.mu.Unlock()
-						if applyDeviceReset {
-							h.stopAllInputPublishers(entry)
-						}
-					}
-					lifecycleErr := h.processor.Lifecycle(lane.ctx, entry.device, current)
-					if current.Token != 0 {
-						status := int32(0)
-						if lifecycleErr != nil {
-							status = statusUnsuccessful
-						}
-						if err := h.completeLifecycle(lane.ctx, current, status); err != nil {
-							h.failLane(lane, fmt.Errorf("endpoint 0x%02x acknowledge lifecycle sequence %d: %w",
-								current.EndpointAddress, current.EndpointSequence, err))
-							return
-						}
-					}
-					if lifecycleErr != nil {
+					if err := h.processLifecycle(lane.ctx, entry, current); err != nil {
 						h.failLane(lane, fmt.Errorf("endpoint 0x%02x lifecycle sequence %d: %w",
-							lane.key.endpoint, current.EndpointSequence, lifecycleErr))
+							lane.key.endpoint, current.EndpointSequence, err))
 						return
 					}
-					switch current.Kind {
-					case OperationEndpointStart:
-						h.mu.Lock()
-						entry.activeInput[current.EndpointAddress] = true
-						h.mu.Unlock()
-						h.startInputPublisher(entry, current.EndpointAddress)
-					case OperationEndpointReset:
-						h.mu.Lock()
-						delete(entry.resettingInput, current.EndpointAddress)
-						restart := entry.activeInput[current.EndpointAddress]
-						h.mu.Unlock()
-						if restart {
-							h.startInputPublisher(entry, current.EndpointAddress)
-						}
-					case OperationDeviceD0Entry:
-						h.mu.Lock()
-						if current.DeviceSequence > entry.powerSequence {
-							entry.powerSequence = current.DeviceSequence
-							entry.inD0 = true
-							applyPowerTransition = true
-						}
-						h.mu.Unlock()
-						if applyPowerTransition {
-							for _, endpoint := range h.activeInputEndpoints(entry) {
-								h.startInputPublisher(entry, endpoint)
-							}
-						}
-					case OperationDeviceReset:
-						if applyDeviceReset {
-							h.mu.Lock()
-							entry.resetting = false
-							h.mu.Unlock()
-							for _, endpoint := range h.activeInputEndpoints(entry) {
-								h.startInputPublisher(entry, endpoint)
-							}
-						}
-					}
 				} else {
-					if err := h.process(lane.ctx, entry.device, current); err != nil {
+					if err := h.process(lane.ctx, entry, current); err != nil {
 						h.failLane(lane, fmt.Errorf("endpoint 0x%02x complete sequence %d: %w",
 							lane.key.endpoint, current.EndpointSequence, err))
 						return
@@ -942,6 +877,169 @@ func isLifecycleOperation(kind OperationKind) bool {
 	}
 }
 
+func (h *Host) processLifecycle(ctx context.Context, entry *registeredDevice, op Operation) error {
+	gateCtx, lease, superseded, err := entry.sequence.enter(ctx, op)
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil
+		}
+		return err
+	}
+	if superseded {
+		defer lease.finish()
+		// Endpoint lifecycle notifications describe durable UdeCx state even
+		// when their pre-barrier callback must not run. Preserve only the host's
+		// minimal publisher bookkeeping; the device-wide barrier owns all actual
+		// controller/processor state from this point forward.
+		switch op.Kind {
+		case OperationEndpointStart:
+			h.mu.Lock()
+			entry.activeInput[op.EndpointAddress] = true
+			h.mu.Unlock()
+		case OperationEndpointPurge:
+			h.mu.Lock()
+			entry.activeInput[op.EndpointAddress] = false
+			delete(entry.resettingInput, op.EndpointAddress)
+			h.mu.Unlock()
+		case OperationEndpointReset:
+			h.mu.Lock()
+			delete(entry.resettingInput, op.EndpointAddress)
+			h.mu.Unlock()
+		}
+		return h.completeSupersededLifecycle(ctx, entry, op)
+	}
+	defer lease.finish()
+
+	applyPowerTransition := false
+	applyDeviceReset := false
+	switch op.Kind {
+	case OperationEndpointPurge:
+		h.mu.Lock()
+		entry.activeInput[op.EndpointAddress] = false
+		delete(entry.resettingInput, op.EndpointAddress)
+		h.mu.Unlock()
+		h.stopInputPublisher(entry, op.EndpointAddress)
+	case OperationEndpointReset:
+		h.mu.Lock()
+		entry.resettingInput[op.EndpointAddress] = true
+		h.mu.Unlock()
+		h.stopInputPublisher(entry, op.EndpointAddress)
+	case OperationDeviceD0Exit:
+		h.mu.Lock()
+		if op.DeviceSequence > entry.powerSequence {
+			entry.powerSequence = op.DeviceSequence
+			entry.inD0 = false
+			applyPowerTransition = true
+		}
+		h.mu.Unlock()
+		if applyPowerTransition {
+			h.stopAllInputPublishers(entry)
+		}
+	case OperationDeviceReset:
+		h.mu.Lock()
+		if !entry.resetting {
+			entry.resetting = true
+			entry.resettingInput = make(map[uint8]bool)
+			applyDeviceReset = true
+		}
+		h.mu.Unlock()
+		if applyDeviceReset {
+			h.stopAllInputPublishers(entry)
+		}
+	}
+
+	lifecycleErr := h.processor.Lifecycle(gateCtx, entry.device, op)
+	if errors.Is(context.Cause(gateCtx), errSupersededByDeviceBarrier) {
+		return h.completeSupersededLifecycle(ctx, entry, op)
+	}
+	if op.Token != 0 {
+		status := int32(0)
+		if lifecycleErr != nil {
+			status = statusUnsuccessful
+		}
+		if err := h.completeLifecycle(gateCtx, op, status); err != nil {
+			if errors.Is(context.Cause(gateCtx), errSupersededByDeviceBarrier) {
+				return h.completeSupersededLifecycle(ctx, entry, op)
+			}
+			return fmt.Errorf("acknowledge lifecycle: %w", err)
+		}
+	}
+	if errors.Is(context.Cause(gateCtx), errSupersededByDeviceBarrier) {
+		h.discardSupersededLifecycle(entry, op)
+		return nil
+	}
+	if lifecycleErr != nil {
+		return lifecycleErr
+	}
+
+	switch op.Kind {
+	case OperationEndpointStart:
+		h.mu.Lock()
+		entry.activeInput[op.EndpointAddress] = true
+		h.mu.Unlock()
+		h.startInputPublisher(entry, op.EndpointAddress)
+	case OperationEndpointReset:
+		h.mu.Lock()
+		delete(entry.resettingInput, op.EndpointAddress)
+		restart := entry.activeInput[op.EndpointAddress]
+		h.mu.Unlock()
+		if restart {
+			h.startInputPublisher(entry, op.EndpointAddress)
+		}
+	case OperationDeviceD0Entry:
+		h.mu.Lock()
+		if op.DeviceSequence > entry.powerSequence {
+			entry.powerSequence = op.DeviceSequence
+			entry.inD0 = true
+			applyPowerTransition = true
+		}
+		h.mu.Unlock()
+		if applyPowerTransition {
+			for _, endpoint := range h.activeInputEndpoints(entry) {
+				h.startInputPublisher(entry, endpoint)
+			}
+		}
+	case OperationDeviceReset:
+		if applyDeviceReset {
+			h.mu.Lock()
+			entry.resetting = false
+			h.mu.Unlock()
+			for _, endpoint := range h.activeInputEndpoints(entry) {
+				h.startInputPublisher(entry, endpoint)
+			}
+		}
+	}
+	return nil
+}
+
+func (h *Host) discardSupersededLifecycle(entry *registeredDevice, op Operation) {
+	if op.Kind != OperationEndpointReset {
+		return
+	}
+	h.mu.Lock()
+	delete(entry.resettingInput, op.EndpointAddress)
+	h.mu.Unlock()
+}
+
+func (h *Host) completeSupersededLifecycle(
+	ctx context.Context, entry *registeredDevice, op Operation,
+) error {
+	h.discardSupersededLifecycle(entry, op)
+	if op.Token == 0 {
+		return nil
+	}
+	// A token-bearing lifecycle notification owns a live UdeCx management
+	// request. Device barriers cancel the old processor callback, but the kernel
+	// intentionally retains that request until user mode acknowledges it (owner
+	// teardown is the only kernel-side bulk abort). Complete it outside the
+	// canceled sequence context while the old lease is still held, so the next
+	// barrier cannot start with a stranded endpoint-reset/interface request.
+	if err := h.completeLifecycle(ctx, op, statusUnsuccessful); err != nil {
+		return fmt.Errorf("cancel superseded lifecycle: %w", err)
+	}
+	return nil
+}
+
 func (h *Host) completeLifecycle(ctx context.Context, op Operation, status int32) error {
 	completionCtx, cancel := context.WithTimeout(ctx, completionTimeout)
 	defer cancel()
@@ -950,15 +1048,62 @@ func (h *Host) completeLifecycle(ctx context.Context, op Operation, status int32
 	})
 }
 
-func (h *Host) process(ctx context.Context, dev usb.Device, op Operation) error {
-	opCtx, cancel, active := h.beginOperation(ctx, op)
+func (h *Host) process(ctx context.Context, entry *registeredDevice, op Operation) error {
+	gateCtx, lease, superseded, err := entry.sequence.enter(ctx, op)
+	if err != nil {
+		if ctx.Err() != nil {
+			h.cancelOperation(op)
+			h.finishOperation(op.Token)
+			return nil
+		}
+		h.finishOperation(op.Token)
+		return err
+	}
+	if superseded {
+		defer lease.finish()
+		h.cancelOperation(op)
+		h.finishOperation(op.Token)
+		return nil
+	}
+	defer lease.finish()
+	configurationBarrier := isSetConfigurationOperation(op)
+	if configurationBarrier {
+		// SET_CONFIGURATION replaces the child's active USB configuration. The
+		// global sequence gate has already joined every brokered endpoint lane;
+		// close and join the direct interrupt-IN lane as part of the same barrier
+		// so an old report cannot cross the configuration request either.
+		h.mu.Lock()
+		applyConfigurationBarrier := !entry.resetting
+		if applyConfigurationBarrier {
+			entry.resetting = true
+		}
+		h.mu.Unlock()
+		if applyConfigurationBarrier {
+			h.stopAllInputPublishers(entry)
+			defer func() {
+				h.mu.Lock()
+				entry.resetting = false
+				h.mu.Unlock()
+				for _, endpoint := range h.activeInputEndpoints(entry) {
+					h.startInputPublisher(entry, endpoint)
+				}
+			}()
+		}
+	}
+
+	opCtx, cancel, active := h.beginOperation(gateCtx, op)
 	if !active {
 		h.finishOperation(op.Token)
 		return nil
 	}
 	defer cancel()
 
-	completion, err := h.processor.Process(opCtx, dev, op)
+	completion, err := h.processor.Process(opCtx, entry.device, op)
+	if errors.Is(context.Cause(gateCtx), errSupersededByDeviceBarrier) {
+		h.cancelOperation(op)
+		h.finishOperation(op.Token)
+		return nil
+	}
 	if err != nil {
 		completion = failureCompletion(op)
 	}
@@ -969,9 +1114,19 @@ func (h *Host) process(ctx context.Context, dev usb.Device, op Operation) error 
 	completion.Token = op.Token
 	completion.DeviceID = op.DeviceID
 	completion.Generation = op.Generation
-	completionCtx, completionCancel := context.WithTimeout(ctx, completionTimeout)
+	// Keep the completion inside the same cancellable device-sequence lease as
+	// the controller callback. A reset announced after Process returns must be
+	// able to cancel a blocked driver completion and join it before the reset is
+	// applied; using the lane context here would leave that old callback outside
+	// the barrier.
+	completionCtx, completionCancel := context.WithTimeout(gateCtx, completionTimeout)
 	defer completionCancel()
 	err = h.driver.Complete(completionCtx, completion)
+	if errors.Is(context.Cause(gateCtx), errSupersededByDeviceBarrier) {
+		h.cancelOperation(op)
+		h.finishOperation(op.Token)
+		return nil
+	}
 	h.finishOperation(op.Token)
 	return err
 }

@@ -96,6 +96,11 @@ func (p *NativeProcessor) lockSession(key nativeSessionKey) *nativeSessionState 
 func (p *NativeProcessor) resetDeviceLocked(dev usbdevice.Device, identity udecx.DeviceIdentity,
 	session *nativeSessionState) {
 	p.server.resetInterfaceAlts(dev)
+	p.clearDeviceTransportLocked(identity, session)
+}
+
+func (p *NativeProcessor) clearDeviceTransportLocked(identity udecx.DeviceIdentity,
+	session *nativeSessionState) {
 	p.mu.Lock()
 	for key := range p.next {
 		if key.deviceID == identity.DeviceID && key.generation == identity.Generation {
@@ -329,6 +334,18 @@ func (p *NativeProcessor) Process(ctx context.Context, dev usbdevice.Device, op 
 
 func (p *NativeProcessor) processControl(ctx context.Context, dev usbdevice.Device,
 	op udecx.Operation, ep, dir uint32) (udecx.Completion, error) {
+	if op.SetupPacket[0] == usbReqTypeStandardToDevice && op.SetupPacket[1] == usbReqSetConfiguration {
+		identity := udecx.DeviceIdentity{DeviceID: op.DeviceID, Generation: op.Generation}
+		session := p.lockSession(nativeSessionKey{
+			deviceID: op.DeviceID, generation: op.Generation,
+		})
+		// Server.processSubmit applies the USB request's interface reset and
+		// publishes that notification exactly once. Retire the native endpoint
+		// activity and media-clock state here after the host's device barrier has
+		// joined every pre-configuration callback.
+		p.clearDeviceTransportLocked(identity, session)
+		session.mu.Unlock()
+	}
 	setup := op.SetupPacket[:]
 	response := p.server.processSubmit(ctx, dev, ep, dir, setup, op.Payload)
 	if err := ctx.Err(); err != nil {
