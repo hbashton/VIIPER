@@ -367,20 +367,22 @@ type InputReport struct {
 	Payload         []byte
 }
 
-func (m InputReport) MarshalBinary() ([]byte, error) {
+func (m InputReport) marshalMetadata(dst []byte) error {
 	if m.DeviceID == 0 || m.Generation == 0 || m.EndpointAddress&0x80 == 0 ||
 		m.Sequence == 0 || m.Sequence > math.MaxInt64 {
-		return nil, fmt.Errorf("%w: invalid input-report identity", ErrInvalidRange)
+		return fmt.Errorf("%w: invalid input-report identity", ErrInvalidRange)
 	}
 	if len(m.Payload) == 0 || len(m.Payload) > MaxInputReportBytes {
-		return nil, ErrLimitExceeded
+		return ErrLimitExceeded
 	}
 	total := InputReportSize + len(m.Payload)
 	h, err := NewHeader(total)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	dst := make([]byte, total)
+	if len(dst) != InputReportSize {
+		return ErrInvalidSize
+	}
 	putHeader(dst, h)
 	binary.LittleEndian.PutUint64(dst[16:24], m.DeviceID)
 	binary.LittleEndian.PutUint32(dst[24:28], m.Generation)
@@ -388,6 +390,16 @@ func (m InputReport) MarshalBinary() ([]byte, error) {
 	binary.LittleEndian.PutUint32(dst[32:36], InputReportSize)
 	binary.LittleEndian.PutUint32(dst[36:40], uint32(len(m.Payload)))
 	binary.LittleEndian.PutUint64(dst[40:48], m.Sequence)
+	return nil
+}
+
+func (m InputReport) MarshalBinary() ([]byte, error) {
+	var metadata [InputReportSize]byte
+	if err := m.marshalMetadata(metadata[:]); err != nil {
+		return nil, err
+	}
+	dst := make([]byte, InputReportSize+len(m.Payload))
+	copy(dst[:InputReportSize], metadata[:])
 	copy(dst[InputReportSize:], m.Payload)
 	return dst, nil
 }

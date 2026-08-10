@@ -308,11 +308,11 @@ func (c *Client) Complete(ctx context.Context, completion Completion) error {
 }
 
 func (c *Client) SubmitInputReport(ctx context.Context, report InputReport) error {
-	request, err := report.MarshalBinary()
-	if err != nil {
+	var metadata [InputReportSize]byte
+	if err := report.marshalMetadata(metadata[:]); err != nil {
 		return err
 	}
-	_, err = c.ioctl(ctx, ioctlSubmitInputReport, request[:InputReportSize], request[InputReportSize:])
+	_, err := c.ioctl(ctx, ioctlSubmitInputReport, metadata[:], report.Payload)
 	return err
 }
 

@@ -150,6 +150,22 @@ func TestInputReportMarshalling(t *testing.T) {
 	}
 }
 
+func TestInputReportMetadataEncodingDoesNotAllocate(t *testing.T) {
+	report := InputReport{
+		DeviceID: 5, Generation: 7, EndpointAddress: 0x81,
+		Sequence: 11, Payload: []byte{1, 2, 3},
+	}
+	var metadata [InputReportSize]byte
+	allocations := testing.AllocsPerRun(1000, func() {
+		if err := report.marshalMetadata(metadata[:]); err != nil {
+			panic(err)
+		}
+	})
+	if allocations != 0 {
+		t.Fatalf("input-report metadata encoding allocated %.2f objects per call", allocations)
+	}
+}
+
 func TestIdentityAndStatsLayout(t *testing.T) {
 	identity, err := (DeviceIdentity{DeviceID: 0x1122334455667788, Generation: 7}).MarshalBinary()
 	if err != nil {
