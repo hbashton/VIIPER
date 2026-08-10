@@ -108,6 +108,7 @@ typedef struct VIIPER_UDE_DEVICE_CONTEXT {
     ULONG Slot;
     BOOLEAN Plugged;
     BOOLEAN Purging;
+    volatile LONG ActiveCounted;
     UDECXUSBENDPOINT DefaultEndpoint;
     volatile LONG64 EndpointSequences[256];
 } VIIPER_UDE_DEVICE_CONTEXT;

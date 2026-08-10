@@ -282,22 +282,24 @@ ViiperCreateVirtualDevice(
     }
 
     deviceContext->Plugged = TRUE;
+    InterlockedExchange(&deviceContext->ActiveCounted, 1);
     InterlockedIncrement(&controllerContext->ActiveDevices);
     WdfRequestSetInformation(Request, 0);
     return STATUS_SUCCESS;
 }
 
 static
-UDECXUSBDEVICE
-ViiperTakeDevice(
+NTSTATUS
+ViiperBeginRemoveDevice(
     _In_ VIIPER_UDE_CONTROLLER_CONTEXT *ControllerContext,
     _In_ WDFFILEOBJECT OwnerFile,
     _In_ ULONGLONG DeviceId,
     _In_ ULONG Generation,
-    _In_ BOOLEAN MatchGeneration
+    _In_ BOOLEAN MatchGeneration,
+    _Out_ UDECXUSBDEVICE *Device
     )
 {
-    UDECXUSBDEVICE found = WDF_NO_HANDLE;
+    NTSTATUS status = STATUS_NOT_FOUND;
     ULONG index;
 
     WdfWaitLockAcquire(ControllerContext->DeviceLock, NULL);
@@ -312,13 +314,32 @@ ViiperTakeDevice(
             (MatchGeneration && deviceContext->Generation != Generation)) {
             continue;
         }
+        if (deviceContext->Purging) {
+            status = STATUS_DEVICE_BUSY;
+            break;
+        }
         deviceContext->Purging = TRUE;
-        ControllerContext->Devices[index] = WDF_NO_HANDLE;
-        found = current;
+        *Device = current;
+        status = STATUS_SUCCESS;
         break;
     }
     WdfWaitLockRelease(ControllerContext->DeviceLock);
-    return found;
+    return status;
+}
+
+static
+VOID
+ViiperCancelRemoveDevice(
+    _In_ VIIPER_UDE_CONTROLLER_CONTEXT *ControllerContext,
+    _In_ UDECXUSBDEVICE Device
+    )
+{
+    WdfWaitLockAcquire(ControllerContext->DeviceLock, NULL);
+    if (ViiperGetDeviceContext(Device)->Slot < VIIPER_UDE_MAX_DEVICES &&
+        ControllerContext->Devices[ViiperGetDeviceContext(Device)->Slot] == Device) {
+        ViiperGetDeviceContext(Device)->Purging = FALSE;
+    }
+    WdfWaitLockRelease(ControllerContext->DeviceLock);
 }
 
 NTSTATUS
@@ -351,14 +372,14 @@ ViiperDestroyVirtualDevice(
         return STATUS_INVALID_PARAMETER;
     }
 
-    device = ViiperTakeDevice(
-        controllerContext, ownerFile, input->DeviceId, input->Generation, TRUE);
-    if (device == WDF_NO_HANDLE) {
-        return STATUS_NOT_FOUND;
+    status = ViiperBeginRemoveDevice(
+        controllerContext, ownerFile, input->DeviceId, input->Generation, TRUE, &device);
+    if (!NT_SUCCESS(status)) {
+        return status;
     }
     status = UdecxUsbDevicePlugOutAndDelete(device);
-    if (NT_SUCCESS(status)) {
-        InterlockedDecrement(&controllerContext->ActiveDevices);
+    if (!NT_SUCCESS(status)) {
+        ViiperCancelRemoveDevice(controllerContext, device);
     }
     return status;
 }
@@ -381,7 +402,9 @@ ViiperDestroyOwnedDevices(
         WdfWaitLockAcquire(controllerContext->DeviceLock, NULL);
         for (index = 0; index < VIIPER_UDE_MAX_DEVICES; ++index) {
             device = controllerContext->Devices[index];
-            if (device != WDF_NO_HANDLE && ViiperGetDeviceContext(device)->OwnerFile == OwnerFile) {
+            if (device != WDF_NO_HANDLE &&
+                ViiperGetDeviceContext(device)->OwnerFile == OwnerFile &&
+                !ViiperGetDeviceContext(device)->Purging) {
                 deviceId = ViiperGetDeviceContext(device)->DeviceId;
                 break;
             }
@@ -391,14 +414,15 @@ ViiperDestroyOwnedDevices(
             break;
         }
 
-        device = ViiperTakeDevice(controllerContext, OwnerFile, deviceId, 0, FALSE);
-        if (device == WDF_NO_HANDLE) {
+        if (!NT_SUCCESS(ViiperBeginRemoveDevice(
+                controllerContext, OwnerFile, deviceId, 0, FALSE, &device))) {
             continue;
         }
         deviceContext = ViiperGetDeviceContext(device);
         if (deviceContext->Plugged) {
-            if (NT_SUCCESS(UdecxUsbDevicePlugOutAndDelete(device))) {
-                InterlockedDecrement(&controllerContext->ActiveDevices);
+            if (!NT_SUCCESS(UdecxUsbDevicePlugOutAndDelete(device))) {
+                ViiperCancelRemoveDevice(controllerContext, device);
+                break;
             }
         } else {
             WdfObjectDelete(device);
@@ -421,6 +445,9 @@ ViiperEvtVirtualDeviceCleanup(
     }
     controllerContext = ViiperGetControllerContext(deviceContext->Controller);
     ViiperReleaseDeviceSlot(controllerContext, device, deviceContext->Slot);
+    if (InterlockedExchange(&deviceContext->ActiveCounted, 0) != 0) {
+        InterlockedDecrement(&controllerContext->ActiveDevices);
+    }
 }
 
 NTSTATUS

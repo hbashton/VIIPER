@@ -51,7 +51,7 @@ ViiperDispatchCancelEvents(
     for (;;) {
         WDFREQUEST dequeueRequest = WDF_NO_HANDLE;
         VIIPER_UDE_OPERATION *operation = NULL;
-        VIIPER_UDE_CANCEL_EVENT event;
+        VIIPER_UDE_CANCEL_EVENT event = {0};
         NTSTATUS status;
 
         WdfSpinLockAcquire(controllerContext->BrokerLock);
@@ -309,6 +309,85 @@ ViiperGetUrb(
 }
 
 static
+PMDL
+ViiperGetTransferMdl(
+    _In_ PURB Urb
+    )
+{
+    switch (Urb->UrbHeader.Function) {
+    case URB_FUNCTION_BULK_OR_INTERRUPT_TRANSFER:
+    case URB_FUNCTION_BULK_OR_INTERRUPT_TRANSFER_USING_CHAINED_MDL:
+        return Urb->UrbBulkOrInterruptTransfer.TransferBufferMDL;
+    case URB_FUNCTION_ISOCH_TRANSFER:
+    case URB_FUNCTION_ISOCH_TRANSFER_USING_CHAINED_MDL:
+        return Urb->UrbIsochronousTransfer.TransferBufferMDL;
+    case URB_FUNCTION_CONTROL_TRANSFER:
+    case URB_FUNCTION_CONTROL_TRANSFER_EX:
+        return Urb->UrbControlTransferEx.TransferBufferMDL;
+    default:
+        return NULL;
+    }
+}
+
+static
+NTSTATUS
+ViiperCopyTransferBuffer(
+    _In_ WDFREQUEST Request,
+    _In_ PURB Urb,
+    _Inout_updates_bytes_(Length) UCHAR *Buffer,
+    _In_ ULONG Length,
+    _In_ BOOLEAN ToUrb
+    )
+{
+    UCHAR *contiguous = NULL;
+    ULONG contiguousLength = 0;
+    PMDL mdl;
+    ULONG copied = 0;
+    NTSTATUS status;
+
+    if (Length == 0) {
+        return STATUS_SUCCESS;
+    }
+
+    status = UdecxUrbRetrieveBuffer(Request, &contiguous, &contiguousLength);
+    if (NT_SUCCESS(status) && contiguous != NULL && contiguousLength >= Length) {
+        if (ToUrb) {
+            RtlCopyMemory(contiguous, Buffer, Length);
+        } else {
+            RtlCopyMemory(Buffer, contiguous, Length);
+        }
+        return STATUS_SUCCESS;
+    }
+
+    mdl = ViiperGetTransferMdl(Urb);
+    while (mdl != NULL && copied < Length) {
+        ULONG mdlLength = MmGetMdlByteCount(mdl);
+        ULONG chunk = min(mdlLength, Length - copied);
+        UCHAR *mapped;
+
+        if (chunk != 0) {
+            mapped = (UCHAR *)MmGetSystemAddressForMdlSafe(
+                mdl, (MM_PAGE_PRIORITY)(NormalPagePriority | MdlMappingNoExecute));
+            if (mapped == NULL) {
+                return STATUS_INSUFFICIENT_RESOURCES;
+            }
+            if (ToUrb) {
+                RtlCopyMemory(mapped, Buffer + copied, chunk);
+            } else {
+                RtlCopyMemory(Buffer + copied, mapped, chunk);
+            }
+            copied += chunk;
+        }
+        mdl = mdl->Next;
+    }
+
+    if (copied != Length) {
+        return NT_SUCCESS(status) ? STATUS_BUFFER_TOO_SMALL : status;
+    }
+    return STATUS_SUCCESS;
+}
+
+static
 NTSTATUS
 ViiperGetTransferMetadata(
     _In_ WDFREQUEST Request,
@@ -395,8 +474,6 @@ ViiperSerializeOperation(
     VIIPER_UDE_OPERATION *operation;
     VIIPER_UDE_ISO_PACKET *packets;
     UCHAR *payload;
-    UCHAR *transferBuffer = NULL;
-    ULONG transferBufferLength = 0;
     ULONG transferFlags;
     ULONG transferLength;
     ULONG startFrame;
@@ -421,12 +498,6 @@ ViiperSerializeOperation(
 
     isoBytes = packetCount * sizeof(VIIPER_UDE_ISO_PACKET);
     payloadLength = directionIn ? 0 : transferLength;
-    if (payloadLength > 0) {
-        status = UdecxUrbRetrieveBuffer(UrbRequest, &transferBuffer, &transferBufferLength);
-        if (!NT_SUCCESS(status) || transferBufferLength < payloadLength) {
-            return NT_SUCCESS(status) ? STATUS_BUFFER_TOO_SMALL : status;
-        }
-    }
     if (isoBytes > MAXULONG - sizeof(*operation) ||
         payloadLength > MAXULONG - sizeof(*operation) - isoBytes) {
         return STATUS_INTEGER_OVERFLOW;
@@ -476,7 +547,11 @@ ViiperSerializeOperation(
     }
     payload = (UCHAR *)operation + operation->PayloadOffset;
     if (payloadLength > 0) {
-        RtlCopyMemory(payload, transferBuffer, payloadLength);
+        status = ViiperCopyTransferBuffer(
+            UrbRequest, urb, payload, payloadLength, FALSE);
+        if (!NT_SUCCESS(status)) {
+            return status;
+        }
     }
 
     requestContext->TransferLength = transferLength;
@@ -771,8 +846,6 @@ ViiperCompleteOperation(
     UCHAR *payload = NULL;
     WDFREQUEST urbRequest = WDF_NO_HANDLE;
     PURB urb;
-    UCHAR *transferBuffer = NULL;
-    ULONG transferBufferLength = 0;
     size_t inputLength;
     size_t tailLength = 0;
     ULONG slot;
@@ -886,13 +959,11 @@ ViiperCompleteOperation(
     }
 
     if (requestContext->DirectionIn && completion->PayloadLength > 0) {
-        status = UdecxUrbRetrieveBuffer(
-            urbRequest, &transferBuffer, &transferBufferLength);
-        if (!NT_SUCCESS(status) || transferBufferLength < completion->PayloadLength) {
-            status = NT_SUCCESS(status) ? STATUS_BUFFER_TOO_SMALL : status;
+        status = ViiperCopyTransferBuffer(
+            urbRequest, urb, payload, completion->PayloadLength, TRUE);
+        if (!NT_SUCCESS(status)) {
             goto CompleteWithNtStatus;
         }
-        RtlCopyMemory(transferBuffer, payload, completion->PayloadLength);
         InterlockedAdd64(&controllerContext->BytesFromDevice, completion->TransferLength);
     }
     if (completion->IsoPacketCount != 0) {
