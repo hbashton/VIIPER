@@ -13,7 +13,7 @@ import (
 const (
 	Magic    uint32 = 0x45445556
 	ABIMajor uint16 = 1
-	ABIMinor uint16 = 1
+	ABIMinor uint16 = 2
 
 	HeaderSize            = 16
 	NegotiateRequestSize  = 32
@@ -272,6 +272,8 @@ type Operation struct {
 	Kind             OperationKind
 	EndpointAddress  uint8
 	Direction        uint8
+	InterfaceNumber  uint8
+	InterfaceSetting uint8
 	URBFunction      uint32
 	TransferFlags    uint32
 	StartFrame       uint32
@@ -309,6 +311,8 @@ func ParseOperation(src []byte) (Operation, error) {
 		Kind:             OperationKind(binary.LittleEndian.Uint32(src[36:40])),
 		EndpointAddress:  src[40],
 		Direction:        src[41],
+		InterfaceNumber:  src[42],
+		InterfaceSetting: src[43],
 		URBFunction:      binary.LittleEndian.Uint32(src[44:48]),
 		TransferFlags:    binary.LittleEndian.Uint32(src[48:52]),
 		StartFrame:       binary.LittleEndian.Uint32(src[52:56]),

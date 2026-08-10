@@ -43,6 +43,8 @@ typedef struct VIIPER_UDE_NOTIFICATION {
     ULONG Generation;
     ULONG Kind;
     UCHAR EndpointAddress;
+    UCHAR InterfaceNumber;
+    UCHAR InterfaceSetting;
 } VIIPER_UDE_NOTIFICATION;
 
 typedef struct VIIPER_UDE_REQUEST_CONTEXT {
@@ -96,6 +98,7 @@ WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(VIIPER_UDE_CONTROLLER_CONTEXT, ViiperGetContr
 typedef struct VIIPER_UDE_FILE_CONTEXT {
     BOOLEAN Negotiated;
     BOOLEAN Closing;
+    BOOLEAN BrokerOwner;
     ULONGLONG ClientNonce;
     ULONGLONG DriverNonce;
 } VIIPER_UDE_FILE_CONTEXT;
@@ -145,7 +148,6 @@ EVT_UDECX_USB_ENDPOINT_RESET ViiperEvtEndpointReset;
 EVT_UDECX_USB_ENDPOINT_PURGE ViiperEvtEndpointPurge;
 EVT_UDECX_USB_ENDPOINT_START ViiperEvtEndpointStart;
 EVT_WDF_IO_QUEUE_IO_INTERNAL_DEVICE_CONTROL ViiperEvtEndpointIoInternalControl;
-EVT_WDF_IO_QUEUE_STATE ViiperEvtEndpointQueuePurged;
 EVT_WDF_OBJECT_CONTEXT_CLEANUP ViiperEvtVirtualDeviceCleanup;
 
 NTSTATUS ViiperCreateQueues(_In_ WDFDEVICE Device);
@@ -164,3 +166,7 @@ NTSTATUS ViiperQueueEndpointLifecycleEvent(
 NTSTATUS ViiperQueueDeviceLifecycleEvent(
     _In_ UDECXUSBDEVICE Device,
     _In_ VIIPER_UDE_OPERATION_KIND Kind);
+NTSTATUS ViiperQueueInterfaceLifecycleEvent(
+    _In_ UDECXUSBDEVICE Device,
+    _In_ UCHAR InterfaceNumber,
+    _In_ UCHAR InterfaceSetting);

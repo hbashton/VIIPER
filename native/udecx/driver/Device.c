@@ -594,18 +594,6 @@ ViiperEvtEndpointReset(
 }
 
 VOID
-ViiperEvtEndpointQueuePurged(
-    _In_ WDFQUEUE Queue,
-    _In_ WDFCONTEXT Context
-    )
-{
-    UDECXUSBENDPOINT endpoint = (UDECXUSBENDPOINT)Context;
-    UNREFERENCED_PARAMETER(Queue);
-    ViiperGetEndpointContext(endpoint)->Purging = FALSE;
-    UdecxUsbEndpointPurgeComplete(endpoint);
-}
-
-VOID
 ViiperEvtEndpointPurge(
     _In_ UDECXUSBENDPOINT Endpoint
     )
@@ -614,7 +602,8 @@ ViiperEvtEndpointPurge(
     endpointContext->Purging = TRUE;
     ViiperPurgeEndpointOperations(Endpoint, STATUS_DEVICE_NOT_READY);
     (VOID)ViiperQueueEndpointLifecycleEvent(Endpoint, ViiperUdeOperationEndpointPurge);
-    WdfIoQueuePurge(endpointContext->Queue, ViiperEvtEndpointQueuePurged, Endpoint);
+    endpointContext->Purging = FALSE;
+    UdecxUsbEndpointPurgeComplete(Endpoint);
 }
 
 VOID
@@ -623,7 +612,6 @@ ViiperEvtEndpointStart(
     )
 {
     (VOID)ViiperQueueEndpointLifecycleEvent(Endpoint, ViiperUdeOperationEndpointStart);
-    WdfIoQueueStart(ViiperGetEndpointContext(Endpoint)->Queue);
 }
 
 VOID
@@ -633,9 +621,26 @@ ViiperEvtEndpointsConfigure(
     _In_ UDECX_ENDPOINTS_CONFIGURE_PARAMS *ConfigureParams
     )
 {
-    UNREFERENCED_PARAMETER(Device);
-    UNREFERENCED_PARAMETER(ConfigureParams);
-    WdfRequestComplete(Request, STATUS_SUCCESS);
+    NTSTATUS status = STATUS_SUCCESS;
+
+    switch (ConfigureParams->ConfigureType) {
+    case UdecxEndpointsConfigureTypeDeviceInitialize:
+    case UdecxEndpointsConfigureTypeDeviceConfigurationChange:
+        status = ViiperQueueDeviceLifecycleEvent(Device, ViiperUdeOperationDeviceReset);
+        break;
+    case UdecxEndpointsConfigureTypeInterfaceSettingChange:
+        status = ViiperQueueInterfaceLifecycleEvent(
+            Device,
+            ConfigureParams->InterfaceNumber,
+            ConfigureParams->NewInterfaceSetting);
+        break;
+    case UdecxEndpointsConfigureTypeEndpointsReleasedOnly:
+        break;
+    default:
+        status = STATUS_INVALID_PARAMETER;
+        break;
+    }
+    WdfRequestComplete(Request, status);
 }
 
 VOID

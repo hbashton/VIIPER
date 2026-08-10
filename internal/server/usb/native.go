@@ -68,11 +68,28 @@ func (p *NativeProcessor) Lifecycle(_ context.Context, dev usbdevice.Device, op 
 	case udecx.OperationDeviceReset, udecx.OperationDeviceD0Entry, udecx.OperationDeviceD0Exit:
 		p.Reset(dev, identity)
 	case udecx.OperationSetInterface:
-		p.clearLane(key)
+		if !descriptorHasInterfaceAlt(dev.GetDescriptor(), op.InterfaceNumber, op.InterfaceSetting) {
+			return fmt.Errorf("native UDE selected invalid alternate setting %d for interface %d",
+				op.InterfaceSetting, op.InterfaceNumber)
+		}
+		p.clearDeviceLanes(identity)
+		p.server.setInterfaceAlt(dev, op.InterfaceNumber, op.InterfaceSetting)
+		p.server.notifyInterfaceAlt(dev, op.InterfaceNumber, op.InterfaceSetting)
 	default:
 		return fmt.Errorf("unsupported native UDE lifecycle operation %d", op.Kind)
 	}
 	return nil
+}
+
+func (p *NativeProcessor) clearDeviceLanes(identity udecx.DeviceIdentity) {
+	p.mu.Lock()
+	for key := range p.next {
+		if key.deviceID == identity.DeviceID && key.generation == identity.Generation {
+			delete(p.next, key)
+			delete(p.lastIn, key)
+		}
+	}
+	p.mu.Unlock()
 }
 
 func (p *NativeProcessor) clearLane(key nativeLaneKey) {

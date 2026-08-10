@@ -54,6 +54,7 @@ ViiperEvtDeviceAdd(
     UDECX_WDF_DEVICE_CONFIG udeConfig;
     VIIPER_UDE_CONTROLLER_CONTEXT *context;
     UNICODE_STRING sddl = RTL_CONSTANT_STRING(L"D:P(A;;GA;;;SY)(A;;GA;;;BA)");
+    UNICODE_STRING hostControllerReference;
 
     PAGED_CODE();
     UNREFERENCED_PARAMETER(Driver);
@@ -109,6 +110,14 @@ ViiperEvtDeviceAdd(
     if (!NT_SUCCESS(status)) {
         return status;
     }
+    RtlInitUnicodeString(&hostControllerReference, USB_HOST_DEVINTERFACE_REF_STRING);
+    status = WdfDeviceCreateDeviceInterface(
+        device,
+        (LPGUID)&GUID_DEVINTERFACE_USB_HOST_CONTROLLER,
+        &hostControllerReference);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
 
     UDECX_WDF_DEVICE_CONFIG_INIT(&udeConfig, ViiperEvtQueryUsbCapability);
     udeConfig.NumberOfUsb20Ports = (USHORT)VIIPER_UDE_MAX_DEVICES;
@@ -156,16 +165,38 @@ ViiperEvtFileCreate(
 {
     VIIPER_UDE_CONTROLLER_CONTEXT *context;
     VIIPER_UDE_FILE_CONTEXT *fileContext;
+    PUNICODE_STRING fileName;
+    UNICODE_STRING hostControllerReference;
+    BOOLEAN isHostControllerClient = FALSE;
     NTSTATUS status = STATUS_SUCCESS;
 
     PAGED_CODE();
     context = ViiperGetControllerContext(Device);
+    fileContext = ViiperGetFileContext(FileObject);
+    RtlZeroMemory(fileContext, sizeof(*fileContext));
+
+    fileName = WdfFileObjectGetFileName(FileObject);
+    RtlInitUnicodeString(&hostControllerReference, USB_HOST_DEVINTERFACE_REF_STRING);
+    if (fileName != NULL &&
+        fileName->Length == hostControllerReference.Length + sizeof(WCHAR) &&
+        fileName->Buffer[0] == L'\\' &&
+        RtlEqualMemory(
+            fileName->Buffer + 1,
+            hostControllerReference.Buffer,
+            hostControllerReference.Length)) {
+        isHostControllerClient = TRUE;
+    }
+
+    if (isHostControllerClient) {
+        WdfRequestComplete(Request, STATUS_SUCCESS);
+        return;
+    }
+
     WdfWaitLockAcquire(context->OwnerLock, NULL);
     if (context->OwnerFile != WDF_NO_HANDLE || context->CleanupInProgress) {
         status = STATUS_SHARING_VIOLATION;
     } else {
-        fileContext = ViiperGetFileContext(FileObject);
-        RtlZeroMemory(fileContext, sizeof(*fileContext));
+        fileContext->BrokerOwner = TRUE;
         context->OwnerFile = FileObject;
         WdfIoQueueStart(context->DefaultQueue);
         WdfIoQueueStart(context->WaitingDequeues);
@@ -189,6 +220,10 @@ ViiperEvtFileCleanup(
     context = ViiperGetControllerContext(device);
     fileContext = ViiperGetFileContext(FileObject);
     fileContext->Closing = TRUE;
+
+    if (!fileContext->BrokerOwner) {
+        return;
+    }
 
     WdfWaitLockAcquire(context->OwnerLock, NULL);
     if (context->OwnerFile == FileObject) {

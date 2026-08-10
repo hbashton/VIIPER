@@ -36,6 +36,8 @@ ViiperQueueCancelEventLocked(
     event->Generation = Pending->DeviceGeneration;
     event->Kind = ViiperUdeOperationCancel;
     event->EndpointAddress = Pending->EndpointAddress;
+    event->InterfaceNumber = 0;
+    event->InterfaceSetting = 0;
     ControllerContext->NotificationTail = (ControllerContext->NotificationTail + 1) %
         VIIPER_UDE_MAX_PENDING_OPERATIONS;
     ++ControllerContext->NotificationCount;
@@ -93,6 +95,8 @@ ViiperDispatchNotificationEvents(
         operation->Generation = event.Generation;
         operation->Kind = event.Kind;
         operation->EndpointAddress = event.EndpointAddress;
+        operation->InterfaceNumber = event.InterfaceNumber;
+        operation->InterfaceSetting = event.InterfaceSetting;
         operation->EndpointSequence = event.EndpointSequence;
         WdfRequestSetInformation(dequeueRequest, sizeof(*operation));
         InterlockedIncrement64(&controllerContext->NotificationEventsDelivered);
@@ -220,7 +224,9 @@ ViiperQueueLifecycleEventLocked(
     _In_ VIIPER_UDE_CONTROLLER_CONTEXT *ControllerContext,
     _In_ VIIPER_UDE_DEVICE_CONTEXT *DeviceContext,
     _In_ UCHAR EndpointAddress,
-    _In_ VIIPER_UDE_OPERATION_KIND Kind
+    _In_ VIIPER_UDE_OPERATION_KIND Kind,
+    _In_ UCHAR InterfaceNumber,
+    _In_ UCHAR InterfaceSetting
     )
 {
     VIIPER_UDE_NOTIFICATION *event;
@@ -236,6 +242,8 @@ ViiperQueueLifecycleEventLocked(
     event->Generation = DeviceContext->Generation;
     event->Kind = Kind;
     event->EndpointAddress = EndpointAddress;
+    event->InterfaceNumber = InterfaceNumber;
+    event->InterfaceSetting = InterfaceSetting;
     event->EndpointSequence = (ULONGLONG)InterlockedIncrement64(
         &DeviceContext->EndpointSequences[EndpointAddress]);
     ControllerContext->NotificationTail = (ControllerContext->NotificationTail + 1) %
@@ -258,7 +266,12 @@ ViiperQueueEndpointLifecycleEvent(
 
     WdfSpinLockAcquire(controllerContext->BrokerLock);
     queued = ViiperQueueLifecycleEventLocked(
-        controllerContext, deviceContext, endpointContext->Descriptor.bEndpointAddress, Kind);
+        controllerContext,
+        deviceContext,
+        endpointContext->Descriptor.bEndpointAddress,
+        Kind,
+        0,
+        0);
     WdfSpinLockRelease(controllerContext->BrokerLock);
     if (!queued) {
         return STATUS_INSUFFICIENT_RESOURCES;
@@ -279,7 +292,36 @@ ViiperQueueDeviceLifecycleEvent(
     BOOLEAN queued;
 
     WdfSpinLockAcquire(controllerContext->BrokerLock);
-    queued = ViiperQueueLifecycleEventLocked(controllerContext, deviceContext, 0, Kind);
+    queued = ViiperQueueLifecycleEventLocked(
+        controllerContext, deviceContext, 0, Kind, 0, 0);
+    WdfSpinLockRelease(controllerContext->BrokerLock);
+    if (!queued) {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+    ViiperDispatchNotificationEvents(deviceContext->Controller);
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS
+ViiperQueueInterfaceLifecycleEvent(
+    _In_ UDECXUSBDEVICE Device,
+    _In_ UCHAR InterfaceNumber,
+    _In_ UCHAR InterfaceSetting
+    )
+{
+    VIIPER_UDE_DEVICE_CONTEXT *deviceContext = ViiperGetDeviceContext(Device);
+    VIIPER_UDE_CONTROLLER_CONTEXT *controllerContext =
+        ViiperGetControllerContext(deviceContext->Controller);
+    BOOLEAN queued;
+
+    WdfSpinLockAcquire(controllerContext->BrokerLock);
+    queued = ViiperQueueLifecycleEventLocked(
+        controllerContext,
+        deviceContext,
+        0,
+        ViiperUdeOperationSetInterface,
+        InterfaceNumber,
+        InterfaceSetting);
     WdfSpinLockRelease(controllerContext->BrokerLock);
     if (!queued) {
         return STATUS_INSUFFICIENT_RESOURCES;

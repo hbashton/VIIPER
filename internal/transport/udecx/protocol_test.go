@@ -89,6 +89,7 @@ func TestParseOperationCopiesPayloadAndPackets(t *testing.T) {
 	binary.LittleEndian.PutUint32(raw[32:36], 8)
 	binary.LittleEndian.PutUint32(raw[36:40], uint32(OperationTransfer))
 	raw[40], raw[41] = 0x84, 1
+	raw[42], raw[43] = 2, 1
 	binary.LittleEndian.PutUint32(raw[56:60], 1)
 	binary.LittleEndian.PutUint32(raw[60:64], uint32(len(payload)))
 	binary.LittleEndian.PutUint32(raw[64:68], OperationSize+IsoPacketSize)
@@ -104,7 +105,8 @@ func TestParseOperationCopiesPayloadAndPackets(t *testing.T) {
 		t.Fatal(err)
 	}
 	if op.Token != 99 || op.DeviceID != 4 || op.Generation != 8 ||
-		op.EndpointSequence != 17 || len(op.IsoPackets) != 1 {
+		op.EndpointSequence != 17 || op.InterfaceNumber != 2 ||
+		op.InterfaceSetting != 1 || len(op.IsoPackets) != 1 {
 		t.Fatalf("unexpected operation: %+v", op)
 	}
 	raw[len(raw)-1] = 0xff

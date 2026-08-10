@@ -36,6 +36,43 @@ func TestNativeProcessorServesControlDescriptor(t *testing.T) {
 	}
 }
 
+func TestNativeProcessorAppliesUdeCxInterfaceSettingLifecycle(t *testing.T) {
+	desc := &usbdevice.Descriptor{
+		Device: usbdevice.DeviceDescriptor{Speed: uint32(udecx.DeviceSpeedHigh)},
+		Interfaces: []usbdevice.InterfaceConfig{
+			{Descriptor: usbdevice.InterfaceDescriptor{
+				BInterfaceNumber: 2, BAlternateSetting: 0,
+			}},
+			{Descriptor: usbdevice.InterfaceDescriptor{
+				BInterfaceNumber: 2, BAlternateSetting: 1,
+			}},
+		},
+	}
+	dev := &altSettingTestDevice{desc: desc}
+	processor := nativeProcessorForTest(t)
+	op := udecx.Operation{
+		DeviceID: 1, Generation: 1, Kind: udecx.OperationSetInterface,
+		InterfaceNumber: 2, InterfaceSetting: 1,
+	}
+	if err := processor.Lifecycle(context.Background(), dev, op); err != nil {
+		t.Fatal(err)
+	}
+	if got := processor.server.getInterfaceAlt(dev, 2); got != 1 {
+		t.Fatalf("interface 2 alt=%d want 1", got)
+	}
+	if len(dev.altEvents) != 1 || dev.altEvents[0] != [2]uint8{2, 1} {
+		t.Fatalf("device alternate-setting events=%v want [[2 1]]", dev.altEvents)
+	}
+
+	op.InterfaceSetting = 3
+	if err := processor.Lifecycle(context.Background(), dev, op); err == nil {
+		t.Fatal("invalid native alternate setting unexpectedly succeeded")
+	}
+	if got := processor.server.getInterfaceAlt(dev, 2); got != 1 {
+		t.Fatalf("invalid transition changed interface 2 alt to %d", got)
+	}
+}
+
 func TestNativeProcessorPreservesSparseIsoInLayout(t *testing.T) {
 	desc := &usbdevice.Descriptor{
 		Device: usbdevice.DeviceDescriptor{Speed: uint32(udecx.DeviceSpeedHigh)},
