@@ -992,6 +992,16 @@ ViiperSubmitInputReport(
     if (!NT_SUCCESS(status)) {
         return status;
     }
+    // A broker fault means an ordered lifecycle notification was lost. The
+    // completion path must remain available so already-published URBs can be
+    // drained, but accepting a new direct interrupt-IN state after that point
+    // could apply it to a generation whose reset/power boundary user mode did
+    // not observe. Fail the producer lane and let Host terminate this one-shot
+    // owner session when it dequeues ViiperUdeOperationBrokerFault.
+    if (InterlockedCompareExchange(
+            &controllerContext->BrokerFaulted, FALSE, FALSE) != FALSE) {
+        return STATUS_DATA_ERROR;
+    }
     ownerFile = WdfRequestGetFileObject(Request);
     status = WdfRequestRetrieveInputBuffer(
         Request, sizeof(*input), (PVOID *)&input, &inputLength);

@@ -218,6 +218,10 @@ interface fields are only hints for alternates that contain no endpoints.
 - Each fast interrupt-IN endpoint has its own passive lock. Different
   controllers publish concurrently, while accidental concurrent submissions
   for one endpoint cannot reorder reports or replay a coalesced sequence.
+- A lost ordered lifecycle notification faults both the broker and the direct
+  interrupt-IN producer lane. Already-published broker completions remain
+  drainable, but no new controller state is admitted into a generation whose
+  power/reset history is no longer trustworthy.
 - Endpoint start opens the kernel admission gate before publishing the ordered
   start notification. The first fresh input snapshot after resume therefore
   cannot consume its sequence against a still-purged kernel endpoint; the
