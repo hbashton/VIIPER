@@ -89,6 +89,31 @@ ViiperCompleteUnownedUrbAsync(
 
 static
 BOOLEAN
+ViiperFaultBrokerLocked(
+    _In_ VIIPER_UDE_CONTROLLER_CONTEXT *ControllerContext
+    )
+{
+    VIIPER_UDE_NOTIFICATION *event;
+
+    InterlockedIncrement64(&ControllerContext->NotificationEventOverflows);
+    if (InterlockedCompareExchange(&ControllerContext->BrokerFaulted, TRUE, FALSE) != FALSE) {
+        return FALSE;
+    }
+    if (ControllerContext->NotificationCount >= VIIPER_UDE_MAX_PENDING_OPERATIONS) {
+        return FALSE;
+    }
+
+    event = &ControllerContext->Notifications[ControllerContext->NotificationTail];
+    RtlZeroMemory(event, sizeof(*event));
+    event->Kind = ViiperUdeOperationBrokerFault;
+    ControllerContext->NotificationTail = (ControllerContext->NotificationTail + 1) %
+        VIIPER_UDE_MAX_PENDING_OPERATIONS;
+    ++ControllerContext->NotificationCount;
+    return TRUE;
+}
+
+static
+BOOLEAN
 ViiperQueueCancelEventLocked(
     _In_ VIIPER_UDE_CONTROLLER_CONTEXT *ControllerContext,
     _In_ const VIIPER_UDE_PENDING_SLOT *Pending
@@ -99,9 +124,10 @@ ViiperQueueCancelEventLocked(
     if (!Pending->PublishedToOwner) {
         return FALSE;
     }
-    if (ControllerContext->NotificationCount >= VIIPER_UDE_MAX_PENDING_OPERATIONS) {
-        InterlockedIncrement64(&ControllerContext->NotificationEventOverflows);
-        return FALSE;
+    // Keep one slot reserved for a broker-fault event. Losing cancellation or
+    // lifecycle state is not recoverable within the current owner session.
+    if (ControllerContext->NotificationCount >= VIIPER_UDE_MAX_PENDING_OPERATIONS - 1) {
+        return ViiperFaultBrokerLocked(ControllerContext);
     }
 
     event = &ControllerContext->Notifications[ControllerContext->NotificationTail];
@@ -374,8 +400,8 @@ ViiperQueueLifecycleEventLocked(
 {
     VIIPER_UDE_NOTIFICATION *event;
 
-    if (ControllerContext->NotificationCount >= VIIPER_UDE_MAX_PENDING_OPERATIONS) {
-        InterlockedIncrement64(&ControllerContext->NotificationEventOverflows);
+    if (ControllerContext->NotificationCount >= VIIPER_UDE_MAX_PENDING_OPERATIONS - 1) {
+        (VOID)ViiperFaultBrokerLocked(ControllerContext);
         return FALSE;
     }
 
@@ -1078,6 +1104,9 @@ ViiperQueueDequeueOperation(
     if (!NT_SUCCESS(status)) {
         return status;
     }
+    if (InterlockedCompareExchange(&controllerContext->BrokerFaulted, FALSE, FALSE) != FALSE) {
+        return STATUS_DATA_ERROR;
+    }
     status = WdfRequestForwardToIoQueue(Request, controllerContext->WaitingDequeues);
     if (!NT_SUCCESS(status)) {
         return status;
@@ -1105,7 +1134,8 @@ ViiperQueueUrb(
     BOOLEAN abortPending = FALSE;
     NTSTATUS abortStatus = STATUS_CANCELLED;
 
-    if (InterlockedCompareExchange(&deviceContext->Purging, 0, 0) != 0 ||
+    if (InterlockedCompareExchange(&controllerContext->BrokerFaulted, FALSE, FALSE) != FALSE ||
+        InterlockedCompareExchange(&deviceContext->Purging, 0, 0) != 0 ||
         InterlockedCompareExchange(&endpointContext->Purging, 0, 0) != 0) {
         return STATUS_DEVICE_NOT_READY;
     }

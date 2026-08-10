@@ -33,7 +33,7 @@ typedef int32_t VIIPER_UDE_INT32;
 
 #define VIIPER_UDE_MAGIC VIIPER_UDE_UINT32_C(0x45445556) /* "VUDE" little-endian */
 #define VIIPER_UDE_ABI_MAJOR VIIPER_UDE_UINT16_C(1)
-#define VIIPER_UDE_ABI_MINOR VIIPER_UDE_UINT16_C(2)
+#define VIIPER_UDE_ABI_MINOR VIIPER_UDE_UINT16_C(3)
 
 #define VIIPER_UDE_MAX_DEVICES VIIPER_UDE_UINT32_C(32)
 #define VIIPER_UDE_MAX_DESCRIPTOR_BYTES VIIPER_UDE_UINT32_C(262144)
@@ -130,7 +130,8 @@ typedef enum VIIPER_UDE_OPERATION_KIND {
     ViiperUdeOperationSetInterface = 7,
     ViiperUdeOperationDeviceD0Entry = 8,
     ViiperUdeOperationDeviceD0Exit = 9,
-    ViiperUdeOperationCancel = 10
+    ViiperUdeOperationCancel = 10,
+    ViiperUdeOperationBrokerFault = 11
 } VIIPER_UDE_OPERATION_KIND;
 
 typedef struct VIIPER_UDE_ISO_PACKET {

@@ -153,6 +153,7 @@ ViiperEvtControllerCleanup(
         context->NotificationHead = 0;
         context->NotificationTail = 0;
         context->NotificationCount = 0;
+        InterlockedExchange(&context->BrokerFaulted, FALSE);
         WdfSpinLockRelease(context->BrokerLock);
     }
 }
@@ -199,6 +200,7 @@ ViiperEvtFileCreate(
     } else {
         fileContext->BrokerOwner = TRUE;
         context->OwnerFile = FileObject;
+        InterlockedExchange(&context->BrokerFaulted, FALSE);
         WdfIoQueueStart(context->WaitingDequeues);
     }
     WdfWaitLockRelease(context->OwnerLock);

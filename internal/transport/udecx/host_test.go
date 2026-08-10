@@ -599,3 +599,31 @@ func TestHostCompletionFailureFailsSession(t *testing.T) {
 		t.Fatal("completion failure did not fail the host session")
 	}
 }
+
+func TestHostBrokerFaultFailsSessionWithoutDispatchingAnOperation(t *testing.T) {
+	driver := newFakeHostDriver()
+	processor := &recordingProcessor{
+		processed: make(chan uint64, 1), lifecycle: make(chan uint64, 1),
+		resets: make(chan DeviceIdentity, 1),
+	}
+	host, _ := NewHost(driver, processor, 1)
+	done := make(chan error, 1)
+	go func() { done <- host.Serve(context.Background()) }()
+	driver.operations <- Operation{Kind: OperationBrokerFault}
+
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "lost lifecycle notification") {
+			t.Fatalf("Serve error=%v, want broker-fault session failure", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("kernel broker fault did not fail the host session")
+	}
+	select {
+	case sequence := <-processor.processed:
+		t.Fatalf("broker fault reached transfer processor with sequence %d", sequence)
+	case sequence := <-processor.lifecycle:
+		t.Fatalf("broker fault reached lifecycle processor with sequence %d", sequence)
+	default:
+	}
+}

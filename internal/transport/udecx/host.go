@@ -280,6 +280,10 @@ func (h *Host) Serve(ctx context.Context) error {
 				}
 				return fmt.Errorf("dequeue native UDE operation: %w", result.err)
 			}
+			if result.op.Kind == OperationBrokerFault {
+				h.reportFatal(errors.New("native UDE kernel broker reported a lost lifecycle notification"))
+				continue
+			}
 			if result.op.Kind == OperationCancel {
 				h.cancelOperation(result.op)
 				continue

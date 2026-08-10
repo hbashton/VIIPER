@@ -85,6 +85,7 @@ typedef struct VIIPER_UDE_CONTROLLER_CONTEXT {
     WDFQUEUE DefaultQueue;
     WDFQUEUE WaitingDequeues;
     BOOLEAN CleanupInProgress;
+    volatile LONG BrokerFaulted;
     volatile LONG ActiveDevices;
     volatile LONG PendingOperations;
     volatile LONG WaitingDequeueCount;

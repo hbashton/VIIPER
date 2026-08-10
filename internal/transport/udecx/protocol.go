@@ -13,7 +13,7 @@ import (
 const (
 	Magic    uint32 = 0x45445556
 	ABIMajor uint16 = 1
-	ABIMinor uint16 = 2
+	ABIMinor uint16 = 3
 
 	HeaderSize            = 16
 	NegotiateRequestSize  = 32
@@ -261,6 +261,7 @@ const (
 	OperationDeviceD0Entry
 	OperationDeviceD0Exit
 	OperationCancel
+	OperationBrokerFault
 )
 
 type IsoPacket struct {
