@@ -67,6 +67,9 @@ jobs:
           ./device/dualsense
           ./device/dualshock4
           ./device/xbox360
+          ./device/ns2pro
+          ./device/keyboard
+          ./device/mouse
 
   driver:
     runs-on: windows-2025-vs2026

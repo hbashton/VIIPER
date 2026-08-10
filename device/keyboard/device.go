@@ -3,6 +3,7 @@ package keyboard
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	"github.com/Alia5/VIIPER/device"
@@ -115,6 +116,19 @@ func (k *Keyboard) HandleTransfer(ctx context.Context, ep uint32, dir uint32, ou
 		}
 	}
 	return nil
+}
+
+// ReadInterruptInput implements usb.InterruptInputDevice for native UDE.
+func (k *Keyboard) ReadInterruptInput(ctx context.Context, ep uint32, dst []byte) (int, error) {
+	if ep != 1 {
+		return 0, fmt.Errorf("keyboard interrupt-IN endpoint %d is unsupported", ep)
+	}
+	select {
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	case st := <-k.inputCh:
+		return st.BuildReportInto(dst)
+	}
 }
 
 func ledStateFromMask(mask uint8) LEDState {

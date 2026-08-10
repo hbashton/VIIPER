@@ -164,6 +164,27 @@ func (d *NS2Pro) HandleTransfer(ctx context.Context, ep uint32, dir uint32, out 
 	return nil
 }
 
+// ReadInterruptInput implements usb.InterruptInputDevice for the HID input
+// endpoint. The bulk response endpoint remains on the ordered transfer broker.
+func (d *NS2Pro) ReadInterruptInput(ctx context.Context, ep uint32, dst []byte) (int, error) {
+	if ep != EndpointHIDIn&0x0f {
+		return 0, fmt.Errorf("Switch 2 Pro interrupt-IN endpoint %d is unsupported", ep)
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) && d.reportsEnabled() {
+				return d.nextInputReportInto(dst)
+			}
+			return 0, ctx.Err()
+		case <-d.inputCh:
+			if d.reportsEnabled() {
+				return d.nextInputReportInto(dst)
+			}
+		}
+	}
+}
+
 func (d *NS2Pro) HandleControl(bmRequestType, bRequest uint8, wValue, wIndex uint16, wLength uint16, data []byte) ([]byte, bool) {
 	reportType := uint8(wValue >> 8)
 	reportID := uint8(wValue)
@@ -231,7 +252,20 @@ func (d *NS2Pro) nextInputReport() []byte {
 	return d.inputReportForID(reportID)
 }
 
+func (d *NS2Pro) nextInputReportInto(dst []byte) (int, error) {
+	d.protoMu.Lock()
+	reportID := d.activeReportID
+	d.protoMu.Unlock()
+	return d.inputReportForIDInto(reportID, dst)
+}
+
 func (d *NS2Pro) inputReportForID(reportID uint8) []byte {
+	report := make([]byte, InputReportSize)
+	_, _ = d.inputReportForIDInto(reportID, report)
+	return report
+}
+
+func (d *NS2Pro) inputReportForIDInto(reportID uint8, dst []byte) (int, error) {
 	d.stateMu.Lock()
 	st := *d.inputState
 	meta := *d.metaState
@@ -242,7 +276,8 @@ func (d *NS2Pro) inputReportForID(reportID uint8) []byte {
 		reportID = d.activeReportID
 	}
 	features := d.featureFlags
-	var report []byte
+	var written int
+	var err error
 	switch reportID {
 	case ReportIDCommon:
 		d.reportCounter32++
@@ -251,13 +286,13 @@ func (d *NS2Pro) inputReportForID(reportID uint8) []byte {
 			motionTS = uint32(time.Since(d.motionStart).Microseconds())
 			d.lastMotionTS = motionTS
 		}
-		report = st.buildCommonReport(d.reportCounter32, motionTS, features, meta)
+		written, err = st.buildCommonReportInto(dst, d.reportCounter32, motionTS, features, meta)
 	default:
 		d.reportCounter8++
-		report = st.buildProReport(d.reportCounter8, features, meta)
+		written, err = st.buildProReportInto(dst, d.reportCounter8, features, meta)
 	}
 	d.protoMu.Unlock()
-	return report
+	return written, err
 }
 
 func (d *NS2Pro) serialNumber() string {

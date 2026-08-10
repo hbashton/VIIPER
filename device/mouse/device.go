@@ -3,6 +3,7 @@ package mouse
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	"github.com/Alia5/VIIPER/device"
@@ -70,6 +71,26 @@ func (m *Mouse) HandleTransfer(ctx context.Context, ep uint32, dir uint32, out [
 		}
 	}
 	return nil
+}
+
+// ReadInterruptInput implements usb.InterruptInputDevice for native UDE.
+func (m *Mouse) ReadInterruptInput(ctx context.Context, ep uint32, dst []byte) (int, error) {
+	if ep != 1 {
+		return 0, fmt.Errorf("mouse interrupt-IN endpoint %d is unsupported", ep)
+	}
+	select {
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	case st := <-m.inputCh:
+		if st.DX != 0 || st.DY != 0 || st.Wheel != 0 || st.Pan != 0 {
+			zeroed := InputState{Buttons: st.Buttons}
+			select {
+			case m.inputCh <- zeroed:
+			default:
+			}
+		}
+		return st.BuildReportInto(dst)
+	}
 }
 
 // HID Report Descriptor for a 5-button mouse with vertical and horizontal wheels.
