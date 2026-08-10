@@ -215,6 +215,10 @@ interface fields are only hints for alternates that contain no endpoints.
 - Each fast interrupt-IN endpoint has its own passive lock. Different
   controllers publish concurrently, while accidental concurrent submissions
   for one endpoint cannot reorder reports or replay a coalesced sequence.
+- Endpoint start opens the kernel admission gate before publishing the ordered
+  start notification. The first fresh input snapshot after resume therefore
+  cannot consume its sequence against a still-purged kernel endpoint; the
+  callback itself is the single UdeCx restart boundary for both paths.
 - Every published operation also carries a per-device publication sequence.
   Endpoint lanes remain independent, but device-wide D0 transitions use that
   sequence to reject a delayed pre-exit start notification. Multiple overlapped

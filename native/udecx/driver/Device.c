@@ -712,6 +712,15 @@ ViiperEvtUsbDeviceSetFunctionSuspendAndWake(
     UNREFERENCED_PARAMETER(Device);
     UNREFERENCED_PARAMETER(Interface);
     UNREFERENCED_PARAMETER(FunctionPower);
+
+    // VIIPER's production controller set is low/full/high-speed, so UdeCx
+    // never invokes this SuperSpeed-only callback for a supported child.  A
+    // virtual child has no physical function to power down; acknowledge the
+    // host's bookkeeping transition exactly as usbip-win2's UdeCx reference
+    // does, without mutating endpoint/media state behind UdeCx's queue
+    // lifecycle.  If VIIPER adds a SuperSpeed controller with real remote-wake
+    // behavior, that device must add an explicit per-interface state contract
+    // rather than repurposing endpoint purge/start implicitly.
     return STATUS_SUCCESS;
 }
 
@@ -1172,9 +1181,16 @@ ViiperEvtEndpointStart(
     )
 {
     VIIPER_UDE_ENDPOINT_CONTEXT *endpointContext = ViiperGetEndpointContext(Endpoint);
-    (VOID)ViiperQueueEndpointLifecycleEvent(Endpoint, ViiperUdeOperationEndpointStart);
+
+    // UdeCx defines START as the boundary at which both the endpoint queue and
+    // any client-owned forwarded paths may resume. Open the kernel admission
+    // gate before publishing that boundary to user mode. Publishing first lets
+    // the newly started input publisher race back through SUBMIT_INPUT_REPORT
+    // while Purging is still true, consuming and discarding the first fresh
+    // sequence after resume.
     InterlockedExchange64(&endpointContext->NextIsoStartFrame, 0);
     InterlockedExchange(&endpointContext->Purging, FALSE);
+    (VOID)ViiperQueueEndpointLifecycleEvent(Endpoint, ViiperUdeOperationEndpointStart);
 }
 
 VOID
