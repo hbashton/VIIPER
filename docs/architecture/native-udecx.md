@@ -241,6 +241,11 @@ interface fields are only hints for alternates that contain no endpoints.
   owner file object before dropping the owner lock. Concurrent cleanup can
   release the controller's long-lived reference without leaving the retry path
   with a stale WDF handle.
+- Child creation is protected by an owner-admission barrier. Cleanup closes
+  admission under the owner lock and waits for every admitted UdeCx create and
+  PlugIn transaction before enumerating owned children. UdeCx calls run without
+  the owner lock held, avoiding callback deadlocks while preventing an orphaned
+  child from being published behind cleanup's enumeration boundary.
 - Completion lookup is keyed by `(device ID, generation, token)`.
 - Failed transfers do not need to fabricate a successful ISO packet table.
   Successful completions are canonical: OUT replies carry no payload, every

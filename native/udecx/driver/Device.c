@@ -257,6 +257,57 @@ ViiperValidateOwner(
 }
 
 static
+NTSTATUS
+ViiperBeginOwnerAdmission(
+    _In_ WDFDEVICE Controller,
+    _In_ WDFREQUEST Request,
+    _Out_ WDFFILEOBJECT *OwnerFile
+    )
+{
+    VIIPER_UDE_CONTROLLER_CONTEXT *controllerContext = ViiperGetControllerContext(Controller);
+    VIIPER_UDE_FILE_CONTEXT *fileContext;
+    WDFFILEOBJECT fileObject = WdfRequestGetFileObject(Request);
+    NTSTATUS status = STATUS_SUCCESS;
+
+    if (fileObject == WDF_NO_HANDLE) {
+        return STATUS_INVALID_HANDLE;
+    }
+    fileContext = ViiperGetFileContext(fileObject);
+    WdfWaitLockAcquire(controllerContext->OwnerLock, NULL);
+    if (controllerContext->OwnerFile != fileObject || controllerContext->CleanupInProgress ||
+        InterlockedCompareExchange(&fileContext->Negotiated, 0, 0) == 0 ||
+        InterlockedCompareExchange(&fileContext->Closing, 0, 0) != 0) {
+        status = STATUS_INVALID_DEVICE_STATE;
+    } else {
+        // Keep both the owner object and cleanup boundary alive while a child
+        // is being built. UdeCx creation and PlugIn may invoke asynchronous
+        // callbacks, so do not hold OwnerLock across those calls.
+        WdfObjectReference(fileObject);
+        InterlockedIncrement(&controllerContext->ActiveOwnerAdmissions);
+        *OwnerFile = fileObject;
+    }
+    WdfWaitLockRelease(controllerContext->OwnerLock);
+    return status;
+}
+
+static
+VOID
+ViiperEndOwnerAdmission(
+    _In_ WDFDEVICE Controller,
+    _In_ WDFFILEOBJECT OwnerFile
+    )
+{
+    VIIPER_UDE_CONTROLLER_CONTEXT *controllerContext = ViiperGetControllerContext(Controller);
+    LONG remaining;
+
+    WdfWaitLockAcquire(controllerContext->OwnerLock, NULL);
+    remaining = InterlockedDecrement(&controllerContext->ActiveOwnerAdmissions);
+    NT_ASSERT(remaining >= 0);
+    WdfWaitLockRelease(controllerContext->OwnerLock);
+    WdfObjectDereference(OwnerFile);
+}
+
+static
 UDECX_USB_DEVICE_SPEED
 ViiperMapSpeed(
     _In_ ULONG Speed
@@ -359,10 +410,6 @@ ViiperCreateVirtualDevice(
     ULONG slot;
 
     PAGED_CODE();
-    status = ViiperValidateOwner(controller, Request, &ownerFile);
-    if (!NT_SUCCESS(status)) {
-        return status;
-    }
     status = WdfRequestRetrieveInputBuffer(Request, sizeof(*input), (PVOID *)&input, &inputLength);
     if (!NT_SUCCESS(status)) {
         return status;
@@ -375,10 +422,15 @@ ViiperCreateVirtualDevice(
     if (speed == (UDECX_USB_DEVICE_SPEED)0) {
         return STATUS_NOT_SUPPORTED;
     }
+    status = ViiperBeginOwnerAdmission(controller, Request, &ownerFile);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
 
     deviceInit = UdecxUsbDeviceInitAllocate(controller);
     if (deviceInit == NULL) {
-        return STATUS_INSUFFICIENT_RESOURCES;
+        status = STATUS_INSUFFICIENT_RESOURCES;
+        goto ExitAdmission;
     }
 
     UDECX_USB_DEVICE_CALLBACKS_INIT(&callbacks);
@@ -398,7 +450,7 @@ ViiperCreateVirtualDevice(
     status = ViiperAddDeviceDescriptors(deviceInit, input);
     if (!NT_SUCCESS(status)) {
         UdecxUsbDeviceInitFree(deviceInit);
-        return status;
+        goto ExitAdmission;
     }
 
     WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&attributes, VIIPER_UDE_DEVICE_CONTEXT);
@@ -407,7 +459,7 @@ ViiperCreateVirtualDevice(
     status = UdecxUsbDeviceCreate(&deviceInit, &attributes, &device);
     if (!NT_SUCCESS(status)) {
         UdecxUsbDeviceInitFree(deviceInit);
-        return status;
+        goto ExitAdmission;
     }
 
     deviceContext = ViiperGetDeviceContext(device);
@@ -424,7 +476,7 @@ ViiperCreateVirtualDevice(
     status = ViiperClaimDeviceSlot(controllerContext, device, input->DeviceId, &slot);
     if (!NT_SUCCESS(status)) {
         WdfObjectDelete(device);
-        return status;
+        goto ExitAdmission;
     }
     deviceContext->Slot = slot;
 
@@ -438,14 +490,18 @@ ViiperCreateVirtualDevice(
     if (!NT_SUCCESS(status)) {
         ViiperReleaseDeviceSlot(controllerContext, device, slot);
         WdfObjectDelete(device);
-        return status;
+        goto ExitAdmission;
     }
 
     deviceContext->Plugged = TRUE;
     InterlockedExchange(&deviceContext->ActiveCounted, 1);
     InterlockedIncrement(&controllerContext->ActiveDevices);
     WdfRequestSetInformation(Request, 0);
-    return STATUS_SUCCESS;
+    status = STATUS_SUCCESS;
+
+ExitAdmission:
+    ViiperEndOwnerAdmission(controller, ownerFile);
+    return status;
 }
 
 static

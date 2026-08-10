@@ -27,6 +27,17 @@ ViiperFinishOwnerCleanup(
     BOOLEAN releaseOwner = FALSE;
 
     PAGED_CODE();
+    WdfWaitLockAcquire(context->OwnerLock, NULL);
+    if (context->OwnerFile != OwnerFile || !context->CleanupInProgress) {
+        WdfWaitLockRelease(context->OwnerLock);
+        return TRUE;
+    }
+    if (InterlockedCompareExchange(&context->ActiveOwnerAdmissions, 0, 0) != 0) {
+        WdfWaitLockRelease(context->OwnerLock);
+        return FALSE;
+    }
+    WdfWaitLockRelease(context->OwnerLock);
+
     if (!ViiperDestroyOwnedDevices(Device, OwnerFile)) {
         return FALSE;
     }

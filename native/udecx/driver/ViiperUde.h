@@ -111,6 +111,7 @@ typedef struct VIIPER_UDE_CONTROLLER_CONTEXT {
     BOOLEAN CleanupInProgress;
     volatile LONG BrokerFaulted;
     volatile LONG OwnerReferenced;
+    volatile LONG ActiveOwnerAdmissions;
     volatile LONG CleanupRetries;
     volatile LONG ActiveDevices;
     volatile LONG PendingOperations;
