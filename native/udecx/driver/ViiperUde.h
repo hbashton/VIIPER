@@ -175,6 +175,7 @@ typedef struct VIIPER_UDE_ENDPOINT_CONTEXT {
     UDECXUSBDEVICE Device;
     WDFQUEUE Queue;
     WDFWAITLOCK InputLock;
+    WDFWORKITEM InputReadyWorkItem;
     WDFWORKITEM PurgeWorkItem;
     WDFWORKITEM ResetWorkItem;
     WDFREQUEST ResetRequest;
@@ -186,6 +187,7 @@ typedef struct VIIPER_UDE_ENDPOINT_CONTEXT {
     volatile LONG64 LastInputSequence;
     volatile LONG64 NextIsoStartFrame;
     volatile LONG InputReportValid;
+    volatile LONG CachedDeliveryPending;
     ULONG InputReportLength;
     UCHAR InputReport[VIIPER_UDE_MAX_INPUT_REPORT_BYTES];
     ULONGLONG NextAdmissionSequence;
@@ -218,6 +220,7 @@ EVT_UDECX_USB_ENDPOINT_PURGE ViiperEvtEndpointPurge;
 EVT_UDECX_USB_ENDPOINT_START ViiperEvtEndpointStart;
 EVT_WDF_IO_QUEUE_IO_INTERNAL_DEVICE_CONTROL ViiperEvtEndpointIoInternalControl;
 EVT_WDF_IO_QUEUE_STATE ViiperEvtFastInputQueueReady;
+EVT_WDF_WORKITEM ViiperEvtFastInputWorkItem;
 EVT_WDF_WORKITEM ViiperEvtEndpointPurgeWorkItem;
 EVT_WDF_WORKITEM ViiperEvtEndpointResetWorkItem;
 EVT_WDF_DPC ViiperEvtCompletionDpc;

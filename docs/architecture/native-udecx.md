@@ -77,9 +77,11 @@ The transport is intentionally split by USB semantics:
   `SUBMIT_INPUT_REPORT` call atomically replaces the endpoint's preallocated
   latest-state cache and completes a waiting URB without an allocation or
   broker round trip. If the state arrives first, KMDF's manual-queue ready
-  notification completes the later poll from that cache. Input timing is
-  therefore host-poll-driven rather than dependent on a second physical
-  report arriving after the poll;
+  notification schedules one preallocated passive work item, which completes
+  one later poll from that cache. The ready callback itself never completes an
+  URB because KMDF can invoke it synchronously on UdeCx's submitter thread.
+  Input timing is therefore host-poll-driven rather than dependent on a second
+  physical report arriving after the poll;
 - control, interrupt-OUT, isochronous speaker/microphone/haptics, feedback, and
   every lifecycle transition use the cancel-safe ordered inverted-call broker.
   VIIPER posts multiple `DEQUEUE_OPERATION` requests, processes each immutable
@@ -89,10 +91,11 @@ The transport is intentionally split by USB semantics:
 The input counters intentionally measure opposite sides of that cache:
 `InputReportsSubmitted` counts accepted latest-state publications, while
 `InputReportsCompleted` counts Windows interrupt-IN polls completed from the
-cache. A host may poll the same stable controller state more than once, so the
-completed count can legitimately exceed the submitted count. Live validation
-requires both forward publication and a completed Windows poll; it does not
-invent a one-to-one relationship that USB interrupt polling does not have.
+cache. Several publications can coalesce before a Windows poll, so completion
+can trail submission. A one-shot cached-delivery token ensures a publication
+cannot replay itself into multiple successor polls. Live validation requires
+both forward publication and a completed Windows poll without inventing a
+strict one-to-one relationship.
 
 UDE URB completion deliberately keeps a separate DPC boundary. The individual
 `UdecxUrbComplete` API reference currently lists `PASSIVE_LEVEL`, but
@@ -101,10 +104,13 @@ drivers require completion at `DISPATCH_LEVEL`, a synchronously processed URB
 must not be completed on its submitting thread, and cancellation must complete
 on a separate DPC. usbip-win2 0.9.7.8 independently follows that same contract.
 VIIPER therefore copies data and transfers ownership at PASSIVE level, then
-uses one preallocated controller DPC to finish bounded pending slots. Direct
-input also crosses that DPC-compatible completion boundary without allocating
-per report. This is not optional scheduler padding; removing it would violate
-the documented UDE compatibility contract.
+uses one preallocated controller DPC to finish bounded broker slots. Direct
+producer input arrives on a separate user I/O path and completes at
+`DISPATCH_LEVEL` without allocating per report. A late cached poll first crosses
+a preallocated endpoint work-item boundary before the same DISPATCH-level
+completion, because `WdfIoQueueReadyNotify` is permitted to run inline on the
+UdeCx submitter thread. This is not optional scheduler padding; removing either
+boundary would violate the documented UDE compatibility contract.
 
 Input publishers start and stop from UdeCx endpoint lifecycle notifications,
 retain their sequence across a purge/start cycle, and are cancelled before
@@ -281,10 +287,11 @@ interface fields are only hints for alternates that contain no endpoints.
   span. Chained or short mappings fall through to a bounded MDL-chain walk;
   the driver never treats the URB length as permission to overrun one mapping.
 - Interrupt-IN queues are manual and completed from a generation-owned,
-  sequence-checked latest-state cache. The queue-ready callback snapshots the
-  number of already-waiting polls before it completes any of them, preventing
-  a synchronously replenished Windows poll from turning into a kernel drain
-  loop. Endpoint purge/reset and device reset/D0 exit invalidate the cache
+  sequence-checked latest-state cache. The queue-ready callback only enqueues a
+  preallocated work item; that separate execution boundary consumes one cached
+  delivery token and one poll. A synchronously replenished Windows poll is left
+  parked for the next producer instead of becoming a kernel replay loop.
+  Endpoint purge/reset and device reset/D0 exit invalidate the cache and token
   after closing admission, so no held button can cross a lifecycle boundary.
   Output and media endpoints retain independent ordered queues.
 - A direct input report that was already submitted when D0 exit, device reset,

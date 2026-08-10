@@ -677,6 +677,40 @@ ViiperEvtVirtualDeviceCleanup(
 
 static
 VOID
+ViiperInvalidateEndpointInputReport(
+    _In_ UDECXUSBENDPOINT Endpoint
+    )
+{
+    VIIPER_UDE_ENDPOINT_CONTEXT *endpointContext = ViiperGetEndpointContext(Endpoint);
+
+    InterlockedExchange(&endpointContext->InputReportValid, FALSE);
+    InterlockedExchange(&endpointContext->CachedDeliveryPending, FALSE);
+}
+
+static
+VOID
+ViiperInvalidateInputIfLifecycleClosed(
+    _In_ UDECXUSBENDPOINT Endpoint
+    )
+{
+    VIIPER_UDE_ENDPOINT_CONTEXT *endpointContext = ViiperGetEndpointContext(Endpoint);
+    VIIPER_UDE_DEVICE_CONTEXT *deviceContext = ViiperGetDeviceContext(endpointContext->Device);
+    VIIPER_UDE_CONTROLLER_CONTEXT *controllerContext =
+        ViiperGetControllerContext(deviceContext->Controller);
+
+    WdfSpinLockAcquire(controllerContext->BrokerLock);
+    if (InterlockedCompareExchange(&deviceContext->InD0, 0, 0) == 0 ||
+        InterlockedCompareExchange(&deviceContext->Purging, 0, 0) != 0 ||
+        InterlockedCompareExchange(&deviceContext->Resetting, 0, 0) != 0 ||
+        InterlockedCompareExchange(&endpointContext->Purging, 0, 0) != 0 ||
+        InterlockedCompareExchange(&endpointContext->Resetting, 0, 0) != 0) {
+        ViiperInvalidateEndpointInputReport(Endpoint);
+    }
+    WdfSpinLockRelease(controllerContext->BrokerLock);
+}
+
+static
+VOID
 ViiperInvalidateDeviceInputReports(
     _In_ UDECXUSBDEVICE Device
     )
@@ -698,8 +732,7 @@ ViiperInvalidateDeviceInputReports(
         }
         WdfWaitLockRelease(controllerContext->DeviceLock);
         if (endpoint != WDF_NO_HANDLE) {
-            InterlockedExchange(
-                &ViiperGetEndpointContext(endpoint)->InputReportValid, FALSE);
+            ViiperInvalidateEndpointInputReport(endpoint);
             WdfObjectDereference(endpoint);
         }
     }
@@ -968,6 +1001,14 @@ ViiperEvtEndpointAdd(
         if (!NT_SUCCESS(status)) {
             return status;
         }
+        WDF_WORKITEM_CONFIG_INIT(&workItemConfig, ViiperEvtFastInputWorkItem);
+        WDF_OBJECT_ATTRIBUTES_INIT(&attributes);
+        attributes.ParentObject = endpoint;
+        status = WdfWorkItemCreate(
+            &workItemConfig, &attributes, &endpointContext->InputReadyWorkItem);
+        if (!NT_SUCCESS(status)) {
+            return status;
+        }
     } else {
         dispatchType = WdfIoQueueDispatchParallel;
     }
@@ -1094,23 +1135,32 @@ ViiperEvtFastInputQueueReady(
 {
     UDECXUSBENDPOINT endpoint = (UDECXUSBENDPOINT)Context;
     VIIPER_UDE_ENDPOINT_CONTEXT *endpointContext = ViiperGetEndpointContext(endpoint);
+
+    UNREFERENCED_PARAMETER(Queue);
+    PAGED_CODE();
+    // WdfIoQueueReadyNotify is allowed to invoke this callback synchronously
+    // on UdeCx's URB submitter thread, including before registration returns.
+    // A cached poll must therefore cross a real execution boundary before it
+    // is retrieved and completed. KMDF 1.7+ safely coalesces repeated enqueue
+    // calls for one reusable work item while it is already queued.
+    WdfWorkItemEnqueue(endpointContext->InputReadyWorkItem);
+}
+
+VOID
+ViiperEvtFastInputWorkItem(
+    _In_ WDFWORKITEM WorkItem
+    )
+{
+    UDECXUSBENDPOINT endpoint =
+        (UDECXUSBENDPOINT)WdfWorkItemGetParentObject(WorkItem);
+    VIIPER_UDE_ENDPOINT_CONTEXT *endpointContext = ViiperGetEndpointContext(endpoint);
     VIIPER_UDE_DEVICE_CONTEXT *deviceContext = ViiperGetDeviceContext(endpointContext->Device);
     VIIPER_UDE_CONTROLLER_CONTEXT *controllerContext =
         ViiperGetControllerContext(deviceContext->Controller);
     WDFREQUEST request = WDF_NO_HANDLE;
-    ULONG requestCount = 0;
-    ULONG index;
     BOOLEAN admitted = FALSE;
 
     PAGED_CODE();
-    // Snapshot only the polls which caused this ready transition. Completing
-    // an URB can synchronously cause the USB stack to post its successor; an
-    // unbounded drain loop would therefore become a kernel busy loop.
-    (VOID)WdfIoQueueGetState(Queue, &requestCount, NULL);
-    if (requestCount == 0) {
-        return;
-    }
-
     WdfWaitLockAcquire(endpointContext->InputLock, NULL);
     WdfSpinLockAcquire(controllerContext->BrokerLock);
     if (InterlockedCompareExchange(&controllerContext->BrokerFaulted, FALSE, FALSE) == FALSE &&
@@ -1119,7 +1169,8 @@ ViiperEvtFastInputQueueReady(
         InterlockedCompareExchange(&deviceContext->Resetting, 0, 0) == 0 &&
         InterlockedCompareExchange(&endpointContext->Purging, 0, 0) == 0 &&
         InterlockedCompareExchange(&endpointContext->Resetting, 0, 0) == 0 &&
-        InterlockedCompareExchange(&endpointContext->InputReportValid, 0, 0) != 0) {
+        InterlockedCompareExchange(&endpointContext->InputReportValid, 0, 0) != 0 &&
+        InterlockedCompareExchange(&endpointContext->CachedDeliveryPending, 0, 0) != 0) {
         ViiperEndpointOperationStarted(endpoint);
         admitted = TRUE;
     }
@@ -1129,13 +1180,16 @@ ViiperEvtFastInputQueueReady(
         return;
     }
 
-    for (index = 0; index < requestCount; ++index) {
-        if (!NT_SUCCESS(WdfIoQueueRetrieveNextRequest(Queue, &request))) {
-            break;
-        }
+    // One cached-delivery token represents one accepted publication which
+    // arrived before its Windows poll. Consume exactly one parked request.
+    // Completing it can cause HIDClass to post a successor; leaving that poll
+    // parked prevents a cache replay loop and lets the next producer update
+    // complete it on the allocation-free direct path.
+    if (NT_SUCCESS(WdfIoQueueRetrieveNextRequest(endpointContext->Queue, &request))) {
+        InterlockedExchange(&endpointContext->CachedDeliveryPending, FALSE);
         (VOID)ViiperCompleteCachedInputUrb(endpoint, request);
-        request = WDF_NO_HANDLE;
     }
+    ViiperInvalidateInputIfLifecycleClosed(endpoint);
     ViiperEndpointOperationCompleted(endpoint);
     WdfWaitLockRelease(endpointContext->InputLock);
 }
@@ -1287,6 +1341,10 @@ ViiperSubmitInputReport(
     InterlockedIncrement64(&controllerContext->InputReportsSubmitted);
     status = WdfIoQueueRetrieveNextRequest(endpointContext->Queue, &urbRequest);
     if (!NT_SUCCESS(status)) {
+        InterlockedExchange(
+            &endpointContext->CachedDeliveryPending,
+            status == STATUS_NO_MORE_ENTRIES ? TRUE : FALSE);
+        ViiperInvalidateInputIfLifecycleClosed(endpoint);
         ViiperEndpointOperationCompleted(endpoint);
         WdfWaitLockRelease(endpointContext->InputLock);
         WdfObjectDereference(endpoint);
@@ -1294,7 +1352,13 @@ ViiperSubmitInputReport(
         // the next Windows poll even if the physical feeder becomes idle.
         return status == STATUS_NO_MORE_ENTRIES ? STATUS_SUCCESS : status;
     }
+    InterlockedExchange(&endpointContext->CachedDeliveryPending, FALSE);
     status = ViiperCompleteCachedInputUrb(endpoint, urbRequest);
+    // Lifecycle admission can close after this operation was admitted. The
+    // pre-boundary poll may finish, but its cached state must never survive the
+    // reset/purge/D0 boundary. Revalidate under the same admission lock so
+    // either this path or the lifecycle callback performs the final clear.
+    ViiperInvalidateInputIfLifecycleClosed(endpoint);
     ViiperEndpointOperationCompleted(endpoint);
     WdfWaitLockRelease(endpointContext->InputLock);
     WdfObjectDereference(endpoint);
@@ -1329,7 +1393,7 @@ ViiperEvtEndpointReset(
     }
 
     InterlockedExchange64(&endpointContext->NextIsoStartFrame, 0);
-    InterlockedExchange(&endpointContext->InputReportValid, FALSE);
+    ViiperInvalidateEndpointInputReport(Endpoint);
     ViiperPurgeEndpointOperations(Endpoint, STATUS_DEVICE_NOT_READY);
     endpointContext->ResetRequest = Request;
     // A forwarded broker operation or direct input copy may have won
@@ -1357,6 +1421,9 @@ ViiperEvtEndpointResetWorkItem(
         KernelMode,
         FALSE,
         NULL);
+    // An input publisher admitted immediately before Resetting was raised is
+    // allowed to finish, then this barrier performs the final invalidation.
+    ViiperInvalidateEndpointInputReport(endpoint);
     request = endpointContext->ResetRequest;
     endpointContext->ResetRequest = WDF_NO_HANDLE;
     if (InterlockedCompareExchange(&endpointContext->Purging, 0, 0) != 0) {
@@ -1390,6 +1457,9 @@ ViiperEvtEndpointPurgeWorkItem(
         KernelMode,
         FALSE,
         NULL);
+    // The admission barrier is closed and all pre-boundary publishers have
+    // drained, so no cached state can be republished after this clear.
+    ViiperInvalidateEndpointInputReport(endpoint);
     UdecxUsbEndpointPurgeComplete(endpoint);
 }
 
@@ -1411,7 +1481,7 @@ ViiperEvtEndpointPurge(
     InterlockedExchange(&endpointContext->Purging, TRUE);
     WdfSpinLockRelease(controllerContext->BrokerLock);
     InterlockedExchange64(&endpointContext->NextIsoStartFrame, 0);
-    InterlockedExchange(&endpointContext->InputReportValid, FALSE);
+    ViiperInvalidateEndpointInputReport(Endpoint);
     ViiperPurgeEndpointOperations(Endpoint, STATUS_DEVICE_NOT_READY);
     (VOID)ViiperQueueEndpointLifecycleEvent(Endpoint, ViiperUdeOperationEndpointPurge);
     // UdeCx owns the state of the endpoint queue. We only drain requests that

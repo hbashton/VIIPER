@@ -43,13 +43,19 @@ Directory contract:
 The interrupt-IN path follows ViGEmBus's useful pending-read principle without
 copying its target-specific implementation. Each endpoint owns a preallocated,
 sequence-checked latest-state cache. A report arriving before a Windows poll is
-retained and completed by KMDF's manual-queue ready notification; reset, purge,
-D0 exit, and device reset invalidate it behind the same admission barriers used
-by the direct producer. This removes the old lost-rendezvous window and never
-requires an extra feeder update to wake an already-posted host poll.
+retained and completed after KMDF's manual-queue ready notification crosses a
+preallocated passive work-item boundary; the notification itself can run
+synchronously on UdeCx's submitter thread and therefore never completes the URB.
+One token permits exactly one later cached completion, so the successor poll is
+left parked for the next producer instead of replaying the cache in a busy loop.
+Reset, purge, D0 exit, and device reset invalidate both the cache and token
+behind the same admission barriers used by the direct producer. This removes
+the old lost-rendezvous window and never requires an extra feeder update to wake
+the first already-posted host poll.
 `InputReportsSubmitted` counts accepted state publications and
-`InputReportsCompleted` counts host polls served from that cache, so a stable
-state may produce more completions than submissions by design.
+`InputReportsCompleted` counts host polls served from them. Multiple publications
+can coalesce into one latest state before Windows polls, but one publication can
+never manufacture multiple completions.
 
 The design and release gates are in
 `docs/architecture/native-udecx.md`. The Microsoft signing boundary is in
