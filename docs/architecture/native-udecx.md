@@ -83,6 +83,12 @@ active publishers, so a retry does not strand the current generation. Once
 ownership transfers, a terminal UdeCx removal fault restarts the controller
 and the removed generation remains closed.
 
+Dynamic endpoint cleanup leaves an address-scoped retirement tombstone for
+the current device generation. This lets the kernel acknowledge and discard
+the single latest-state input report that can cross asynchronous cleanup before
+user mode consumes the ordered purge event, without accepting reports for an
+endpoint that was never configured.
+
 The broker owner session is deliberately one-shot. Stopping the user-mode host
 cancels endpoint lanes that may already own dequeued kernel requests; those
 requests cannot be reconstructed safely in a restarted goroutine. VIIPER must

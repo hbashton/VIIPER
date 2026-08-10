@@ -137,6 +137,7 @@ typedef struct VIIPER_UDE_DEVICE_CONTEXT {
     volatile LONG OwnerReferenced;
     UDECXUSBENDPOINT DefaultEndpoint;
     UDECXUSBENDPOINT Endpoints[256];
+    BOOLEAN RetiredEndpoints[256];
     volatile LONG64 EndpointSequences[256];
 } VIIPER_UDE_DEVICE_CONTEXT;
 

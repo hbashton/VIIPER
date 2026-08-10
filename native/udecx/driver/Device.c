@@ -705,6 +705,12 @@ ViiperEvtEndpointCleanup(
     WdfWaitLockAcquire(controllerContext->DeviceLock, NULL);
     if (deviceContext->Endpoints[address] == endpoint) {
         deviceContext->Endpoints[address] = WDF_NO_HANDLE;
+        // The user-mode latest-state publisher is stopped by the ordered
+        // endpoint-purge notification. It can race this asynchronous object
+        // cleanup by one already-built report. Preserve an address-scoped
+        // tombstone so that report is distinguishable from a report for an
+        // endpoint that never existed in this device generation.
+        deviceContext->RetiredEndpoints[address] = TRUE;
     }
     WdfWaitLockRelease(controllerContext->DeviceLock);
 }
@@ -778,6 +784,7 @@ ViiperEvtEndpointAdd(
             ViiperGetControllerContext(deviceContext->Controller);
         WdfWaitLockAcquire(controllerContext->DeviceLock, NULL);
         deviceContext->Endpoints[descriptor.bEndpointAddress] = endpoint;
+        deviceContext->RetiredEndpoints[descriptor.bEndpointAddress] = FALSE;
         WdfWaitLockRelease(controllerContext->DeviceLock);
     }
     return STATUS_SUCCESS;
@@ -897,6 +904,8 @@ ViiperSubmitInputReport(
         endpoint = deviceContext->Endpoints[input->EndpointAddress];
         if (endpoint != WDF_NO_HANDLE) {
             WdfObjectReference(endpoint);
+        } else if (deviceContext->RetiredEndpoints[input->EndpointAddress]) {
+            lifecycleDrop = TRUE;
         }
         break;
     }
