@@ -661,6 +661,27 @@ ViiperGetTransferMdl(
     }
 }
 
+ULONG
+ViiperGetTransferBufferLength(
+    _In_ PURB Urb
+    )
+{
+    switch (Urb->UrbHeader.Function) {
+    case URB_FUNCTION_BULK_OR_INTERRUPT_TRANSFER:
+    case URB_FUNCTION_BULK_OR_INTERRUPT_TRANSFER_USING_CHAINED_MDL:
+        return Urb->UrbBulkOrInterruptTransfer.TransferBufferLength;
+    case URB_FUNCTION_ISOCH_TRANSFER:
+    case URB_FUNCTION_ISOCH_TRANSFER_USING_CHAINED_MDL:
+        return Urb->UrbIsochronousTransfer.TransferBufferLength;
+    case URB_FUNCTION_CONTROL_TRANSFER:
+        return Urb->UrbControlTransfer.TransferBufferLength;
+    case URB_FUNCTION_CONTROL_TRANSFER_EX:
+        return Urb->UrbControlTransferEx.TransferBufferLength;
+    default:
+        return 0;
+    }
+}
+
 NTSTATUS
 ViiperCopyTransferBuffer(
     _In_ WDFREQUEST Request,
@@ -672,6 +693,7 @@ ViiperCopyTransferBuffer(
 {
     UCHAR *contiguous = NULL;
     ULONG contiguousLength = 0;
+    ULONG transferBufferLength;
     PMDL mdl;
     ULONG copied = 0;
     NTSTATUS status;
@@ -680,8 +702,16 @@ ViiperCopyTransferBuffer(
         return STATUS_SUCCESS;
     }
 
+    transferBufferLength = ViiperGetTransferBufferLength(Urb);
+    if (Length > transferBufferLength) {
+        return STATUS_BUFFER_TOO_SMALL;
+    }
+
     status = UdecxUrbRetrieveBuffer(Request, &contiguous, &contiguousLength);
-    if (NT_SUCCESS(status) && contiguous != NULL && contiguousLength >= Length) {
+    if (NT_SUCCESS(status) && contiguous != NULL) {
+        // UdeCx can report a mapped span smaller than the URB's declared
+        // TransferBufferLength.  The URB field is the authoritative transfer
+        // capacity for this request; usbip-win2 follows the same rule.
         if (ToUrb) {
             RtlCopyMemory(contiguous, Buffer, Length);
         } else {
