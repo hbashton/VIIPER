@@ -2,7 +2,12 @@
 
 package udecx
 
-import "testing"
+import (
+	"testing"
+	"time"
+
+	"golang.org/x/sys/windows"
+)
 
 func TestIOCTLCodesMatchPackedHeader(t *testing.T) {
 	wants := map[string]struct{ got, want uint32 }{
@@ -25,5 +30,39 @@ func TestParseMultiSZ(t *testing.T) {
 	got := parseMultiSZ(raw)
 	if len(got) != 2 || got[0] != "ab" || got[1] != "c" {
 		t.Fatalf("parseMultiSZ=%q", got)
+	}
+}
+
+func TestCompletionPortRoutesExactOverlappedRequest(t *testing.T) {
+	port, err := windows.CreateIoCompletionPort(windows.InvalidHandle, 0, 0, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &Client{completionPort: port, pumpDone: make(chan struct{})}
+	go client.runCompletionPort()
+
+	request := &ioRequest{done: make(chan ioCompletion, 1)}
+	if err := windows.PostQueuedCompletionStatus(port, 547, 0, &request.overlapped); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case completion := <-request.done:
+		if completion.err != nil || completion.transferred != 547 {
+			t.Fatalf("completion=%+v want 547 successful bytes", completion)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("completion pump did not route the exact OVERLAPPED request")
+	}
+
+	if err := windows.PostQueuedCompletionStatus(port, 0, completionPortCloseKey, nil); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-client.pumpDone:
+	case <-time.After(time.Second):
+		t.Fatal("completion pump did not stop on its sentinel")
+	}
+	if err := windows.CloseHandle(port); err != nil {
+		t.Fatal(err)
 	}
 }
