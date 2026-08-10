@@ -8,8 +8,10 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"log/slog"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf16"
 	"unsafe"
@@ -44,6 +46,10 @@ const (
 	nativeAcquisitionAttempts      = 20
 	nativeAcquisitionRetryInterval = 100 * time.Millisecond
 	nativeBrokerShareMode          = 0
+	// Context expiry requests cancellation; it cannot safely bound completion.
+	// Surface a stuck driver promptly without releasing memory still owned by
+	// the Windows I/O manager.
+	cancellationWatchdogInterval = 5 * time.Second
 )
 
 // AcquisitionErrorKind identifies the only two controller-open failures that
@@ -121,6 +127,7 @@ type Client struct {
 	closeErr       error
 	requestPool    sync.Pool
 	completionPool sync.Pool
+	slowCancels    atomic.Uint64
 	// Windows suppresses IOCP packets only for operations that return success
 	// inline. Pending operations still use the shared completion pump. This
 	// removes a scheduler/channel round trip from direct input without changing
@@ -138,11 +145,24 @@ type Client struct {
 	// real overlapped kernel request for DeviceIoControl. Production clients
 	// leave it nil and always issue the native UDE IOCTL below.
 	overlappedIssuer func(windows.Handle, *windows.Overlapped) (uint32, error)
+	// These seams let the Windows IOCP harness deterministically model a driver
+	// that accepts cancellation but delays completion. Production clients use
+	// CancelIoEx and a real timer and leave the observer nil.
+	cancelIssuer             func(windows.Handle, *windows.Overlapped) error
+	cancellationWatchdog     func() (<-chan time.Time, func())
+	slowCancellationObserver func(code uint32, elapsed time.Duration, count uint64)
 }
 
 type ioCompletion struct {
 	transferred uint32
 	err         error
+}
+
+// CancellationTelemetry reports client-side cancellation acknowledgements
+// that exceeded the watchdog interval. It is deliberately outside the ABI
+// 1.8 Stats message, so observing a sick driver does not alter the wire format.
+type CancellationTelemetry struct {
+	SlowAcknowledgements uint64
 }
 
 // overlapped must remain the first field. Windows returns the exact pointer
@@ -442,6 +462,39 @@ func completionAfterPumpStop(handle windows.Handle, request *ioRequest) ioComple
 	return ioCompletion{transferred: transferred, err: err}
 }
 
+func (c *Client) cancelOverlapped(handle windows.Handle, request *ioRequest) error {
+	if c.cancelIssuer != nil {
+		return c.cancelIssuer(handle, &request.overlapped)
+	}
+	return windows.CancelIoEx(handle, &request.overlapped)
+}
+
+func (c *Client) startCancellationWatchdog() (<-chan time.Time, func()) {
+	if c.cancellationWatchdog != nil {
+		return c.cancellationWatchdog()
+	}
+	timer := time.NewTimer(cancellationWatchdogInterval)
+	return timer.C, func() { timer.Stop() }
+}
+
+func (c *Client) recordSlowCancellation(code uint32, elapsed time.Duration) {
+	count := c.slowCancels.Add(1)
+	if c.slowCancellationObserver != nil {
+		c.slowCancellationObserver(code, elapsed, count)
+		return
+	}
+	slog.Warn(
+		"native UDE driver has not acknowledged overlapped I/O cancellation",
+		"ioctl", fmt.Sprintf("%#x", code),
+		"elapsed", elapsed.Round(time.Millisecond),
+		"slow_cancellations", count,
+	)
+}
+
+func (c *Client) CancellationTelemetry() CancellationTelemetry {
+	return CancellationTelemetry{SlowAcknowledgements: c.slowCancels.Load()}
+}
+
 func (c *Client) Capabilities() Capabilities {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -695,13 +748,31 @@ func (c *Client) ioctl(ctx context.Context, code uint32, input, output []byte) (
 	case result := <-request.done:
 		return result.transferred, result.err
 	case <-ctx.Done():
-		_ = windows.CancelIoEx(handle, &request.overlapped)
-		select {
-		case result := <-request.done:
-			return completionAfterCancel(result, ctx.Err())
-		case <-c.pumpDone:
-			result := completionAfterPumpStop(handle, request)
-			return completionAfterCancel(result, errors.Join(ctx.Err(), c.completionPumpError()))
+		contextErr := ctx.Err()
+		cancelStarted := time.Now()
+		_ = c.cancelOverlapped(handle, request)
+		watchdog, stopWatchdog := c.startCancellationWatchdog()
+		defer stopWatchdog()
+
+		// CancelIoEx only marks the operation for cancellation and explicitly
+		// forbids freeing or reusing OVERLAPPED until the final completion:
+		// https://learn.microsoft.com/windows/win32/api/ioapiset/nf-ioapiset-cancelioex
+		// DeviceIoControl also still owns input/output buffers. A hard return here
+		// would therefore permit both use-after-return and pooled OVERLAPPED reuse.
+		// Lifecycle mutations may also complete successfully after cancellation,
+		// so wait for and preserve the authoritative kernel outcome. The watchdog
+		// makes a broken cancellation path observable without violating lifetime.
+		for {
+			select {
+			case result := <-request.done:
+				return completionAfterCancel(result, contextErr)
+			case <-c.pumpDone:
+				result := completionAfterPumpStop(handle, request)
+				return completionAfterCancel(result, errors.Join(contextErr, c.completionPumpError()))
+			case <-watchdog:
+				c.recordSlowCancellation(code, time.Since(cancelStarted))
+				watchdog = nil
+			}
 		}
 	case <-c.pumpDone:
 		result := completionAfterPumpStop(handle, request)

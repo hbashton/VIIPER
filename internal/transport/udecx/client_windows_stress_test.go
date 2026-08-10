@@ -187,6 +187,9 @@ func TestWindowsClientIOCPStress(t *testing.T) {
 		if !reused {
 			t.Fatal("stress loop did not reuse an OVERLAPPED request")
 		}
+		if got := harness.client.CancellationTelemetry().SlowAcknowledgements; got != 0 {
+			t.Fatalf("prompt cancellation emitted %d slow acknowledgements", got)
+		}
 
 		result := harness.listen(context.Background())
 		harness.waitPending(result)
@@ -194,6 +197,71 @@ func TestWindowsClientIOCPStress(t *testing.T) {
 		completed := harness.waitResult(result)
 		if completed.err != nil || completed.written != 0 {
 			t.Fatalf("completion after cancellation stress = (%d, %v), want success", completed.written, completed.err)
+		}
+		if err := windows.CloseHandle(peer); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("stalled cancellation keeps request live and emits watchdog telemetry", func(t *testing.T) {
+		harness := newPipeIOCPHarness(t, "")
+		cancelAttempted := make(chan struct{}, 1)
+		watchdog := make(chan time.Time, 1)
+		type observation struct {
+			code    uint32
+			elapsed time.Duration
+			count   uint64
+		}
+		observed := make(chan observation, 1)
+		harness.client.cancelIssuer = func(windows.Handle, *windows.Overlapped) error {
+			cancelAttempted <- struct{}{}
+			// Model a driver that accepts the request but has not completed the
+			// IRP yet. The named-pipe OVERLAPPED remains genuinely pending.
+			return nil
+		}
+		harness.client.cancellationWatchdog = func() (<-chan time.Time, func()) {
+			return watchdog, func() {}
+		}
+		harness.client.slowCancellationObserver = func(code uint32, elapsed time.Duration, count uint64) {
+			observed <- observation{code: code, elapsed: elapsed, count: count}
+		}
+
+		deadline := newControlledDeadline()
+		result := harness.listen(deadline)
+		request := harness.waitPending(result)
+		deadline.expire()
+		select {
+		case <-cancelAttempted:
+		case <-time.After(5 * time.Second):
+			t.Fatal("client did not attempt targeted cancellation")
+		}
+		watchdog <- time.Now()
+		select {
+		case event := <-observed:
+			if event.code != 0 || event.elapsed < 0 || event.count != 1 {
+				t.Fatalf("slow-cancellation observation=%+v", event)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("stalled cancellation did not emit watchdog telemetry")
+		}
+		if got := harness.client.CancellationTelemetry().SlowAcknowledgements; got != 1 {
+			t.Fatalf("slow cancellation telemetry=%d want=1", got)
+		}
+		select {
+		case completed := <-result:
+			t.Fatalf("deadline returned before OVERLAPPED completion: (%d, %v)", completed.written, completed.err)
+		default:
+		}
+
+		peer := harness.connect()
+		completed := harness.waitResult(result)
+		if completed.err != nil || completed.written != 0 {
+			t.Fatalf("completion after delayed cancellation = (%d, %v), want kernel success", completed.written, completed.err)
+		}
+		select {
+		case stale := <-request.done:
+			t.Fatalf("delayed cancellation left stale completion %+v", stale)
+		default:
 		}
 		if err := windows.CloseHandle(peer); err != nil {
 			t.Fatal(err)
