@@ -92,7 +92,7 @@ func TestCompletionPortRoutesExactOverlappedRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 	client := &Client{completionPort: port, pumpDone: make(chan struct{})}
-	go client.runCompletionPort()
+	go client.runCompletionPort(port)
 
 	request := &ioRequest{done: make(chan ioCompletion, 1)}
 	if err := windows.PostQueuedCompletionStatus(port, 547, 0, &request.overlapped); err != nil {

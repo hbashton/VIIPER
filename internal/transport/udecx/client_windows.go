@@ -117,7 +117,7 @@ func Open(ctx context.Context) (*Client, error) {
 	client.requestPool.New = func() any {
 		return &ioRequest{done: make(chan ioCompletion, 1)}
 	}
-	go client.runCompletionPort()
+	go client.runCompletionPort(completionPort)
 	if err = client.negotiate(ctx); err != nil {
 		_ = client.Close()
 		return nil, err
@@ -152,14 +152,14 @@ func (c *Client) Close() error {
 	return errors.Join(windows.CloseHandle(handle), windows.CloseHandle(completionPort))
 }
 
-func (c *Client) runCompletionPort() {
+func (c *Client) runCompletionPort(completionPort windows.Handle) {
 	defer close(c.pumpDone)
 	for {
 		var transferred uint32
 		var key uintptr
 		var overlapped *windows.Overlapped
 		err := windows.GetQueuedCompletionStatus(
-			c.completionPort, &transferred, &key, &overlapped, windows.INFINITE)
+			completionPort, &transferred, &key, &overlapped, windows.INFINITE)
 		if overlapped == nil {
 			if key == completionPortCloseKey {
 				return
