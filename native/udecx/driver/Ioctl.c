@@ -84,7 +84,9 @@ ViiperHandleNegotiate(
     output->Header.Size = sizeof(*output);
     output->ClientNonce = fileContext->ClientNonce;
     output->DriverNonce = fileContext->DriverNonce;
-    output->Capabilities = VIIPER_UDE_CAP_ISOCHRONOUS | VIIPER_UDE_CAP_DEVICE_LIFECYCLE;
+    output->Capabilities = VIIPER_UDE_CAP_ISOCHRONOUS |
+        VIIPER_UDE_CAP_DEVICE_LIFECYCLE |
+        VIIPER_UDE_CAP_INPUT_REPORTS;
     output->MaxDevices = VIIPER_UDE_MAX_DEVICES;
     output->MaxDescriptorBytes = VIIPER_UDE_MAX_DESCRIPTOR_BYTES;
     output->MaxTransferBytes = VIIPER_UDE_MAX_TRANSFER_BYTES;
@@ -143,6 +145,10 @@ ViiperHandleQueryStats(
     output->PendingOperations = (ULONG)InterlockedCompareExchange(&context->PendingOperations, 0, 0);
     output->WaitingDequeues = (ULONG)InterlockedCompareExchange(&context->WaitingDequeueCount, 0, 0);
     output->CleanupRetries = (ULONG)InterlockedCompareExchange(&context->CleanupRetries, 0, 0);
+    output->InputReportsSubmitted =
+        (ULONGLONG)ViiperReadCounter(&context->InputReportsSubmitted);
+    output->InputReportsCompleted =
+        (ULONGLONG)ViiperReadCounter(&context->InputReportsCompleted);
     WdfRequestSetInformation(Request, sizeof(*output));
     return STATUS_SUCCESS;
 }
@@ -179,6 +185,9 @@ ViiperEvtIoDeviceControl(
         break;
     case IOCTL_VIIPER_UDE_COMPLETE_OPERATION:
         status = ViiperCompleteOperation(Queue, Request);
+        break;
+    case IOCTL_VIIPER_UDE_SUBMIT_INPUT_REPORT:
+        status = ViiperSubmitInputReport(Queue, Request);
         break;
     default:
         status = UdecxWdfDeviceTryHandleUserIoctl(WdfIoQueueGetDevice(Queue), Request)

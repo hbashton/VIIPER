@@ -16,6 +16,7 @@
 #pragma alloc_text(PAGE, ViiperEvtEndpointAdd)
 #pragma alloc_text(PAGE, ViiperEvtDefaultEndpointAdd)
 #pragma alloc_text(PAGE, ViiperEvtVirtualDeviceCleanup)
+#pragma alloc_text(PAGE, ViiperEvtEndpointCleanup)
 #endif
 
 static
@@ -622,7 +623,9 @@ ViiperCreateEndpointQueue(
 
     WDF_IO_QUEUE_CONFIG_INIT(&queueConfig, DispatchType);
     queueConfig.PowerManaged = WdfFalse;
-    queueConfig.EvtIoInternalDeviceControl = ViiperEvtEndpointIoInternalControl;
+    if (DispatchType != WdfIoQueueDispatchManual) {
+        queueConfig.EvtIoInternalDeviceControl = ViiperEvtEndpointIoInternalControl;
+    }
     WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&attributes, UDECXUSBENDPOINT);
     attributes.ParentObject = Endpoint;
     attributes.ExecutionLevel = WdfExecutionLevelPassive;
@@ -634,6 +637,34 @@ ViiperCreateEndpointQueue(
     *queueEndpoint = Endpoint;
     UdecxUsbEndpointSetWdfIoQueue(Endpoint, endpointContext->Queue);
     return STATUS_SUCCESS;
+}
+
+VOID
+ViiperEvtEndpointCleanup(
+    _In_ WDFOBJECT EndpointObject
+    )
+{
+    UDECXUSBENDPOINT endpoint = (UDECXUSBENDPOINT)EndpointObject;
+    VIIPER_UDE_ENDPOINT_CONTEXT *endpointContext = ViiperGetEndpointContext(endpoint);
+    VIIPER_UDE_DEVICE_CONTEXT *deviceContext;
+    VIIPER_UDE_CONTROLLER_CONTEXT *controllerContext;
+    UCHAR address;
+
+    PAGED_CODE();
+    if (endpointContext->Device == WDF_NO_HANDLE) {
+        return;
+    }
+    deviceContext = ViiperGetDeviceContext(endpointContext->Device);
+    if (deviceContext->Controller == WDF_NO_HANDLE) {
+        return;
+    }
+    controllerContext = ViiperGetControllerContext(deviceContext->Controller);
+    address = endpointContext->Descriptor.bEndpointAddress;
+    WdfWaitLockAcquire(controllerContext->DeviceLock, NULL);
+    if (deviceContext->Endpoints[address] == endpoint) {
+        deviceContext->Endpoints[address] = WDF_NO_HANDLE;
+    }
+    WdfWaitLockRelease(controllerContext->DeviceLock);
 }
 
 NTSTATUS
@@ -668,6 +699,8 @@ ViiperEvtEndpointAdd(
 
     WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&attributes, VIIPER_UDE_ENDPOINT_CONTEXT);
     attributes.ParentObject = Device;
+    attributes.EvtCleanupCallback = ViiperEvtEndpointCleanup;
+    attributes.ExecutionLevel = WdfExecutionLevelPassive;
     status = UdecxUsbEndpointCreate(&EndpointData->UdecxUsbEndpointInit, &attributes, &endpoint);
     if (!NT_SUCCESS(status)) {
         return status;
@@ -679,10 +712,27 @@ ViiperEvtEndpointAdd(
     if (descriptor.bEndpointAddress == 0) {
         ViiperGetDeviceContext(Device)->DefaultEndpoint = endpoint;
         dispatchType = WdfIoQueueDispatchSequential;
+    } else if ((descriptor.bEndpointAddress & USB_ENDPOINT_DIRECTION_MASK) != 0 &&
+        (descriptor.bmAttributes & USB_ENDPOINT_TYPE_MASK) == USB_ENDPOINT_TYPE_INTERRUPT) {
+        endpointContext->FastInput = TRUE;
+        dispatchType = WdfIoQueueDispatchManual;
     } else {
         dispatchType = WdfIoQueueDispatchParallel;
     }
-    return ViiperCreateEndpointQueue(endpoint, dispatchType);
+    status = ViiperCreateEndpointQueue(endpoint, dispatchType);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+
+    {
+        VIIPER_UDE_DEVICE_CONTEXT *deviceContext = ViiperGetDeviceContext(Device);
+        VIIPER_UDE_CONTROLLER_CONTEXT *controllerContext =
+            ViiperGetControllerContext(deviceContext->Controller);
+        WdfWaitLockAcquire(controllerContext->DeviceLock, NULL);
+        deviceContext->Endpoints[descriptor.bEndpointAddress] = endpoint;
+        WdfWaitLockRelease(controllerContext->DeviceLock);
+    }
+    return STATUS_SUCCESS;
 }
 
 NTSTATUS
@@ -697,6 +747,160 @@ ViiperEvtDefaultEndpointAdd(
     RtlZeroMemory(&endpointData, sizeof(endpointData));
     endpointData.UdecxUsbEndpointInit = EndpointInit;
     return ViiperEvtEndpointAdd(Device, &endpointData);
+}
+
+static
+VOID
+ViiperCompleteRetrievedInputUrb(
+    _In_ WDFREQUEST Request,
+    _In_ NTSTATUS Status
+    )
+{
+    KIRQL previousIrql = KeGetCurrentIrql();
+    BOOLEAN raised = previousIrql < DISPATCH_LEVEL;
+
+    // The URB was parked in a manual queue and is therefore completed from a
+    // different call path than UdeCx's submit callback. Match usbip-win2's
+    // documented compatibility pattern without allocating a DPC per report.
+    if (raised) {
+        KeRaiseIrql(DISPATCH_LEVEL, &previousIrql);
+    }
+    if (NT_SUCCESS(Status)) {
+        UdecxUrbComplete(Request, USBD_STATUS_SUCCESS);
+    } else {
+        UdecxUrbCompleteWithNtStatus(Request, Status);
+    }
+    if (raised) {
+        KeLowerIrql(previousIrql);
+    }
+}
+
+NTSTATUS
+ViiperSubmitInputReport(
+    _In_ WDFQUEUE Queue,
+    _In_ WDFREQUEST Request
+    )
+{
+    WDFDEVICE controller = WdfIoQueueGetDevice(Queue);
+    VIIPER_UDE_CONTROLLER_CONTEXT *controllerContext = ViiperGetControllerContext(controller);
+    VIIPER_UDE_INPUT_REPORT *input;
+    UCHAR *payload;
+    size_t inputLength;
+    size_t payloadLength;
+    WDFFILEOBJECT ownerFile;
+    UDECXUSBENDPOINT endpoint = WDF_NO_HANDLE;
+    VIIPER_UDE_ENDPOINT_CONTEXT *endpointContext;
+    WDFREQUEST urbRequest = WDF_NO_HANDLE;
+    PURB urb;
+    ULONG transferLength;
+    ULONG index;
+    NTSTATUS status;
+
+    status = ViiperValidateBrokerOwner(controller, Request);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+    ownerFile = WdfRequestGetFileObject(Request);
+    status = WdfRequestRetrieveInputBuffer(
+        Request, sizeof(*input), (PVOID *)&input, &inputLength);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+    status = WdfRequestRetrieveOutputBuffer(
+        Request, 1, (PVOID *)&payload, &payloadLength);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+    if (inputLength != sizeof(*input) ||
+        input->Header.Magic != VIIPER_UDE_MAGIC ||
+        input->Header.Major != VIIPER_UDE_ABI_MAJOR ||
+        input->Header.Minor != VIIPER_UDE_ABI_MINOR ||
+        input->Header.Size != sizeof(*input) + input->PayloadLength ||
+        input->DeviceId == 0 || input->Generation == 0 || input->Sequence == 0 ||
+        input->Sequence > MAXLONGLONG ||
+        (input->EndpointAddress & USB_ENDPOINT_DIRECTION_MASK) == 0 ||
+        input->PayloadOffset != sizeof(*input) || input->PayloadLength == 0 ||
+        input->PayloadLength > VIIPER_UDE_MAX_INPUT_REPORT_BYTES ||
+        payloadLength != input->PayloadLength ||
+        input->Reserved1[0] != 0 || input->Reserved1[1] != 0 || input->Reserved1[2] != 0) {
+        InterlockedIncrement64(&controllerContext->InvalidMessages);
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    WdfWaitLockAcquire(controllerContext->DeviceLock, NULL);
+    for (index = 0; index < VIIPER_UDE_MAX_DEVICES; ++index) {
+        UDECXUSBDEVICE device = controllerContext->Devices[index];
+        VIIPER_UDE_DEVICE_CONTEXT *deviceContext;
+        if (device == WDF_NO_HANDLE) {
+            continue;
+        }
+        deviceContext = ViiperGetDeviceContext(device);
+        if (deviceContext->OwnerFile != ownerFile ||
+            deviceContext->DeviceId != input->DeviceId ||
+            deviceContext->Generation != input->Generation ||
+            InterlockedCompareExchange(&deviceContext->Purging, 0, 0) != 0) {
+            continue;
+        }
+        endpoint = deviceContext->Endpoints[input->EndpointAddress];
+        if (endpoint != WDF_NO_HANDLE) {
+            WdfObjectReference(endpoint);
+        }
+        break;
+    }
+    WdfWaitLockRelease(controllerContext->DeviceLock);
+    if (endpoint == WDF_NO_HANDLE) {
+        return STATUS_NOT_FOUND;
+    }
+
+    endpointContext = ViiperGetEndpointContext(endpoint);
+    if (!endpointContext->FastInput ||
+        InterlockedCompareExchange(&endpointContext->Purging, 0, 0) != 0 ||
+        input->Sequence <= (ULONGLONG)InterlockedCompareExchange64(
+            &endpointContext->LastInputSequence, 0, 0)) {
+        WdfObjectDereference(endpoint);
+        return STATUS_INVALID_DEVICE_STATE;
+    }
+
+    InterlockedIncrement64(&controllerContext->InputReportsSubmitted);
+    status = WdfIoQueueRetrieveNextRequest(endpointContext->Queue, &urbRequest);
+    if (!NT_SUCCESS(status)) {
+        WdfObjectDereference(endpoint);
+        // A producer update is allowed to arrive before Windows posts its
+        // next interrupt poll. This is normal latest-state coalescing, not a
+        // session fault; the following report services the following poll.
+        return status == STATUS_NO_MORE_ENTRIES ? STATUS_SUCCESS : status;
+    }
+    urb = ViiperGetUrb(urbRequest);
+    if (urb == NULL ||
+        (urb->UrbHeader.Function != URB_FUNCTION_BULK_OR_INTERRUPT_TRANSFER &&
+            urb->UrbHeader.Function != URB_FUNCTION_BULK_OR_INTERRUPT_TRANSFER_USING_CHAINED_MDL) ||
+        (urb->UrbBulkOrInterruptTransfer.TransferFlags & USBD_TRANSFER_DIRECTION_IN) == 0) {
+        ViiperCompleteRetrievedInputUrb(urbRequest, STATUS_INVALID_DEVICE_REQUEST);
+        WdfObjectDereference(endpoint);
+        return STATUS_INVALID_DEVICE_REQUEST;
+    }
+    transferLength = urb->UrbBulkOrInterruptTransfer.TransferBufferLength;
+    if (input->PayloadLength > transferLength) {
+        ViiperCompleteRetrievedInputUrb(urbRequest, STATUS_BUFFER_TOO_SMALL);
+        WdfObjectDereference(endpoint);
+        return STATUS_BUFFER_TOO_SMALL;
+    }
+    status = ViiperCopyTransferBuffer(
+        urbRequest, urb, payload, input->PayloadLength, TRUE);
+    if (!NT_SUCCESS(status)) {
+        ViiperCompleteRetrievedInputUrb(urbRequest, status);
+        WdfObjectDereference(endpoint);
+        return status;
+    }
+
+    urb->UrbBulkOrInterruptTransfer.TransferBufferLength = input->PayloadLength;
+    UdecxUrbSetBytesCompleted(urbRequest, input->PayloadLength);
+    InterlockedExchange64(&endpointContext->LastInputSequence, (LONG64)input->Sequence);
+    InterlockedAdd64(&controllerContext->BytesFromDevice, input->PayloadLength);
+    InterlockedIncrement64(&controllerContext->InputReportsCompleted);
+    ViiperCompleteRetrievedInputUrb(urbRequest, STATUS_SUCCESS);
+    WdfObjectDereference(endpoint);
+    return STATUS_SUCCESS;
 }
 
 VOID

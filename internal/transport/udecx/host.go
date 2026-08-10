@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Alia5/VIIPER/usb"
+	"github.com/Alia5/VIIPER/usbip"
 )
 
 const (
@@ -29,6 +30,13 @@ type Driver interface {
 	QueryStats(context.Context) (Stats, error)
 }
 
+// InputReportDriver is an optional, version-negotiated extension used only
+// for interrupt-IN reports. Keeping it separate preserves the ordered broker
+// contract for control, output, feedback, audio, and lifecycle traffic.
+type InputReportDriver interface {
+	SubmitInputReport(context.Context, InputReport) error
+}
+
 // OperationProcessor translates one native USB operation through VIIPER's
 // existing usb.Device engines. Implementations must not retain operation
 // payload slices after Process returns.
@@ -39,11 +47,22 @@ type OperationProcessor interface {
 }
 
 type registeredDevice struct {
-	identity DeviceIdentity
-	device   usb.Device
-	ctx      context.Context
+	identity          DeviceIdentity
+	device            usb.Device
+	ctx               context.Context
+	cancel            context.CancelFunc
+	stopping          bool
+	publisherStopping bool
+	fastInput         map[uint8]struct{}
+	publishers        map[uint8]*inputPublisher
+	activeInput       map[uint8]bool
+	inputSequences    map[uint8]uint64
+}
+
+type inputPublisher struct {
+	endpoint uint8
 	cancel   context.CancelFunc
-	stopping bool
+	done     chan struct{}
 }
 
 type laneKey struct {
@@ -74,6 +93,7 @@ type operationState struct {
 // across endpoints while preserving strict FIFO within each endpoint.
 type Host struct {
 	driver    Driver
+	input     InputReportDriver
 	processor OperationProcessor
 	workers   int
 
@@ -99,13 +119,30 @@ func NewHost(driver Driver, processor OperationProcessor, workers int) (*Host, e
 	if workers <= 0 {
 		workers = defaultDequeueWorkers
 	}
-	return &Host{
+	host := &Host{
 		driver: driver, processor: processor, workers: workers,
 		devices:     make(map[uint64]*registeredDevice),
 		generations: make(map[uint64]uint32),
 		lanes:       make(map[laneKey]*operationLane),
 		operations:  make(map[uint64]*operationState),
-	}, nil
+	}
+	host.input, _ = driver.(InputReportDriver)
+	return host, nil
+}
+
+func fastInputEndpoints(dev usb.Device) map[uint8]struct{} {
+	result := make(map[uint8]struct{})
+	if dev == nil || dev.GetDescriptor() == nil {
+		return result
+	}
+	for _, iface := range dev.GetDescriptor().Interfaces {
+		for _, endpoint := range iface.Endpoints {
+			if endpoint.BEndpointAddress&0x80 != 0 && endpoint.BMAttributes&0x03 == 0x03 {
+				result[endpoint.BEndpointAddress] = struct{}{}
+			}
+		}
+	}
+	return result
 }
 
 // Register publishes a USB device using a fresh generation. The routing entry
@@ -129,7 +166,11 @@ func (h *Host) Register(ctx context.Context, deviceID uint64, dev usb.Device) (D
 	}
 	identity := DeviceIdentity{DeviceID: deviceID, Generation: generation}
 	deviceCtx, cancel := context.WithCancel(context.Background())
-	entry := &registeredDevice{identity: identity, device: dev, ctx: deviceCtx, cancel: cancel}
+	entry := &registeredDevice{
+		identity: identity, device: dev, ctx: deviceCtx, cancel: cancel,
+		fastInput: fastInputEndpoints(dev), publishers: make(map[uint8]*inputPublisher),
+		activeInput: make(map[uint8]bool), inputSequences: make(map[uint8]uint64),
+	}
 	h.devices[deviceID] = entry
 	h.generations[deviceID] = generation
 	h.mu.Unlock()
@@ -163,10 +204,22 @@ func (h *Host) Unregister(ctx context.Context, identity DeviceIdentity) error {
 	}
 	h.mu.RUnlock()
 
+	h.mu.Lock()
+	entry.publisherStopping = true
+	h.mu.Unlock()
+	activePublishers := h.activeInputEndpoints(entry)
+	h.stopAllInputPublishers(entry)
+
 	// Keep routing live until the driver has transactionally unplugged the
 	// child. If unplug fails, callers can retry without losing the generation,
 	// endpoint lanes, or the ability to complete already-issued Windows URBs.
 	if err := h.driver.DestroyDevice(ctx, identity); err != nil {
+		h.mu.Lock()
+		entry.publisherStopping = false
+		h.mu.Unlock()
+		for _, endpoint := range activePublishers {
+			h.startInputPublisher(entry, endpoint)
+		}
 		return err
 	}
 
@@ -211,6 +264,104 @@ func (h *Host) Unregister(ctx context.Context, identity DeviceIdentity) error {
 	return nil
 }
 
+func (h *Host) startInputPublisher(entry *registeredDevice, endpoint uint8) {
+	if h.input == nil {
+		return
+	}
+	h.mu.Lock()
+	if !h.running || entry.stopping || entry.publisherStopping || h.devices[entry.identity.DeviceID] != entry {
+		h.mu.Unlock()
+		return
+	}
+	if _, fast := entry.fastInput[endpoint]; !fast || entry.publishers[endpoint] != nil {
+		h.mu.Unlock()
+		return
+	}
+	ctx, cancel := context.WithCancel(entry.ctx)
+	publisher := &inputPublisher{endpoint: endpoint, cancel: cancel, done: make(chan struct{})}
+	entry.publishers[endpoint] = publisher
+	h.mu.Unlock()
+
+	go h.runInputPublisher(ctx, entry, publisher)
+}
+
+func (h *Host) stopInputPublisher(entry *registeredDevice, endpoint uint8) bool {
+	h.mu.Lock()
+	publisher := entry.publishers[endpoint]
+	if publisher != nil {
+		delete(entry.publishers, endpoint)
+		publisher.cancel()
+	}
+	h.mu.Unlock()
+	if publisher == nil {
+		return false
+	}
+	<-publisher.done
+	return true
+}
+
+func (h *Host) stopAllInputPublishers(entry *registeredDevice) []uint8 {
+	h.mu.RLock()
+	endpoints := make([]uint8, 0, len(entry.publishers))
+	for endpoint := range entry.publishers {
+		endpoints = append(endpoints, endpoint)
+	}
+	h.mu.RUnlock()
+	for _, endpoint := range endpoints {
+		h.stopInputPublisher(entry, endpoint)
+	}
+	return endpoints
+}
+
+func (h *Host) activeInputEndpoints(entry *registeredDevice) []uint8 {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	endpoints := make([]uint8, 0, len(entry.activeInput))
+	for endpoint, active := range entry.activeInput {
+		if active {
+			endpoints = append(endpoints, endpoint)
+		}
+	}
+	return endpoints
+}
+
+func (h *Host) runInputPublisher(ctx context.Context, entry *registeredDevice, publisher *inputPublisher) {
+	defer close(publisher.done)
+	var sequence uint64
+	for {
+		payload := entry.device.HandleTransfer(
+			ctx, uint32(publisher.endpoint&0x0f), usbip.DirIn, nil)
+		if ctx.Err() != nil {
+			return
+		}
+		if len(payload) == 0 {
+			h.reportFatal(fmt.Errorf(
+				"device %d returned an empty interrupt-IN report for endpoint 0x%02x",
+				entry.identity.DeviceID, publisher.endpoint))
+			return
+		}
+		h.mu.Lock()
+		sequence = entry.inputSequences[publisher.endpoint] + 1
+		if sequence == 0 {
+			sequence = 1
+		}
+		entry.inputSequences[publisher.endpoint] = sequence
+		h.mu.Unlock()
+		if err := h.input.SubmitInputReport(ctx, InputReport{
+			DeviceID: entry.identity.DeviceID, Generation: entry.identity.Generation,
+			EndpointAddress: publisher.endpoint, Sequence: sequence, Payload: payload,
+		}); err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			h.reportFatal(fmt.Errorf(
+				"submit native UDE input report for device %d endpoint 0x%02x: %w",
+				entry.identity.DeviceID, publisher.endpoint, err))
+			return
+		}
+	}
+}
+
 type dequeueResult struct {
 	op  Operation
 	err error
@@ -225,7 +376,16 @@ func (h *Host) Serve(ctx context.Context) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	fatal := make(chan error, 1)
 	h.runCtx, h.runCancel, h.fatal, h.running = runCtx, cancel, fatal, true
+	entries := make([]*registeredDevice, 0, len(h.devices))
+	for _, entry := range h.devices {
+		entries = append(entries, entry)
+	}
 	h.mu.Unlock()
+	for _, entry := range entries {
+		for _, endpoint := range h.activeInputEndpoints(entry) {
+			h.startInputPublisher(entry, endpoint)
+		}
+	}
 	defer func() {
 		cancel()
 		h.mu.Lock()
@@ -237,8 +397,15 @@ func (h *Host) Serve(ctx context.Context) error {
 		h.laneWG.Wait()
 		h.cancelAllOperations()
 		h.mu.Lock()
+		entries = entries[:0]
+		for _, entry := range h.devices {
+			entries = append(entries, entry)
+		}
 		h.running, h.runCtx, h.runCancel, h.fatal = false, nil, nil, nil
 		h.mu.Unlock()
+		for _, entry := range entries {
+			h.stopAllInputPublishers(entry)
+		}
 	}()
 
 	results := make(chan dequeueResult, h.workers*2)
@@ -383,10 +550,30 @@ func (h *Host) runLane(lane *operationLane, entry *registeredDevice) {
 				}
 				delete(pending, expected)
 				if isLifecycleOperation(current.Kind) {
+					switch current.Kind {
+					case OperationEndpointPurge:
+						h.mu.Lock()
+						entry.activeInput[current.EndpointAddress] = false
+						h.mu.Unlock()
+						h.stopInputPublisher(entry, current.EndpointAddress)
+					case OperationDeviceD0Exit:
+						h.stopAllInputPublishers(entry)
+					}
 					if err := h.processor.Lifecycle(lane.ctx, entry.device, current); err != nil {
 						h.reportFatal(fmt.Errorf("endpoint 0x%02x lifecycle sequence %d: %w",
 							lane.key.endpoint, current.EndpointSequence, err))
 						return
+					}
+					switch current.Kind {
+					case OperationEndpointStart:
+						h.mu.Lock()
+						entry.activeInput[current.EndpointAddress] = true
+						h.mu.Unlock()
+						h.startInputPublisher(entry, current.EndpointAddress)
+					case OperationDeviceD0Entry:
+						for _, endpoint := range h.activeInputEndpoints(entry) {
+							h.startInputPublisher(entry, endpoint)
+						}
 					}
 				} else {
 					if err := h.process(lane.ctx, entry.device, current); err != nil {

@@ -22,6 +22,21 @@ type fakeHostDriver struct {
 	completeErr error
 }
 
+type fastInputDriver struct {
+	*fakeHostDriver
+	reports chan InputReport
+}
+
+func (d *fastInputDriver) SubmitInputReport(ctx context.Context, report InputReport) error {
+	report.Payload = append([]byte(nil), report.Payload...)
+	select {
+	case d.reports <- report:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 func newFakeHostDriver() *fakeHostDriver {
 	return &fakeHostDriver{
 		operations: make(chan Operation, 16), completions: make(chan Completion, 16),
@@ -140,6 +155,91 @@ func hostTestDevice() usb.Device {
 			BEndpointAddress: 0x81, BMAttributes: 3, WMaxPacketSize: 64, BInterval: 4,
 		}}}},
 	}}
+}
+
+type inputPublisherTestDevice struct {
+	descriptor usb.Descriptor
+	reports    chan []byte
+}
+
+func newInputPublisherTestDevice() *inputPublisherTestDevice {
+	base := hostTestDevice().GetDescriptor()
+	return &inputPublisherTestDevice{descriptor: *base, reports: make(chan []byte, 4)}
+}
+
+func (d *inputPublisherTestDevice) HandleTransfer(
+	ctx context.Context, _ uint32, _ uint32, _ []byte,
+) []byte {
+	select {
+	case report := <-d.reports:
+		return report
+	case <-ctx.Done():
+		return nil
+	}
+}
+
+func (d *inputPublisherTestDevice) GetDescriptor() *usb.Descriptor { return &d.descriptor }
+func (*inputPublisherTestDevice) GetDeviceSpecificArgs() map[string]any {
+	return nil
+}
+
+func TestHostPublishesInterruptInputDirectlyAfterEndpointStart(t *testing.T) {
+	driver := &fastInputDriver{fakeHostDriver: newFakeHostDriver(), reports: make(chan InputReport, 4)}
+	processor := &recordingProcessor{
+		processed: make(chan uint64, 1), lifecycle: make(chan uint64, 2),
+		resets: make(chan DeviceIdentity, 1),
+	}
+	host, err := NewHost(driver, processor, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	device := newInputPublisherTestDevice()
+	identity, err := host.Register(context.Background(), 44, device)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- host.Serve(ctx) }()
+	driver.operations <- Operation{
+		DeviceID: identity.DeviceID, Generation: identity.Generation,
+		EndpointAddress: 0x81, EndpointSequence: 1, Kind: OperationEndpointStart,
+	}
+	select {
+	case <-processor.lifecycle:
+	case <-time.After(time.Second):
+		t.Fatal("endpoint start was not processed")
+	}
+	device.reports <- []byte{1, 2, 3, 4}
+	select {
+	case report := <-driver.reports:
+		if report.DeviceID != identity.DeviceID || report.Generation != identity.Generation ||
+			report.EndpointAddress != 0x81 || report.Sequence != 1 ||
+			string(report.Payload) != string([]byte{1, 2, 3, 4}) {
+			t.Fatalf("unexpected direct input report: %+v", report)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("interrupt-IN report did not use the direct publisher")
+	}
+
+	driver.operations <- Operation{
+		DeviceID: identity.DeviceID, Generation: identity.Generation,
+		EndpointAddress: 0x81, EndpointSequence: 2, Kind: OperationEndpointPurge,
+	}
+	select {
+	case <-processor.lifecycle:
+	case <-time.After(time.Second):
+		t.Fatal("endpoint purge was not processed")
+	}
+	cancel()
+	select {
+	case err = <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("host did not stop")
+	}
 }
 
 func TestHostPreservesEndpointSequenceAcrossDequeueWorkers(t *testing.T) {

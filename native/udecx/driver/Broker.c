@@ -242,7 +242,6 @@ ViiperSlotMatches(
         Pending->State != ViiperUdePendingEmpty;
 }
 
-static
 NTSTATUS
 ViiperValidateBrokerOwner(
     _In_ WDFDEVICE Controller,
@@ -586,7 +585,6 @@ ViiperEvtUrbCancel(
     }
 }
 
-static
 PURB
 ViiperGetUrb(
     _In_ WDFREQUEST Request
@@ -620,7 +618,6 @@ ViiperGetTransferMdl(
     }
 }
 
-static
 NTSTATUS
 ViiperCopyTransferBuffer(
     _In_ WDFREQUEST Request,

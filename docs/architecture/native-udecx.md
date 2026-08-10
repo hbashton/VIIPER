@@ -64,16 +64,29 @@ The kernel driver owns only Windows USB presentation and transfer lifecycle.
 
 ## Kernel/user transport
 
-The first implementation uses a cancel-safe inverted-call model. VIIPER posts
-multiple `DEQUEUE_OPERATION` requests. When UdeCx delivers an endpoint request,
-the driver pairs it with a waiting user request and returns an immutable
-operation record. VIIPER processes it through the existing `usb.Device`
-interface and submits `COMPLETE_OPERATION`.
+The transport is intentionally split by USB semantics:
 
-This deliberately removes TCP, WSK, USB/IP framing, and attach bookkeeping
-before introducing a shared-memory optimization. Once correctness gates pass,
-high-rate media payloads may move to a preallocated ring while keeping the same
-token/generation lifecycle. Control and lifecycle operations remain IOCTL based.
+- interrupt-IN input reports use the ViGEm-style manual-queue fast path. The
+  Windows poll stays parked in the endpoint queue; one versioned
+  `SUBMIT_INPUT_REPORT` call copies the already encoded report into that URB
+  and completes it without an allocation or broker round trip;
+- control, interrupt-OUT, isochronous speaker/microphone/haptics, feedback, and
+  every lifecycle transition use the cancel-safe ordered inverted-call broker.
+  VIIPER posts multiple `DEQUEUE_OPERATION` requests, processes each immutable
+  operation through the existing `usb.Device` interface, then submits
+  `COMPLETE_OPERATION`.
+
+Input publishers start and stop from UdeCx endpoint lifecycle notifications,
+retain their sequence across a purge/start cycle, and are cancelled before
+device removal. Failed removal restores the active publishers so a retry does
+not strand the current generation.
+
+This deliberately removes TCP, WSK, USB/IP framing, and attach bookkeeping.
+The direct input lane removes the highest-frequency HID broker path without
+mixing report ownership into the proven PlayStation media/state transport.
+Once correctness gates pass, high-rate media payloads may move to a
+preallocated ring while keeping the same token/generation lifecycle. Control
+and lifecycle operations remain IOCTL based.
 
 ### Operation identity
 
@@ -120,6 +133,8 @@ unplug all converge on the same idempotent purge path.
 - A controller-level lock protects the device table and owner registration.
 - Each device has a short-held state lock and independent endpoint queues.
 - Media callbacks do not take the controller lock.
+- Interrupt-IN queues are manual and completed from fresh input snapshots;
+  output and media endpoints retain independent ordered queues.
 - UDE callbacks never wait on user mode while holding a WDF lock.
 - Blocking work is represented by cancelable WDF requests, not sleeping kernel
   threads.
@@ -159,4 +174,3 @@ request queues while accounting for UdeCx's endpoint-specific purge contract.
 - Microsoft, `EVT_UDECX_USB_ENDPOINT_PURGE`
 - Microsoft, *Install the WDK using NuGet*
 - Microsoft Windows Driver Samples CI guidance
-

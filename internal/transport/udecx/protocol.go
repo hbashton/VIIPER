@@ -13,7 +13,7 @@ import (
 const (
 	Magic    uint32 = 0x45445556
 	ABIMajor uint16 = 1
-	ABIMinor uint16 = 3
+	ABIMinor uint16 = 4
 
 	HeaderSize            = 16
 	NegotiateRequestSize  = 32
@@ -24,12 +24,14 @@ const (
 	IsoPacketSize         = 16
 	OperationSize         = 96
 	CompletionSize        = 72
-	StatsSize             = 128
+	InputReportSize       = 48
+	StatsSize             = 144
 
 	MaxDevices           = 32
 	MaxDescriptorBytes   = 256 * 1024
 	MaxTransferBytes     = 1024 * 1024
 	MaxIsoPackets        = 1024
+	MaxInputReportBytes  = 4096
 	MaxPendingOperations = 4096
 )
 
@@ -49,6 +51,7 @@ const (
 	CapabilityIsochronous Capabilities = 1 << iota
 	CapabilityStreams
 	CapabilityDeviceLifecycle
+	CapabilityInputReports
 )
 
 type Header struct {
@@ -352,6 +355,43 @@ type Completion struct {
 	Payload        []byte
 }
 
+// InputReport is the ViGEm-style fast path for interrupt-IN endpoints. The
+// host parks the Windows polling request in the kernel and user mode submits
+// only a fresh, already encoded report. Audio, control, output, and lifecycle
+// traffic deliberately remain on the ordered operation broker.
+type InputReport struct {
+	DeviceID        uint64
+	Generation      uint32
+	EndpointAddress uint8
+	Sequence        uint64
+	Payload         []byte
+}
+
+func (m InputReport) MarshalBinary() ([]byte, error) {
+	if m.DeviceID == 0 || m.Generation == 0 || m.EndpointAddress&0x80 == 0 ||
+		m.Sequence == 0 || m.Sequence > math.MaxInt64 {
+		return nil, fmt.Errorf("%w: invalid input-report identity", ErrInvalidRange)
+	}
+	if len(m.Payload) == 0 || len(m.Payload) > MaxInputReportBytes {
+		return nil, ErrLimitExceeded
+	}
+	total := InputReportSize + len(m.Payload)
+	h, err := NewHeader(total)
+	if err != nil {
+		return nil, err
+	}
+	dst := make([]byte, total)
+	putHeader(dst, h)
+	binary.LittleEndian.PutUint64(dst[16:24], m.DeviceID)
+	binary.LittleEndian.PutUint32(dst[24:28], m.Generation)
+	dst[28] = m.EndpointAddress
+	binary.LittleEndian.PutUint32(dst[32:36], InputReportSize)
+	binary.LittleEndian.PutUint32(dst[36:40], uint32(len(m.Payload)))
+	binary.LittleEndian.PutUint64(dst[40:48], m.Sequence)
+	copy(dst[InputReportSize:], m.Payload)
+	return dst, nil
+}
+
 type Stats struct {
 	OperationsDequeued         uint64
 	OperationsCompleted        uint64
@@ -369,6 +409,8 @@ type Stats struct {
 	PendingOperations          uint32
 	WaitingDequeues            uint32
 	CleanupRetries             uint32
+	InputReportsSubmitted      uint64
+	InputReportsCompleted      uint64
 }
 
 func ParseStats(src []byte) (Stats, error) {
@@ -396,6 +438,8 @@ func ParseStats(src []byte) (Stats, error) {
 		PendingOperations:          binary.LittleEndian.Uint32(src[116:120]),
 		WaitingDequeues:            binary.LittleEndian.Uint32(src[120:124]),
 		CleanupRetries:             binary.LittleEndian.Uint32(src[124:128]),
+		InputReportsSubmitted:      binary.LittleEndian.Uint64(src[128:136]),
+		InputReportsCompleted:      binary.LittleEndian.Uint64(src[136:144]),
 	}, nil
 }
 

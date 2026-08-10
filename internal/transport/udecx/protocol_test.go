@@ -12,7 +12,8 @@ func TestABISizes(t *testing.T) {
 		"negotiate response": NegotiateResponseSize, "descriptor": DescriptorRecordSize,
 		"create device": CreateDeviceSize, "identity": DeviceIdentitySize,
 		"iso packet": IsoPacketSize, "operation": OperationSize,
-		"completion": CompletionSize, "stats": StatsSize,
+		"completion": CompletionSize, "input report": InputReportSize,
+		"stats": StatsSize,
 	} {
 		if got%8 != 0 {
 			t.Fatalf("%s ABI size %d is not 8-byte aligned", name, got)
@@ -132,6 +133,23 @@ func TestCompletionMarshalling(t *testing.T) {
 	}
 }
 
+func TestInputReportMarshalling(t *testing.T) {
+	raw, err := (InputReport{
+		DeviceID: 5, Generation: 7, EndpointAddress: 0x81,
+		Sequence: 11, Payload: []byte{1, 2, 3},
+	}).MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) != InputReportSize+3 ||
+		binary.LittleEndian.Uint32(raw[32:36]) != InputReportSize ||
+		binary.LittleEndian.Uint32(raw[36:40]) != 3 ||
+		binary.LittleEndian.Uint64(raw[40:48]) != 11 ||
+		string(raw[InputReportSize:]) != string([]byte{1, 2, 3}) {
+		t.Fatalf("invalid input-report wire layout: %x", raw)
+	}
+}
+
 func TestIdentityAndStatsLayout(t *testing.T) {
 	identity, err := (DeviceIdentity{DeviceID: 0x1122334455667788, Generation: 7}).MarshalBinary()
 	if err != nil {
@@ -151,12 +169,15 @@ func TestIdentityAndStatsLayout(t *testing.T) {
 	binary.LittleEndian.PutUint32(raw[112:116], 3)
 	binary.LittleEndian.PutUint32(raw[116:120], 5)
 	binary.LittleEndian.PutUint32(raw[120:124], 7)
+	binary.LittleEndian.PutUint64(raw[128:136], 37)
+	binary.LittleEndian.PutUint64(raw[136:144], 41)
 	stats, err := ParseStats(raw)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if stats.OperationsDequeued != 11 || stats.BytesFromDevice != 29 || stats.NotificationEvents != 31 ||
-		stats.ActiveDevices != 3 || stats.PendingOperations != 5 || stats.WaitingDequeues != 7 {
+		stats.ActiveDevices != 3 || stats.PendingOperations != 5 || stats.WaitingDequeues != 7 ||
+		stats.InputReportsSubmitted != 37 || stats.InputReportsCompleted != 41 {
 		t.Fatalf("unexpected stats: %+v", stats)
 	}
 }

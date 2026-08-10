@@ -33,8 +33,9 @@ const (
 	ioctlDequeueOperation                   = (fileDeviceUnknown << 16) | ((fileReadData | fileWriteData) << 14) | ((ioctlBase + 3) << 2) | methodOutDirect
 	ioctlCompleteOperation                  = (fileDeviceUnknown << 16) | ((fileReadData | fileWriteData) << 14) | ((ioctlBase + 4) << 2) | methodInDirect
 	ioctlQueryStats                         = (fileDeviceUnknown << 16) | (fileReadData << 14) | ((ioctlBase + 5) << 2) | methodBuffered
+	ioctlSubmitInputReport                  = (fileDeviceUnknown << 16) | ((fileReadData | fileWriteData) << 14) | ((ioctlBase + 6) << 2) | methodInDirect
 	completionPortCloseKey          uintptr = ^uintptr(0)
-	requiredCapabilities                    = CapabilityIsochronous | CapabilityDeviceLifecycle
+	requiredCapabilities                    = CapabilityIsochronous | CapabilityDeviceLifecycle | CapabilityInputReports
 )
 
 var (
@@ -303,6 +304,15 @@ func (c *Client) Complete(ctx context.Context, completion Completion) error {
 	// METHOD_IN_DIRECT keeps the fixed metadata in the system buffer and maps
 	// the variable packet/payload tail read-only into the driver.
 	_, err = c.ioctl(ctx, ioctlCompleteOperation, request[:CompletionSize], request[CompletionSize:])
+	return err
+}
+
+func (c *Client) SubmitInputReport(ctx context.Context, report InputReport) error {
+	request, err := report.MarshalBinary()
+	if err != nil {
+		return err
+	}
+	_, err = c.ioctl(ctx, ioctlSubmitInputReport, request[:InputReportSize], request[InputReportSize:])
 	return err
 }
 
