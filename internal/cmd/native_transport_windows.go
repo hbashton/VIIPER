@@ -4,19 +4,10 @@ package cmd
 
 import (
 	"context"
-	"sync"
 
 	serverusb "github.com/Alia5/VIIPER/internal/server/usb"
 	"github.com/Alia5/VIIPER/internal/transport/udecx"
 )
-
-type windowsNativeUDETransport struct {
-	host      *udecx.Host
-	client    *udecx.Client
-	done      chan error
-	closeOnce sync.Once
-	closeErr  error
-}
 
 func startNativeUDETransport(ctx context.Context, server *serverusb.Server) (nativeUDETransport, error) {
 	client, err := udecx.Open(ctx)
@@ -37,22 +28,13 @@ func startNativeUDETransport(ctx context.Context, server *serverusb.Server) (nat
 		_ = client.Close()
 		return nil, err
 	}
-	session := &windowsNativeUDETransport{
-		host: host, client: client, done: make(chan error, 1),
+	sessionCtx, cancel := context.WithCancel(ctx)
+	session := &nativeUDETransportSession{
+		cancel: cancel, closeClient: client.Close, done: make(chan error, 1),
 	}
 	go func() {
-		session.done <- host.Serve(ctx)
+		session.done <- host.Serve(sessionCtx)
 		close(session.done)
 	}()
 	return session, nil
-}
-
-func (s *windowsNativeUDETransport) Done() <-chan error { return s.done }
-
-func (s *windowsNativeUDETransport) Close() error {
-	s.closeOnce.Do(func() {
-		s.host.Close()
-		s.closeErr = s.client.Close()
-	})
-	return s.closeErr
 }

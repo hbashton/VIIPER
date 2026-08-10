@@ -60,7 +60,8 @@ func (s *Server) StartServer(ctx context.Context, logger *slog.Logger, rawLogger
 	s.APIServerConfig.ConnectionTimeout = s.ConnectionTimeout
 	s.USBServerConfig.BusCleanupTimeout = s.APIServerConfig.DeviceHandlerConnectTimeout
 
-	logger.Info("Starting VIIPER USB-IP server", "addr", s.USBServerConfig.Addr)
+	logger.Info("Starting VIIPER virtual USB server", "transport", transport,
+		"usbipAddr", s.USBServerConfig.Addr)
 
 	keyFileDir, err := configpaths.KeyFileDir()
 	if err != nil {

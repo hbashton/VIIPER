@@ -100,6 +100,12 @@ close that driver handle and negotiate a fresh `Client`/`Host` session, matching
 ViGEmBus's file-session ownership model, rather than guessing a new endpoint
 sequence baseline and risking an abandoned USB request.
 
+Session shutdown owns a cancellation context before `Serve` is scheduled, so
+even an immediate stop cannot miss host cancellation. The client waits for all
+dequeue workers, endpoint lanes, input publishers, and their completions to
+finish before cancelling overlapped kernel I/O and closing the exclusive broker
+handle. The handle is therefore always the last object released.
+
 This deliberately removes TCP, WSK, USB/IP framing, and attach bookkeeping.
 The direct input lane removes the highest-frequency HID broker path without
 mixing report ownership into the proven PlayStation media/state transport.
