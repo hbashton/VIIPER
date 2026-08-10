@@ -415,6 +415,28 @@ func hostTestDevice() usb.Device {
 	}}
 }
 
+func TestInterruptInputServiceIntervalMatchesUSBContract(t *testing.T) {
+	tests := []struct {
+		name      string
+		speed     uint32
+		bInterval uint8
+		want      time.Duration
+	}{
+		{name: "full-speed frames", speed: uint32(DeviceSpeedFull), bInterval: 5, want: 5 * time.Millisecond},
+		{name: "high-speed microframes", speed: uint32(DeviceSpeedHigh), bInterval: 4, want: time.Millisecond},
+		{name: "maximum high-speed exponent", speed: uint32(DeviceSpeedSuper), bInterval: 16, want: 4096 * time.Millisecond},
+		{name: "zero is unscheduled", speed: uint32(DeviceSpeedHigh), bInterval: 0, want: 0},
+		{name: "reserved high-speed exponent", speed: uint32(DeviceSpeedHigh), bInterval: 17, want: 0},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := interruptInputServiceInterval(test.speed, test.bInterval); got != test.want {
+				t.Fatalf("service interval=%v want=%v", got, test.want)
+			}
+		})
+	}
+}
+
 func TestHostDoesNotSerializeIndependentControllerRegistration(t *testing.T) {
 	driver := &independentlyBlockingCreateDriver{
 		fakeHostDriver: newFakeHostDriver(), blockedDevice: 81,
@@ -639,6 +661,52 @@ type directInputPublisherTestDevice struct {
 	buffers chan *byte
 }
 
+type cachedDeadlineInputPublisherTestDevice struct {
+	*inputPublisherTestDevice
+	cached []byte
+}
+
+type controlledInputAttempt struct {
+	context.Context
+	deadline   time.Time
+	done       chan struct{}
+	once       sync.Once
+	mu         sync.Mutex
+	err        error
+	stopParent func() bool
+}
+
+func newControlledInputAttempt(parent context.Context, interval time.Duration) *controlledInputAttempt {
+	attempt := &controlledInputAttempt{
+		Context: parent, deadline: time.Now().Add(interval), done: make(chan struct{}),
+	}
+	attempt.stopParent = context.AfterFunc(parent, func() { attempt.finish(parent.Err()) })
+	return attempt
+}
+
+func (c *controlledInputAttempt) Deadline() (time.Time, bool) { return c.deadline, true }
+func (c *controlledInputAttempt) Done() <-chan struct{}       { return c.done }
+func (c *controlledInputAttempt) Err() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.err
+}
+func (c *controlledInputAttempt) finish(err error) {
+	c.once.Do(func() {
+		c.mu.Lock()
+		c.err = err
+		c.mu.Unlock()
+		close(c.done)
+	})
+}
+func (c *controlledInputAttempt) expire() { c.finish(context.DeadlineExceeded) }
+func (c *controlledInputAttempt) cancel() {
+	if c.stopParent != nil {
+		c.stopParent()
+	}
+	c.finish(context.Canceled)
+}
+
 func newInputPublisherTestDevice() *inputPublisherTestDevice {
 	base := hostTestDevice().GetDescriptor()
 	return &inputPublisherTestDevice{descriptor: *base, reports: make(chan []byte, 4)}
@@ -648,6 +716,13 @@ func newDirectInputPublisherTestDevice() *directInputPublisherTestDevice {
 	return &directInputPublisherTestDevice{
 		inputPublisherTestDevice: newInputPublisherTestDevice(),
 		buffers:                  make(chan *byte, 4),
+	}
+}
+
+func newCachedDeadlineInputPublisherTestDevice(report []byte) *cachedDeadlineInputPublisherTestDevice {
+	return &cachedDeadlineInputPublisherTestDevice{
+		inputPublisherTestDevice: newInputPublisherTestDevice(),
+		cached:                   append([]byte(nil), report...),
 	}
 }
 
@@ -668,6 +743,20 @@ func (d *directInputPublisherTestDevice) ReadInterruptInput(
 	case <-ctx.Done():
 		return 0, ctx.Err()
 	}
+}
+
+func (d *cachedDeadlineInputPublisherTestDevice) ReadInterruptInput(
+	ctx context.Context, _ uint32, dst []byte,
+) (int, error) {
+	<-ctx.Done()
+	if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return 0, ctx.Err()
+	}
+	if len(d.cached) > len(dst) {
+		return 0, errors.New("native input buffer is too short for cached report")
+	}
+	copy(dst, d.cached)
+	return len(d.cached), nil
 }
 
 func (d *inputPublisherTestDevice) HandleTransfer(
@@ -1412,6 +1501,131 @@ func TestHostRestartsInputPublisherAfterEndpointPurgeWithoutResettingSequence(t 
 		t.Fatal("publisher did not resume after endpoint restart")
 	}
 
+	cancel()
+	select {
+	case err = <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("host did not stop")
+	}
+}
+
+func TestHostReplaysCachedInputAtServiceDeadlineAcrossPurgeStart(t *testing.T) {
+	driver := &fastInputDriver{fakeHostDriver: newFakeHostDriver(), reports: make(chan InputReport, 8)}
+	processor := &recordingProcessor{
+		processed: make(chan uint64, 1), lifecycle: make(chan uint64, 4),
+		resets: make(chan DeviceIdentity, 1),
+	}
+	host, err := NewHost(driver, processor, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	type attempt struct {
+		context  *controlledInputAttempt
+		interval time.Duration
+	}
+	attempts := make(chan attempt, 8)
+	host.inputAttemptContext = func(parent context.Context, interval time.Duration) (context.Context, context.CancelFunc) {
+		controlled := newControlledInputAttempt(parent, interval)
+		attempts <- attempt{context: controlled, interval: interval}
+		return controlled, controlled.cancel
+	}
+	device := newCachedDeadlineInputPublisherTestDevice([]byte{0x11, 0x22, 0x33})
+	identity, err := host.Register(context.Background(), 471, device)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- host.Serve(ctx) }()
+
+	driver.operations <- Operation{
+		DeviceID: identity.DeviceID, Generation: identity.Generation,
+		EndpointAddress: 0x81, EndpointSequence: 1, Kind: OperationEndpointStart,
+	}
+	select {
+	case <-processor.lifecycle:
+	case <-time.After(time.Second):
+		t.Fatal("endpoint start was not processed")
+	}
+	var firstAttempt attempt
+	select {
+	case firstAttempt = <-attempts:
+	case <-time.After(time.Second):
+		t.Fatal("publisher did not arm its first service deadline")
+	}
+	if firstAttempt.interval != time.Millisecond {
+		t.Fatalf("high-speed bInterval=4 deadline=%v want=1ms", firstAttempt.interval)
+	}
+	firstAttempt.context.expire()
+	select {
+	case report := <-driver.reports:
+		if report.Sequence != 1 || string(report.Payload) != string([]byte{0x11, 0x22, 0x33}) {
+			t.Fatalf("first cached input report=%+v", report)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("idle controller did not publish cached state at its service deadline")
+	}
+
+	// Join the next blocked read through purge. Once lifecycle processing
+	// returns, the old publisher cannot submit a late report.
+	select {
+	case <-attempts:
+	case <-time.After(time.Second):
+		t.Fatal("publisher did not arm its next service deadline")
+	}
+	driver.operations <- Operation{
+		DeviceID: identity.DeviceID, Generation: identity.Generation,
+		EndpointAddress: 0x81, EndpointSequence: 2, Kind: OperationEndpointPurge,
+	}
+	select {
+	case <-processor.lifecycle:
+	case <-time.After(time.Second):
+		t.Fatal("endpoint purge was not processed")
+	}
+	select {
+	case report := <-driver.reports:
+		t.Fatalf("cached report crossed completed purge: %+v", report)
+	default:
+	}
+
+	driver.operations <- Operation{
+		DeviceID: identity.DeviceID, Generation: identity.Generation,
+		EndpointAddress: 0x81, EndpointSequence: 3, Kind: OperationEndpointStart,
+	}
+	select {
+	case <-processor.lifecycle:
+	case <-time.After(time.Second):
+		t.Fatal("endpoint restart was not processed")
+	}
+	var restartedAttempt attempt
+	select {
+	case restartedAttempt = <-attempts:
+	case <-time.After(time.Second):
+		t.Fatal("restarted publisher did not arm a service deadline")
+	}
+	restartedAttempt.context.expire()
+	select {
+	case report := <-driver.reports:
+		if report.Sequence != 2 || string(report.Payload) != string([]byte{0x11, 0x22, 0x33}) {
+			t.Fatalf("cached report after endpoint restart=%+v", report)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("restarted publisher did not replay cached controller state")
+	}
+
+	driver.operations <- Operation{
+		DeviceID: identity.DeviceID, Generation: identity.Generation,
+		EndpointAddress: 0x81, EndpointSequence: 4, Kind: OperationEndpointPurge,
+	}
+	select {
+	case <-processor.lifecycle:
+	case <-time.After(time.Second):
+		t.Fatal("final endpoint purge was not processed")
+	}
 	cancel()
 	select {
 	case err = <-done:

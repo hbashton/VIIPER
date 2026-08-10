@@ -19,8 +19,11 @@ type Device interface {
 // encode directly into it instead of allocating a new report for every input
 // sample. Implementations must block until input is available or ctx is
 // cancelled, must not retain dst, and must be safe when different endpoints
-// are read concurrently. A successful call returns the number of bytes written
-// to dst; zero-length successful reports are invalid.
+// are read concurrently. Native transports impose the endpoint's USB service
+// interval as a deadline. Stateful controllers may encode their cached state
+// when that deadline expires; event-only devices may return DeadlineExceeded
+// and keep waiting. A successful call returns the number of bytes written to
+// dst; zero-length successful reports are invalid.
 //
 // HandleTransfer remains the compatibility contract for USB/IP and for devices
 // which do not implement this interface.

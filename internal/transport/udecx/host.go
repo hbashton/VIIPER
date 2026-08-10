@@ -64,7 +64,7 @@ type registeredDevice struct {
 	cancel            context.CancelFunc
 	stopping          bool
 	publisherStopping bool
-	fastInput         map[uint8]int
+	fastInput         map[uint8]fastInputEndpoint
 	publishers        map[uint8]*inputPublisher
 	activeInput       map[uint8]bool
 	resettingInput    map[uint8]bool
@@ -77,9 +77,15 @@ type registeredDevice struct {
 type inputPublisher struct {
 	endpoint   uint8
 	reportSize int
+	interval   time.Duration
 	sequence   *atomic.Uint64
 	cancel     context.CancelFunc
 	done       chan struct{}
+}
+
+type fastInputEndpoint struct {
+	reportSize int
+	interval   time.Duration
 }
 
 type laneKey struct {
@@ -137,6 +143,10 @@ type Host struct {
 	operationMu sync.Mutex
 	operations  map[uint64]*operationState
 	completed   []uint64
+
+	// inputAttemptContext is a deterministic deadline seam for host tests.
+	// Production hosts leave it nil and use context.WithTimeout.
+	inputAttemptContext func(context.Context, time.Duration) (context.Context, context.CancelFunc)
 }
 
 func NewHost(driver Driver, processor OperationProcessor, workers int) (*Host, error) {
@@ -185,8 +195,25 @@ func (h *Host) lockDeviceLifecycle(deviceID uint64) func() {
 	}
 }
 
-func fastInputEndpoints(dev usb.Device) map[uint8]int {
-	result := make(map[uint8]int)
+func interruptInputServiceInterval(speed uint32, bInterval uint8) time.Duration {
+	// Match the proven USB/IP interrupt scheduler in
+	// internal/server/usb.usbServiceInterval.
+	if bInterval == 0 {
+		return 0
+	}
+	if speed >= uint32(DeviceSpeedHigh) {
+		// USB 2.x/3.x encode interrupt service periods as a power of two
+		// microframes and reserve values above 16.
+		if bInterval > 16 {
+			return 0
+		}
+		return time.Duration(uint64(1)<<(bInterval-1)) * 125 * time.Microsecond
+	}
+	return time.Duration(bInterval) * time.Millisecond
+}
+
+func fastInputEndpoints(dev usb.Device) map[uint8]fastInputEndpoint {
+	result := make(map[uint8]fastInputEndpoint)
 	if dev == nil || dev.GetDescriptor() == nil {
 		return result
 	}
@@ -201,7 +228,11 @@ func fastInputEndpoints(dev usb.Device) map[uint8]int {
 				transactions := 1 + int((endpoint.WMaxPacketSize>>11)&0x03)
 				reportSize := packetBytes * transactions
 				if reportSize > 0 && reportSize <= MaxInputReportBytes {
-					result[endpoint.BEndpointAddress] = reportSize
+					result[endpoint.BEndpointAddress] = fastInputEndpoint{
+						reportSize: reportSize,
+						interval: interruptInputServiceInterval(
+							dev.GetDescriptor().Device.Speed, endpoint.BInterval),
+					}
 				}
 			}
 		}
@@ -390,7 +421,7 @@ func (h *Host) startInputPublisher(entry *registeredDevice, endpoint uint8) {
 		h.mu.Unlock()
 		return
 	}
-	reportSize, fast := entry.fastInput[endpoint]
+	endpointContract, fast := entry.fastInput[endpoint]
 	if !fast || entry.publishers[endpoint] != nil {
 		h.mu.Unlock()
 		return
@@ -402,7 +433,8 @@ func (h *Host) startInputPublisher(entry *registeredDevice, endpoint uint8) {
 	}
 	ctx, cancel := context.WithCancel(entry.ctx)
 	publisher := &inputPublisher{
-		endpoint: endpoint, reportSize: reportSize, sequence: sequence,
+		endpoint: endpoint, reportSize: endpointContract.reportSize,
+		interval: endpointContract.interval, sequence: sequence,
 		cancel: cancel, done: make(chan struct{}),
 	}
 	entry.publishers[endpoint] = publisher
@@ -451,6 +483,15 @@ func (h *Host) activeInputEndpoints(entry *registeredDevice) []uint8 {
 	return endpoints
 }
 
+func (h *Host) withInputAttemptDeadline(
+	ctx context.Context, interval time.Duration,
+) (context.Context, context.CancelFunc) {
+	if h.inputAttemptContext != nil {
+		return h.inputAttemptContext(ctx, interval)
+	}
+	return context.WithTimeout(ctx, interval)
+}
+
 func (h *Host) runInputPublisher(ctx context.Context, entry *registeredDevice, publisher *inputPublisher) {
 	defer close(publisher.done)
 	reader, direct := entry.device.(usb.InterruptInputDevice)
@@ -461,11 +502,23 @@ func (h *Host) runInputPublisher(ctx context.Context, entry *registeredDevice, p
 	for {
 		var payload []byte
 		if direct {
+			attemptCtx := ctx
+			attemptCancel := context.CancelFunc(func() {})
+			if publisher.interval > 0 {
+				attemptCtx, attemptCancel = h.withInputAttemptDeadline(ctx, publisher.interval)
+			}
 			written, err := reader.ReadInterruptInput(
-				ctx, uint32(publisher.endpoint&0x0f), reportBuffer)
+				attemptCtx, uint32(publisher.endpoint&0x0f), reportBuffer)
+			attemptCancel()
 			if err != nil {
 				if ctx.Err() != nil {
 					return
+				}
+				// Event-only devices may decline to synthesize an idle report.
+				// Cached-state controller implementations return success on the
+				// same deadline and are submitted below at the endpoint cadence.
+				if errors.Is(err, context.DeadlineExceeded) {
+					continue
 				}
 				h.reportFatal(fmt.Errorf(
 					"encode native UDE input report for device %d endpoint 0x%02x: %w",
