@@ -163,6 +163,10 @@ unplug all converge on the same idempotent purge path.
   lock. If KMDF invokes cancellation before that lock is reacquired, the cancel
   callback's DPC ownership is final and cannot be overwritten by admission or
   publication.
+- Broker dequeue validation, wait-count admission, and transfer into the
+  manual inverted-call queue share the owner lock with file cleanup. No close
+  can finish purging that queue and then have an already-validated request
+  appear behind the purge boundary.
 - Completion lookup is keyed by `(device ID, generation, token)`.
 
 This follows the useful ViGEmBus pattern of per-target ownership and manual

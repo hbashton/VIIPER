@@ -1152,19 +1152,40 @@ ViiperQueueDequeueOperation(
 {
     WDFDEVICE controller = WdfIoQueueGetDevice(Queue);
     VIIPER_UDE_CONTROLLER_CONTEXT *controllerContext = ViiperGetControllerContext(controller);
-    NTSTATUS status = ViiperValidateBrokerOwner(controller, Request);
+    WDFFILEOBJECT fileObject = WdfRequestGetFileObject(Request);
+    VIIPER_UDE_FILE_CONTEXT *fileContext;
+    NTSTATUS status = STATUS_SUCCESS;
 
+    if (fileObject == WDF_NO_HANDLE) {
+        return STATUS_INVALID_HANDLE;
+    }
+    fileContext = ViiperGetFileContext(fileObject);
+
+    // File cleanup closes admission and purges WaitingDequeues while holding
+    // OwnerLock. Keep validation, accounting, and the manual-queue handoff in
+    // that same ownership transaction so a request cannot be forwarded after
+    // cleanup has already finished purging the queue.
+    WdfWaitLockAcquire(controllerContext->OwnerLock, NULL);
+    if (controllerContext->OwnerFile != fileObject ||
+        controllerContext->CleanupInProgress ||
+        InterlockedCompareExchange(&fileContext->Negotiated, 0, 0) == 0 ||
+        InterlockedCompareExchange(&fileContext->Closing, 0, 0) != 0) {
+        status = STATUS_INVALID_DEVICE_STATE;
+    } else if (InterlockedCompareExchange(
+            &controllerContext->BrokerFaulted, FALSE, FALSE) != FALSE) {
+        status = STATUS_DATA_ERROR;
+    } else {
+        InterlockedIncrement(&controllerContext->WaitingDequeueCount);
+        status = WdfRequestForwardToIoQueue(Request, controllerContext->WaitingDequeues);
+        if (!NT_SUCCESS(status)) {
+            InterlockedDecrement(&controllerContext->WaitingDequeueCount);
+        }
+    }
+    WdfWaitLockRelease(controllerContext->OwnerLock);
     if (!NT_SUCCESS(status)) {
         return status;
     }
-    if (InterlockedCompareExchange(&controllerContext->BrokerFaulted, FALSE, FALSE) != FALSE) {
-        return STATUS_DATA_ERROR;
-    }
-    status = WdfRequestForwardToIoQueue(Request, controllerContext->WaitingDequeues);
-    if (!NT_SUCCESS(status)) {
-        return status;
-    }
-    InterlockedIncrement(&controllerContext->WaitingDequeueCount);
+
     ViiperDispatchAvailable(controller);
     return STATUS_PENDING;
 }
