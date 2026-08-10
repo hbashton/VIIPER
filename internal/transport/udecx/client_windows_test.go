@@ -83,6 +83,21 @@ func TestClientRejectsRequestsOutsideNegotiatedLimitsBeforeKernelIO(t *testing.T
 	}
 }
 
+func TestCompletionPoolReusesBoundedMediaBuffer(t *testing.T) {
+	client := &Client{}
+	first := client.acquireCompletionBuffer(2048)
+	if len(first) != 2048 || cap(first) < 2048 {
+		t.Fatalf("first buffer len=%d cap=%d", len(first), cap(first))
+	}
+	first[0] = 0x5a
+	client.releaseCompletionBuffer(first)
+	second := client.acquireCompletionBuffer(1024)
+	if len(second) != 1024 || cap(second) < 2048 {
+		t.Fatalf("reused buffer len=%d cap=%d", len(second), cap(second))
+	}
+	client.releaseCompletionBuffer(second)
+}
+
 func TestIOCTLCodesMatchPackedHeader(t *testing.T) {
 	wants := map[string]struct{ got, want uint32 }{
 		"negotiate": {ioctlNegotiate, 0x22e400},

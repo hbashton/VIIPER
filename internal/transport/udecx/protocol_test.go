@@ -160,6 +160,44 @@ func TestCompletionMarshallingPreservesZeroLengthSparseISO(t *testing.T) {
 	}
 }
 
+func TestCompletionEncodingIntoCallerBufferDoesNotAllocate(t *testing.T) {
+	completion := Completion{
+		Token: 1, DeviceID: 2, Generation: 3, TransferLength: 4 * 196,
+		IsoPackets: []IsoPacket{
+			{Offset: 0, Length: 196}, {Offset: 196, Length: 196},
+			{Offset: 392, Length: 196}, {Offset: 588, Length: 196},
+		},
+		Payload: make([]byte, 4*196),
+	}
+	_, _, total, err := completion.wireLayout()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dst := make([]byte, total)
+	for index := range dst {
+		dst[index] = 0xff
+	}
+	allocations := testing.AllocsPerRun(1000, func() {
+		if err := completion.marshalBinaryInto(dst); err != nil {
+			panic(err)
+		}
+	})
+	if allocations != 0 {
+		t.Fatalf("caller-buffer completion encoding allocated %.2f objects", allocations)
+	}
+	for index, value := range dst[64:CompletionSize] {
+		if value != 0 {
+			t.Fatalf("completion reserved byte %d retained %#x", 64+index, value)
+		}
+	}
+	for packet := range completion.IsoPackets {
+		offset := CompletionSize + packet*IsoPacketSize + 12
+		if value := binary.LittleEndian.Uint32(dst[offset : offset+4]); value != 0 {
+			t.Fatalf("ISO packet %d reserved word retained %#x", packet, value)
+		}
+	}
+}
+
 func TestInputReportMarshalling(t *testing.T) {
 	raw, err := (InputReport{
 		DeviceID: 5, Generation: 7, EndpointAddress: 0x81,

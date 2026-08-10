@@ -61,6 +61,7 @@ type Client struct {
 	pumpDone       chan struct{}
 	pumpErr        error
 	requestPool    sync.Pool
+	completionPool sync.Pool
 	// Windows suppresses IOCP packets only for operations that return success
 	// inline. Pending operations still use the shared completion pump. This
 	// removes a scheduler/channel round trip from direct input without changing
@@ -125,6 +126,11 @@ func Open(ctx context.Context) (*Client, error) {
 	}
 	client.requestPool.New = func() any {
 		return &ioRequest{done: make(chan ioCompletion, 1)}
+	}
+	client.completionPool.New = func() any {
+		// Control/state completions stay inside this initial slab. Larger media
+		// buffers grow once and are then recycled by capacity.
+		return make([]byte, 0, 4096)
 	}
 	go client.runCompletionPort(completionPort)
 	if err = client.negotiate(ctx); err != nil {
@@ -325,14 +331,37 @@ func (c *Client) Complete(ctx context.Context, completion Completion) error {
 		completion.TransferLength > limits.MaxTransferBytes {
 		return ErrLimitExceeded
 	}
-	request, err := completion.MarshalBinary()
+	_, _, total, err := completion.wireLayout()
 	if err != nil {
+		return err
+	}
+	request := c.acquireCompletionBuffer(total)
+	defer c.releaseCompletionBuffer(request)
+	if err = completion.marshalBinaryInto(request); err != nil {
 		return err
 	}
 	// METHOD_IN_DIRECT keeps the fixed metadata in the system buffer and maps
 	// the variable packet/payload tail read-only into the driver.
 	_, err = c.ioctl(ctx, ioctlCompleteOperation, request[:CompletionSize], request[CompletionSize:])
 	return err
+}
+
+func (c *Client) acquireCompletionBuffer(size int) []byte {
+	var buffer []byte
+	if pooled := c.completionPool.Get(); pooled != nil {
+		buffer = pooled.([]byte)
+	}
+	if cap(buffer) < size {
+		return make([]byte, size)
+	}
+	return buffer[:size]
+}
+
+func (c *Client) releaseCompletionBuffer(buffer []byte) {
+	// A negotiated completion cannot exceed the protocol's bounded maximum.
+	// Retaining the slab avoids high-frequency ISO completion churn while
+	// keeping worst-case pool entries bounded by the ABI.
+	c.completionPool.Put(buffer[:0])
 }
 
 func (c *Client) SubmitInputReport(ctx context.Context, report InputReport) error {

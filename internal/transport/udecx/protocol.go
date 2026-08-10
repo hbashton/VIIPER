@@ -466,14 +466,14 @@ func ParseStats(src []byte) (Stats, error) {
 	}, nil
 }
 
-func (m Completion) MarshalBinary() ([]byte, error) {
+func (m Completion) wireLayout() (transferLength uint32, isoBytes int, total int, err error) {
 	if m.Token == 0 || m.DeviceID == 0 || m.Generation == 0 {
-		return nil, fmt.Errorf("%w: zero completion identity", ErrInvalidRange)
+		return 0, 0, 0, fmt.Errorf("%w: zero completion identity", ErrInvalidRange)
 	}
 	if len(m.Payload) > MaxTransferBytes || len(m.IsoPackets) > MaxIsoPackets {
-		return nil, ErrLimitExceeded
+		return 0, 0, 0, ErrLimitExceeded
 	}
-	transferLength := m.TransferLength
+	transferLength = m.TransferLength
 	// Non-isochronous IN completions historically infer the completed byte
 	// count from their contiguous payload. Isochronous payloads are different:
 	// the buffer preserves the host packet offsets, including sparse gaps, while
@@ -484,15 +484,28 @@ func (m Completion) MarshalBinary() ([]byte, error) {
 		transferLength = uint32(len(m.Payload))
 	}
 	if transferLength > MaxTransferBytes {
-		return nil, ErrLimitExceeded
+		return 0, 0, 0, ErrLimitExceeded
 	}
-	isoBytes := len(m.IsoPackets) * IsoPacketSize
-	total := CompletionSize + isoBytes + len(m.Payload)
+	isoBytes = len(m.IsoPackets) * IsoPacketSize
+	total = CompletionSize + isoBytes + len(m.Payload)
+	if _, err = NewHeader(total); err != nil {
+		return 0, 0, 0, err
+	}
+	return transferLength, isoBytes, total, nil
+}
+
+func (m Completion) marshalBinaryInto(dst []byte) error {
+	transferLength, isoBytes, total, err := m.wireLayout()
+	if err != nil {
+		return err
+	}
+	if len(dst) != total {
+		return ErrInvalidSize
+	}
 	h, err := NewHeader(total)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	dst := make([]byte, total)
 	putHeader(dst, h)
 	binary.LittleEndian.PutUint64(dst[16:24], m.Token)
 	binary.LittleEndian.PutUint64(dst[24:32], m.DeviceID)
@@ -504,13 +517,30 @@ func (m Completion) MarshalBinary() ([]byte, error) {
 	binary.LittleEndian.PutUint32(dst[52:56], uint32(CompletionSize+isoBytes))
 	binary.LittleEndian.PutUint32(dst[56:60], uint32(len(m.Payload)))
 	binary.LittleEndian.PutUint32(dst[60:64], CompletionSize)
+	// CompletionSize includes the C ABI's two explicit reserved words. Fresh
+	// allocations make both zero implicitly; caller-owned and pooled buffers
+	// must make that wire invariant explicit.
+	clear(dst[64:CompletionSize])
 	for i, packet := range m.IsoPackets {
 		off := CompletionSize + i*IsoPacketSize
 		binary.LittleEndian.PutUint32(dst[off:off+4], packet.Offset)
 		binary.LittleEndian.PutUint32(dst[off+4:off+8], packet.Length)
 		binary.LittleEndian.PutUint32(dst[off+8:off+12], uint32(packet.Status))
+		binary.LittleEndian.PutUint32(dst[off+12:off+16], 0)
 	}
 	copy(dst[CompletionSize+isoBytes:], m.Payload)
+	return nil
+}
+
+func (m Completion) MarshalBinary() ([]byte, error) {
+	_, _, total, err := m.wireLayout()
+	if err != nil {
+		return nil, err
+	}
+	dst := make([]byte, total)
+	if err := m.marshalBinaryInto(dst); err != nil {
+		return nil, err
+	}
 	return dst, nil
 }
 

@@ -182,7 +182,7 @@ typedef struct VIIPER_UDE_COMPLETION {
     VIIPER_UDE_UINT32 PayloadOffset;
     VIIPER_UDE_UINT32 PayloadLength;
     VIIPER_UDE_UINT32 IsoPacketsOffset;
-    VIIPER_UDE_UINT32 Reserved;
+    VIIPER_UDE_UINT32 Reserved[2];
 } VIIPER_UDE_COMPLETION;
 
 typedef struct VIIPER_UDE_INPUT_REPORT {
@@ -245,3 +245,22 @@ _Static_assert(sizeof(VIIPER_UDE_COMPLETION) == 72, "VIIPER_UDE_COMPLETION ABI d
 _Static_assert(sizeof(VIIPER_UDE_INPUT_REPORT) == 48, "VIIPER_UDE_INPUT_REPORT ABI drift");
 _Static_assert(sizeof(VIIPER_UDE_STATS) == 144, "VIIPER_UDE_STATS ABI drift");
 #endif
+
+/*
+ * MSVC compiles the KMDF driver as C without defining __STDC_VERSION__, so
+ * neither static_assert branch above is guaranteed to run in the production
+ * driver build.  These C89-compatible guards deliberately fail every C/C++
+ * compiler if the packed wire ABI drifts.  Keep them in addition to the more
+ * readable assertions above.
+ */
+typedef char VIIPER_UDE_ABI_HEADER_SIZE[(sizeof(VIIPER_UDE_HEADER) == 16) ? 1 : -1];
+typedef char VIIPER_UDE_ABI_NEGOTIATE_REQUEST_SIZE[(sizeof(VIIPER_UDE_NEGOTIATE_REQUEST) == 32) ? 1 : -1];
+typedef char VIIPER_UDE_ABI_NEGOTIATE_RESPONSE_SIZE[(sizeof(VIIPER_UDE_NEGOTIATE_RESPONSE) == 56) ? 1 : -1];
+typedef char VIIPER_UDE_ABI_DESCRIPTOR_RECORD_SIZE[(sizeof(VIIPER_UDE_DESCRIPTOR_RECORD) == 16) ? 1 : -1];
+typedef char VIIPER_UDE_ABI_CREATE_DEVICE_SIZE[(sizeof(VIIPER_UDE_CREATE_DEVICE) == 56) ? 1 : -1];
+typedef char VIIPER_UDE_ABI_DEVICE_IDENTITY_SIZE[(sizeof(VIIPER_UDE_DEVICE_IDENTITY) == 32) ? 1 : -1];
+typedef char VIIPER_UDE_ABI_ISO_PACKET_SIZE[(sizeof(VIIPER_UDE_ISO_PACKET) == 16) ? 1 : -1];
+typedef char VIIPER_UDE_ABI_OPERATION_SIZE[(sizeof(VIIPER_UDE_OPERATION) == 104) ? 1 : -1];
+typedef char VIIPER_UDE_ABI_COMPLETION_SIZE[(sizeof(VIIPER_UDE_COMPLETION) == 72) ? 1 : -1];
+typedef char VIIPER_UDE_ABI_INPUT_REPORT_SIZE[(sizeof(VIIPER_UDE_INPUT_REPORT) == 48) ? 1 : -1];
+typedef char VIIPER_UDE_ABI_STATS_SIZE[(sizeof(VIIPER_UDE_STATS) == 144) ? 1 : -1];

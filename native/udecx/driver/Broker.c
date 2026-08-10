@@ -1829,7 +1829,7 @@ ViiperCompleteOperation(
         completion->TransferLength > VIIPER_UDE_MAX_TRANSFER_BYTES ||
         completion->PayloadLength > VIIPER_UDE_MAX_TRANSFER_BYTES ||
         completion->IsoPacketCount > VIIPER_UDE_MAX_ISO_PACKETS ||
-        completion->Reserved != 0) {
+        completion->Reserved[0] != 0 || completion->Reserved[1] != 0) {
         InterlockedIncrement64(&controllerContext->InvalidMessages);
         return STATUS_INVALID_PARAMETER;
     }

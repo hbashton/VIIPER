@@ -67,6 +67,9 @@ The kernel driver owns only Windows USB presentation and transfer lifecycle.
    state never share mutable buffers.
 9. No raw user pointer crosses the ABI.
 10. The ABI is size- and version-negotiated before any mutating operation.
+11. Every packed wire structure has a compiler-independent size guard. The
+    72-byte completion header carries two explicit reserved words; its size
+    never depends on compiler tail padding.
 
 ## Kernel/user transport
 
@@ -389,6 +392,10 @@ stall an independent pad's registration or removal.
   the kernel completes inline returns on its publisher goroutine without an
   otherwise redundant IOCP-pump/channel scheduling hop; operations that return
   `ERROR_IO_PENDING` retain the existing cancellation-safe completion path.
+- Native completion encoding writes into bounded buffers recycled by the
+  client. Continuous control and isochronous traffic no longer allocates a new
+  wire buffer for every URB; an allocation gate protects the caller-buffer
+  encoder while the existing public marshal API remains available for tooling.
 - Product changes to scheduling, thread priority, DPC behavior, or queue depth
   require a named, bounded-memory WPR capture of the signed live gate. CPU
   sampled/precise, ready-thread, context-switch, WDF DPC, interrupt, and ISR
