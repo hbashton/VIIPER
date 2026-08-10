@@ -69,6 +69,9 @@ jobs:
       - uses: NuGet/setup-nuget@v2
       - name: Restore WDK packages
         run: nuget restore native/udecx/ViiperUde.sln -PackagesDirectory native/udecx/packages -NonInteractive
+      - name: Validate Windows and KMDF target contract
+        shell: pwsh
+        run: ./native/udecx/tools/Test-ViiperUdeTargetCompatibility.ps1
       - name: Expose WDK tools
         shell: pwsh
         run: |

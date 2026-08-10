@@ -318,6 +318,10 @@ request queues while accounting for UdeCx's endpoint-specific purge contract.
   ViGEmBus-style virtual input under the same workload.
 - Installation is signed, reversible, version-gated, and never replaces a live
   kernel driver across an unsafe reboot boundary.
+- The INF's Windows 10 1809 floor and the linked KMDF contract remain aligned:
+  the driver targets KMDF 1.27, the framework version Microsoft ships in
+  Windows 10 1809. CI rejects a newer KMDF target unless the INF floor is also
+  intentionally raised.
 
 The exact attestation/HLK boundary, CAB construction, and Microsoft-signature
 validation contract is documented in
@@ -327,5 +331,6 @@ validation contract is documented in
 
 - Microsoft, *Write a UDE client driver*
 - Microsoft, `EVT_UDECX_USB_ENDPOINT_PURGE`
+- Microsoft, *KMDF Version History*
 - Microsoft, *Install the WDK using NuGet*
 - Microsoft Windows Driver Samples CI guidance
