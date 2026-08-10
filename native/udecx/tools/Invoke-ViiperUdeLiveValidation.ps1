@@ -112,7 +112,7 @@ $resolvedInputProbe = $null
 if (-not [string]::IsNullOrWhiteSpace($InputProbePath)) {
     $resolvedInputProbe = (Resolve-Path -LiteralPath $InputProbePath -ErrorAction Stop).Path
     if ([IO.Path]::GetExtension($resolvedInputProbe) -ine '.exe') {
-        throw "The native HID input probe must be an executable: '$resolvedInputProbe'."
+        throw "The native HID input/output probe must be an executable: '$resolvedInputProbe'."
     }
 }
 
@@ -166,6 +166,6 @@ finally {
 
 $verifierSuffix = if ($RequireDriverVerifier) { ' with Driver Verifier active' } else { '' }
 $mediaSuffix = if ($null -ne $resolvedMediaProbe) { ' with full-duplex CoreAudio media' } else { '' }
-$inputSuffix = if ($null -ne $resolvedInputProbe) { ' with end-to-end HID latency' } else { '' }
+$inputSuffix = if ($null -ne $resolvedInputProbe) { ' with end-to-end HID input latency and output feedback' } else { '' }
 $restartSuffix = if ($RestartRootDevice) { ' with active root-device restart recovery' } else { '' }
-Write-Host "VIIPER UDE live lifecycle/input validation passed for $Iterations iteration(s)$verifierSuffix$mediaSuffix$inputSuffix$restartSuffix."
+Write-Host "VIIPER UDE live lifecycle/HID/media validation passed for $Iterations iteration(s)$verifierSuffix$mediaSuffix$inputSuffix$restartSuffix."

@@ -163,14 +163,16 @@ std::set<std::wstring> ReadSnapshot(const std::filesystem::path& path) {
 struct OpenHid final {
     Handle file;
     USHORT inputReportLength = 0;
+    USHORT outputReportLength = 0;
     std::wstring path;
 };
 
 std::unique_ptr<OpenHid> TryOpenGamepad(
     const std::wstring& path,
     USHORT vendorId,
-    USHORT productId) {
-    Handle file(CreateFileW(path.c_str(), GENERIC_READ,
+    USHORT productId,
+    DWORD desiredAccess) {
+    Handle file(CreateFileW(path.c_str(), desiredAccess,
         FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
         FILE_FLAG_OVERLAPPED, nullptr));
     if (!file.valid()) return nullptr;
@@ -194,6 +196,7 @@ std::unique_ptr<OpenHid> TryOpenGamepad(
     auto result = std::make_unique<OpenHid>();
     result->file = std::move(file);
     result->inputReportLength = caps.InputReportByteLength;
+    result->outputReportLength = caps.OutputReportByteLength;
     result->path = path;
     return result;
 }
@@ -202,13 +205,14 @@ std::unique_ptr<OpenHid> WaitForNewGamepad(
     const std::set<std::wstring>& baseline,
     USHORT vendorId,
     USHORT productId,
+    DWORD desiredAccess,
     std::chrono::seconds timeout) {
     const auto deadline = std::chrono::steady_clock::now() + timeout;
     do {
         std::unique_ptr<OpenHid> match;
         for (const auto& path : EnumerateHidPaths()) {
             if (baseline.contains(path)) continue;
-            auto candidate = TryOpenGamepad(path, vendorId, productId);
+            auto candidate = TryOpenGamepad(path, vendorId, productId, desiredAccess);
             if (!candidate) continue;
             if (match) {
                 throw std::runtime_error(
@@ -231,6 +235,25 @@ std::uint32_t ParseUnsigned(const wchar_t* value, const wchar_t* name, std::uint
     return static_cast<std::uint32_t>(parsed);
 }
 
+void CancelAndDrainOverlapped(HANDLE file, OVERLAPPED& overlapped) {
+    if (!CancelIoEx(file, &overlapped)) {
+        const DWORD error = GetLastError();
+        if (error != ERROR_NOT_FOUND) {
+            throw std::runtime_error(
+                "CancelIoEx failed with Win32 error " + std::to_string(error));
+        }
+    }
+    DWORD ignored = 0;
+    if (!GetOverlappedResult(file, &overlapped, &ignored, TRUE)) {
+        const DWORD error = GetLastError();
+        if (error != ERROR_OPERATION_ABORTED && error != ERROR_NOT_FOUND) {
+            throw std::runtime_error(
+                "draining cancelled overlapped I/O failed with Win32 error " +
+                std::to_string(error));
+        }
+    }
+}
+
 int Measure(
     const std::filesystem::path& snapshotPath,
     USHORT vendorId,
@@ -239,7 +262,7 @@ int Measure(
     std::size_t sampleCount) {
     const auto baseline = ReadSnapshot(snapshotPath);
     auto device = WaitForNewGamepad(
-        baseline, vendorId, productId, std::chrono::seconds(30));
+        baseline, vendorId, productId, GENERIC_READ, std::chrono::seconds(30));
     if (markerOffset >= device->inputReportLength) {
         throw std::runtime_error("marker offset exceeds the HID input report length");
     }
@@ -288,7 +311,7 @@ int Measure(
                 wait = WaitForSingleObject(event.get(), waitMilliseconds);
             }
             if (wait == WAIT_TIMEOUT) {
-                CancelIoEx(device->file.get(), &overlapped);
+                CancelAndDrainOverlapped(device->file.get(), overlapped);
                 break;
             }
             if (wait != WAIT_OBJECT_0 ||
@@ -307,9 +330,99 @@ int Measure(
         ++matches;
     }
     if (matches != sampleCount) {
-        CancelIoEx(device->file.get(), &overlapped);
         throw std::runtime_error("timed out before observing every unique input marker");
     }
+    return 0;
+}
+
+std::vector<std::uint8_t> BuildFeedbackReport(
+    const std::wstring& controllerKind,
+    USHORT outputReportLength) {
+    if (_wcsicmp(controllerKind.c_str(), L"dualshock4") == 0) {
+        if (outputReportLength != 32) {
+            throw std::runtime_error(
+                "DualShock 4 HID output report length is not the expected 32 bytes");
+        }
+        std::vector<std::uint8_t> report(outputReportLength);
+        report[0] = 0x05;
+        report[4] = 0x23;
+        report[5] = 0xA7;
+        report[6] = 0x11;
+        report[7] = 0x52;
+        report[8] = 0xC3;
+        report[9] = 0x04;
+        report[10] = 0x09;
+        return report;
+    }
+    if (_wcsicmp(controllerKind.c_str(), L"dualsense") == 0 ||
+        _wcsicmp(controllerKind.c_str(), L"dualsense-edge") == 0) {
+        if (outputReportLength != 48) {
+            throw std::runtime_error(
+                "DualSense HID output report length is not the expected 48 bytes");
+        }
+        std::vector<std::uint8_t> report(outputReportLength);
+        report[0] = 0x02;
+        report[1] = 0x0F; // compatible rumble and both adaptive triggers
+        report[2] = 0x14; // player LEDs and lightbar
+        report[3] = 0x22;
+        report[4] = 0x88;
+        report[11] = 0x21;
+        report[12] = 0xFC;
+        report[13] = 0x03;
+        report[20] = 0x44;
+        report[22] = 0x25;
+        report[23] = 0x40;
+        report[24] = 0x05;
+        report[31] = 0x55;
+        report[44] = 0x24;
+        report[45] = 0x11;
+        report[46] = 0x52;
+        report[47] = 0xC3;
+        return report;
+    }
+    throw std::runtime_error("unsupported feedback controller kind");
+}
+
+int SendFeedback(
+    const std::filesystem::path& snapshotPath,
+    USHORT vendorId,
+    USHORT productId,
+    const std::wstring& controllerKind) {
+    const auto baseline = ReadSnapshot(snapshotPath);
+    auto device = WaitForNewGamepad(
+        baseline, vendorId, productId, GENERIC_READ | GENERIC_WRITE,
+        std::chrono::seconds(30));
+    if (device->outputReportLength == 0) {
+        throw std::runtime_error("the virtual HID gamepad has no output report");
+    }
+    auto report = BuildFeedbackReport(controllerKind, device->outputReportLength);
+
+    Handle event(CreateEventW(nullptr, TRUE, FALSE, nullptr));
+    if (!event.valid()) throw std::runtime_error(Win32Error("CreateEvent"));
+    OVERLAPPED overlapped{};
+    overlapped.hEvent = event.get();
+    DWORD transferred = 0;
+    BOOL completed = WriteFile(device->file.get(), report.data(),
+        static_cast<DWORD>(report.size()), &transferred, &overlapped);
+    if (!completed) {
+        const DWORD error = GetLastError();
+        if (error != ERROR_IO_PENDING) {
+            throw std::runtime_error(Win32Error("WriteFile(HID output)"));
+        }
+        const DWORD wait = WaitForSingleObject(event.get(), 10000);
+        if (wait == WAIT_TIMEOUT) {
+            CancelAndDrainOverlapped(device->file.get(), overlapped);
+            throw std::runtime_error("timed out writing the HID output report");
+        }
+        if (wait != WAIT_OBJECT_0 ||
+            !GetOverlappedResult(device->file.get(), &overlapped, &transferred, FALSE)) {
+            throw std::runtime_error(Win32Error("GetOverlappedResult(HID output)"));
+        }
+    }
+    if (transferred != static_cast<DWORD>(report.size())) {
+        throw std::runtime_error("the HID output report completed with a short write");
+    }
+    std::cout << "WROTE " << transferred << " " << WideToUtf8(device->path) << "\n";
     return 0;
 }
 
@@ -334,9 +447,18 @@ int wmain(int argc, wchar_t** argv) {
             if (samples == 0) throw std::runtime_error("sample count must be nonzero");
             return Measure(argv[2], vendorId, productId, offset, samples);
         }
+        if (argc == 7 && _wcsicmp(argv[1], L"feedback") == 0) {
+            const auto vendorId = static_cast<USHORT>(ParseUnsigned(argv[3], L"vendor ID", 0xFFFF));
+            const auto productId = static_cast<USHORT>(ParseUnsigned(argv[4], L"product ID", 0xFFFF));
+            if (wcscmp(argv[6], L"hid-output-v1") != 0) {
+                throw std::runtime_error("unsupported HID output probe contract");
+            }
+            return SendFeedback(argv[2], vendorId, productId, argv[5]);
+        }
         std::wcerr << L"Usage:\n"
                    << L"  ViiperUdeInputProbe.exe snapshot <snapshot-path>\n"
-                   << L"  ViiperUdeInputProbe.exe measure <snapshot-path> <vid> <pid> <offset> <samples> qpc-v1\n";
+                   << L"  ViiperUdeInputProbe.exe measure <snapshot-path> <vid> <pid> <offset> <samples> qpc-v1\n"
+                   << L"  ViiperUdeInputProbe.exe feedback <snapshot-path> <vid> <pid> <controller-kind> hid-output-v1\n";
         return 2;
     } catch (const std::exception& error) {
         std::cerr << "VIIPER UDE input probe failed: " << error.what() << "\n";

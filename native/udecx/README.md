@@ -39,11 +39,13 @@ Directory contract:
   WASAPI, and lets the signed-driver test require real ISO traffic and bytes in
   both directions rather than treating endpoint enumeration as media success.
 - `tools/ViiperUdeInputProbe.cpp` follows Microsoft's HIDClass discovery and
-  continuous `ReadFile` contract. It snapshots existing HID collections,
-  opens only the newly enumerated matching gamepad, and timestamps unique
-  state markers with the system-wide performance counter. The signed live
-  gate measures the complete publisher-to-Windows-HID path instead of an
-  internal queue approximation.
+  continuous `ReadFile`/`WriteFile` contracts. It snapshots existing HID
+  collections, opens only the newly enumerated matching gamepad, timestamps
+  unique state markers with the system-wide performance counter, and writes a
+  versioned feedback marker containing rumble, LEDs, and adaptive-trigger
+  state. The signed live gate therefore measures the complete
+  publisher-to-Windows-HID path and proves the reverse HIDClass-to-device
+  path instead of trusting internal queue approximations.
 - ABI, lifecycle, descriptor, cancellation, and fault tests live beside the Go
   broker packages and in the native-driver CI gates.
 
@@ -123,7 +125,12 @@ sampled immediately before publication and when a continuous HID `ReadFile`
 observes the matching report. The release gate requires p95 <= 4 ms,
 p99 <= 8 ms, and maximum <= 20 ms, including user-mode scheduling, the native
 IOCTL, UdeCx, and HIDClass. These are measured long-tail limits, not claims
-derived from the nominal USB polling interval.
+derived from the nominal USB polling interval. The same newly enumerated HID
+collection must then accept a full-length overlapped `WriteFile`; exact
+DualShock 4 rumble/lightbar data or exact DualSense rumble, lightbar, player
+LED, and left/right adaptive-trigger data must arrive at the corresponding
+VIIPER device callback, and the driver's completion and host-to-device byte
+counters must advance.
 On Windows 10 2004 or newer, `-RestartRootDevice -DisposableTestMachine`
 restarts the exact signed root devnode with a live DualSense child and input
 publisher. The invalidated owner must terminate, the restarted controller must

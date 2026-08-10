@@ -412,6 +412,13 @@ stall an independent pad's registration or removal.
   DualSense, and DualSense Edge must remain at or below 4 ms p95, 8 ms p99,
   and 20 ms maximum publisher-to-HID latency. These gates include user-mode
   scheduling and prevent a nominal polling-rate claim from hiding tail stalls.
+- That same signed live HID gate writes a full output report through the newly
+  enumerated HIDClass collection. The exact marker must survive UdeCx and the
+  native broker into DualShock 4 rumble/lightbar feedback and DualSense rumble,
+  player/lightbar LED, and both adaptive-trigger blocks; kernel operation,
+  completion, and host-to-device byte counters must advance. Unit-level
+  processor tests alone are not accepted as proof of Windows game-feedback
+  delivery.
 - Installation is signed, reversible, version-gated, and never replaces a live
   kernel driver across an unsafe reboot boundary.
 - The INF's Windows 10 1809 floor and the linked KMDF contract remain aligned:

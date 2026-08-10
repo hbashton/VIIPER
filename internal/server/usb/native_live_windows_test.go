@@ -26,6 +26,7 @@ import (
 	serverusb "github.com/Alia5/VIIPER/internal/server/usb"
 	"github.com/Alia5/VIIPER/internal/transport/udecx"
 	usbdevice "github.com/Alia5/VIIPER/usb"
+	"github.com/Alia5/VIIPER/usbip"
 	"golang.org/x/sys/windows"
 )
 
@@ -44,7 +45,85 @@ type liveNativeController struct {
 	vendorID          uint16
 	productID         uint16
 	inputMarkerOffset uint16
+	feedbackProbeKind string
+	feedbackReportLen uint64
+	armFeedbackProbe  func(usbdevice.Device) (func(context.Context) error, error)
 	new               func() (usbdevice.Device, func(uint64), func(byte), error)
+}
+
+func armDualShock4FeedbackProbe(dev usbdevice.Device) (func(context.Context) error, error) {
+	controller, ok := dev.(*dualshock4.DualShock4)
+	if !ok {
+		return nil, fmt.Errorf("feedback probe expected *dualshock4.DualShock4, got %T", dev)
+	}
+	want := dualshock4.OutputState{
+		RumbleSmall: 0x23, RumbleLarge: 0xA7,
+		LedRed: 0x11, LedGreen: 0x52, LedBlue: 0xC3,
+		FlashOn: 0x04, FlashOff: 0x09,
+	}
+	done := make(chan struct{})
+	var matched sync.Once
+	controller.SetOutputCallback(func(got dualshock4.OutputState) {
+		if got == want {
+			matched.Do(func() { close(done) })
+		}
+	})
+	return func(ctx context.Context) error {
+		select {
+		case <-done:
+			return nil
+		case <-ctx.Done():
+			return fmt.Errorf("DualShock 4 feedback marker did not reach the device engine: %w", ctx.Err())
+		}
+	}, nil
+}
+
+func armDualSenseFeedbackProbe(dev usbdevice.Device) (func(context.Context) error, error) {
+	controller, ok := dev.(*dualsense.DualSense)
+	if !ok {
+		return nil, fmt.Errorf("feedback probe expected *dualsense.DualSense, got %T", dev)
+	}
+	var want [dualsense.OutputReportSize]byte
+	want[0] = dualsense.ReportIDOutput
+	want[1] = 0x0F
+	want[2] = 0x14
+	want[3] = 0x22
+	want[4] = 0x88
+	want[11] = 0x21
+	want[12] = 0xFC
+	want[13] = 0x03
+	want[20] = 0x44
+	want[22] = 0x25
+	want[23] = 0x40
+	want[24] = 0x05
+	want[31] = 0x55
+	want[44] = 0x24
+	want[45] = 0x11
+	want[46] = 0x52
+	want[47] = 0xC3
+
+	done := make(chan struct{})
+	var matched sync.Once
+	controller.SetOutputCallback(func(got dualsense.OutputState) {
+		if got.RawOutputReport == want &&
+			got.RumbleSmall == 0x22 && got.RumbleLarge == 0x88 &&
+			got.LedRed == 0x11 && got.LedGreen == 0x52 && got.LedBlue == 0xC3 &&
+			got.PlayerLeds == 0x24 &&
+			got.TriggerR2Mode == 0x21 && got.TriggerR2StartResistance == 0xFC &&
+			got.TriggerR2EffectForce == 0x03 && got.TriggerR2Frequency == 0x44 &&
+			got.TriggerL2Mode == 0x25 && got.TriggerL2StartResistance == 0x40 &&
+			got.TriggerL2EffectForce == 0x05 && got.TriggerL2Frequency == 0x55 {
+			matched.Do(func() { close(done) })
+		}
+	})
+	return func(ctx context.Context) error {
+		select {
+		case <-done:
+			return nil
+		case <-ctx.Done():
+			return fmt.Errorf("DualSense feedback marker did not reach the device engine: %w", ctx.Err())
+		}
+	}, nil
 }
 
 func liveNativeControllers() []liveNativeController {
@@ -59,6 +138,8 @@ func liveNativeControllers() []liveNativeController {
 		}},
 		{name: "DualShock4", vendorID: dualshock4.DefaultVID,
 			productID: dualshock4.DefaultPID, inputMarkerOffset: 1,
+			feedbackProbeKind: "dualshock4", feedbackReportLen: 32,
+			armFeedbackProbe: armDualShock4FeedbackProbe,
 			new: func() (usbdevice.Device, func(uint64), func(byte), error) {
 				dev, err := dualshock4.New(nil)
 				return dev, func(sequence uint64) {
@@ -73,6 +154,8 @@ func liveNativeControllers() []liveNativeController {
 			}},
 		{name: "DualSense", vendorID: dualsense.DefaultVID,
 			productID: dualsense.DefaultPIDDS, inputMarkerOffset: 1,
+			feedbackProbeKind: "dualsense", feedbackReportLen: dualsense.OutputReportSize,
+			armFeedbackProbe: armDualSenseFeedbackProbe,
 			new: func() (usbdevice.Device, func(uint64), func(byte), error) {
 				dev, err := dualsense.New(nil)
 				return dev, func(sequence uint64) {
@@ -87,6 +170,8 @@ func liveNativeControllers() []liveNativeController {
 			}},
 		{name: "DualSenseEdge", vendorID: dualsense.DefaultVID,
 			productID: dualsense.DefaultPIDDSEdge, inputMarkerOffset: 3,
+			feedbackProbeKind: "dualsense-edge", feedbackReportLen: dualsense.OutputReportSize,
+			armFeedbackProbe: armDualSenseFeedbackProbe,
 			new: func() (usbdevice.Device, func(uint64), func(byte), error) {
 				dev, err := dualsense.NewEdge(nil)
 				return dev, func(sequence uint64) {
@@ -107,6 +192,51 @@ func liveNativeControllers() []liveNativeController {
 				dev.UpdateInputState(*state)
 			}, nil, err
 		}},
+	}
+}
+
+func TestNativeLiveFeedbackProbeContracts(t *testing.T) {
+	for _, controller := range liveNativeControllers()[1:4] {
+		controller := controller
+		t.Run(controller.name, func(t *testing.T) {
+			dev, _, _, err := controller.new()
+			if err != nil {
+				t.Fatal(err)
+			}
+			waitForFeedback, err := controller.armFeedbackProbe(dev)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			var endpoint uint8
+			var report []byte
+			switch controller.feedbackProbeKind {
+			case "dualshock4":
+				endpoint = dualshock4.EndpointOut
+				report = make([]byte, 32)
+				report[0] = dualshock4.ReportIDOutput
+				report[4], report[5] = 0x23, 0xA7
+				report[6], report[7], report[8] = 0x11, 0x52, 0xC3
+				report[9], report[10] = 0x04, 0x09
+			case "dualsense", "dualsense-edge":
+				endpoint = dualsense.EndpointOut
+				report = make([]byte, dualsense.OutputReportSize)
+				report[0], report[1], report[2] = dualsense.ReportIDOutput, 0x0F, 0x14
+				report[3], report[4] = 0x22, 0x88
+				report[11], report[12], report[13], report[20] = 0x21, 0xFC, 0x03, 0x44
+				report[22], report[23], report[24], report[31] = 0x25, 0x40, 0x05, 0x55
+				report[44], report[45], report[46], report[47] = 0x24, 0x11, 0x52, 0xC3
+			default:
+				t.Fatalf("unsupported feedback probe kind %q", controller.feedbackProbeKind)
+			}
+
+			dev.HandleTransfer(context.Background(), uint32(endpoint), usbip.DirOut, report)
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			if err = waitForFeedback(ctx); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
 
@@ -363,6 +493,15 @@ func TestNativeUDELiveProductionControllers(t *testing.T) {
 				if createErr != nil {
 					t.Fatalf("construct %s: %v", controller.name, createErr)
 				}
+				feedbackController := iteration == 1 && inputProbe != "" &&
+					controller.armFeedbackProbe != nil
+				var waitForFeedback func(context.Context) error
+				if feedbackController {
+					waitForFeedback, createErr = controller.armFeedbackProbe(dev)
+					if createErr != nil {
+						t.Fatalf("arm %s HID feedback probe: %v", controller.name, createErr)
+					}
+				}
 				mediaSnapshot := ""
 				mediaController := iteration == 1 && mediaProbe != "" &&
 					(controller.name == "DualShock4" || controller.name == "DualSense")
@@ -380,7 +519,7 @@ func TestNativeUDELiveProductionControllers(t *testing.T) {
 				}
 				inputSnapshot := ""
 				inputController := iteration == 1 && inputProbe != "" && publishMarker != nil
-				if inputController {
+				if inputController || feedbackController {
 					snapshot, snapshotErr := os.CreateTemp("", "viiper-ude-input-*.snapshot")
 					if snapshotErr != nil {
 						t.Fatalf("create input endpoint snapshot: %v", snapshotErr)
@@ -446,6 +585,34 @@ func TestNativeUDELiveProductionControllers(t *testing.T) {
 				if inputController {
 					runLiveInputLatencyProbe(
 						t, testCtx, inputProbe, inputSnapshot, controller, publishMarker)
+				}
+				if feedbackController {
+					feedbackBefore, feedbackErr := client.QueryStats(testCtx)
+					if feedbackErr != nil {
+						t.Fatalf("query %s feedback baseline: %v", controller.name, feedbackErr)
+					}
+					probeOutput := runLiveMediaProbe(t, testCtx, inputProbe,
+						"feedback", inputSnapshot,
+						fmt.Sprintf("0x%04X", controller.vendorID),
+						fmt.Sprintf("0x%04X", controller.productID),
+						controller.feedbackProbeKind, "hid-output-v1")
+					feedbackCtx, cancelFeedback := context.WithTimeout(testCtx, 10*time.Second)
+					if feedbackErr = waitForFeedback(feedbackCtx); feedbackErr != nil {
+						cancelFeedback()
+						t.Fatalf("%s HID output was not preserved end to end: %v; probe=%s",
+							controller.name, feedbackErr, probeOutput)
+					}
+					feedbackAfter, waitErr := waitForNativeStats(feedbackCtx, client,
+						controller.name+" HID output completion", func(stats udecx.Stats) bool {
+							return stats.OperationsDequeued > feedbackBefore.OperationsDequeued &&
+								stats.OperationsCompleted > feedbackBefore.OperationsCompleted &&
+								stats.BytesToDevice >= feedbackBefore.BytesToDevice+controller.feedbackReportLen
+						})
+					cancelFeedback()
+					if waitErr != nil {
+						t.Fatalf("%s HID output did not complete through the native driver: %v; before=%+v after=%+v probe=%s",
+							controller.name, waitErr, feedbackBefore, feedbackAfter, probeOutput)
+					}
 				}
 
 				inputDeadline := time.Now().Add(750 * time.Millisecond)
