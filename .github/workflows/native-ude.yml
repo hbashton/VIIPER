@@ -31,6 +31,13 @@ permissions:
   contents: read
   security-events: write
 
+# A driver artifact is meaningful only for the exact current branch head.
+# Cancel superseded WDK/CodeQL work instead of letting several incompatible
+# ABI revisions finish and present equally downloadable test packages.
+concurrency:
+  group: native-ude-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   protocol:
     runs-on: windows-2025
