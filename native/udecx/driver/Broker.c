@@ -694,14 +694,19 @@ ViiperIsoFrameSpan(
         ViiperGetDeviceContext(EndpointContext->Device);
     ULONGLONG span;
 
-    if (PacketCount == 0 || interval == 0 || interval > 16) {
+    if (PacketCount == 0 || interval == 0) {
         return PacketCount == 0 ? 1 : PacketCount;
     }
     if (deviceContext->Speed == UdecxUsbHighSpeed ||
         deviceContext->Speed == UdecxUsbSuperSpeed) {
+        if (interval > 16) {
+            // UdeCx should reject an invalid high-speed descriptor before an
+            // URB reaches us. Keep the fallback bounded if it does not.
+            return PacketCount;
+        }
         // High/SuperSpeed bInterval is an exponent in 125-us microframes,
         // while URB StartFrame is expressed in one-millisecond USB frames.
-        span = (ULONGLONG)PacketCount * (1UL << (interval - 1));
+        span = (ULONGLONG)PacketCount * ((ULONGLONG)1 << (interval - 1));
         span = (span + 7) / 8;
     } else {
         span = (ULONGLONG)PacketCount * interval;

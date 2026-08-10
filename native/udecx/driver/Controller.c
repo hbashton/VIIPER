@@ -86,6 +86,10 @@ ViiperEvtQueryUsbCapability(
         RtlEqualMemory(
             CapabilityType,
             &GUID_USB_CAPABILITY_DEVICE_CONNECTION_HIGH_SPEED_COMPATIBLE,
+            sizeof(GUID)) ||
+        RtlEqualMemory(
+            CapabilityType,
+            &GUID_USB_CAPABILITY_DEVICE_CONNECTION_SUPER_SPEED_COMPATIBLE,
             sizeof(GUID))) {
         return STATUS_SUCCESS;
     }

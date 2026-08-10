@@ -17,6 +17,10 @@ after transfer ordering, cancellation, teardown, and recovery are proven.
   cancelled before `UdecxUsbEndpointPurgeComplete` is called.
 - The local usbip-win2 0.9.7.8 reference proves that UdeCx can expose VIIPER's
   bidirectional isochronous PlayStation audio topology on Windows.
+- Its controller contract also reports chained-MDL, high-speed, and SuperSpeed
+  compatibility for a root controller with USB 2 and USB 3 ports. VIIPER
+  mirrors that capability set and explicitly forwards post-enumeration child
+  resets into the generation-owned lifecycle stream.
 - ViGEmBus provides the lifecycle north star: explicit protocol negotiation,
   handle-scoped ownership, bounded manual queues, cancel-safe requests,
   generation-aware target teardown, and synchronization per target rather than

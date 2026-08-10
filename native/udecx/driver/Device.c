@@ -384,6 +384,7 @@ ViiperCreateVirtualDevice(
     UDECX_USB_DEVICE_CALLBACKS_INIT(&callbacks);
     callbacks.EvtUsbDeviceLinkPowerEntry = ViiperEvtUsbDeviceD0Entry;
     callbacks.EvtUsbDeviceLinkPowerExit = ViiperEvtUsbDeviceD0Exit;
+    callbacks.EvtUsbDeviceReset = ViiperEvtUsbDeviceReset;
     if (speed == UdecxUsbSuperSpeed) {
         callbacks.EvtUsbDeviceSetFunctionSuspendAndWake =
             ViiperEvtUsbDeviceSetFunctionSuspendAndWake;
@@ -648,6 +649,29 @@ ViiperEvtUsbDeviceSetFunctionSuspendAndWake(
     UNREFERENCED_PARAMETER(Interface);
     UNREFERENCED_PARAMETER(FunctionPower);
     return STATUS_SUCCESS;
+}
+
+VOID
+ViiperEvtUsbDeviceReset(
+    _In_ WDFDEVICE Controller,
+    _In_ UDECXUSBDEVICE Device,
+    _In_ WDFREQUEST Request,
+    _In_ BOOLEAN AllDevicesReset
+    )
+{
+    NTSTATUS status;
+
+    UNREFERENCED_PARAMETER(Controller);
+    if (AllDevicesReset) {
+        // The controller uses UdecxWdfDeviceResetActionResetEachUsbDevice,
+        // so UdeCx must deliver one callback per child. Accepting a controller-
+        // wide reset here would make the owner lose the affected generation.
+        WdfRequestComplete(Request, STATUS_NOT_SUPPORTED);
+        return;
+    }
+
+    status = ViiperQueueDeviceLifecycleEvent(Device, ViiperUdeOperationDeviceReset);
+    WdfRequestComplete(Request, status);
 }
 
 static
