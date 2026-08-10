@@ -4,6 +4,16 @@ param(
     [string]$SignedPackageDirectory,
 
     [Parameter(Mandatory = $true)]
+    [string]$SubmissionManifestPath,
+
+    [Parameter(Mandatory = $true)]
+    [ValidatePattern('^[0-9a-fA-F]{40,64}$')]
+    [string]$ExpectedSourceRevision,
+
+    [ValidateSet('ControlledTest', 'Production')]
+    [string]$SignatureValidationMode = 'Production',
+
+    [Parameter(Mandatory = $true)]
     [string]$OutputPath,
 
     [ValidateRange(1, 1000)]
@@ -63,6 +73,9 @@ $validationFailure = $null
 
 $validationArguments = @{
     SignedPackageDirectory = $SignedPackageDirectory
+    SubmissionManifestPath = $SubmissionManifestPath
+    ExpectedSourceRevision = $ExpectedSourceRevision
+    SignatureValidationMode = $SignatureValidationMode
     Iterations             = $Iterations
 }
 if (-not [string]::IsNullOrWhiteSpace($MediaProbePath)) {

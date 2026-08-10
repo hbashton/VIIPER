@@ -16,7 +16,10 @@ Directory contract:
   explicit testing-only acknowledgement. Microsoft currently restricts
   attestation to testing scenarios; production release requires HLK/WHCP.
 - `tools/Test-ViiperUdeSignedPackage.ps1` validates the Microsoft-returned
-  driver and catalog against kernel signing policy.
+  driver and catalog against kernel signing policy, proves that INF and SYS are
+  members of that exact catalog, distinguishes testing-only attestation from
+  production HLK/WHCP signatures, and binds the returned INF/PDB to the
+  reviewed source-revision manifest.
 - `tools/Invoke-ViiperUdeLiveValidation.ps1` hash-binds that verified package
   to the installed service image and root devnode, then exercises every
   production controller through the real UdeCx host, direct interrupt-input
@@ -100,6 +103,9 @@ Microsoft-signed package with:
 ```powershell
 .\native\udecx\tools\Invoke-ViiperUdeLiveValidation.ps1 `
   -SignedPackageDirectory C:\ViiperUde\MicrosoftSigned `
+  -SubmissionManifestPath C:\ViiperUde\ViiperUde.cab.sha256.json `
+  -ExpectedSourceRevision 0123456789abcdef0123456789abcdef01234567 `
+  -SignatureValidationMode Production `
   -Iterations 10 `
   -MediaProbePath .\native\udecx\x64\Release\ViiperUdeMediaProbe.exe `
   -InputProbePath .\native\udecx\x64\Release\ViiperUdeInputProbe.exe
@@ -143,10 +149,16 @@ The Driver Verifier pass is a separate, explicit disposable-machine gate:
 ```powershell
 .\native\udecx\tools\Enable-ViiperUdeVerifierForNextBoot.ps1 `
   -SignedPackageDirectory C:\ViiperUde\MicrosoftSigned `
+  -SubmissionManifestPath C:\ViiperUde\ViiperUde.cab.sha256.json `
+  -ExpectedSourceRevision 0123456789abcdef0123456789abcdef01234567 `
+  -SignatureValidationMode Production `
   -DisposableTestMachine
 # Restart once, then:
 .\native\udecx\tools\Invoke-ViiperUdeLiveValidation.ps1 `
   -SignedPackageDirectory C:\ViiperUde\MicrosoftSigned `
+  -SubmissionManifestPath C:\ViiperUde\ViiperUde.cab.sha256.json `
+  -ExpectedSourceRevision 0123456789abcdef0123456789abcdef01234567 `
+  -SignatureValidationMode Production `
   -Iterations 10 `
   -RequireDriverVerifier `
   -RestartRootDevice `
@@ -162,6 +174,9 @@ inside WPR's bounded `GeneralProfile.Light` memory profile:
 ```powershell
 .\native\udecx\tools\Invoke-ViiperUdePerformanceValidation.ps1 `
   -SignedPackageDirectory C:\ViiperUde\MicrosoftSigned `
+  -SubmissionManifestPath C:\ViiperUde\ViiperUde.cab.sha256.json `
+  -ExpectedSourceRevision 0123456789abcdef0123456789abcdef01234567 `
+  -SignatureValidationMode Production `
   -OutputPath C:\ViiperUde\Traces\native-ude.etl `
   -MediaProbePath .\native\udecx\x64\Release\ViiperUdeMediaProbe.exe `
   -InputProbePath .\native\udecx\x64\Release\ViiperUdeInputProbe.exe

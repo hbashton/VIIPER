@@ -3,6 +3,16 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$SignedPackageDirectory,
 
+    [Parameter(Mandatory = $true)]
+    [string]$SubmissionManifestPath,
+
+    [Parameter(Mandatory = $true)]
+    [ValidatePattern('^[0-9a-fA-F]{40,64}$')]
+    [string]$ExpectedSourceRevision,
+
+    [ValidateSet('ControlledTest', 'Production')]
+    [string]$SignatureValidationMode = 'Production',
+
     [ValidateRange(1, 100)]
     [int]$Iterations = 1,
 
@@ -46,7 +56,11 @@ if ([string]::IsNullOrWhiteSpace($RepositoryRoot)) {
 }
 $repository = (Resolve-Path -LiteralPath $RepositoryRoot -ErrorAction Stop).Path
 $signatureGate = Join-Path $PSScriptRoot 'Test-ViiperUdeSignedPackage.ps1'
-& $signatureGate -PackageDirectory $SignedPackageDirectory
+& $signatureGate `
+    -PackageDirectory $SignedPackageDirectory `
+    -SubmissionManifestPath $SubmissionManifestPath `
+    -ExpectedSourceRevision $ExpectedSourceRevision `
+    -ValidationMode $SignatureValidationMode
 
 $packageRoot = (Resolve-Path -LiteralPath $SignedPackageDirectory -ErrorAction Stop).Path
 $packageDrivers = @(Get-ChildItem -LiteralPath $packageRoot -Recurse -File -Filter 'ViiperUde.sys')

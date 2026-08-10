@@ -28,8 +28,10 @@ the public VIIPER driver.
 4. Submit the signed CAB through the applicable Partner Center testing flow.
 5. Download Microsoft's returned package and run
    `native/udecx/tools/Test-ViiperUdeSignedPackage.ps1`. It requires valid
-   Microsoft kernel-policy signatures on both the SYS and catalog and reruns
-   INF verification when the WDK tool is available.
+   Microsoft kernel-policy signatures on both the SYS and catalog, proves the
+   INF and SYS are members of that exact catalog, requires the testing-only
+   attestation EKU, binds the unchanged INF/PDB to the source-revision sidecar,
+   and requires both WHQL-aligned and Universal INF verification.
 6. Hash-lock only that validated Microsoft-signed package into the installer.
 
 The structural CAB produced by CI is not installable production media. It has
@@ -45,7 +47,9 @@ dashboard-signed drivers for release; WHCP is required for retail Windows
 Update publication. Run the controller and child devices through the
 applicable Device Fundamentals, USB, HID, audio, power, reliability, and
 security playlists, submit the resulting HLKX package, and validate the
-dashboard-signed result with the same local validation script.
+dashboard-signed result with the same local validation script in `Production`
+mode. That mode rejects the attestation EKU and requires a release-eligible
+`HLK/WHCP` evidence manifest bound to the reviewed source revision.
 
 ## Package invariants
 
@@ -55,6 +59,11 @@ dashboard-signed result with the same local validation script.
 - The INF targets only `ROOT\VIIPER\UDE`, copies only `ViiperUde.sys`, and
   names only `ViiperUde.cat`.
 - The build and submission hash manifests identify the exact reviewed bits.
+- Returned packages contain only the canonical INF, SYS, PDB, and CAT in one
+  directory. The unchanged INF/PDB must match the submission manifest, and
+  SignTool must prove INF/SYS membership in the returned Microsoft catalog.
+- Controlled-test and production signatures are separate validation modes;
+  an attestation EKU can never satisfy the production release gate.
 - Test certificates, test-signing state, or disabled Secure Boot are never a
   release prerequisite.
 - The installer refuses an unsigned, test-signed, mismatched, downgraded, or

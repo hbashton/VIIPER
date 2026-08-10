@@ -168,6 +168,7 @@ try {
         schema = 1
         purpose = 'Microsoft Hardware Dev Center controlled-test attestation submission; not a retail release package'
         releaseEligible = $false
+        signingRoute = 'ControlledTestAttestation'
         requiredProductionRoute = 'HLK/WHCP dashboard signing'
         sourceRevision = $SourceRevision.ToLowerInvariant()
         cabinet = [System.IO.Path]::GetFileName($outputFullPath)
