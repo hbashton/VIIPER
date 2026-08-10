@@ -33,6 +33,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: microsoft/setup-msbuild@v2
+        with:
+          msbuild-architecture: x64
       - uses: NuGet/setup-nuget@v2
       - name: Restore WDK packages
         run: nuget restore native/udecx/ViiperUde.sln -PackagesDirectory native/udecx/packages -NonInteractive
@@ -49,6 +51,7 @@ jobs:
         with:
           name: ViiperUde-x64-test-signed
           path: |
+            native/udecx/x64/Release/**
             native/udecx/driver/x64/Release/**
             native/udecx/package/x64/Release/**
           if-no-files-found: error

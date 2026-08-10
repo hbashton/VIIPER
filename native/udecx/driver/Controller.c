@@ -89,6 +89,10 @@ ViiperEvtDeviceAdd(
     if (!NT_SUCCESS(status)) {
         return status;
     }
+    status = WdfWaitLockCreate(&attributes, &context->DeviceLock);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
 
     status = WdfDeviceCreateDeviceInterface(device, &GUID_DEVINTERFACE_VIIPER_UDE, NULL);
     if (!NT_SUCCESS(status)) {
@@ -97,7 +101,7 @@ ViiperEvtDeviceAdd(
 
     UDECX_WDF_DEVICE_CONFIG_INIT(&udeConfig, ViiperEvtQueryUsbCapability);
     udeConfig.NumberOfUsb20Ports = (USHORT)VIIPER_UDE_MAX_DEVICES;
-    udeConfig.NumberOfUsb30Ports = 0;
+    udeConfig.NumberOfUsb30Ports = (USHORT)VIIPER_UDE_MAX_DEVICES;
     status = UdecxWdfDeviceAddUsbDeviceEmulation(device, &udeConfig);
     if (!NT_SUCCESS(status)) {
         return status;
@@ -115,6 +119,9 @@ ViiperEvtControllerCleanup(
 
     PAGED_CODE();
     context = ViiperGetControllerContext((WDFDEVICE)ControllerObject);
+    if (context->DefaultQueue != WDF_NO_HANDLE) {
+        WdfIoQueuePurgeSynchronously(context->DefaultQueue);
+    }
     if (context->WaitingDequeues != WDF_NO_HANDLE) {
         WdfIoQueuePurgeSynchronously(context->WaitingDequeues);
     }
@@ -140,6 +147,7 @@ ViiperEvtFileCreate(
         fileContext = ViiperGetFileContext(FileObject);
         RtlZeroMemory(fileContext, sizeof(*fileContext));
         context->OwnerFile = FileObject;
+        WdfIoQueueStart(context->DefaultQueue);
         WdfIoQueueStart(context->WaitingDequeues);
     }
     WdfWaitLockRelease(context->OwnerLock);
@@ -169,8 +177,16 @@ ViiperEvtFileCleanup(
     }
     WdfWaitLockRelease(context->OwnerLock);
 
-    if (ownsController && context->WaitingDequeues != WDF_NO_HANDLE) {
-        WdfIoQueuePurgeSynchronously(context->WaitingDequeues);
+    if (ownsController) {
+        if (context->DefaultQueue != WDF_NO_HANDLE) {
+            WdfIoQueuePurgeSynchronously(context->DefaultQueue);
+        }
+        if (context->WaitingDequeues != WDF_NO_HANDLE) {
+            WdfIoQueuePurgeSynchronously(context->WaitingDequeues);
+        }
+    }
+    if (ownsController) {
+        ViiperDestroyOwnedDevices(device, FileObject);
     }
 
     if (ownsController) {

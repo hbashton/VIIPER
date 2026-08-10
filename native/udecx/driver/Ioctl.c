@@ -163,6 +163,12 @@ ViiperEvtIoDeviceControl(
     case IOCTL_VIIPER_UDE_QUERY_STATS:
         status = ViiperHandleQueryStats(Queue, Request);
         break;
+    case IOCTL_VIIPER_UDE_CREATE_DEVICE:
+        status = ViiperCreateVirtualDevice(Queue, Request);
+        break;
+    case IOCTL_VIIPER_UDE_DESTROY_DEVICE:
+        status = ViiperDestroyVirtualDevice(Queue, Request);
+        break;
     default:
         status = UdecxWdfDeviceTryHandleUserIoctl(WdfIoQueueGetDevice(Queue), Request)
             ? STATUS_PENDING
@@ -174,4 +180,3 @@ ViiperEvtIoDeviceControl(
         WdfRequestComplete(Request, status);
     }
 }
-
