@@ -60,6 +60,8 @@ type Client struct {
 	completionPort windows.Handle
 	pumpDone       chan struct{}
 	pumpErr        error
+	closeDone      chan struct{}
+	closeErr       error
 	requestPool    sync.Pool
 	completionPool sync.Pool
 	// Windows suppresses IOCP packets only for operations that return success
@@ -70,6 +72,15 @@ type Client struct {
 	driverNonce                 uint64
 	capabilities                Capabilities
 	limits                      NegotiateResponse
+	// pendingObserver is a package-private synchronization seam for the
+	// Windows IOCP stress harness. Production clients leave it nil. It runs
+	// only after the overlapped issuer has returned ERROR_IO_PENDING, so tests can
+	// trigger cancellation and close without scheduler sleeps.
+	pendingObserver func(*ioRequest)
+	// overlappedIssuer lets the Windows-only stress harness substitute another
+	// real overlapped kernel request for DeviceIoControl. Production clients
+	// leave it nil and always issue the native UDE IOCTL below.
+	overlappedIssuer func(windows.Handle, *windows.Overlapped) (uint32, error)
 }
 
 type ioCompletion struct {
@@ -149,28 +160,46 @@ func enableSkipCompletionPortOnSuccess(handle windows.Handle) bool {
 func (c *Client) Close() error {
 	c.mu.Lock()
 	if c.handle == 0 || c.handle == windows.InvalidHandle {
+		closeDone := c.closeDone
+		closeErr := c.closeErr
 		c.mu.Unlock()
-		return nil
+		if closeDone == nil {
+			return closeErr
+		}
+		<-closeDone
+		c.mu.RLock()
+		defer c.mu.RUnlock()
+		return c.closeErr
 	}
 	handle := c.handle
 	completionPort := c.completionPort
 	pumpDone := c.pumpDone
+	closeDone := make(chan struct{})
+	c.closeDone = closeDone
 	c.handle = windows.InvalidHandle
 	c.completionPort = windows.InvalidHandle
 	c.mu.Unlock()
 
 	_ = windows.CancelIoEx(handle, nil)
 	c.inflight.Wait()
+	var closeErr error
 	if err := windows.PostQueuedCompletionStatus(
 		completionPort, 0, completionPortCloseKey, nil); err != nil {
 		// Closing the port is the documented escape hatch for a waiter when a
 		// sentinel cannot be posted. The pump records the abandoned wait.
 		_ = windows.CloseHandle(completionPort)
 		<-pumpDone
-		return errors.Join(windows.CloseHandle(handle), err)
+		closeErr = errors.Join(windows.CloseHandle(handle), err)
+	} else {
+		<-pumpDone
+		closeErr = errors.Join(windows.CloseHandle(handle), windows.CloseHandle(completionPort))
 	}
-	<-pumpDone
-	return errors.Join(windows.CloseHandle(handle), windows.CloseHandle(completionPort))
+
+	c.mu.Lock()
+	c.closeErr = closeErr
+	close(closeDone)
+	c.mu.Unlock()
+	return closeErr
 }
 
 func (c *Client) runCompletionPort(completionPort windows.Handle) {
@@ -186,7 +215,11 @@ func (c *Client) runCompletionPort(completionPort windows.Handle) {
 				return
 			}
 			c.mu.Lock()
-			c.pumpErr = fmt.Errorf("native UDE I/O completion pump stopped: %w", err)
+			if err == nil {
+				c.pumpErr = errors.New("native UDE I/O completion pump stopped on an unexpected packet")
+			} else {
+				c.pumpErr = fmt.Errorf("native UDE I/O completion pump stopped: %w", err)
+			}
 			c.mu.Unlock()
 			return
 		}
@@ -215,6 +248,22 @@ func completionAfterCancel(result ioCompletion, contextErr error) (uint32, error
 		return 0, contextErr
 	}
 	return result.transferred, errors.Join(contextErr, result.err)
+}
+
+func completionAfterPumpStop(handle windows.Handle, request *ioRequest) ioCompletion {
+	// The pump closes pumpDone only after its last channel send. Drain that
+	// terminal packet first: if both channels were ready, select may have chosen
+	// pumpDone and leaving request.done populated would poison pooled reuse.
+	select {
+	case result := <-request.done:
+		return result
+	default:
+	}
+
+	_ = windows.CancelIoEx(handle, &request.overlapped)
+	var transferred uint32
+	err := windows.GetOverlappedResult(handle, &request.overlapped, &transferred, true)
+	return ioCompletion{transferred: transferred, err: err}
 }
 
 func (c *Client) Capabilities() Capabilities {
@@ -410,6 +459,9 @@ func (c *Client) beginIO() (windows.Handle, error) {
 	if c.handle == 0 || c.handle == windows.InvalidHandle {
 		return windows.InvalidHandle, windows.ERROR_INVALID_HANDLE
 	}
+	if c.pumpErr != nil {
+		return windows.InvalidHandle, c.pumpErr
+	}
 	c.inflight.Add(1)
 	return c.handle, nil
 }
@@ -443,11 +495,15 @@ func (c *Client) ioctl(ctx context.Context, code uint32, input, output []byte) (
 		outputPointer = &output[0]
 	}
 	var immediate uint32
-	err = windows.DeviceIoControl(
-		handle, code,
-		inputPointer, uint32(len(input)),
-		outputPointer, uint32(len(output)),
-		&immediate, &request.overlapped)
+	if c.overlappedIssuer != nil {
+		immediate, err = c.overlappedIssuer(handle, &request.overlapped)
+	} else {
+		err = windows.DeviceIoControl(
+			handle, code,
+			inputPointer, uint32(len(input)),
+			outputPointer, uint32(len(output)),
+			&immediate, &request.overlapped)
+	}
 	if err == nil && c.skipCompletionPortOnSuccess {
 		// FILE_SKIP_COMPLETION_PORT_ON_SUCCESS guarantees that no completion
 		// packet exists for this exact immediate-success operation. Returning
@@ -457,6 +513,9 @@ func (c *Client) ioctl(ctx context.Context, code uint32, input, output []byte) (
 	}
 	if err != nil && !errors.Is(err, windows.ERROR_IO_PENDING) {
 		return 0, err
+	}
+	if errors.Is(err, windows.ERROR_IO_PENDING) && c.pendingObserver != nil {
+		c.pendingObserver(request)
 	}
 
 	select {
@@ -468,15 +527,12 @@ func (c *Client) ioctl(ctx context.Context, code uint32, input, output []byte) (
 		case result := <-request.done:
 			return completionAfterCancel(result, ctx.Err())
 		case <-c.pumpDone:
-			var transferred uint32
-			_ = windows.GetOverlappedResult(handle, &request.overlapped, &transferred, true)
-			return 0, errors.Join(ctx.Err(), c.completionPumpError())
+			result := completionAfterPumpStop(handle, request)
+			return completionAfterCancel(result, errors.Join(ctx.Err(), c.completionPumpError()))
 		}
 	case <-c.pumpDone:
-		_ = windows.CancelIoEx(handle, &request.overlapped)
-		var transferred uint32
-		_ = windows.GetOverlappedResult(handle, &request.overlapped, &transferred, true)
-		return 0, c.completionPumpError()
+		result := completionAfterPumpStop(handle, request)
+		return completionAfterCancel(result, c.completionPumpError())
 	}
 }
 

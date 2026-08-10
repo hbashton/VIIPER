@@ -72,6 +72,11 @@ jobs:
           cache: true
       - name: Test complete VIIPER tree
         run: go test ./...
+      - name: Stress native Windows client cancellation, close, pump failure, and reconnect
+        run: >-
+          go test -count=10 -timeout=5m
+          -run=^TestWindowsClientIOCPStress$
+          ./internal/transport/udecx
       - name: Vet complete VIIPER tree
         run: go vet ./...
       - name: Type-check cross-transport end-to-end benchmark
