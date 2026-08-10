@@ -26,10 +26,12 @@ func TestAppendDualSenseV5SpeakerPreservesRawFrontPair(t *testing.T) {
 	}
 	destination := make([]byte, 0, dualSenseV5SpeakerPayloadSize)
 
-	if allocations := testing.AllocsPerRun(1000, func() {
-		destination = appendDualSenseV5Speaker(destination[:0], source)
-	}); allocations != 0 {
-		t.Fatalf("V5 front-channel assembler allocated %.2f objects per generation", allocations)
+	if !raceDetectorEnabled {
+		if allocations := testing.AllocsPerRun(1000, func() {
+			destination = appendDualSenseV5Speaker(destination[:0], source)
+		}); allocations != 0 {
+			t.Fatalf("V5 front-channel assembler allocated %.2f objects per generation", allocations)
+		}
 	}
 	destination = appendDualSenseV5Speaker(destination[:0], source)
 	if len(destination) != dualSenseV5SpeakerPayloadSize {
