@@ -16,6 +16,8 @@ EXTERN_C const GUID GUID_DEVINTERFACE_VIIPER_UDE;
 // Only VIIPER's private interface receives a reference string. The standard
 // host-controller interface must retain UdeCx's canonical unqualified path.
 #define VIIPER_UDE_BROKER_REFERENCE_STRING L"broker"
+#define VIIPER_UDE_MAX_PENDING_MANAGEMENT 256
+#define VIIPER_UDE_MANAGEMENT_SLOT_FLAG 0x80000000UL
 
 typedef enum VIIPER_UDE_PENDING_STATE {
     ViiperUdePendingEmpty = 0,
@@ -59,6 +61,17 @@ typedef struct VIIPER_UDE_NOTIFICATION {
     USHORT EndpointMaxPacketSize;
 } VIIPER_UDE_NOTIFICATION;
 
+typedef struct VIIPER_UDE_MANAGEMENT_SLOT {
+    WDFREQUEST Request;
+    ULONGLONG Token;
+    ULONGLONG DeviceId;
+    ULONG Generation;
+    ULONG DeviceGeneration;
+    VIIPER_UDE_PENDING_STATE State;
+    ULONG Kind;
+    UCHAR EndpointAddress;
+} VIIPER_UDE_MANAGEMENT_SLOT;
+
 typedef struct VIIPER_UDE_REQUEST_CONTEXT {
     WDFDEVICE Controller;
     UDECXUSBENDPOINT Endpoint;
@@ -80,8 +93,11 @@ typedef struct VIIPER_UDE_CONTROLLER_CONTEXT {
     VIIPER_UDE_PENDING_SLOT *PendingSlots;
     ULONG NextPendingSlot;
     ULONG NextCompletionSlot;
+    ULONG NextManagementSlot;
     WDFMEMORY NotificationStorage;
     VIIPER_UDE_NOTIFICATION *Notifications;
+    WDFMEMORY ManagementStorage;
+    VIIPER_UDE_MANAGEMENT_SLOT *ManagementSlots;
     WDFDPC CompletionDpc;
     ULONG NotificationHead;
     ULONG NotificationTail;
@@ -188,7 +204,6 @@ EVT_UDECX_USB_ENDPOINT_RESET ViiperEvtEndpointReset;
 EVT_UDECX_USB_ENDPOINT_PURGE ViiperEvtEndpointPurge;
 EVT_UDECX_USB_ENDPOINT_START ViiperEvtEndpointStart;
 EVT_WDF_IO_QUEUE_IO_INTERNAL_DEVICE_CONTROL ViiperEvtEndpointIoInternalControl;
-EVT_WDF_IO_QUEUE_STATE ViiperEvtEndpointQueuePurged;
 EVT_WDF_WORKITEM ViiperEvtEndpointPurgeWorkItem;
 EVT_WDF_DPC ViiperEvtCompletionDpc;
 EVT_WDF_OBJECT_CONTEXT_CLEANUP ViiperEvtVirtualDeviceCleanup;
@@ -225,6 +240,19 @@ NTSTATUS ViiperQueueEndpointLifecycleEvent(
 NTSTATUS ViiperQueueDeviceLifecycleEvent(
     _In_ UDECXUSBDEVICE Device,
     _In_ VIIPER_UDE_OPERATION_KIND Kind);
+NTSTATUS ViiperQueueAcknowledgedEndpointLifecycleEvent(
+    _In_ UDECXUSBENDPOINT Endpoint,
+    _In_ WDFREQUEST Request,
+    _In_ VIIPER_UDE_OPERATION_KIND Kind);
+NTSTATUS ViiperQueueAcknowledgedDeviceLifecycleEvent(
+    _In_ UDECXUSBDEVICE Device,
+    _In_ WDFREQUEST Request,
+    _In_ VIIPER_UDE_OPERATION_KIND Kind);
+NTSTATUS ViiperQueueAcknowledgedInterfaceLifecycleEvent(
+    _In_ UDECXUSBDEVICE Device,
+    _In_ WDFREQUEST Request,
+    _In_ UCHAR InterfaceNumber,
+    _In_ UCHAR InterfaceSetting);
 NTSTATUS ViiperQueueInterfaceLifecycleEvent(
     _In_ UDECXUSBDEVICE Device,
     _In_ UCHAR InterfaceNumber,

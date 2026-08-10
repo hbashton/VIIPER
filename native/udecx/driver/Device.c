@@ -670,8 +670,11 @@ ViiperEvtUsbDeviceReset(
         return;
     }
 
-    status = ViiperQueueDeviceLifecycleEvent(Device, ViiperUdeOperationDeviceReset);
-    WdfRequestComplete(Request, status);
+    status = ViiperQueueAcknowledgedDeviceLifecycleEvent(
+        Device, Request, ViiperUdeOperationDeviceReset);
+    if (!NT_SUCCESS(status)) {
+        WdfRequestComplete(Request, status);
+    }
 }
 
 static
@@ -1047,20 +1050,11 @@ ViiperEvtEndpointReset(
 
     InterlockedExchange64(&ViiperGetEndpointContext(Endpoint)->NextIsoStartFrame, 0);
     ViiperPurgeEndpointOperations(Endpoint, STATUS_DEVICE_NOT_READY);
-    status = ViiperQueueEndpointLifecycleEvent(Endpoint, ViiperUdeOperationEndpointReset);
-    WdfRequestComplete(Request, status);
-}
-
-VOID
-ViiperEvtEndpointQueuePurged(
-    _In_ WDFQUEUE Queue,
-    _In_ WDFCONTEXT Context
-    )
-{
-    UDECXUSBENDPOINT endpoint = (UDECXUSBENDPOINT)Context;
-    VIIPER_UDE_ENDPOINT_CONTEXT *endpointContext = ViiperGetEndpointContext(endpoint);
-    UNREFERENCED_PARAMETER(Queue);
-    WdfWorkItemEnqueue(endpointContext->PurgeWorkItem);
+    status = ViiperQueueAcknowledgedEndpointLifecycleEvent(
+        Endpoint, Request, ViiperUdeOperationEndpointReset);
+    if (!NT_SUCCESS(status)) {
+        WdfRequestComplete(Request, status);
+    }
 }
 
 VOID
@@ -1094,7 +1088,10 @@ ViiperEvtEndpointPurge(
     InterlockedExchange64(&endpointContext->NextIsoStartFrame, 0);
     ViiperPurgeEndpointOperations(Endpoint, STATUS_DEVICE_NOT_READY);
     (VOID)ViiperQueueEndpointLifecycleEvent(Endpoint, ViiperUdeOperationEndpointPurge);
-    WdfIoQueuePurge(endpointContext->Queue, ViiperEvtEndpointQueuePurged, Endpoint);
+    // UdeCx owns the state of the endpoint queue. We only drain requests that
+    // were already forwarded to the broker/direct-input paths, then report
+    // purge completion from the passive work item.
+    WdfWorkItemEnqueue(endpointContext->PurgeWorkItem);
 }
 
 VOID
@@ -1106,7 +1103,6 @@ ViiperEvtEndpointStart(
     (VOID)ViiperQueueEndpointLifecycleEvent(Endpoint, ViiperUdeOperationEndpointStart);
     InterlockedExchange64(&endpointContext->NextIsoStartFrame, 0);
     InterlockedExchange(&endpointContext->Purging, FALSE);
-    WdfIoQueueStart(endpointContext->Queue);
 }
 
 VOID
@@ -1121,21 +1117,27 @@ ViiperEvtEndpointsConfigure(
     switch (ConfigureParams->ConfigureType) {
     case UdecxEndpointsConfigureTypeDeviceInitialize:
     case UdecxEndpointsConfigureTypeDeviceConfigurationChange:
-        status = ViiperQueueDeviceLifecycleEvent(Device, ViiperUdeOperationDeviceReset);
+        status = ViiperQueueAcknowledgedDeviceLifecycleEvent(
+            Device, Request, ViiperUdeOperationDeviceReset);
         break;
     case UdecxEndpointsConfigureTypeInterfaceSettingChange:
-        status = ViiperQueueInterfaceLifecycleEvent(
+        status = ViiperQueueAcknowledgedInterfaceLifecycleEvent(
             Device,
+            Request,
             ConfigureParams->InterfaceNumber,
             ConfigureParams->NewInterfaceSetting);
         break;
     case UdecxEndpointsConfigureTypeEndpointsReleasedOnly:
+        WdfRequestComplete(Request, STATUS_SUCCESS);
+        return;
         break;
     default:
         status = STATUS_INVALID_PARAMETER;
         break;
     }
-    WdfRequestComplete(Request, status);
+    if (!NT_SUCCESS(status)) {
+        WdfRequestComplete(Request, status);
+    }
 }
 
 VOID

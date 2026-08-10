@@ -479,7 +479,12 @@ func (h *Host) Serve(ctx context.Context) error {
 				}
 			}
 			if err := h.dispatch(runCtx, result.op); err != nil {
-				if !isLifecycleOperation(result.op.Kind) {
+				if isLifecycleOperation(result.op.Kind) && result.op.Token != 0 {
+					if completeErr := h.completeLifecycle(runCtx, result.op, statusUnsuccessful); completeErr != nil {
+						h.reportFatal(fmt.Errorf("reject lifecycle token %d after dispatch failure %v: %w",
+							result.op.Token, err, completeErr))
+					}
+				} else if !isLifecycleOperation(result.op.Kind) {
 					if completeErr := h.completeFailure(runCtx, result.op); completeErr != nil {
 						h.reportFatal(fmt.Errorf("reject operation token %d after dispatch failure %v: %w",
 							result.op.Token, err, completeErr))
@@ -576,9 +581,21 @@ func (h *Host) runLane(lane *operationLane, entry *registeredDevice) {
 					case OperationDeviceD0Exit:
 						h.stopAllInputPublishers(entry)
 					}
-					if err := h.processor.Lifecycle(lane.ctx, entry.device, current); err != nil {
+					lifecycleErr := h.processor.Lifecycle(lane.ctx, entry.device, current)
+					if current.Token != 0 {
+						status := int32(0)
+						if lifecycleErr != nil {
+							status = statusUnsuccessful
+						}
+						if err := h.completeLifecycle(lane.ctx, current, status); err != nil {
+							h.reportFatal(fmt.Errorf("endpoint 0x%02x acknowledge lifecycle sequence %d: %w",
+								current.EndpointAddress, current.EndpointSequence, err))
+							return
+						}
+					}
+					if lifecycleErr != nil {
 						h.reportFatal(fmt.Errorf("endpoint 0x%02x lifecycle sequence %d: %w",
-							lane.key.endpoint, current.EndpointSequence, err))
+							lane.key.endpoint, current.EndpointSequence, lifecycleErr))
 						return
 					}
 					switch current.Kind {
@@ -613,6 +630,14 @@ func isLifecycleOperation(kind OperationKind) bool {
 	default:
 		return false
 	}
+}
+
+func (h *Host) completeLifecycle(ctx context.Context, op Operation, status int32) error {
+	completionCtx, cancel := context.WithTimeout(ctx, completionTimeout)
+	defer cancel()
+	return h.driver.Complete(completionCtx, Completion{
+		Token: op.Token, DeviceID: op.DeviceID, Generation: op.Generation, Status: status,
+	})
 }
 
 func (h *Host) process(ctx context.Context, dev usb.Device, op Operation) error {

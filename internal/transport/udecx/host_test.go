@@ -645,6 +645,84 @@ func TestHostOrdersLifecycleBeforeFollowingTransfer(t *testing.T) {
 	<-done
 }
 
+func TestHostAcknowledgesLifecycleOnlyAfterProcessorAppliesIt(t *testing.T) {
+	driver := newFakeHostDriver()
+	processor := &recordingProcessor{
+		processed: make(chan uint64, 1), lifecycle: make(chan uint64, 1),
+		resets: make(chan DeviceIdentity, 1),
+	}
+	host, err := NewHost(driver, processor, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := host.Register(context.Background(), 73, hostTestDevice())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- host.Serve(ctx) }()
+
+	const token = uint64(0x0000000180000001)
+	driver.operations <- Operation{
+		Token: token, DeviceID: identity.DeviceID, Generation: identity.Generation,
+		EndpointAddress: 0x81, EndpointSequence: 1, Kind: OperationEndpointReset,
+	}
+	select {
+	case sequence := <-processor.lifecycle:
+		if sequence != 1 {
+			t.Fatalf("lifecycle endpoint sequence=%d want=1", sequence)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for acknowledged lifecycle operation")
+	}
+	select {
+	case completion := <-driver.completions:
+		if completion.Token != token || completion.DeviceID != identity.DeviceID ||
+			completion.Generation != identity.Generation || completion.Status != 0 ||
+			completion.TransferLength != 0 || len(completion.Payload) != 0 ||
+			len(completion.IsoPackets) != 0 {
+			t.Fatalf("lifecycle acknowledgement=%+v", completion)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for lifecycle acknowledgement")
+	}
+	cancel()
+	<-done
+}
+
+func TestHostDoesNotCompleteAdvisoryLifecycleNotification(t *testing.T) {
+	driver := newFakeHostDriver()
+	processor := &recordingProcessor{
+		processed: make(chan uint64, 1), lifecycle: make(chan uint64, 1),
+		resets: make(chan DeviceIdentity, 1),
+	}
+	host, _ := NewHost(driver, processor, 1)
+	identity, err := host.Register(context.Background(), 74, hostTestDevice())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- host.Serve(ctx) }()
+	driver.operations <- Operation{
+		DeviceID: identity.DeviceID, Generation: identity.Generation,
+		EndpointAddress: 0x81, EndpointSequence: 1, Kind: OperationEndpointPurge,
+	}
+	select {
+	case <-processor.lifecycle:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for advisory lifecycle operation")
+	}
+	select {
+	case completion := <-driver.completions:
+		t.Fatalf("advisory lifecycle notification was completed: %+v", completion)
+	case <-time.After(20 * time.Millisecond):
+	}
+	cancel()
+	<-done
+}
+
 func TestHostRegisterFailureRollsBackButAdvancesGeneration(t *testing.T) {
 	driver := newFakeHostDriver()
 	driver.createErr = errors.New("plug failed")
@@ -968,8 +1046,17 @@ func TestHostLifecycleFailureFailsSession(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- host.Serve(context.Background()) }()
 	driver.operations <- Operation{
-		DeviceID: identity.DeviceID, Generation: identity.Generation,
+		Token: 0x0000000180000001, DeviceID: identity.DeviceID, Generation: identity.Generation,
 		EndpointAddress: 0x81, EndpointSequence: 1, Kind: OperationEndpointReset,
+	}
+	select {
+	case completion := <-driver.completions:
+		if completion.Status != statusUnsuccessful {
+			t.Fatalf("failed lifecycle completion status=%d want=%d",
+				completion.Status, statusUnsuccessful)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("failed lifecycle was not acknowledged to the driver")
 	}
 	select {
 	case err = <-done:

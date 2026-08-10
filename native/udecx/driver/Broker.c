@@ -180,6 +180,19 @@ ViiperDispatchNotificationEvents(
             controllerContext->NotificationHead = (controllerContext->NotificationHead + 1) %
                 VIIPER_UDE_MAX_PENDING_OPERATIONS;
             --controllerContext->NotificationCount;
+            if (((ULONG)event.Token & VIIPER_UDE_MANAGEMENT_SLOT_FLAG) != 0) {
+                ULONG managementSlot = ((ULONG)event.Token &
+                    ~VIIPER_UDE_MANAGEMENT_SLOT_FLAG) - 1;
+                if (managementSlot >= VIIPER_UDE_MAX_PENDING_MANAGEMENT ||
+                    controllerContext->ManagementSlots[managementSlot].Token != event.Token ||
+                    controllerContext->ManagementSlots[managementSlot].State !=
+                        ViiperUdePendingQueued) {
+                    status = STATUS_INVALID_DEVICE_STATE;
+                } else {
+                    controllerContext->ManagementSlots[managementSlot].State =
+                        ViiperUdePendingInFlight;
+                }
+            }
         }
         WdfSpinLockRelease(controllerContext->BrokerLock);
 
@@ -208,6 +221,25 @@ ViiperDispatchNotificationEvents(
         InterlockedIncrement64(&controllerContext->NotificationEventsDelivered);
         WdfRequestComplete(dequeueRequest, STATUS_SUCCESS);
     }
+}
+
+static
+VOID
+ViiperClearManagementSlotLocked(
+    _In_ VIIPER_UDE_CONTROLLER_CONTEXT *ControllerContext,
+    _In_ ULONG Slot
+    )
+{
+    VIIPER_UDE_MANAGEMENT_SLOT *pending = &ControllerContext->ManagementSlots[Slot];
+
+    pending->Request = WDF_NO_HANDLE;
+    pending->Token = 0;
+    pending->DeviceId = 0;
+    pending->DeviceGeneration = 0;
+    pending->State = ViiperUdePendingEmpty;
+    pending->Kind = 0;
+    pending->EndpointAddress = 0;
+    InterlockedDecrement(&ControllerContext->PendingOperations);
 }
 
 static
@@ -357,6 +389,24 @@ ViiperInitializeBroker(
         controllerContext->Notifications,
         sizeof(VIIPER_UDE_NOTIFICATION) * VIIPER_UDE_MAX_PENDING_OPERATIONS);
 
+    WDF_OBJECT_ATTRIBUTES_INIT(&attributes);
+    attributes.ParentObject = Device;
+    status = WdfMemoryCreate(
+        &attributes,
+        NonPagedPoolNx,
+        0x56495544,
+        sizeof(VIIPER_UDE_MANAGEMENT_SLOT) * VIIPER_UDE_MAX_PENDING_MANAGEMENT,
+        &controllerContext->ManagementStorage,
+        (PVOID *)&controllerContext->ManagementSlots);
+    if (!NT_SUCCESS(status)) {
+        controllerContext->ManagementStorage = WDF_NO_HANDLE;
+        controllerContext->ManagementSlots = NULL;
+        return status;
+    }
+    RtlZeroMemory(
+        controllerContext->ManagementSlots,
+        sizeof(VIIPER_UDE_MANAGEMENT_SLOT) * VIIPER_UDE_MAX_PENDING_MANAGEMENT);
+
     WDF_DPC_CONFIG_INIT(&dpcConfig, ViiperEvtCompletionDpc);
     dpcConfig.AutomaticSerialization = FALSE;
     WDF_OBJECT_ATTRIBUTES_INIT(&attributes);
@@ -431,7 +481,8 @@ ViiperQueueLifecycleEventLocked(
     _In_opt_ const USB_ENDPOINT_DESCRIPTOR *EndpointDescriptor,
     _In_ VIIPER_UDE_OPERATION_KIND Kind,
     _In_ UCHAR InterfaceNumber,
-    _In_ UCHAR InterfaceSetting
+    _In_ UCHAR InterfaceSetting,
+    _In_ ULONGLONG Token
     )
 {
     VIIPER_UDE_NOTIFICATION *event;
@@ -443,6 +494,7 @@ ViiperQueueLifecycleEventLocked(
 
     event = &ControllerContext->Notifications[ControllerContext->NotificationTail];
     RtlZeroMemory(event, sizeof(*event));
+    event->Token = Token;
     event->DeviceId = DeviceContext->DeviceId;
     event->Generation = DeviceContext->Generation;
     event->Kind = Kind;
@@ -481,6 +533,7 @@ ViiperQueueEndpointLifecycleEvent(
         &endpointContext->Descriptor,
         Kind,
         0,
+        0,
         0);
     WdfSpinLockRelease(controllerContext->BrokerLock);
     if (!queued) {
@@ -503,7 +556,7 @@ ViiperQueueDeviceLifecycleEvent(
 
     WdfSpinLockAcquire(controllerContext->BrokerLock);
     queued = ViiperQueueLifecycleEventLocked(
-        controllerContext, deviceContext, NULL, Kind, 0, 0);
+        controllerContext, deviceContext, NULL, Kind, 0, 0, 0);
     WdfSpinLockRelease(controllerContext->BrokerLock);
     if (!queued) {
         return STATUS_INSUFFICIENT_RESOURCES;
@@ -531,13 +584,144 @@ ViiperQueueInterfaceLifecycleEvent(
         NULL,
         ViiperUdeOperationSetInterface,
         InterfaceNumber,
-        InterfaceSetting);
+        InterfaceSetting,
+        0);
     WdfSpinLockRelease(controllerContext->BrokerLock);
     if (!queued) {
         return STATUS_INSUFFICIENT_RESOURCES;
     }
     ViiperDispatchNotificationEvents(deviceContext->Controller);
     return STATUS_SUCCESS;
+}
+
+static
+NTSTATUS
+ViiperQueueAcknowledgedLifecycleEvent(
+    _In_ UDECXUSBDEVICE Device,
+    _In_opt_ UDECXUSBENDPOINT Endpoint,
+    _In_ WDFREQUEST Request,
+    _In_ VIIPER_UDE_OPERATION_KIND Kind,
+    _In_ UCHAR InterfaceNumber,
+    _In_ UCHAR InterfaceSetting
+    )
+{
+    VIIPER_UDE_DEVICE_CONTEXT *deviceContext = ViiperGetDeviceContext(Device);
+    VIIPER_UDE_CONTROLLER_CONTEXT *controllerContext =
+        ViiperGetControllerContext(deviceContext->Controller);
+    const USB_ENDPOINT_DESCRIPTOR *descriptor = NULL;
+    ULONG offset;
+    NTSTATUS status = STATUS_INSUFFICIENT_RESOURCES;
+    BOOLEAN canAllocate = TRUE;
+
+    if (Endpoint != WDF_NO_HANDLE) {
+        descriptor = &ViiperGetEndpointContext(Endpoint)->Descriptor;
+    }
+
+    WdfSpinLockAcquire(controllerContext->BrokerLock);
+    if (InterlockedCompareExchange(&controllerContext->BrokerFaulted, FALSE, FALSE) != FALSE ||
+        InterlockedCompareExchange(&deviceContext->Purging, 0, 0) != 0) {
+        status = STATUS_DEVICE_NOT_READY;
+        canAllocate = FALSE;
+    } else if (controllerContext->NotificationCount >=
+            VIIPER_UDE_MAX_PENDING_OPERATIONS - 1) {
+        (VOID)ViiperFaultBrokerLocked(controllerContext);
+        status = STATUS_INSUFFICIENT_RESOURCES;
+        canAllocate = FALSE;
+    }
+    for (offset = 0; canAllocate && status == STATUS_INSUFFICIENT_RESOURCES &&
+            offset < VIIPER_UDE_MAX_PENDING_MANAGEMENT; ++offset) {
+        ULONG index = (controllerContext->NextManagementSlot + offset) %
+            VIIPER_UDE_MAX_PENDING_MANAGEMENT;
+        VIIPER_UDE_MANAGEMENT_SLOT *pending = &controllerContext->ManagementSlots[index];
+        ULONGLONG token;
+
+        if (pending->State != ViiperUdePendingEmpty) {
+            continue;
+        }
+        ++pending->Generation;
+        if (pending->Generation == 0) {
+            ++pending->Generation;
+        }
+        token = ((ULONGLONG)pending->Generation << 32) |
+            VIIPER_UDE_MANAGEMENT_SLOT_FLAG | (index + 1);
+        pending->Request = Request;
+        pending->Token = token;
+        pending->DeviceId = deviceContext->DeviceId;
+        pending->DeviceGeneration = deviceContext->Generation;
+        pending->State = ViiperUdePendingQueued;
+        pending->Kind = Kind;
+        pending->EndpointAddress = descriptor != NULL ? descriptor->bEndpointAddress : 0;
+        if (!ViiperQueueLifecycleEventLocked(
+                controllerContext,
+                deviceContext,
+                descriptor,
+                Kind,
+                InterfaceNumber,
+                InterfaceSetting,
+                token)) {
+            pending->Request = WDF_NO_HANDLE;
+            pending->Token = 0;
+            pending->DeviceId = 0;
+            pending->DeviceGeneration = 0;
+            pending->State = ViiperUdePendingEmpty;
+            pending->Kind = 0;
+            pending->EndpointAddress = 0;
+            break;
+        }
+        controllerContext->NextManagementSlot = (index + 1) %
+            VIIPER_UDE_MAX_PENDING_MANAGEMENT;
+        InterlockedIncrement(&controllerContext->PendingOperations);
+        status = STATUS_SUCCESS;
+        break;
+    }
+    WdfSpinLockRelease(controllerContext->BrokerLock);
+
+    if (status == STATUS_INSUFFICIENT_RESOURCES) {
+        InterlockedIncrement64(&controllerContext->QueueExhaustions);
+    }
+    if (NT_SUCCESS(status)) {
+        ViiperDispatchNotificationEvents(deviceContext->Controller);
+    }
+    return status;
+}
+
+NTSTATUS
+ViiperQueueAcknowledgedEndpointLifecycleEvent(
+    _In_ UDECXUSBENDPOINT Endpoint,
+    _In_ WDFREQUEST Request,
+    _In_ VIIPER_UDE_OPERATION_KIND Kind
+    )
+{
+    return ViiperQueueAcknowledgedLifecycleEvent(
+        ViiperGetEndpointContext(Endpoint)->Device, Endpoint, Request, Kind, 0, 0);
+}
+
+NTSTATUS
+ViiperQueueAcknowledgedDeviceLifecycleEvent(
+    _In_ UDECXUSBDEVICE Device,
+    _In_ WDFREQUEST Request,
+    _In_ VIIPER_UDE_OPERATION_KIND Kind
+    )
+{
+    return ViiperQueueAcknowledgedLifecycleEvent(
+        Device, WDF_NO_HANDLE, Request, Kind, 0, 0);
+}
+
+NTSTATUS
+ViiperQueueAcknowledgedInterfaceLifecycleEvent(
+    _In_ UDECXUSBDEVICE Device,
+    _In_ WDFREQUEST Request,
+    _In_ UCHAR InterfaceNumber,
+    _In_ UCHAR InterfaceSetting
+    )
+{
+    return ViiperQueueAcknowledgedLifecycleEvent(
+        Device,
+        WDF_NO_HANDLE,
+        Request,
+        ViiperUdeOperationSetInterface,
+        InterfaceNumber,
+        InterfaceSetting);
 }
 
 static
@@ -1439,6 +1623,54 @@ ViiperRangeValid(
     return Offset <= Total && Length <= Total - Offset;
 }
 
+static
+NTSTATUS
+ViiperCompleteManagementOperation(
+    _In_ VIIPER_UDE_CONTROLLER_CONTEXT *ControllerContext,
+    _In_ const VIIPER_UDE_COMPLETION *Completion
+    )
+{
+    ULONG encodedSlot = (ULONG)Completion->Token;
+    ULONG slot = (encodedSlot & ~VIIPER_UDE_MANAGEMENT_SLOT_FLAG) - 1;
+    WDFREQUEST request = WDF_NO_HANDLE;
+
+    if ((encodedSlot & VIIPER_UDE_MANAGEMENT_SLOT_FLAG) == 0 ||
+        slot >= VIIPER_UDE_MAX_PENDING_MANAGEMENT ||
+        Completion->TransferLength != 0 || Completion->IsoPacketCount != 0 ||
+        Completion->PayloadLength != 0 || Completion->UsbdStatus != 0 ||
+        (NTSTATUS)Completion->Status == STATUS_PENDING) {
+        InterlockedIncrement64(&ControllerContext->InvalidMessages);
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    WdfSpinLockAcquire(ControllerContext->BrokerLock);
+    if (ControllerContext->ManagementSlots[slot].Token == Completion->Token &&
+        ControllerContext->ManagementSlots[slot].State == ViiperUdePendingInFlight &&
+        ControllerContext->ManagementSlots[slot].DeviceId == Completion->DeviceId &&
+        ControllerContext->ManagementSlots[slot].DeviceGeneration == Completion->Generation) {
+        request = ControllerContext->ManagementSlots[slot].Request;
+        ControllerContext->ManagementSlots[slot].State = ViiperUdePendingCompleting;
+        WdfObjectReference(request);
+    }
+    WdfSpinLockRelease(ControllerContext->BrokerLock);
+    if (request == WDF_NO_HANDLE) {
+        InterlockedIncrement64(&ControllerContext->LateCompletions);
+        return STATUS_NOT_FOUND;
+    }
+
+    WdfRequestComplete(request, (NTSTATUS)Completion->Status);
+    WdfSpinLockAcquire(ControllerContext->BrokerLock);
+    if (ControllerContext->ManagementSlots[slot].Request == request &&
+        ControllerContext->ManagementSlots[slot].Token == Completion->Token &&
+        ControllerContext->ManagementSlots[slot].State == ViiperUdePendingCompleting) {
+        ViiperClearManagementSlotLocked(ControllerContext, slot);
+    }
+    WdfSpinLockRelease(ControllerContext->BrokerLock);
+    WdfObjectDereference(request);
+    InterlockedIncrement64(&ControllerContext->OperationsCompleted);
+    return STATUS_SUCCESS;
+}
+
 NTSTATUS
 ViiperCompleteOperation(
     _In_ WDFQUEUE Queue,
@@ -1526,6 +1758,9 @@ ViiperCompleteOperation(
     }
     if (completion->PayloadLength != 0) {
         payload = tail + completion->PayloadOffset - sizeof(*completion);
+    }
+    if (((ULONG)completion->Token & VIIPER_UDE_MANAGEMENT_SLOT_FLAG) != 0) {
+        return ViiperCompleteManagementOperation(controllerContext, completion);
     }
 
     slot = (ULONG)(completion->Token & MAXULONG);
@@ -1743,6 +1978,50 @@ ViiperAbortMatchingOperations(
     }
 }
 
+static
+VOID
+ViiperAbortManagementOperations(
+    _In_ WDFDEVICE Controller,
+    _In_ NTSTATUS Status
+    )
+{
+    VIIPER_UDE_CONTROLLER_CONTEXT *controllerContext = ViiperGetControllerContext(Controller);
+    ULONG index;
+
+    if (controllerContext->BrokerLock == WDF_NO_HANDLE ||
+        controllerContext->ManagementSlots == NULL) {
+        return;
+    }
+    for (index = 0; index < VIIPER_UDE_MAX_PENDING_MANAGEMENT; ++index) {
+        WDFREQUEST request = WDF_NO_HANDLE;
+        ULONGLONG token = 0;
+
+        WdfSpinLockAcquire(controllerContext->BrokerLock);
+        if (controllerContext->ManagementSlots[index].State != ViiperUdePendingEmpty &&
+            controllerContext->ManagementSlots[index].State != ViiperUdePendingCompleting) {
+            request = controllerContext->ManagementSlots[index].Request;
+            token = controllerContext->ManagementSlots[index].Token;
+            controllerContext->ManagementSlots[index].State = ViiperUdePendingCompleting;
+            WdfObjectReference(request);
+        }
+        WdfSpinLockRelease(controllerContext->BrokerLock);
+        if (request == WDF_NO_HANDLE) {
+            continue;
+        }
+
+        WdfRequestComplete(request, Status);
+        WdfSpinLockAcquire(controllerContext->BrokerLock);
+        if (controllerContext->ManagementSlots[index].Request == request &&
+            controllerContext->ManagementSlots[index].Token == token &&
+            controllerContext->ManagementSlots[index].State == ViiperUdePendingCompleting) {
+            ViiperClearManagementSlotLocked(controllerContext, index);
+        }
+        WdfSpinLockRelease(controllerContext->BrokerLock);
+        WdfObjectDereference(request);
+        InterlockedIncrement64(&controllerContext->OperationsPurged);
+    }
+}
+
 VOID
 ViiperPurgeEndpointOperations(
     _In_ UDECXUSBENDPOINT Endpoint,
@@ -1761,4 +2040,5 @@ ViiperPurgeOwnerOperations(
     )
 {
     ViiperAbortMatchingOperations(Controller, WDF_NO_HANDLE, Status);
+    ViiperAbortManagementOperations(Controller, Status);
 }

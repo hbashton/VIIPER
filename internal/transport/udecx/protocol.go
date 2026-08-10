@@ -13,7 +13,7 @@ import (
 const (
 	Magic    uint32 = 0x45445556
 	ABIMajor uint16 = 1
-	ABIMinor uint16 = 5
+	ABIMinor uint16 = 6
 
 	HeaderSize            = 16
 	NegotiateRequestSize  = 32
