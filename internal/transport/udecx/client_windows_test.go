@@ -11,6 +11,28 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+func TestCompletionAfterCancelPreservesKernelOutcome(t *testing.T) {
+	t.Parallel()
+
+	transferred, err := completionAfterCancel(ioCompletion{transferred: 547}, context.Canceled)
+	if err != nil || transferred != 547 {
+		t.Fatalf("normal completion after cancellation = (%d, %v), want (547, nil)", transferred, err)
+	}
+
+	transferred, err = completionAfterCancel(
+		ioCompletion{err: windows.ERROR_OPERATION_ABORTED}, context.DeadlineExceeded)
+	if transferred != 0 || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("cancelled completion = (%d, %v), want deadline exceeded", transferred, err)
+	}
+
+	transportErr := windows.ERROR_INVALID_DATA
+	transferred, err = completionAfterCancel(
+		ioCompletion{transferred: 17, err: transportErr}, context.Canceled)
+	if transferred != 17 || !errors.Is(err, context.Canceled) || !errors.Is(err, transportErr) {
+		t.Fatalf("failed completion = (%d, %v), want joined context and transport errors", transferred, err)
+	}
+}
+
 func validTestNegotiation() NegotiateResponse {
 	return NegotiateResponse{
 		ClientNonce:          7,

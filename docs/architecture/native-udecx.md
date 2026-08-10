@@ -246,6 +246,11 @@ interface fields are only hints for alternates that contain no endpoints.
   PlugIn transaction before enumerating owned children. UdeCx calls run without
   the owner lock held, avoiding callback deadlocks while preventing an orphaned
   child from being published behind cleanup's enumeration boundary.
+- Overlapped cancellation is outcome-based rather than intent-based. After
+  `CancelIoEx`, the completion packet decides whether the operation completed
+  normally, was actually aborted, or failed. A successful create/destroy can
+  therefore never be reported as cancelled merely because the context deadline
+  raced its completion.
 - Completion lookup is keyed by `(device ID, generation, token)`.
 - Failed transfers do not need to fabricate a successful ISO packet table.
   Successful completions are canonical: OUT replies carry no payload, every

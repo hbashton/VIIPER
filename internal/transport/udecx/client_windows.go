@@ -183,6 +183,19 @@ func (c *Client) completionPumpError() error {
 	return windows.ERROR_INVALID_HANDLE
 }
 
+func completionAfterCancel(result ioCompletion, contextErr error) (uint32, error) {
+	// CancelIoEx is advisory: Microsoft explicitly permits the operation to
+	// complete normally when cancellation loses the race. Preserve that kernel
+	// outcome so create/destroy state cannot diverge across the ABI boundary.
+	if result.err == nil {
+		return result.transferred, nil
+	}
+	if errors.Is(result.err, windows.ERROR_OPERATION_ABORTED) {
+		return 0, contextErr
+	}
+	return result.transferred, errors.Join(contextErr, result.err)
+}
+
 func (c *Client) Capabilities() Capabilities {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -382,8 +395,8 @@ func (c *Client) ioctl(ctx context.Context, code uint32, input, output []byte) (
 	case <-ctx.Done():
 		_ = windows.CancelIoEx(handle, &request.overlapped)
 		select {
-		case <-request.done:
-			return 0, ctx.Err()
+		case result := <-request.done:
+			return completionAfterCancel(result, ctx.Err())
 		case <-c.pumpDone:
 			var transferred uint32
 			_ = windows.GetOverlappedResult(handle, &request.overlapped, &transferred, true)
