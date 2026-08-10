@@ -2,6 +2,15 @@
 
 The script `viiper/_testing/e2e/scripts/lat_bench.go` runs (or parses) end‑to‑end input latency benchmarks and produces enriched output (table, markdown, or JSON).
 
+The benchmark defaults to the supported USB/IP transport. On a disposable
+Windows test system with the exact Microsoft-signed native UDE package already
+installed, set `VIIPER_E2E_TRANSPORT=native-ude` to run the identical API,
+controller, SDL, press, and release workload through the native bus. The
+benchmark never installs or trusts a driver. Invalid transport names, a server
+that exits during startup, input timeouts, and stream failures fail the run;
+they are not reported as latency samples. Plain and encrypted cases open their
+own matching API stream, so their labels describe the path actually measured.
+
 It groups repeated cycles when `-count > 1` and uses the single press E2E measurement (`E2E-InputDelay`) as the 100% baseline.
 
 ## Output

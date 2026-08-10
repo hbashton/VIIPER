@@ -10,6 +10,8 @@ on:
       - "internal/cmd/**"
       - "device/**"
       - "usb/**"
+      - "_testing/e2e/**"
+      - "docs/testing/e2e_latency.md"
       - ".github/workflows/native-ude.yml"
   pull_request:
     paths:
@@ -19,6 +21,8 @@ on:
       - "internal/cmd/**"
       - "device/**"
       - "usb/**"
+      - "_testing/e2e/**"
+      - "docs/testing/e2e_latency.md"
       - ".github/workflows/native-ude.yml"
   workflow_dispatch:
 
@@ -40,6 +44,10 @@ jobs:
         run: go test ./...
       - name: Vet complete VIIPER tree
         run: go vet ./...
+      - name: Type-check cross-transport end-to-end benchmark
+        env:
+          CGO_ENABLED: "0"
+        run: go test -run=^$ ./_testing/e2e
       - name: Fuzz native protocol decoders
         run: go test -run=^$ -fuzz=FuzzProtocolDecoders -fuzztime=20s ./internal/transport/udecx
 
