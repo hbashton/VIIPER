@@ -17,22 +17,23 @@ import (
 )
 
 const (
-	crSuccess                       = 0
-	crBufferSmall                   = 0x1a
-	cmGetDeviceInterfaceListPresent = 0
-	fileDeviceUnknown               = 0x22
-	methodBuffered                  = 0
-	methodInDirect                  = 1
-	methodOutDirect                 = 2
-	fileReadData                    = 1
-	fileWriteData                   = 2
-	ioctlBase                       = 0x900
-	ioctlNegotiate                  = (fileDeviceUnknown << 16) | ((fileReadData | fileWriteData) << 14) | ((ioctlBase + 0) << 2) | methodBuffered
-	ioctlCreateDevice               = (fileDeviceUnknown << 16) | ((fileReadData | fileWriteData) << 14) | ((ioctlBase + 1) << 2) | methodBuffered
-	ioctlDestroyDevice              = (fileDeviceUnknown << 16) | ((fileReadData | fileWriteData) << 14) | ((ioctlBase + 2) << 2) | methodBuffered
-	ioctlDequeueOperation           = (fileDeviceUnknown << 16) | ((fileReadData | fileWriteData) << 14) | ((ioctlBase + 3) << 2) | methodOutDirect
-	ioctlCompleteOperation          = (fileDeviceUnknown << 16) | ((fileReadData | fileWriteData) << 14) | ((ioctlBase + 4) << 2) | methodInDirect
-	ioctlQueryStats                 = (fileDeviceUnknown << 16) | (fileReadData << 14) | ((ioctlBase + 5) << 2) | methodBuffered
+	crSuccess                               = 0
+	crBufferSmall                           = 0x1a
+	cmGetDeviceInterfaceListPresent         = 0
+	fileDeviceUnknown                       = 0x22
+	methodBuffered                          = 0
+	methodInDirect                          = 1
+	methodOutDirect                         = 2
+	fileReadData                            = 1
+	fileWriteData                           = 2
+	ioctlBase                               = 0x900
+	ioctlNegotiate                          = (fileDeviceUnknown << 16) | ((fileReadData | fileWriteData) << 14) | ((ioctlBase + 0) << 2) | methodBuffered
+	ioctlCreateDevice                       = (fileDeviceUnknown << 16) | ((fileReadData | fileWriteData) << 14) | ((ioctlBase + 1) << 2) | methodBuffered
+	ioctlDestroyDevice                      = (fileDeviceUnknown << 16) | ((fileReadData | fileWriteData) << 14) | ((ioctlBase + 2) << 2) | methodBuffered
+	ioctlDequeueOperation                   = (fileDeviceUnknown << 16) | ((fileReadData | fileWriteData) << 14) | ((ioctlBase + 3) << 2) | methodOutDirect
+	ioctlCompleteOperation                  = (fileDeviceUnknown << 16) | ((fileReadData | fileWriteData) << 14) | ((ioctlBase + 4) << 2) | methodInDirect
+	ioctlQueryStats                         = (fileDeviceUnknown << 16) | (fileReadData << 14) | ((ioctlBase + 5) << 2) | methodBuffered
+	completionPortCloseKey          uintptr = ^uintptr(0)
 )
 
 var (
@@ -48,12 +49,29 @@ var (
 )
 
 type Client struct {
-	mu           sync.RWMutex
-	inflight     sync.WaitGroup
-	handle       windows.Handle
-	driverNonce  uint64
-	capabilities Capabilities
-	limits       NegotiateResponse
+	mu             sync.RWMutex
+	inflight       sync.WaitGroup
+	handle         windows.Handle
+	completionPort windows.Handle
+	pumpDone       chan struct{}
+	pumpErr        error
+	requestPool    sync.Pool
+	driverNonce    uint64
+	capabilities   Capabilities
+	limits         NegotiateResponse
+}
+
+type ioCompletion struct {
+	transferred uint32
+	err         error
+}
+
+// overlapped must remain the first field. Windows returns the exact pointer
+// submitted to DeviceIoControl through the completion port, allowing the
+// single completion pump to recover the owning request without a map or lock.
+type ioRequest struct {
+	overlapped windows.Overlapped
+	done       chan ioCompletion
 }
 
 func Open(ctx context.Context) (*Client, error) {
@@ -84,9 +102,22 @@ func Open(ctx context.Context) (*Client, error) {
 		return nil, fmt.Errorf("open native UDE controller: %w", err)
 	}
 
-	client := &Client{handle: handle}
-	if err = client.negotiate(ctx); err != nil {
+	completionPort, err := windows.CreateIoCompletionPort(handle, 0, 0, 0)
+	if err != nil {
 		_ = windows.CloseHandle(handle)
+		return nil, fmt.Errorf("associate native UDE controller with I/O completion port: %w", err)
+	}
+	client := &Client{
+		handle:         handle,
+		completionPort: completionPort,
+		pumpDone:       make(chan struct{}),
+	}
+	client.requestPool.New = func() any {
+		return &ioRequest{done: make(chan ioCompletion, 1)}
+	}
+	go client.runCompletionPort()
+	if err = client.negotiate(ctx); err != nil {
+		_ = client.Close()
 		return nil, err
 	}
 	return client, nil
@@ -99,12 +130,55 @@ func (c *Client) Close() error {
 		return nil
 	}
 	handle := c.handle
+	completionPort := c.completionPort
+	pumpDone := c.pumpDone
 	c.handle = windows.InvalidHandle
+	c.completionPort = windows.InvalidHandle
 	c.mu.Unlock()
 
 	_ = windows.CancelIoEx(handle, nil)
 	c.inflight.Wait()
-	return windows.CloseHandle(handle)
+	if err := windows.PostQueuedCompletionStatus(
+		completionPort, 0, completionPortCloseKey, nil); err != nil {
+		// Closing the port is the documented escape hatch for a waiter when a
+		// sentinel cannot be posted. The pump records the abandoned wait.
+		_ = windows.CloseHandle(completionPort)
+		<-pumpDone
+		return errors.Join(windows.CloseHandle(handle), err)
+	}
+	<-pumpDone
+	return errors.Join(windows.CloseHandle(handle), windows.CloseHandle(completionPort))
+}
+
+func (c *Client) runCompletionPort() {
+	defer close(c.pumpDone)
+	for {
+		var transferred uint32
+		var key uintptr
+		var overlapped *windows.Overlapped
+		err := windows.GetQueuedCompletionStatus(
+			c.completionPort, &transferred, &key, &overlapped, windows.INFINITE)
+		if overlapped == nil {
+			if key == completionPortCloseKey {
+				return
+			}
+			c.mu.Lock()
+			c.pumpErr = fmt.Errorf("native UDE I/O completion pump stopped: %w", err)
+			c.mu.Unlock()
+			return
+		}
+		request := (*ioRequest)(unsafe.Pointer(overlapped))
+		request.done <- ioCompletion{transferred: transferred, err: err}
+	}
+}
+
+func (c *Client) completionPumpError() error {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.pumpErr != nil {
+		return c.pumpErr
+	}
+	return windows.ERROR_INVALID_HANDLE
 }
 
 func (c *Client) Capabilities() Capabilities {
@@ -233,12 +307,19 @@ func (c *Client) ioctl(ctx context.Context, code uint32, input, output []byte) (
 	}
 	defer c.inflight.Done()
 
-	event, err := windows.CreateEvent(nil, 1, 0, nil)
-	if err != nil {
-		return 0, err
+	request := c.requestPool.Get().(*ioRequest)
+	request.overlapped = windows.Overlapped{}
+	select {
+	case <-request.done:
+		panic("native UDE I/O request returned to pool with an unread completion")
+	default:
 	}
-	defer windows.CloseHandle(event)
-	overlapped := windows.Overlapped{HEvent: event}
+	defer func() {
+		runtime.KeepAlive(input)
+		runtime.KeepAlive(output)
+		runtime.KeepAlive(request)
+		c.requestPool.Put(request)
+	}()
 	var inputPointer *byte
 	var outputPointer *byte
 	if len(input) != 0 {
@@ -252,34 +333,29 @@ func (c *Client) ioctl(ctx context.Context, code uint32, input, output []byte) (
 		handle, code,
 		inputPointer, uint32(len(input)),
 		outputPointer, uint32(len(output)),
-		&immediate, &overlapped)
-	if err == nil {
-		var transferred uint32
-		err = windows.GetOverlappedResult(handle, &overlapped, &transferred, false)
-		runtime.KeepAlive(input)
-		runtime.KeepAlive(output)
-		return transferred, err
-	}
-	if !errors.Is(err, windows.ERROR_IO_PENDING) {
+		&immediate, &request.overlapped)
+	if err != nil && !errors.Is(err, windows.ERROR_IO_PENDING) {
 		return 0, err
 	}
 
-	done := make(chan struct{})
-	var transferred uint32
-	var resultErr error
-	go func() {
-		resultErr = windows.GetOverlappedResult(handle, &overlapped, &transferred, true)
-		close(done)
-	}()
 	select {
+	case result := <-request.done:
+		return result.transferred, result.err
 	case <-ctx.Done():
-		_ = windows.CancelIoEx(handle, &overlapped)
-		<-done
-		return 0, ctx.Err()
-	case <-done:
-		runtime.KeepAlive(input)
-		runtime.KeepAlive(output)
-		return transferred, resultErr
+		_ = windows.CancelIoEx(handle, &request.overlapped)
+		select {
+		case <-request.done:
+			return 0, ctx.Err()
+		case <-c.pumpDone:
+			var transferred uint32
+			_ = windows.GetOverlappedResult(handle, &request.overlapped, &transferred, true)
+			return 0, errors.Join(ctx.Err(), c.completionPumpError())
+		}
+	case <-c.pumpDone:
+		_ = windows.CancelIoEx(handle, &request.overlapped)
+		var transferred uint32
+		_ = windows.GetOverlappedResult(handle, &request.overlapped, &transferred, true)
+		return 0, c.completionPumpError()
 	}
 }
 
