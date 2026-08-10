@@ -3,11 +3,63 @@
 package udecx
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"golang.org/x/sys/windows"
 )
+
+func validTestNegotiation() NegotiateResponse {
+	return NegotiateResponse{
+		ClientNonce:          7,
+		DriverNonce:          8,
+		Capabilities:         requiredCapabilities,
+		MaxDevices:           MaxDevices,
+		MaxDescriptorBytes:   MaxDescriptorBytes,
+		MaxTransferBytes:     MaxTransferBytes,
+		MaxIsoPackets:        MaxIsoPackets,
+		MaxPendingOperations: MaxPendingOperations,
+	}
+}
+
+func TestNegotiationRejectsMissingCapabilitiesAndImpossibleLimits(t *testing.T) {
+	valid := validTestNegotiation()
+	if err := validateNegotiation(valid, valid.ClientNonce); err != nil {
+		t.Fatal(err)
+	}
+
+	missingCapability := valid
+	missingCapability.Capabilities &^= CapabilityIsochronous
+	if err := validateNegotiation(missingCapability, valid.ClientNonce); err == nil {
+		t.Fatal("negotiation accepted a driver without isochronous support")
+	}
+
+	oversized := valid
+	oversized.MaxTransferBytes++
+	if err := validateNegotiation(oversized, valid.ClientNonce); err == nil {
+		t.Fatal("negotiation accepted a driver limit outside the client ABI")
+	}
+}
+
+func TestClientRejectsRequestsOutsideNegotiatedLimitsBeforeKernelIO(t *testing.T) {
+	client := &Client{limits: validTestNegotiation()}
+	client.limits.MaxDescriptorBytes = 1
+	if err := client.CreateDevice(context.Background(), CreateDevice{
+		DescriptorData: []byte{1, 2},
+	}); !errors.Is(err, ErrLimitExceeded) {
+		t.Fatalf("CreateDevice error=%v want ErrLimitExceeded", err)
+	}
+
+	client.limits = validTestNegotiation()
+	client.limits.MaxTransferBytes = 1
+	if err := client.Complete(context.Background(), Completion{
+		Payload: []byte{1, 2},
+	}); !errors.Is(err, ErrLimitExceeded) {
+		t.Fatalf("Complete error=%v want ErrLimitExceeded", err)
+	}
+}
 
 func TestIOCTLCodesMatchPackedHeader(t *testing.T) {
 	wants := map[string]struct{ got, want uint32 }{

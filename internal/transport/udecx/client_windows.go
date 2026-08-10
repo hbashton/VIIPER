@@ -34,6 +34,7 @@ const (
 	ioctlCompleteOperation                  = (fileDeviceUnknown << 16) | ((fileReadData | fileWriteData) << 14) | ((ioctlBase + 4) << 2) | methodInDirect
 	ioctlQueryStats                         = (fileDeviceUnknown << 16) | (fileReadData << 14) | ((ioctlBase + 5) << 2) | methodBuffered
 	completionPortCloseKey          uintptr = ^uintptr(0)
+	requiredCapabilities                    = CapabilityIsochronous | CapabilityDeviceLifecycle
 )
 
 var (
@@ -204,7 +205,7 @@ func (c *Client) negotiate(ctx context.Context) error {
 	}
 	request, err := (NegotiateRequest{
 		ClientNonce:           nonce,
-		RequestedCapabilities: CapabilityIsochronous | CapabilityDeviceLifecycle,
+		RequestedCapabilities: requiredCapabilities,
 	}).MarshalBinary()
 	if err != nil {
 		return err
@@ -221,13 +222,8 @@ func (c *Client) negotiate(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("validate native UDE negotiation: %w", err)
 	}
-	if negotiated.ClientNonce != nonce || negotiated.DriverNonce == 0 {
-		return errors.New("validate native UDE negotiation: session nonce mismatch")
-	}
-	if negotiated.MaxDevices == 0 || negotiated.MaxDescriptorBytes == 0 ||
-		negotiated.MaxTransferBytes == 0 || negotiated.MaxIsoPackets == 0 ||
-		negotiated.MaxPendingOperations == 0 {
-		return errors.New("validate native UDE negotiation: driver returned a zero limit")
+	if err := validateNegotiation(negotiated, nonce); err != nil {
+		return err
 	}
 	c.driverNonce = negotiated.DriverNonce
 	c.capabilities = negotiated.Capabilities
@@ -235,7 +231,33 @@ func (c *Client) negotiate(ctx context.Context) error {
 	return nil
 }
 
+func validateNegotiation(negotiated NegotiateResponse, nonce uint64) error {
+	if negotiated.ClientNonce != nonce || negotiated.DriverNonce == 0 {
+		return errors.New("validate native UDE negotiation: session nonce mismatch")
+	}
+	if negotiated.Capabilities&requiredCapabilities != requiredCapabilities {
+		return fmt.Errorf("validate native UDE negotiation: required capabilities %#x, driver returned %#x",
+			requiredCapabilities, negotiated.Capabilities)
+	}
+	if negotiated.MaxDevices == 0 || negotiated.MaxDescriptorBytes == 0 ||
+		negotiated.MaxTransferBytes == 0 || negotiated.MaxIsoPackets == 0 ||
+		negotiated.MaxPendingOperations == 0 {
+		return errors.New("validate native UDE negotiation: driver returned a zero limit")
+	}
+	if negotiated.MaxDevices > MaxDevices || negotiated.MaxDescriptorBytes > MaxDescriptorBytes ||
+		negotiated.MaxTransferBytes > MaxTransferBytes || negotiated.MaxIsoPackets > MaxIsoPackets ||
+		negotiated.MaxPendingOperations > MaxPendingOperations {
+		return errors.New("validate native UDE negotiation: driver limits exceed this client's ABI bounds")
+	}
+	return nil
+}
+
 func (c *Client) CreateDevice(ctx context.Context, device CreateDevice) error {
+	limits := c.Limits()
+	if uint32(len(device.DescriptorData)) > limits.MaxDescriptorBytes ||
+		device.MaxPendingOperations > limits.MaxPendingOperations {
+		return ErrLimitExceeded
+	}
 	request, err := device.MarshalBinary()
 	if err != nil {
 		return err
@@ -268,6 +290,12 @@ func (c *Client) Dequeue(ctx context.Context, buffer []byte) (Operation, error) 
 }
 
 func (c *Client) Complete(ctx context.Context, completion Completion) error {
+	limits := c.Limits()
+	if uint32(len(completion.Payload)) > limits.MaxTransferBytes ||
+		uint32(len(completion.IsoPackets)) > limits.MaxIsoPackets ||
+		completion.TransferLength > limits.MaxTransferBytes {
+		return ErrLimitExceeded
+	}
 	request, err := completion.MarshalBinary()
 	if err != nil {
 		return err
