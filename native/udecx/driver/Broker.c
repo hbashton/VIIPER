@@ -262,7 +262,8 @@ ViiperValidateBrokerOwner(
     fileContext = ViiperGetFileContext(fileObject);
     WdfWaitLockAcquire(controllerContext->OwnerLock, NULL);
     if (controllerContext->OwnerFile != fileObject || controllerContext->CleanupInProgress ||
-        !fileContext->Negotiated || fileContext->Closing) {
+        InterlockedCompareExchange(&fileContext->Negotiated, 0, 0) == 0 ||
+        InterlockedCompareExchange(&fileContext->Closing, 0, 0) != 0) {
         status = STATUS_INVALID_DEVICE_STATE;
     }
     WdfWaitLockRelease(controllerContext->OwnerLock);
@@ -1012,6 +1013,7 @@ ViiperDispatchAvailable(
         ULONG index;
         NTSTATUS status;
         BOOLEAN abortPending = FALSE;
+        BOOLEAN cancelClaimed = FALSE;
         NTSTATUS abortStatus = STATUS_CANCELLED;
 
         ViiperDispatchNotificationEvents(Controller);
@@ -1096,23 +1098,35 @@ ViiperDispatchAvailable(
         if (slot < VIIPER_UDE_MAX_PENDING_OPERATIONS &&
             ViiperSlotMatches(&controllerContext->PendingSlots[slot], urbRequest, token)) {
             VIIPER_UDE_PENDING_SLOT *pending = &controllerContext->PendingSlots[slot];
-            abortPending = pending->AbortPending;
-            abortStatus = pending->AbortStatus;
-            pending->State = abortPending
-                ? ViiperUdePendingCompleting
-                : ViiperUdePendingInFlight;
-            if (!abortPending) {
-                serializedOperation->EndpointSequence =
-                    (ULONGLONG)InterlockedIncrement64(
-                        &ViiperGetDeviceContext(
-                            ViiperGetEndpointContext(endpoint)->Device)->EndpointSequences[
-                                ViiperGetEndpointContext(endpoint)->Descriptor.bEndpointAddress]);
-                pending->PublishedToOwner = TRUE;
+            if (pending->State != ViiperUdePendingPublishing) {
+                // MarkCancelableEx may invoke the cancel callback before this
+                // thread reacquires BrokerLock. That callback owns the URB and
+                // its completion state must never be resurrected here.
+                cancelClaimed = TRUE;
+            } else {
+                abortPending = pending->AbortPending;
+                abortStatus = pending->AbortStatus;
+                pending->State = abortPending
+                    ? ViiperUdePendingCompleting
+                    : ViiperUdePendingInFlight;
+                if (!abortPending) {
+                    serializedOperation->EndpointSequence =
+                        (ULONGLONG)InterlockedIncrement64(
+                            &ViiperGetDeviceContext(
+                                ViiperGetEndpointContext(endpoint)->Device)->EndpointSequences[
+                                    ViiperGetEndpointContext(endpoint)->Descriptor.bEndpointAddress]);
+                    pending->PublishedToOwner = TRUE;
+                }
             }
         } else {
-            status = STATUS_CANCELLED;
+            cancelClaimed = TRUE;
         }
         WdfSpinLockRelease(controllerContext->BrokerLock);
+        if (cancelClaimed) {
+            WdfRequestComplete(dequeueRequest, STATUS_CANCELLED);
+            WdfObjectDereference(urbRequest);
+            continue;
+        }
         if (!NT_SUCCESS(status) || abortPending) {
             NTSTATUS completionStatus = abortPending ? abortStatus : STATUS_CANCELLED;
             NTSTATUS unmarkStatus = WdfRequestUnmarkCancelable(urbRequest);
@@ -1171,6 +1185,7 @@ ViiperQueueUrb(
     ULONGLONG token;
     NTSTATUS status;
     BOOLEAN abortPending = FALSE;
+    BOOLEAN cancelClaimed = FALSE;
     NTSTATUS abortStatus = STATUS_CANCELLED;
 
     if (InterlockedCompareExchange(&controllerContext->BrokerFaulted, FALSE, FALSE) != FALSE ||
@@ -1195,18 +1210,30 @@ ViiperQueueUrb(
     if (slot < VIIPER_UDE_MAX_PENDING_OPERATIONS &&
         ViiperSlotMatches(&controllerContext->PendingSlots[slot], Request, token)) {
         if (NT_SUCCESS(status)) {
-            abortPending = controllerContext->PendingSlots[slot].AbortPending;
-            abortStatus = controllerContext->PendingSlots[slot].AbortStatus;
-            controllerContext->PendingSlots[slot].State = abortPending
-                ? ViiperUdePendingCompleting
-                : ViiperUdePendingQueued;
+            VIIPER_UDE_PENDING_SLOT *pending = &controllerContext->PendingSlots[slot];
+            if (pending->State != ViiperUdePendingPreparing) {
+                // An immediate cancel callback already moved this slot to its
+                // DPC completion state and owns the request.
+                cancelClaimed = TRUE;
+            } else {
+                abortPending = pending->AbortPending;
+                abortStatus = pending->AbortStatus;
+                pending->State = abortPending
+                    ? ViiperUdePendingCompleting
+                    : ViiperUdePendingQueued;
+            }
         } else {
             ViiperClearSlotLocked(controllerContext, slot);
         }
+    } else if (NT_SUCCESS(status)) {
+        cancelClaimed = TRUE;
     }
     WdfSpinLockRelease(controllerContext->BrokerLock);
     if (!NT_SUCCESS(status)) {
         return STATUS_CANCELLED;
+    }
+    if (cancelClaimed) {
+        return STATUS_PENDING;
     }
     if (abortPending) {
         status = WdfRequestUnmarkCancelable(Request);

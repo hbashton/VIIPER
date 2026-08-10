@@ -115,9 +115,9 @@ typedef struct VIIPER_UDE_CONTROLLER_CONTEXT {
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(VIIPER_UDE_CONTROLLER_CONTEXT, ViiperGetControllerContext)
 
 typedef struct VIIPER_UDE_FILE_CONTEXT {
-    BOOLEAN Negotiated;
-    BOOLEAN Closing;
-    BOOLEAN BrokerOwner;
+    volatile LONG Negotiated;
+    volatile LONG Closing;
+    volatile LONG BrokerOwner;
     ULONGLONG ClientNonce;
     ULONGLONG DriverNonce;
 } VIIPER_UDE_FILE_CONTEXT;

@@ -63,14 +63,15 @@ ViiperHandleNegotiate(
         return STATUS_INVALID_HANDLE;
     }
     fileContext = ViiperGetFileContext(fileObject);
-    if (fileContext->Closing) {
+    if (InterlockedCompareExchange(&fileContext->Closing, 0, 0) != 0) {
         return STATUS_FILE_CLOSED;
     }
-    if (fileContext->Negotiated && fileContext->ClientNonce != input->ClientNonce) {
+    if (InterlockedCompareExchange(&fileContext->Negotiated, 0, 0) != 0 &&
+        fileContext->ClientNonce != input->ClientNonce) {
         return STATUS_INVALID_DEVICE_STATE;
     }
 
-    if (!fileContext->Negotiated) {
+    if (InterlockedCompareExchange(&fileContext->Negotiated, 0, 0) == 0) {
         ticks = KeQueryPerformanceCounter(NULL);
         fileContext->ClientNonce = input->ClientNonce;
         fileContext->DriverNonce = ((ULONGLONG)ticks.QuadPart) ^
@@ -78,7 +79,7 @@ ViiperHandleNegotiate(
         if (fileContext->DriverNonce == 0) {
             fileContext->DriverNonce = 1;
         }
-        fileContext->Negotiated = TRUE;
+        InterlockedExchange(&fileContext->Negotiated, TRUE);
     }
 
     RtlZeroMemory(output, sizeof(*output));
@@ -117,7 +118,8 @@ ViiperHandleQueryStats(
         return STATUS_INVALID_HANDLE;
     }
     fileContext = ViiperGetFileContext(fileObject);
-    if (!fileContext->Negotiated || fileContext->Closing) {
+    if (InterlockedCompareExchange(&fileContext->Negotiated, 0, 0) == 0 ||
+        InterlockedCompareExchange(&fileContext->Closing, 0, 0) != 0) {
         return STATUS_INVALID_DEVICE_STATE;
     }
     status = WdfRequestRetrieveOutputBuffer(

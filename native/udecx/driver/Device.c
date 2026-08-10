@@ -245,7 +245,8 @@ ViiperValidateOwner(
     fileContext = ViiperGetFileContext(fileObject);
     WdfWaitLockAcquire(controllerContext->OwnerLock, NULL);
     if (controllerContext->OwnerFile != fileObject || controllerContext->CleanupInProgress ||
-        !fileContext->Negotiated || fileContext->Closing) {
+        InterlockedCompareExchange(&fileContext->Negotiated, 0, 0) == 0 ||
+        InterlockedCompareExchange(&fileContext->Closing, 0, 0) != 0) {
         status = STATUS_INVALID_DEVICE_STATE;
     }
     WdfWaitLockRelease(controllerContext->OwnerLock);

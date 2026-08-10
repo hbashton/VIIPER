@@ -286,7 +286,7 @@ ViiperEvtFileCreate(
     if (context->OwnerFile != WDF_NO_HANDLE || context->CleanupInProgress) {
         status = STATUS_SHARING_VIOLATION;
     } else {
-        fileContext->BrokerOwner = TRUE;
+        InterlockedExchange(&fileContext->BrokerOwner, TRUE);
         WdfObjectReference(FileObject);
         InterlockedExchange(&context->OwnerReferenced, TRUE);
         context->OwnerFile = FileObject;
@@ -311,9 +311,9 @@ ViiperEvtFileCleanup(
     device = WdfFileObjectGetDevice(FileObject);
     context = ViiperGetControllerContext(device);
     fileContext = ViiperGetFileContext(FileObject);
-    fileContext->Closing = TRUE;
+    InterlockedExchange(&fileContext->Closing, TRUE);
 
-    if (!fileContext->BrokerOwner) {
+    if (InterlockedCompareExchange(&fileContext->BrokerOwner, 0, 0) == 0) {
         return;
     }
 

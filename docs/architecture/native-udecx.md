@@ -154,6 +154,10 @@ unplug all converge on the same idempotent purge path.
 - UDE callbacks never wait on user mode while holding a WDF lock.
 - Blocking work is represented by cancelable WDF requests, not sleeping kernel
   threads.
+- Every mark-cancelable transition revalidates its prior state under the broker
+  lock. If KMDF invokes cancellation before that lock is reacquired, the cancel
+  callback's DPC ownership is final and cannot be overwritten by admission or
+  publication.
 - Completion lookup is keyed by `(device ID, generation, token)`.
 
 This follows the useful ViGEmBus pattern of per-target ownership and manual
