@@ -1302,6 +1302,7 @@ ViiperCompleteOperation(
     ULONG isoPayloadLimit;
     ULONG isoBytes;
     ULONG expectedSize;
+    ULONG packetTotal = 0;
     NTSTATUS status;
     BOOLEAN expectedLateAbort = FALSE;
     BOOLEAN queued;
@@ -1402,12 +1403,7 @@ ViiperCompleteOperation(
             ViiperGetDeviceContext(ViiperGetEndpointContext(requestContext->Endpoint)->Device)->DeviceId ||
         completion->Generation !=
             ViiperGetDeviceContext(ViiperGetEndpointContext(requestContext->Endpoint)->Device)->Generation ||
-        completion->TransferLength > requestContext->TransferLength ||
-        completion->IsoPacketCount != requestContext->IsoPacketCount ||
-        (requestContext->DirectionIn && completion->IsoPacketCount == 0 &&
-            completion->PayloadLength != completion->TransferLength) ||
-        (requestContext->DirectionIn && completion->IsoPacketCount != 0 &&
-            completion->PayloadLength > requestContext->TransferLength)) {
+        completion->TransferLength > requestContext->TransferLength) {
         status = STATUS_INVALID_PARAMETER;
         InterlockedIncrement64(&controllerContext->InvalidMessages);
         goto CompleteWithNtStatus;
@@ -1431,6 +1427,20 @@ ViiperCompleteOperation(
         return STATUS_SUCCESS;
     }
 
+    if (completion->IsoPacketCount != requestContext->IsoPacketCount ||
+        (completion->IsoPacketCount == 0 && requestContext->DirectionIn &&
+            completion->PayloadLength != completion->TransferLength) ||
+        (completion->IsoPacketCount == 0 && !requestContext->DirectionIn &&
+            completion->PayloadLength != 0) ||
+        (completion->IsoPacketCount != 0 && requestContext->DirectionIn &&
+            completion->PayloadLength > requestContext->TransferLength) ||
+        (completion->IsoPacketCount != 0 && !requestContext->DirectionIn &&
+            completion->PayloadLength != 0)) {
+        status = STATUS_INVALID_PARAMETER;
+        InterlockedIncrement64(&controllerContext->InvalidMessages);
+        goto CompleteWithNtStatus;
+    }
+
     if (requestContext->DirectionIn && completion->PayloadLength > 0) {
         status = ViiperCopyTransferBuffer(
             urbRequest, urb, payload, completion->PayloadLength, TRUE);
@@ -1444,14 +1454,23 @@ ViiperCompleteOperation(
             ? completion->PayloadLength
             : requestContext->TransferLength;
         for (index = 0; index < completion->IsoPacketCount; ++index) {
-            if (packets[index].Offset > isoPayloadLimit ||
-                packets[index].Length > isoPayloadLimit - packets[index].Offset) {
+            if (packets[index].Reserved != 0 ||
+                packets[index].Offset > isoPayloadLimit ||
+                packets[index].Length > isoPayloadLimit - packets[index].Offset ||
+                packets[index].Length > MAXULONG - packetTotal) {
                 status = STATUS_INVALID_PARAMETER;
+                InterlockedIncrement64(&controllerContext->InvalidMessages);
                 goto CompleteWithNtStatus;
             }
+            packetTotal += packets[index].Length;
             urb->UrbIsochronousTransfer.IsoPacket[index].Offset = packets[index].Offset;
             urb->UrbIsochronousTransfer.IsoPacket[index].Length = packets[index].Length;
             urb->UrbIsochronousTransfer.IsoPacket[index].Status = packets[index].Status;
+        }
+        if (packetTotal != completion->TransferLength) {
+            status = STATUS_INVALID_PARAMETER;
+            InterlockedIncrement64(&controllerContext->InvalidMessages);
+            goto CompleteWithNtStatus;
         }
         InterlockedAdd64(&controllerContext->IsoPackets, completion->IsoPacketCount);
     }

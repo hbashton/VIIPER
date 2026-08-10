@@ -168,6 +168,10 @@ unplug all converge on the same idempotent purge path.
   can finish purging that queue and then have an already-validated request
   appear behind the purge boundary.
 - Completion lookup is keyed by `(device ID, generation, token)`.
+- Failed transfers do not need to fabricate a successful ISO packet table.
+  Successful completions are canonical: OUT replies carry no payload, every
+  ISO reserved field is zero, packet extents stay inside the transfer buffer,
+  and the sum of actual packet lengths equals the reported completed bytes.
 
 This follows the useful ViGEmBus pattern of per-target ownership and manual
 request queues while accounting for UdeCx's endpoint-specific purge contract.
