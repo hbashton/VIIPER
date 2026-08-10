@@ -10,6 +10,7 @@
 #include <windows.h>
 #include <cfgmgr32.h>
 #include <devguid.h>
+#include <initguid.h>
 #include <devpkey.h>
 #include <newdev.h>
 #include <setupapi.h>
