@@ -12,6 +12,8 @@ param(
 
     [string]$MediaProbePath,
 
+    [string]$InputProbePath,
+
     [switch]$RestartRootDevice,
 
     [switch]$DisposableTestMachine
@@ -106,10 +108,19 @@ if (-not [string]::IsNullOrWhiteSpace($MediaProbePath)) {
     }
 }
 
+$resolvedInputProbe = $null
+if (-not [string]::IsNullOrWhiteSpace($InputProbePath)) {
+    $resolvedInputProbe = (Resolve-Path -LiteralPath $InputProbePath -ErrorAction Stop).Path
+    if ([IO.Path]::GetExtension($resolvedInputProbe) -ine '.exe') {
+        throw "The native HID input probe must be an executable: '$resolvedInputProbe'."
+    }
+}
+
 $go = Get-Command go.exe -ErrorAction Stop
 $oldLive = [Environment]::GetEnvironmentVariable('VIIPER_UDE_LIVE', 'Process')
 $oldIterations = [Environment]::GetEnvironmentVariable('VIIPER_UDE_LIVE_ITERATIONS', 'Process')
 $oldMediaProbe = [Environment]::GetEnvironmentVariable('VIIPER_UDE_LIVE_MEDIA_PROBE', 'Process')
+$oldInputProbe = [Environment]::GetEnvironmentVariable('VIIPER_UDE_LIVE_INPUT_PROBE', 'Process')
 $oldRestartInstance = [Environment]::GetEnvironmentVariable('VIIPER_UDE_LIVE_RESTART_INSTANCE_ID', 'Process')
 try {
     $env:VIIPER_UDE_LIVE = '1'
@@ -119,6 +130,12 @@ try {
     }
     else {
         [Environment]::SetEnvironmentVariable('VIIPER_UDE_LIVE_MEDIA_PROBE', $null, 'Process')
+    }
+    if ($null -ne $resolvedInputProbe) {
+        $env:VIIPER_UDE_LIVE_INPUT_PROBE = $resolvedInputProbe
+    }
+    else {
+        [Environment]::SetEnvironmentVariable('VIIPER_UDE_LIVE_INPUT_PROBE', $null, 'Process')
     }
     if ($RestartRootDevice) {
         $env:VIIPER_UDE_LIVE_RESTART_INSTANCE_ID = [string]$devnodes[0].DeviceID
@@ -143,10 +160,12 @@ finally {
     [Environment]::SetEnvironmentVariable('VIIPER_UDE_LIVE', $oldLive, 'Process')
     [Environment]::SetEnvironmentVariable('VIIPER_UDE_LIVE_ITERATIONS', $oldIterations, 'Process')
     [Environment]::SetEnvironmentVariable('VIIPER_UDE_LIVE_MEDIA_PROBE', $oldMediaProbe, 'Process')
+    [Environment]::SetEnvironmentVariable('VIIPER_UDE_LIVE_INPUT_PROBE', $oldInputProbe, 'Process')
     [Environment]::SetEnvironmentVariable('VIIPER_UDE_LIVE_RESTART_INSTANCE_ID', $oldRestartInstance, 'Process')
 }
 
 $verifierSuffix = if ($RequireDriverVerifier) { ' with Driver Verifier active' } else { '' }
 $mediaSuffix = if ($null -ne $resolvedMediaProbe) { ' with full-duplex CoreAudio media' } else { '' }
+$inputSuffix = if ($null -ne $resolvedInputProbe) { ' with end-to-end HID latency' } else { '' }
 $restartSuffix = if ($RestartRootDevice) { ' with active root-device restart recovery' } else { '' }
-Write-Host "VIIPER UDE live lifecycle/input validation passed for $Iterations iteration(s)$verifierSuffix$mediaSuffix$restartSuffix."
+Write-Host "VIIPER UDE live lifecycle/input validation passed for $Iterations iteration(s)$verifierSuffix$mediaSuffix$inputSuffix$restartSuffix."

@@ -354,6 +354,12 @@ stall an independent pad's registration or removal.
 - DualSense and DualShock 4 media survive concurrent state and feedback traffic.
 - Native latency and CPU are measured against the current USB/IP path and
   ViGEmBus-style virtual input under the same workload.
+- Signed live input validation discovers the exact newly created HID gamepad,
+  continuously reads reports through HIDClass, and correlates 256 unique
+  publication markers with cross-process QPC timestamps. DualShock 4,
+  DualSense, and DualSense Edge must remain at or below 4 ms p95, 8 ms p99,
+  and 20 ms maximum publisher-to-HID latency. These gates include user-mode
+  scheduling and prevent a nominal polling-rate claim from hiding tail stalls.
 - Installation is signed, reversible, version-gated, and never replaces a live
   kernel driver across an unsafe reboot boundary.
 - The INF's Windows 10 1809 floor and the linked KMDF contract remain aligned:
@@ -372,3 +378,9 @@ validation contract is documented in
 - Microsoft, *KMDF Version History*
 - Microsoft, *Install the WDK using NuGet*
 - Microsoft Windows Driver Samples CI guidance
+- Microsoft, *Finding and Opening a HID Collection*
+  <https://learn.microsoft.com/en-us/windows-hardware/drivers/hid/finding-and-opening-a-hid-collection>
+- Microsoft, *Obtaining HID Reports*
+  <https://learn.microsoft.com/en-us/windows-hardware/drivers/hid/obtaining-hid-reports>
+- Microsoft, *Acquiring high-resolution time stamps*
+  <https://learn.microsoft.com/en-us/windows/win32/sysinfo/acquiring-high-resolution-time-stamps>

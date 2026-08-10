@@ -3,6 +3,7 @@
 package usb_test
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -10,10 +11,13 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/Alia5/VIIPER/device/dualsense"
 	"github.com/Alia5/VIIPER/device/dualshock4"
@@ -22,6 +26,7 @@ import (
 	serverusb "github.com/Alia5/VIIPER/internal/server/usb"
 	"github.com/Alia5/VIIPER/internal/transport/udecx"
 	usbdevice "github.com/Alia5/VIIPER/usb"
+	"golang.org/x/sys/windows"
 )
 
 const (
@@ -29,56 +34,78 @@ const (
 	liveNativeTestIterations  = "VIIPER_UDE_LIVE_ITERATIONS"
 	liveNativeCrashChild      = "VIIPER_UDE_LIVE_CRASH_CHILD"
 	liveNativeMediaProbe      = "VIIPER_UDE_LIVE_MEDIA_PROBE"
+	liveNativeInputProbe      = "VIIPER_UDE_LIVE_INPUT_PROBE"
 	liveNativeRestartInstance = "VIIPER_UDE_LIVE_RESTART_INSTANCE_ID"
 	liveNativeCrashExitCode   = 86
 )
 
 type liveNativeController struct {
-	name string
-	new  func() (usbdevice.Device, func(uint64), error)
+	name              string
+	vendorID          uint16
+	productID         uint16
+	inputMarkerOffset uint16
+	new               func() (usbdevice.Device, func(uint64), func(byte), error)
 }
 
 func liveNativeControllers() []liveNativeController {
 	return []liveNativeController{
-		{name: "Xbox360", new: func() (usbdevice.Device, func(uint64), error) {
+		{name: "Xbox360", new: func() (usbdevice.Device, func(uint64), func(byte), error) {
 			dev, err := xbox360.New(nil)
 			return dev, func(sequence uint64) {
 				state := xbox360.NewInputState()
 				state.LX = int16(sequence % 1024)
 				dev.UpdateInputState(*state)
-			}, err
+			}, nil, err
 		}},
-		{name: "DualShock4", new: func() (usbdevice.Device, func(uint64), error) {
-			dev, err := dualshock4.New(nil)
-			return dev, func(sequence uint64) {
-				state := dualshock4.NewInputState()
-				state.LX = int8(sequence % 32)
-				dev.UpdateInputState(state)
-			}, err
-		}},
-		{name: "DualSense", new: func() (usbdevice.Device, func(uint64), error) {
-			dev, err := dualsense.New(nil)
-			return dev, func(sequence uint64) {
-				state := dualsense.NewInputState()
-				state.LX = int8(sequence % 32)
-				dev.UpdateInputState(state)
-			}, err
-		}},
-		{name: "DualSenseEdge", new: func() (usbdevice.Device, func(uint64), error) {
-			dev, err := dualsense.NewEdge(nil)
-			return dev, func(sequence uint64) {
-				state := dualsense.NewInputState()
-				state.RX = int8(sequence % 32)
-				dev.UpdateInputState(state)
-			}, err
-		}},
-		{name: "Switch2Pro", new: func() (usbdevice.Device, func(uint64), error) {
+		{name: "DualShock4", vendorID: dualshock4.DefaultVID,
+			productID: dualshock4.DefaultPID, inputMarkerOffset: 1,
+			new: func() (usbdevice.Device, func(uint64), func(byte), error) {
+				dev, err := dualshock4.New(nil)
+				return dev, func(sequence uint64) {
+						state := dualshock4.NewInputState()
+						state.LX = int8(sequence % 32)
+						dev.UpdateInputState(state)
+					}, func(marker byte) {
+						state := dualshock4.NewInputState()
+						state.LX = int8(int(marker) - 128)
+						dev.UpdateInputState(state)
+					}, err
+			}},
+		{name: "DualSense", vendorID: dualsense.DefaultVID,
+			productID: dualsense.DefaultPIDDS, inputMarkerOffset: 1,
+			new: func() (usbdevice.Device, func(uint64), func(byte), error) {
+				dev, err := dualsense.New(nil)
+				return dev, func(sequence uint64) {
+						state := dualsense.NewInputState()
+						state.LX = int8(sequence % 32)
+						dev.UpdateInputState(state)
+					}, func(marker byte) {
+						state := dualsense.NewInputState()
+						state.LX = int8(int(marker) - 128)
+						dev.UpdateInputState(state)
+					}, err
+			}},
+		{name: "DualSenseEdge", vendorID: dualsense.DefaultVID,
+			productID: dualsense.DefaultPIDDSEdge, inputMarkerOffset: 3,
+			new: func() (usbdevice.Device, func(uint64), func(byte), error) {
+				dev, err := dualsense.NewEdge(nil)
+				return dev, func(sequence uint64) {
+						state := dualsense.NewInputState()
+						state.RX = int8(sequence % 32)
+						dev.UpdateInputState(state)
+					}, func(marker byte) {
+						state := dualsense.NewInputState()
+						state.RX = int8(int(marker) - 128)
+						dev.UpdateInputState(state)
+					}, err
+			}},
+		{name: "Switch2Pro", new: func() (usbdevice.Device, func(uint64), func(byte), error) {
 			dev, err := ns2pro.New(nil)
 			return dev, func(sequence uint64) {
 				state := ns2pro.NewInputState()
 				state.LX += uint16(sequence % 32)
 				dev.UpdateInputState(*state)
-			}, err
+			}, nil, err
 		}},
 	}
 }
@@ -140,6 +167,128 @@ func runLiveMediaProbe(t *testing.T, ctx context.Context, probe string, argument
 		t.Fatalf("run native CoreAudio probe %v: %v\n%s", arguments, err, output)
 	}
 	return string(output)
+}
+
+var queryPerformanceCounter = windows.NewLazySystemDLL("kernel32.dll").
+	NewProc("QueryPerformanceCounter")
+
+func performanceCounter(t *testing.T) int64 {
+	t.Helper()
+	var counter int64
+	result, _, callErr := queryPerformanceCounter.Call(
+		uintptr(unsafe.Pointer(&counter)))
+	if result == 0 {
+		t.Fatalf("QueryPerformanceCounter: %v", callErr)
+	}
+	return counter
+}
+
+func percentile(sorted []float64, percentile float64) float64 {
+	if len(sorted) == 0 {
+		return 0
+	}
+	index := int(float64(len(sorted)-1) * percentile)
+	return sorted[index]
+}
+
+func runLiveInputLatencyProbe(
+	t *testing.T,
+	ctx context.Context,
+	probe string,
+	snapshot string,
+	controller liveNativeController,
+	publishMarker func(byte),
+) {
+	t.Helper()
+	const samples = 256
+	probeCtx, cancelProbe := context.WithTimeout(ctx, 45*time.Second)
+	defer cancelProbe()
+	command := exec.CommandContext(probeCtx, probe,
+		"measure", snapshot,
+		fmt.Sprintf("0x%04X", controller.vendorID),
+		fmt.Sprintf("0x%04X", controller.productID),
+		strconv.Itoa(int(controller.inputMarkerOffset)),
+		strconv.Itoa(samples), "qpc-v1")
+	stdout, err := command.StdoutPipe()
+	if err != nil {
+		t.Fatalf("open %s input-probe stdout: %v", controller.name, err)
+	}
+	var stderr strings.Builder
+	command.Stderr = &stderr
+	if err = command.Start(); err != nil {
+		t.Fatalf("start %s input probe: %v", controller.name, err)
+	}
+	waited := false
+	defer func() {
+		if !waited {
+			_ = command.Wait()
+		}
+	}()
+
+	scanner := bufio.NewScanner(stdout)
+	if !scanner.Scan() {
+		_ = command.Wait()
+		waited = true
+		t.Fatalf("%s input probe never became ready: scan=%v stderr=%s",
+			controller.name, scanner.Err(), stderr.String())
+	}
+	ready := strings.Fields(scanner.Text())
+	if len(ready) < 3 || ready[0] != "READY" {
+		t.Fatalf("%s input probe returned an invalid ready record: %q",
+			controller.name, scanner.Text())
+	}
+	frequency, err := strconv.ParseInt(ready[1], 10, 64)
+	if err != nil || frequency <= 0 {
+		t.Fatalf("%s input probe returned invalid QPC frequency %q",
+			controller.name, ready[1])
+	}
+
+	latencies := make([]float64, 0, samples)
+	for index := 0; index < samples; index++ {
+		marker := byte(0xFD + (index & 1))
+		published := performanceCounter(t)
+		publishMarker(marker)
+		if !scanner.Scan() {
+			_ = command.Wait()
+			waited = true
+			t.Fatalf("%s input probe ended after %d/%d samples: scan=%v stderr=%s",
+				controller.name, index, samples, scanner.Err(), stderr.String())
+		}
+		match := strings.Fields(scanner.Text())
+		if len(match) != 3 || match[0] != "MATCH" {
+			t.Fatalf("%s input probe returned an invalid match record: %q",
+				controller.name, scanner.Text())
+		}
+		observedMarker, markerErr := strconv.ParseUint(match[1], 10, 8)
+		observed, observedErr := strconv.ParseInt(match[2], 10, 64)
+		if markerErr != nil || observedErr != nil || byte(observedMarker) != marker ||
+			observed < published {
+			t.Fatalf("%s input probe returned an invalid marker/timestamp: %q published=%d",
+				controller.name, scanner.Text(), published)
+		}
+		latencies = append(latencies,
+			float64(observed-published)*1000/float64(frequency))
+	}
+	if err = command.Wait(); err != nil {
+		waited = true
+		t.Fatalf("%s input probe failed: %v stderr=%s",
+			controller.name, err, stderr.String())
+	}
+	waited = true
+	sort.Float64s(latencies)
+	p50 := percentile(latencies, 0.50)
+	p95 := percentile(latencies, 0.95)
+	p99 := percentile(latencies, 0.99)
+	maximum := latencies[len(latencies)-1]
+	t.Logf("%s native publish-to-HID latency: samples=%d p50=%.3fms p95=%.3fms p99=%.3fms max=%.3fms",
+		controller.name, samples, p50, p95, p99, maximum)
+	// These limits include the Go publisher, native IOCTL, UdeCx/HIDClass, and
+	// the independent observer process. They deliberately gate long-tail loss
+	// without pretending the host's nominal poll interval is end-to-end latency.
+	if p95 > 4 || p99 > 8 || maximum > 20 {
+		t.Fatalf("%s native input latency exceeded the release gate: p95=%.3fms p99=%.3fms max=%.3fms",
+			controller.name, p95, p99, maximum)
+	}
 }
 
 // TestNativeUDELiveProductionControllers is deliberately inert in normal CI.
@@ -204,12 +353,13 @@ func TestNativeUDELiveProductionControllers(t *testing.T) {
 
 	const deviceIDBase uint64 = 0x5649495000000000
 	mediaProbe := os.Getenv(liveNativeMediaProbe)
+	inputProbe := os.Getenv(liveNativeInputProbe)
 	for iteration := 1; iteration <= iterations; iteration++ {
 		for controllerIndex, controller := range liveNativeControllers() {
 			controller := controller
 			t.Run(fmt.Sprintf("%s/generation-%d", controller.name, iteration), func(t *testing.T) {
 				deviceID := deviceIDBase + uint64(controllerIndex+1)
-				dev, publishInput, createErr := controller.new()
+				dev, publishInput, publishMarker, createErr := controller.new()
 				if createErr != nil {
 					t.Fatalf("construct %s: %v", controller.name, createErr)
 				}
@@ -227,6 +377,20 @@ func TestNativeUDELiveProductionControllers(t *testing.T) {
 					}
 					defer os.Remove(mediaSnapshot)
 					runLiveMediaProbe(t, testCtx, mediaProbe, "snapshot", mediaSnapshot)
+				}
+				inputSnapshot := ""
+				inputController := iteration == 1 && inputProbe != "" && publishMarker != nil
+				if inputController {
+					snapshot, snapshotErr := os.CreateTemp("", "viiper-ude-input-*.snapshot")
+					if snapshotErr != nil {
+						t.Fatalf("create input endpoint snapshot: %v", snapshotErr)
+					}
+					inputSnapshot = snapshot.Name()
+					if closeErr := snapshot.Close(); closeErr != nil {
+						t.Fatalf("close input endpoint snapshot: %v", closeErr)
+					}
+					defer os.Remove(inputSnapshot)
+					runLiveMediaProbe(t, testCtx, inputProbe, "snapshot", inputSnapshot)
 				}
 				before, queryErr := client.QueryStats(testCtx)
 				if queryErr != nil {
@@ -278,6 +442,10 @@ func TestNativeUDELiveProductionControllers(t *testing.T) {
 						t.Fatalf("%s CoreAudio did not exercise full-duplex ISO media: before=%+v after=%+v probe=%s",
 							controller.name, mediaBefore, mediaAfter, probeOutput)
 					}
+				}
+				if inputController {
+					runLiveInputLatencyProbe(
+						t, testCtx, inputProbe, inputSnapshot, controller, publishMarker)
 				}
 
 				inputDeadline := time.Now().Add(750 * time.Millisecond)
@@ -341,7 +509,7 @@ func TestNativeUDELiveProductionControllers(t *testing.T) {
 			registerWG.Add(1)
 			go func() {
 				defer registerWG.Done()
-				dev, publishInput, createErr := controller.new()
+				dev, publishInput, _, createErr := controller.new()
 				if createErr != nil {
 					registered <- activeController{name: controller.name, err: createErr}
 					return
@@ -484,7 +652,7 @@ func TestNativeUDELiveOwnerCrashRecovery(t *testing.T) {
 		serveDone := make(chan error, 1)
 		go func() { serveDone <- host.Serve(ctx) }()
 
-		dev, publishInput, err := liveNativeControllers()[2].new()
+		dev, publishInput, _, err := liveNativeControllers()[2].new()
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -566,7 +734,7 @@ func TestNativeUDELiveOwnerCrashRecovery(t *testing.T) {
 	serveCtx, cancelServe := context.WithCancel(recoveryCtx)
 	serveDone := make(chan error, 1)
 	go func() { serveDone <- host.Serve(serveCtx) }()
-	dev, _, err := liveNativeControllers()[2].new()
+	dev, _, _, err := liveNativeControllers()[2].new()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -623,7 +791,7 @@ func TestNativeUDELiveRootRestartRecovery(t *testing.T) {
 	}
 	serveDone := make(chan error, 1)
 	go func() { serveDone <- host.Serve(testCtx) }()
-	dev, publishInput, err := liveNativeControllers()[2].new()
+	dev, publishInput, _, err := liveNativeControllers()[2].new()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -696,7 +864,7 @@ func TestNativeUDELiveRootRestartRecovery(t *testing.T) {
 	recoveredCtx, cancelRecovered := context.WithCancel(testCtx)
 	recoveredDone := make(chan error, 1)
 	go func() { recoveredDone <- recoveredHost.Serve(recoveredCtx) }()
-	dev, publishInput, err = liveNativeControllers()[2].new()
+	dev, publishInput, _, err = liveNativeControllers()[2].new()
 	if err != nil {
 		t.Fatal(err)
 	}

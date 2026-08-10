@@ -119,6 +119,15 @@ jobs:
           & $mediaOutput snapshot $mediaSnapshot
           if ($LASTEXITCODE -ne 0 -or -not (Test-Path $mediaSnapshot)) { throw "ViiperUdeMediaProbe endpoint snapshot smoke test failed" }
           Remove-Item -LiteralPath $mediaSnapshot -Force
+          $inputSource = (Resolve-Path "native\udecx\tools\ViiperUdeInputProbe.cpp").Path
+          $inputOutput = Join-Path $outputDir "ViiperUdeInputProbe.exe"
+          $inputCommand = "`"$devCmd`" -arch=x64 -host_arch=x64 && cl.exe /nologo /std:c++20 /EHsc /W4 /WX /O2 /MT /D_WIN32_WINNT=0x0A00 `"$inputSource`" /Fe:`"$inputOutput`" /link Setupapi.lib Hid.lib"
+          cmd.exe /d /s /c $inputCommand
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path $inputOutput)) { throw "ViiperUdeInputProbe build failed" }
+          $inputSnapshot = Join-Path $env:RUNNER_TEMP "viiper-ude-input-smoke.snapshot"
+          & $inputOutput snapshot $inputSnapshot
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path $inputSnapshot)) { throw "ViiperUdeInputProbe HID snapshot smoke test failed" }
+          Remove-Item -LiteralPath $inputSnapshot -Force
       - name: Validate Hardware Dev Center CAB structure
         shell: pwsh
         run: |

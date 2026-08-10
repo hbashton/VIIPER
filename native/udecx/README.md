@@ -31,6 +31,12 @@ Directory contract:
   created, opens exactly the new render/capture pair concurrently through
   WASAPI, and lets the signed-driver test require real ISO traffic and bytes in
   both directions rather than treating endpoint enumeration as media success.
+- `tools/ViiperUdeInputProbe.cpp` follows Microsoft's HIDClass discovery and
+  continuous `ReadFile` contract. It snapshots existing HID collections,
+  opens only the newly enumerated matching gamepad, and timestamps unique
+  state markers with the system-wide performance counter. The signed live
+  gate measures the complete publisher-to-Windows-HID path instead of an
+  internal queue approximation.
 - ABI, lifecycle, descriptor, cancellation, and fault tests live beside the Go
   broker packages and in the native-driver CI gates.
 
@@ -69,7 +75,8 @@ Microsoft-signed package with:
 .\native\udecx\tools\Invoke-ViiperUdeLiveValidation.ps1 `
   -SignedPackageDirectory C:\ViiperUde\MicrosoftSigned `
   -Iterations 10 `
-  -MediaProbePath .\native\udecx\x64\Release\ViiperUdeMediaProbe.exe
+  -MediaProbePath .\native\udecx\x64\Release\ViiperUdeMediaProbe.exe `
+  -InputProbePath .\native\udecx\x64\Release\ViiperUdeInputProbe.exe
 ```
 
 The command refuses an unsigned package, a package/service hash mismatch, a
@@ -86,6 +93,13 @@ generation must also create one new render/capture endpoint pair; three seconds
 of simultaneous WASAPI render/capture must increase native ISO, host-to-device,
 and device-to-host byte counters. The baseline snapshot prevents a connected
 physical controller from being mistaken for the virtual device.
+When `-InputProbePath` is supplied, the first DualShock 4, DualSense, and
+DualSense Edge generations each publish 256 alternating stick markers. QPC is
+sampled immediately before publication and when a continuous HID `ReadFile`
+observes the matching report. The release gate requires p95 <= 4 ms,
+p99 <= 8 ms, and maximum <= 20 ms, including user-mode scheduling, the native
+IOCTL, UdeCx, and HIDClass. These are measured long-tail limits, not claims
+derived from the nominal USB polling interval.
 On Windows 10 2004 or newer, `-RestartRootDevice -DisposableTestMachine`
 restarts the exact signed root devnode with a live DualSense child and input
 publisher. The invalidated owner must terminate, the restarted controller must
