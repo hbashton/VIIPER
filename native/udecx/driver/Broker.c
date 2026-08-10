@@ -13,6 +13,91 @@
 EVT_WDF_REQUEST_CANCEL ViiperEvtUrbCancel;
 
 static
+BOOLEAN
+ViiperQueueCancelEventLocked(
+    _In_ VIIPER_UDE_CONTROLLER_CONTEXT *ControllerContext,
+    _In_ const VIIPER_UDE_PENDING_SLOT *Pending
+    )
+{
+    VIIPER_UDE_CANCEL_EVENT *event;
+
+    if (!Pending->PublishedToOwner) {
+        return FALSE;
+    }
+    if (ControllerContext->CancelCount >= VIIPER_UDE_MAX_PENDING_OPERATIONS) {
+        InterlockedIncrement64(&ControllerContext->CancelEventOverflows);
+        return FALSE;
+    }
+
+    event = &ControllerContext->CancelEvents[ControllerContext->CancelTail];
+    event->Token = Pending->Token;
+    event->DeviceId = Pending->DeviceId;
+    event->Generation = Pending->DeviceGeneration;
+    event->EndpointAddress = Pending->EndpointAddress;
+    ControllerContext->CancelTail = (ControllerContext->CancelTail + 1) %
+        VIIPER_UDE_MAX_PENDING_OPERATIONS;
+    ++ControllerContext->CancelCount;
+    return TRUE;
+}
+
+static
+VOID
+ViiperDispatchCancelEvents(
+    _In_ WDFDEVICE Controller
+    )
+{
+    VIIPER_UDE_CONTROLLER_CONTEXT *controllerContext = ViiperGetControllerContext(Controller);
+
+    for (;;) {
+        WDFREQUEST dequeueRequest = WDF_NO_HANDLE;
+        VIIPER_UDE_OPERATION *operation = NULL;
+        VIIPER_UDE_CANCEL_EVENT event;
+        NTSTATUS status;
+
+        WdfSpinLockAcquire(controllerContext->BrokerLock);
+        if (controllerContext->CancelCount == 0) {
+            WdfSpinLockRelease(controllerContext->BrokerLock);
+            break;
+        }
+        status = WdfIoQueueRetrieveNextRequest(
+            controllerContext->WaitingDequeues, &dequeueRequest);
+        if (!NT_SUCCESS(status)) {
+            WdfSpinLockRelease(controllerContext->BrokerLock);
+            break;
+        }
+        InterlockedDecrement(&controllerContext->WaitingDequeueCount);
+        status = WdfRequestRetrieveOutputBuffer(
+            dequeueRequest, sizeof(*operation), (PVOID *)&operation, NULL);
+        if (NT_SUCCESS(status)) {
+            event = controllerContext->CancelEvents[controllerContext->CancelHead];
+            controllerContext->CancelHead = (controllerContext->CancelHead + 1) %
+                VIIPER_UDE_MAX_PENDING_OPERATIONS;
+            --controllerContext->CancelCount;
+        }
+        WdfSpinLockRelease(controllerContext->BrokerLock);
+
+        if (!NT_SUCCESS(status)) {
+            WdfRequestComplete(dequeueRequest, status);
+            continue;
+        }
+
+        RtlZeroMemory(operation, sizeof(*operation));
+        operation->Header.Magic = VIIPER_UDE_MAGIC;
+        operation->Header.Major = VIIPER_UDE_ABI_MAJOR;
+        operation->Header.Minor = VIIPER_UDE_ABI_MINOR;
+        operation->Header.Size = sizeof(*operation);
+        operation->Token = event.Token;
+        operation->DeviceId = event.DeviceId;
+        operation->Generation = event.Generation;
+        operation->Kind = ViiperUdeOperationCancel;
+        operation->EndpointAddress = event.EndpointAddress;
+        WdfRequestSetInformation(dequeueRequest, sizeof(*operation));
+        InterlockedIncrement64(&controllerContext->CancelEventsDelivered);
+        WdfRequestComplete(dequeueRequest, STATUS_SUCCESS);
+    }
+}
+
+static
 VOID
 ViiperClearSlotLocked(
     _In_ VIIPER_UDE_CONTROLLER_CONTEXT *ControllerContext,
@@ -24,8 +109,12 @@ ViiperClearSlotLocked(
     pending->Request = WDF_NO_HANDLE;
     pending->Endpoint = WDF_NO_HANDLE;
     pending->Token = 0;
+    pending->DeviceId = 0;
+    pending->DeviceGeneration = 0;
     pending->State = ViiperUdePendingEmpty;
     pending->AbortPending = FALSE;
+    pending->PublishedToOwner = FALSE;
+    pending->EndpointAddress = 0;
     pending->AbortStatus = STATUS_SUCCESS;
     InterlockedDecrement(&ControllerContext->PendingOperations);
 }
@@ -101,6 +190,24 @@ ViiperInitializeBroker(
     RtlZeroMemory(
         controllerContext->PendingSlots,
         sizeof(VIIPER_UDE_PENDING_SLOT) * VIIPER_UDE_MAX_PENDING_OPERATIONS);
+
+    WDF_OBJECT_ATTRIBUTES_INIT(&attributes);
+    attributes.ParentObject = Device;
+    status = WdfMemoryCreate(
+        &attributes,
+        NonPagedPoolNx,
+        0x56495543,
+        sizeof(VIIPER_UDE_CANCEL_EVENT) * VIIPER_UDE_MAX_PENDING_OPERATIONS,
+        &controllerContext->CancelStorage,
+        (PVOID *)&controllerContext->CancelEvents);
+    if (!NT_SUCCESS(status)) {
+        controllerContext->CancelStorage = WDF_NO_HANDLE;
+        controllerContext->CancelEvents = NULL;
+        return status;
+    }
+    RtlZeroMemory(
+        controllerContext->CancelEvents,
+        sizeof(VIIPER_UDE_CANCEL_EVENT) * VIIPER_UDE_MAX_PENDING_OPERATIONS);
     return STATUS_SUCCESS;
 }
 
@@ -114,6 +221,8 @@ ViiperAllocatePendingSlot(
     _Out_ ULONGLONG *Token
     )
 {
+    VIIPER_UDE_ENDPOINT_CONTEXT *endpointContext = ViiperGetEndpointContext(Endpoint);
+    VIIPER_UDE_DEVICE_CONTEXT *deviceContext = ViiperGetDeviceContext(endpointContext->Device);
     ULONG offset;
     NTSTATUS status = STATUS_INSUFFICIENT_RESOURCES;
 
@@ -132,8 +241,12 @@ ViiperAllocatePendingSlot(
         pending->Request = Request;
         pending->Endpoint = Endpoint;
         pending->Token = ((ULONGLONG)pending->Generation << 32) | (index + 1);
+        pending->DeviceId = deviceContext->DeviceId;
+        pending->DeviceGeneration = deviceContext->Generation;
         pending->State = ViiperUdePendingPreparing;
         pending->AbortPending = FALSE;
+        pending->PublishedToOwner = FALSE;
+        pending->EndpointAddress = endpointContext->Descriptor.bEndpointAddress;
         pending->AbortStatus = STATUS_SUCCESS;
         ControllerContext->NextPendingSlot = (index + 1) % VIIPER_UDE_MAX_PENDING_OPERATIONS;
         InterlockedIncrement(&ControllerContext->PendingOperations);
@@ -159,12 +272,14 @@ ViiperEvtUrbCancel(
     VIIPER_UDE_CONTROLLER_CONTEXT *controllerContext =
         ViiperGetControllerContext(requestContext->Controller);
     BOOLEAN ownsRequest = FALSE;
+    BOOLEAN notifyOwner = FALSE;
 
     WdfSpinLockAcquire(controllerContext->BrokerLock);
     if (requestContext->PendingSlot < VIIPER_UDE_MAX_PENDING_OPERATIONS) {
         VIIPER_UDE_PENDING_SLOT *pending =
             &controllerContext->PendingSlots[requestContext->PendingSlot];
         if (ViiperSlotMatches(pending, Request, requestContext->Token)) {
+            notifyOwner = ViiperQueueCancelEventLocked(controllerContext, pending);
             ViiperClearSlotLocked(controllerContext, requestContext->PendingSlot);
             ownsRequest = TRUE;
         }
@@ -174,6 +289,9 @@ ViiperEvtUrbCancel(
     if (ownsRequest) {
         InterlockedIncrement64(&controllerContext->OperationsCancelled);
         UdecxUrbCompleteWithNtStatus(Request, STATUS_CANCELLED);
+        if (notifyOwner) {
+            ViiperDispatchCancelEvents(requestContext->Controller);
+        }
     }
 }
 
@@ -266,7 +384,8 @@ ViiperSerializeOperation(
     _In_ WDFREQUEST UrbRequest,
     _In_ UDECXUSBENDPOINT Endpoint,
     _In_ ULONGLONG Token,
-    _In_ WDFREQUEST DequeueRequest
+    _In_ WDFREQUEST DequeueRequest,
+    _Out_ VIIPER_UDE_OPERATION **SerializedOperation
     )
 {
     PURB urb = ViiperGetUrb(UrbRequest);
@@ -368,6 +487,7 @@ ViiperSerializeOperation(
     if (!directionIn) {
         InterlockedAdd64(&ControllerContext->BytesToDevice, transferLength);
     }
+    *SerializedOperation = operation;
     return STATUS_SUCCESS;
 }
 
@@ -378,20 +498,29 @@ ViiperRemovePublishingRequest(
     _In_ ULONG Slot,
     _In_ WDFREQUEST Request,
     _In_ ULONGLONG Token,
-    _In_ NTSTATUS Status
+    _In_ NTSTATUS Status,
+    _In_ BOOLEAN NotifyOwner
     )
 {
     BOOLEAN ownsRequest = FALSE;
+    BOOLEAN notifyOwner = FALSE;
 
     WdfSpinLockAcquire(ControllerContext->BrokerLock);
     if (Slot < VIIPER_UDE_MAX_PENDING_OPERATIONS &&
         ViiperSlotMatches(&ControllerContext->PendingSlots[Slot], Request, Token)) {
+        if (NotifyOwner) {
+            notifyOwner = ViiperQueueCancelEventLocked(
+                ControllerContext, &ControllerContext->PendingSlots[Slot]);
+        }
         ViiperClearSlotLocked(ControllerContext, Slot);
         ownsRequest = TRUE;
     }
     WdfSpinLockRelease(ControllerContext->BrokerLock);
     if (ownsRequest) {
         UdecxUrbCompleteWithNtStatus(Request, Status);
+        if (notifyOwner) {
+            ViiperDispatchCancelEvents(ViiperGetRequestContext(Request)->Controller);
+        }
     }
 }
 
@@ -407,6 +536,7 @@ ViiperDispatchAvailable(
         WDFREQUEST urbRequest = WDF_NO_HANDLE;
         WDFREQUEST dequeueRequest = WDF_NO_HANDLE;
         UDECXUSBENDPOINT endpoint = WDF_NO_HANDLE;
+        VIIPER_UDE_OPERATION *serializedOperation = NULL;
         ULONGLONG token = 0;
         ULONG slot = VIIPER_UDE_MAX_PENDING_OPERATIONS;
         ULONG index;
@@ -414,6 +544,7 @@ ViiperDispatchAvailable(
         BOOLEAN abortPending = FALSE;
         NTSTATUS abortStatus = STATUS_CANCELLED;
 
+        ViiperDispatchCancelEvents(Controller);
         WdfSpinLockAcquire(controllerContext->BrokerLock);
         for (index = 0; index < VIIPER_UDE_MAX_PENDING_OPERATIONS; ++index) {
             ULONG candidate = (controllerContext->NextPendingSlot + index) %
@@ -450,14 +581,15 @@ ViiperDispatchAvailable(
         }
         if (!NT_SUCCESS(status)) {
             ViiperRemovePublishingRequest(
-                controllerContext, slot, urbRequest, token, status);
+                controllerContext, slot, urbRequest, token, status, FALSE);
             WdfRequestComplete(dequeueRequest, status);
             WdfObjectDereference(urbRequest);
             continue;
         }
 
         status = ViiperSerializeOperation(
-            controllerContext, urbRequest, endpoint, token, dequeueRequest);
+            controllerContext, urbRequest, endpoint, token, dequeueRequest,
+            &serializedOperation);
 
         WdfSpinLockAcquire(controllerContext->BrokerLock);
         if (slot < VIIPER_UDE_MAX_PENDING_OPERATIONS &&
@@ -473,7 +605,7 @@ ViiperDispatchAvailable(
         if (!NT_SUCCESS(status) || abortPending) {
             NTSTATUS completionStatus = abortPending ? abortStatus : status;
             ViiperRemovePublishingRequest(
-                controllerContext, slot, urbRequest, token, completionStatus);
+                controllerContext, slot, urbRequest, token, completionStatus, FALSE);
             WdfRequestComplete(dequeueRequest, completionStatus);
             WdfObjectDereference(urbRequest);
             continue;
@@ -482,7 +614,7 @@ ViiperDispatchAvailable(
         status = WdfRequestMarkCancelableEx(urbRequest, ViiperEvtUrbCancel);
         if (!NT_SUCCESS(status)) {
             ViiperRemovePublishingRequest(
-                controllerContext, slot, urbRequest, token, STATUS_CANCELLED);
+                controllerContext, slot, urbRequest, token, STATUS_CANCELLED, FALSE);
             WdfRequestComplete(dequeueRequest, STATUS_CANCELLED);
             WdfObjectDereference(urbRequest);
             continue;
@@ -498,6 +630,14 @@ ViiperDispatchAvailable(
             pending->State = abortPending
                 ? ViiperUdePendingCompleting
                 : ViiperUdePendingInFlight;
+            if (!abortPending) {
+                serializedOperation->EndpointSequence =
+                    (ULONGLONG)InterlockedIncrement64(
+                        &ViiperGetDeviceContext(
+                            ViiperGetEndpointContext(endpoint)->Device)->EndpointSequences[
+                                ViiperGetEndpointContext(endpoint)->Descriptor.bEndpointAddress]);
+                pending->PublishedToOwner = TRUE;
+            }
         } else {
             status = STATUS_CANCELLED;
         }
@@ -507,7 +647,7 @@ ViiperDispatchAvailable(
             NTSTATUS unmarkStatus = WdfRequestUnmarkCancelable(urbRequest);
             if (NT_SUCCESS(unmarkStatus)) {
                 ViiperRemovePublishingRequest(
-                    controllerContext, slot, urbRequest, token, completionStatus);
+                    controllerContext, slot, urbRequest, token, completionStatus, FALSE);
             }
             WdfRequestComplete(dequeueRequest, completionStatus);
             WdfObjectDereference(urbRequest);
@@ -596,7 +736,7 @@ ViiperQueueUrb(
         status = WdfRequestUnmarkCancelable(Request);
         if (NT_SUCCESS(status)) {
             ViiperRemovePublishingRequest(
-                controllerContext, slot, Request, token, abortStatus);
+                controllerContext, slot, Request, token, abortStatus, FALSE);
         }
         return STATUS_PENDING;
     }
@@ -732,7 +872,10 @@ ViiperCompleteOperation(
             ViiperGetDeviceContext(ViiperGetEndpointContext(requestContext->Endpoint)->Device)->Generation ||
         completion->TransferLength > requestContext->TransferLength ||
         completion->IsoPacketCount != requestContext->IsoPacketCount ||
-        (requestContext->DirectionIn && completion->PayloadLength != completion->TransferLength)) {
+        (requestContext->DirectionIn && completion->IsoPacketCount == 0 &&
+            completion->PayloadLength != completion->TransferLength) ||
+        (requestContext->DirectionIn && completion->IsoPacketCount != 0 &&
+            completion->PayloadLength > requestContext->TransferLength)) {
         status = STATUS_INVALID_PARAMETER;
         InterlockedIncrement64(&controllerContext->InvalidMessages);
         goto CompleteWithNtStatus;
@@ -742,20 +885,20 @@ ViiperCompleteOperation(
         goto CompleteWithNtStatus;
     }
 
-    if (requestContext->DirectionIn && completion->TransferLength > 0) {
+    if (requestContext->DirectionIn && completion->PayloadLength > 0) {
         status = UdecxUrbRetrieveBuffer(
             urbRequest, &transferBuffer, &transferBufferLength);
-        if (!NT_SUCCESS(status) || transferBufferLength < completion->TransferLength) {
+        if (!NT_SUCCESS(status) || transferBufferLength < completion->PayloadLength) {
             status = NT_SUCCESS(status) ? STATUS_BUFFER_TOO_SMALL : status;
             goto CompleteWithNtStatus;
         }
-        RtlCopyMemory(transferBuffer, payload, completion->TransferLength);
+        RtlCopyMemory(transferBuffer, payload, completion->PayloadLength);
         InterlockedAdd64(&controllerContext->BytesFromDevice, completion->TransferLength);
     }
     if (completion->IsoPacketCount != 0) {
         for (index = 0; index < completion->IsoPacketCount; ++index) {
-            if (packets[index].Offset > completion->TransferLength ||
-                packets[index].Length > completion->TransferLength - packets[index].Offset) {
+            if (packets[index].Offset > completion->PayloadLength ||
+                packets[index].Length > completion->PayloadLength - packets[index].Offset) {
                 status = STATUS_INVALID_PARAMETER;
                 goto CompleteWithNtStatus;
             }
@@ -825,7 +968,7 @@ ViiperAbortMatchingOperations(
         unmarkStatus = WdfRequestUnmarkCancelable(request);
         if (NT_SUCCESS(unmarkStatus)) {
             ViiperRemovePublishingRequest(
-                controllerContext, index, request, token, Status);
+                controllerContext, index, request, token, Status, TRUE);
             InterlockedIncrement64(&controllerContext->OperationsPurged);
         }
         WdfObjectDereference(request);

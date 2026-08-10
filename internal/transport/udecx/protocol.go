@@ -13,7 +13,7 @@ import (
 const (
 	Magic    uint32 = 0x45445556
 	ABIMajor uint16 = 1
-	ABIMinor uint16 = 0
+	ABIMinor uint16 = 1
 
 	HeaderSize            = 16
 	NegotiateRequestSize  = 32
@@ -22,9 +22,9 @@ const (
 	CreateDeviceSize      = 56
 	DeviceIdentitySize    = 32
 	IsoPacketSize         = 16
-	OperationSize         = 88
+	OperationSize         = 96
 	CompletionSize        = 72
-	StatsSize             = 112
+	StatsSize             = 128
 
 	MaxDevices           = 32
 	MaxDescriptorBytes   = 256 * 1024
@@ -256,6 +256,7 @@ const (
 	OperationSetInterface
 	OperationDeviceD0Entry
 	OperationDeviceD0Exit
+	OperationCancel
 )
 
 type IsoPacket struct {
@@ -265,19 +266,20 @@ type IsoPacket struct {
 }
 
 type Operation struct {
-	Token           uint64
-	DeviceID        uint64
-	Generation      uint32
-	Kind            OperationKind
-	EndpointAddress uint8
-	Direction       uint8
-	URBFunction     uint32
-	TransferFlags   uint32
-	StartFrame      uint32
-	TransferLength  uint32
-	SetupPacket     [8]byte
-	IsoPackets      []IsoPacket
-	Payload         []byte
+	Token            uint64
+	DeviceID         uint64
+	Generation       uint32
+	Kind             OperationKind
+	EndpointAddress  uint8
+	Direction        uint8
+	URBFunction      uint32
+	TransferFlags    uint32
+	StartFrame       uint32
+	TransferLength   uint32
+	SetupPacket      [8]byte
+	IsoPackets       []IsoPacket
+	Payload          []byte
+	EndpointSequence uint64
 }
 
 func ParseOperation(src []byte) (Operation, error) {
@@ -301,18 +303,19 @@ func ParseOperation(src []byte) (Operation, error) {
 		return Operation{}, ErrInvalidRange
 	}
 	op := Operation{
-		Token:           binary.LittleEndian.Uint64(src[16:24]),
-		DeviceID:        binary.LittleEndian.Uint64(src[24:32]),
-		Generation:      binary.LittleEndian.Uint32(src[32:36]),
-		Kind:            OperationKind(binary.LittleEndian.Uint32(src[36:40])),
-		EndpointAddress: src[40],
-		Direction:       src[41],
-		URBFunction:     binary.LittleEndian.Uint32(src[44:48]),
-		TransferFlags:   binary.LittleEndian.Uint32(src[48:52]),
-		StartFrame:      binary.LittleEndian.Uint32(src[52:56]),
-		TransferLength:  transferLength,
-		IsoPackets:      make([]IsoPacket, int(packetCount)),
-		Payload:         append([]byte(nil), src[payloadOffset:payloadOffset+payloadLength]...),
+		Token:            binary.LittleEndian.Uint64(src[16:24]),
+		DeviceID:         binary.LittleEndian.Uint64(src[24:32]),
+		Generation:       binary.LittleEndian.Uint32(src[32:36]),
+		Kind:             OperationKind(binary.LittleEndian.Uint32(src[36:40])),
+		EndpointAddress:  src[40],
+		Direction:        src[41],
+		URBFunction:      binary.LittleEndian.Uint32(src[44:48]),
+		TransferFlags:    binary.LittleEndian.Uint32(src[48:52]),
+		StartFrame:       binary.LittleEndian.Uint32(src[52:56]),
+		TransferLength:   transferLength,
+		EndpointSequence: binary.LittleEndian.Uint64(src[88:96]),
+		IsoPackets:       make([]IsoPacket, int(packetCount)),
+		Payload:          append([]byte(nil), src[payloadOffset:payloadOffset+payloadLength]...),
 	}
 	copy(op.SetupPacket[:], src[76:84])
 	for i := range op.IsoPackets {
@@ -332,24 +335,30 @@ type Completion struct {
 	Generation uint32
 	Status     int32
 	USBDStatus uint32
-	IsoPackets []IsoPacket
-	Payload    []byte
+	// TransferLength is the number of bytes completed. For ISO-IN transfers,
+	// Payload may span the original gapped transfer buffer and therefore be
+	// larger than this sum of packet actual lengths.
+	TransferLength uint32
+	IsoPackets     []IsoPacket
+	Payload        []byte
 }
 
 type Stats struct {
-	OperationsDequeued  uint64
-	OperationsCompleted uint64
-	OperationsCancelled uint64
-	OperationsPurged    uint64
-	LateCompletions     uint64
-	InvalidMessages     uint64
-	QueueExhaustions    uint64
-	IsoPackets          uint64
-	BytesToDevice       uint64
-	BytesFromDevice     uint64
-	ActiveDevices       uint32
-	PendingOperations   uint32
-	WaitingDequeues     uint32
+	OperationsDequeued   uint64
+	OperationsCompleted  uint64
+	OperationsCancelled  uint64
+	OperationsPurged     uint64
+	LateCompletions      uint64
+	InvalidMessages      uint64
+	QueueExhaustions     uint64
+	IsoPackets           uint64
+	BytesToDevice        uint64
+	BytesFromDevice      uint64
+	CancelEvents         uint64
+	CancelEventOverflows uint64
+	ActiveDevices        uint32
+	PendingOperations    uint32
+	WaitingDequeues      uint32
 }
 
 func ParseStats(src []byte) (Stats, error) {
@@ -361,19 +370,21 @@ func ParseStats(src []byte) (Stats, error) {
 		return Stats{}, ErrInvalidSize
 	}
 	return Stats{
-		OperationsDequeued:  binary.LittleEndian.Uint64(src[16:24]),
-		OperationsCompleted: binary.LittleEndian.Uint64(src[24:32]),
-		OperationsCancelled: binary.LittleEndian.Uint64(src[32:40]),
-		OperationsPurged:    binary.LittleEndian.Uint64(src[40:48]),
-		LateCompletions:     binary.LittleEndian.Uint64(src[48:56]),
-		InvalidMessages:     binary.LittleEndian.Uint64(src[56:64]),
-		QueueExhaustions:    binary.LittleEndian.Uint64(src[64:72]),
-		IsoPackets:          binary.LittleEndian.Uint64(src[72:80]),
-		BytesToDevice:       binary.LittleEndian.Uint64(src[80:88]),
-		BytesFromDevice:     binary.LittleEndian.Uint64(src[88:96]),
-		ActiveDevices:       binary.LittleEndian.Uint32(src[96:100]),
-		PendingOperations:   binary.LittleEndian.Uint32(src[100:104]),
-		WaitingDequeues:     binary.LittleEndian.Uint32(src[104:108]),
+		OperationsDequeued:   binary.LittleEndian.Uint64(src[16:24]),
+		OperationsCompleted:  binary.LittleEndian.Uint64(src[24:32]),
+		OperationsCancelled:  binary.LittleEndian.Uint64(src[32:40]),
+		OperationsPurged:     binary.LittleEndian.Uint64(src[40:48]),
+		LateCompletions:      binary.LittleEndian.Uint64(src[48:56]),
+		InvalidMessages:      binary.LittleEndian.Uint64(src[56:64]),
+		QueueExhaustions:     binary.LittleEndian.Uint64(src[64:72]),
+		IsoPackets:           binary.LittleEndian.Uint64(src[72:80]),
+		BytesToDevice:        binary.LittleEndian.Uint64(src[80:88]),
+		BytesFromDevice:      binary.LittleEndian.Uint64(src[88:96]),
+		CancelEvents:         binary.LittleEndian.Uint64(src[96:104]),
+		CancelEventOverflows: binary.LittleEndian.Uint64(src[104:112]),
+		ActiveDevices:        binary.LittleEndian.Uint32(src[112:116]),
+		PendingOperations:    binary.LittleEndian.Uint32(src[116:120]),
+		WaitingDequeues:      binary.LittleEndian.Uint32(src[120:124]),
 	}, nil
 }
 
@@ -382,6 +393,13 @@ func (m Completion) MarshalBinary() ([]byte, error) {
 		return nil, fmt.Errorf("%w: zero completion identity", ErrInvalidRange)
 	}
 	if len(m.Payload) > MaxTransferBytes || len(m.IsoPackets) > MaxIsoPackets {
+		return nil, ErrLimitExceeded
+	}
+	transferLength := m.TransferLength
+	if transferLength == 0 && len(m.Payload) != 0 {
+		transferLength = uint32(len(m.Payload))
+	}
+	if transferLength > MaxTransferBytes {
 		return nil, ErrLimitExceeded
 	}
 	isoBytes := len(m.IsoPackets) * IsoPacketSize
@@ -397,7 +415,7 @@ func (m Completion) MarshalBinary() ([]byte, error) {
 	binary.LittleEndian.PutUint32(dst[32:36], m.Generation)
 	binary.LittleEndian.PutUint32(dst[36:40], uint32(m.Status))
 	binary.LittleEndian.PutUint32(dst[40:44], m.USBDStatus)
-	binary.LittleEndian.PutUint32(dst[44:48], uint32(len(m.Payload)))
+	binary.LittleEndian.PutUint32(dst[44:48], transferLength)
 	binary.LittleEndian.PutUint32(dst[48:52], uint32(len(m.IsoPackets)))
 	binary.LittleEndian.PutUint32(dst[52:56], uint32(CompletionSize+isoBytes))
 	binary.LittleEndian.PutUint32(dst[56:60], uint32(len(m.Payload)))

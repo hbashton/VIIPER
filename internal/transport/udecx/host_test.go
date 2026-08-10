@@ -1,0 +1,271 @@
+package udecx
+
+import (
+	"context"
+	"errors"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/Alia5/VIIPER/usb"
+)
+
+type fakeHostDriver struct {
+	operations  chan Operation
+	completions chan Completion
+	createErr   error
+	mu          sync.Mutex
+	created     []CreateDevice
+	destroyed   []DeviceIdentity
+}
+
+func newFakeHostDriver() *fakeHostDriver {
+	return &fakeHostDriver{
+		operations: make(chan Operation, 16), completions: make(chan Completion, 16),
+	}
+}
+func (d *fakeHostDriver) CreateDevice(_ context.Context, device CreateDevice) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.created = append(d.created, device)
+	return d.createErr
+}
+func (d *fakeHostDriver) DestroyDevice(_ context.Context, identity DeviceIdentity) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.destroyed = append(d.destroyed, identity)
+	return nil
+}
+func (d *fakeHostDriver) Dequeue(ctx context.Context, _ []byte) (Operation, error) {
+	select {
+	case op := <-d.operations:
+		return op, nil
+	case <-ctx.Done():
+		return Operation{}, ctx.Err()
+	}
+}
+func (d *fakeHostDriver) Complete(ctx context.Context, completion Completion) error {
+	select {
+	case d.completions <- completion:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+func (d *fakeHostDriver) QueryStats(context.Context) (Stats, error) { return Stats{}, nil }
+
+type recordingProcessor struct {
+	processed chan uint64
+	resets    chan DeviceIdentity
+}
+
+func (p *recordingProcessor) Process(_ context.Context, _ usb.Device, op Operation) (Completion, error) {
+	p.processed <- op.EndpointSequence
+	return Completion{TransferLength: op.TransferLength}, nil
+}
+func (p *recordingProcessor) Reset(_ usb.Device, identity DeviceIdentity) { p.resets <- identity }
+
+type cancellableProcessor struct {
+	started   chan struct{}
+	cancelled chan struct{}
+}
+
+func (p *cancellableProcessor) Process(ctx context.Context, _ usb.Device, _ Operation) (Completion, error) {
+	close(p.started)
+	<-ctx.Done()
+	close(p.cancelled)
+	return Completion{}, ctx.Err()
+}
+func (*cancellableProcessor) Reset(usb.Device, DeviceIdentity) {}
+
+func hostTestDevice() usb.Device {
+	return &snapshotDevice{descriptor: usb.Descriptor{
+		Device: usb.DeviceDescriptor{
+			BcdUSB: 0x0200, BMaxPacketSize0: 64, IDVendor: 1, IDProduct: 2,
+			BNumConfigurations: 1, Speed: uint32(DeviceSpeedHigh),
+		},
+		Interfaces: []usb.InterfaceConfig{{Descriptor: usb.InterfaceDescriptor{
+			BInterfaceNumber: 0, BNumEndpoints: 1, BInterfaceClass: 3,
+		}, Endpoints: []usb.EndpointDescriptor{{
+			BEndpointAddress: 0x81, BMAttributes: 3, WMaxPacketSize: 64, BInterval: 4,
+		}}}},
+	}}
+}
+
+func TestHostPreservesEndpointSequenceAcrossDequeueWorkers(t *testing.T) {
+	driver := newFakeHostDriver()
+	processor := &recordingProcessor{processed: make(chan uint64, 2), resets: make(chan DeviceIdentity, 1)}
+	host, err := NewHost(driver, processor, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := host.Register(context.Background(), 9, hostTestDevice())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- host.Serve(ctx) }()
+
+	driver.operations <- Operation{
+		Token: 2, DeviceID: identity.DeviceID, Generation: identity.Generation,
+		EndpointAddress: 0x81, EndpointSequence: 2, TransferLength: 8,
+	}
+	driver.operations <- Operation{
+		Token: 1, DeviceID: identity.DeviceID, Generation: identity.Generation,
+		EndpointAddress: 0x81, EndpointSequence: 1, TransferLength: 8,
+	}
+
+	for want := uint64(1); want <= 2; want++ {
+		select {
+		case got := <-processor.processed:
+			if got != want {
+				t.Fatalf("processed endpoint sequence=%d want=%d", got, want)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("timed out waiting for endpoint sequence %d", want)
+		}
+	}
+	cancel()
+	select {
+	case err = <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("host did not stop after context cancellation")
+	}
+}
+
+func TestHostRegisterFailureRollsBackButAdvancesGeneration(t *testing.T) {
+	driver := newFakeHostDriver()
+	driver.createErr = errors.New("plug failed")
+	processor := &recordingProcessor{processed: make(chan uint64, 1), resets: make(chan DeviceIdentity, 1)}
+	host, _ := NewHost(driver, processor, 1)
+	if _, err := host.Register(context.Background(), 4, hostTestDevice()); err == nil {
+		t.Fatal("register unexpectedly succeeded")
+	}
+	driver.createErr = nil
+	identity, err := host.Register(context.Background(), 4, hostTestDevice())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if identity.Generation != 2 {
+		t.Fatalf("generation=%d want=2 after failed creation", identity.Generation)
+	}
+	if err := host.Unregister(context.Background(), identity); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-processor.resets:
+		if got != identity {
+			t.Fatalf("reset identity=%+v want=%+v", got, identity)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("processor was not reset during unregister")
+	}
+}
+
+func TestHostRejectsStaleOperationGeneration(t *testing.T) {
+	driver := newFakeHostDriver()
+	processor := &recordingProcessor{processed: make(chan uint64, 1), resets: make(chan DeviceIdentity, 1)}
+	host, _ := NewHost(driver, processor, 1)
+	identity, err := host.Register(context.Background(), 5, hostTestDevice())
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = host.dispatch(context.Background(), Operation{
+		Token: 3, DeviceID: identity.DeviceID, Generation: identity.Generation + 1,
+		EndpointAddress: 0x81, EndpointSequence: 1,
+	})
+	if err == nil {
+		t.Fatal("stale generation was accepted")
+	}
+}
+
+func TestHostCancelBeforeOperationSkipsProcessingAndCompletion(t *testing.T) {
+	driver := newFakeHostDriver()
+	processor := &recordingProcessor{processed: make(chan uint64, 1), resets: make(chan DeviceIdentity, 1)}
+	host, _ := NewHost(driver, processor, 1)
+	identity, err := host.Register(context.Background(), 6, hostTestDevice())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- host.Serve(ctx) }()
+
+	driver.operations <- Operation{
+		Token: 44, DeviceID: identity.DeviceID, Generation: identity.Generation,
+		EndpointAddress: 0x81, Kind: OperationCancel,
+	}
+	driver.operations <- Operation{
+		Token: 44, DeviceID: identity.DeviceID, Generation: identity.Generation,
+		EndpointAddress: 0x81, EndpointSequence: 1, Kind: OperationTransfer,
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		host.operationMu.Lock()
+		state := host.operations[44]
+		finished := state != nil && state.done
+		host.operationMu.Unlock()
+		if finished {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("cancelled operation was not retired")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	select {
+	case sequence := <-processor.processed:
+		t.Fatalf("cancelled operation reached processor with sequence %d", sequence)
+	default:
+	}
+	select {
+	case completion := <-driver.completions:
+		t.Fatalf("cancelled operation was completed twice: %+v", completion)
+	default:
+	}
+	cancel()
+	<-done
+}
+
+func TestHostCancelInterruptsActiveProcessor(t *testing.T) {
+	driver := newFakeHostDriver()
+	processor := &cancellableProcessor{started: make(chan struct{}), cancelled: make(chan struct{})}
+	host, _ := NewHost(driver, processor, 2)
+	identity, err := host.Register(context.Background(), 7, hostTestDevice())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- host.Serve(ctx) }()
+	driver.operations <- Operation{
+		Token: 55, DeviceID: identity.DeviceID, Generation: identity.Generation,
+		EndpointAddress: 0x81, EndpointSequence: 1, Kind: OperationTransfer,
+	}
+	select {
+	case <-processor.started:
+	case <-time.After(time.Second):
+		t.Fatal("processor did not start")
+	}
+	driver.operations <- Operation{
+		Token: 55, DeviceID: identity.DeviceID, Generation: identity.Generation,
+		EndpointAddress: 0x81, Kind: OperationCancel,
+	}
+	select {
+	case <-processor.cancelled:
+	case <-time.After(time.Second):
+		t.Fatal("processor context was not cancelled")
+	}
+	select {
+	case completion := <-driver.completions:
+		t.Fatalf("cancelled operation was completed twice: %+v", completion)
+	case <-time.After(20 * time.Millisecond):
+	}
+	cancel()
+	<-done
+}

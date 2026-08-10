@@ -26,11 +26,22 @@ typedef struct VIIPER_UDE_PENDING_SLOT {
     WDFREQUEST Request;
     UDECXUSBENDPOINT Endpoint;
     ULONGLONG Token;
+    ULONGLONG DeviceId;
     ULONG Generation;
+    ULONG DeviceGeneration;
     VIIPER_UDE_PENDING_STATE State;
     BOOLEAN AbortPending;
+    BOOLEAN PublishedToOwner;
+    UCHAR EndpointAddress;
     NTSTATUS AbortStatus;
 } VIIPER_UDE_PENDING_SLOT;
+
+typedef struct VIIPER_UDE_CANCEL_EVENT {
+    ULONGLONG Token;
+    ULONGLONG DeviceId;
+    ULONG Generation;
+    UCHAR EndpointAddress;
+} VIIPER_UDE_CANCEL_EVENT;
 
 typedef struct VIIPER_UDE_REQUEST_CONTEXT {
     WDFDEVICE Controller;
@@ -51,6 +62,11 @@ typedef struct VIIPER_UDE_CONTROLLER_CONTEXT {
     WDFMEMORY PendingStorage;
     VIIPER_UDE_PENDING_SLOT *PendingSlots;
     ULONG NextPendingSlot;
+    WDFMEMORY CancelStorage;
+    VIIPER_UDE_CANCEL_EVENT *CancelEvents;
+    ULONG CancelHead;
+    ULONG CancelTail;
+    ULONG CancelCount;
     WDFFILEOBJECT OwnerFile;
     WDFQUEUE DefaultQueue;
     WDFQUEUE WaitingDequeues;
@@ -65,6 +81,8 @@ typedef struct VIIPER_UDE_CONTROLLER_CONTEXT {
     volatile LONG64 LateCompletions;
     volatile LONG64 InvalidMessages;
     volatile LONG64 QueueExhaustions;
+    volatile LONG64 CancelEventsDelivered;
+    volatile LONG64 CancelEventOverflows;
     volatile LONG64 IsoPackets;
     volatile LONG64 BytesToDevice;
     volatile LONG64 BytesFromDevice;
@@ -91,6 +109,7 @@ typedef struct VIIPER_UDE_DEVICE_CONTEXT {
     BOOLEAN Plugged;
     BOOLEAN Purging;
     UDECXUSBENDPOINT DefaultEndpoint;
+    volatile LONG64 EndpointSequences[256];
 } VIIPER_UDE_DEVICE_CONTEXT;
 
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(VIIPER_UDE_DEVICE_CONTEXT, ViiperGetDeviceContext)

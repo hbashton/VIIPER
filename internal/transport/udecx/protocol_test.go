@@ -94,6 +94,7 @@ func TestParseOperationCopiesPayloadAndPackets(t *testing.T) {
 	binary.LittleEndian.PutUint32(raw[64:68], OperationSize+IsoPacketSize)
 	binary.LittleEndian.PutUint32(raw[68:72], uint32(len(payload)))
 	binary.LittleEndian.PutUint32(raw[72:76], OperationSize)
+	binary.LittleEndian.PutUint64(raw[88:96], 17)
 	binary.LittleEndian.PutUint32(raw[OperationSize:OperationSize+4], 0)
 	binary.LittleEndian.PutUint32(raw[OperationSize+4:OperationSize+8], uint32(len(payload)))
 	copy(raw[OperationSize+IsoPacketSize:], payload)
@@ -102,7 +103,8 @@ func TestParseOperationCopiesPayloadAndPackets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if op.Token != 99 || op.DeviceID != 4 || op.Generation != 8 || len(op.IsoPackets) != 1 {
+	if op.Token != 99 || op.DeviceID != 4 || op.Generation != 8 ||
+		op.EndpointSequence != 17 || len(op.IsoPackets) != 1 {
 		t.Fatalf("unexpected operation: %+v", op)
 	}
 	raw[len(raw)-1] = 0xff
@@ -141,14 +143,16 @@ func TestIdentityAndStatsLayout(t *testing.T) {
 	putHeader(raw, h)
 	binary.LittleEndian.PutUint64(raw[16:24], 11)
 	binary.LittleEndian.PutUint64(raw[88:96], 29)
-	binary.LittleEndian.PutUint32(raw[96:100], 3)
-	binary.LittleEndian.PutUint32(raw[100:104], 5)
-	binary.LittleEndian.PutUint32(raw[104:108], 7)
+	binary.LittleEndian.PutUint64(raw[96:104], 31)
+	binary.LittleEndian.PutUint64(raw[104:112], 0)
+	binary.LittleEndian.PutUint32(raw[112:116], 3)
+	binary.LittleEndian.PutUint32(raw[116:120], 5)
+	binary.LittleEndian.PutUint32(raw[120:124], 7)
 	stats, err := ParseStats(raw)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stats.OperationsDequeued != 11 || stats.BytesFromDevice != 29 ||
+	if stats.OperationsDequeued != 11 || stats.BytesFromDevice != 29 || stats.CancelEvents != 31 ||
 		stats.ActiveDevices != 3 || stats.PendingOperations != 5 || stats.WaitingDequeues != 7 {
 		t.Fatalf("unexpected stats: %+v", stats)
 	}

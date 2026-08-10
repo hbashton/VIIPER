@@ -138,6 +138,13 @@ ViiperEvtControllerCleanup(
         WdfIoQueuePurgeSynchronously(context->WaitingDequeues);
         InterlockedExchange(&context->WaitingDequeueCount, 0);
     }
+    if (context->BrokerLock != WDF_NO_HANDLE) {
+        WdfSpinLockAcquire(context->BrokerLock);
+        context->CancelHead = 0;
+        context->CancelTail = 0;
+        context->CancelCount = 0;
+        WdfSpinLockRelease(context->BrokerLock);
+    }
 }
 
 VOID
@@ -199,6 +206,11 @@ ViiperEvtFileCleanup(
             WdfIoQueuePurgeSynchronously(context->WaitingDequeues);
             InterlockedExchange(&context->WaitingDequeueCount, 0);
         }
+        WdfSpinLockAcquire(context->BrokerLock);
+        context->CancelHead = 0;
+        context->CancelTail = 0;
+        context->CancelCount = 0;
+        WdfSpinLockRelease(context->BrokerLock);
     }
     if (ownsController) {
         ViiperDestroyOwnedDevices(device, FileObject);
