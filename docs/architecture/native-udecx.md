@@ -136,6 +136,9 @@ unplug all converge on the same idempotent purge path.
   submissions run on an independent parallel queue, while mutation, broker,
   and lifecycle IOCTLs retain their serialized control queue. Large media
   completions therefore cannot head-of-line block fresh controller input.
+- Each fast interrupt-IN endpoint has its own passive lock. Different
+  controllers publish concurrently, while accidental concurrent submissions
+  for one endpoint cannot reorder reports or replay a coalesced sequence.
 - Media callbacks do not take the controller lock.
 - Interrupt-IN queues are manual and completed from fresh input snapshots;
   output and media endpoints retain independent ordered queues.

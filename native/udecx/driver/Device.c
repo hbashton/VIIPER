@@ -716,6 +716,12 @@ ViiperEvtEndpointAdd(
         (descriptor.bmAttributes & USB_ENDPOINT_TYPE_MASK) == USB_ENDPOINT_TYPE_INTERRUPT) {
         endpointContext->FastInput = TRUE;
         dispatchType = WdfIoQueueDispatchManual;
+        WDF_OBJECT_ATTRIBUTES_INIT(&attributes);
+        attributes.ParentObject = endpoint;
+        status = WdfWaitLockCreate(&attributes, &endpointContext->InputLock);
+        if (!NT_SUCCESS(status)) {
+            return status;
+        }
     } else {
         dispatchType = WdfIoQueueDispatchParallel;
     }
@@ -854,16 +860,29 @@ ViiperSubmitInputReport(
 
     endpointContext = ViiperGetEndpointContext(endpoint);
     if (!endpointContext->FastInput ||
-        InterlockedCompareExchange(&endpointContext->Purging, 0, 0) != 0 ||
-        input->Sequence <= (ULONGLONG)InterlockedCompareExchange64(
-            &endpointContext->LastInputSequence, 0, 0)) {
+        endpointContext->InputLock == WDF_NO_HANDLE) {
         WdfObjectDereference(endpoint);
         return STATUS_INVALID_DEVICE_STATE;
     }
 
+    // InputQueue is parallel so independent controllers never block one
+    // another. Serialize only this endpoint, preserving report order even if
+    // a faulty or hostile owner submits concurrent updates for the same pad.
+    WdfWaitLockAcquire(endpointContext->InputLock, NULL);
+    if (InterlockedCompareExchange(&endpointContext->Purging, 0, 0) != 0 ||
+        input->Sequence <= (ULONGLONG)InterlockedCompareExchange64(
+            &endpointContext->LastInputSequence, 0, 0)) {
+        WdfWaitLockRelease(endpointContext->InputLock);
+        WdfObjectDereference(endpoint);
+        return STATUS_INVALID_DEVICE_STATE;
+    }
+    // Claim the sequence when the report is accepted, including when no host
+    // poll is parked. That makes latest-state coalescing replay-safe.
+    InterlockedExchange64(&endpointContext->LastInputSequence, (LONG64)input->Sequence);
     InterlockedIncrement64(&controllerContext->InputReportsSubmitted);
     status = WdfIoQueueRetrieveNextRequest(endpointContext->Queue, &urbRequest);
     if (!NT_SUCCESS(status)) {
+        WdfWaitLockRelease(endpointContext->InputLock);
         WdfObjectDereference(endpoint);
         // A producer update is allowed to arrive before Windows posts its
         // next interrupt poll. This is normal latest-state coalescing, not a
@@ -876,12 +895,14 @@ ViiperSubmitInputReport(
             urb->UrbHeader.Function != URB_FUNCTION_BULK_OR_INTERRUPT_TRANSFER_USING_CHAINED_MDL) ||
         (urb->UrbBulkOrInterruptTransfer.TransferFlags & USBD_TRANSFER_DIRECTION_IN) == 0) {
         ViiperCompleteRetrievedInputUrb(urbRequest, STATUS_INVALID_DEVICE_REQUEST);
+        WdfWaitLockRelease(endpointContext->InputLock);
         WdfObjectDereference(endpoint);
         return STATUS_INVALID_DEVICE_REQUEST;
     }
     transferLength = urb->UrbBulkOrInterruptTransfer.TransferBufferLength;
     if (input->PayloadLength > transferLength) {
         ViiperCompleteRetrievedInputUrb(urbRequest, STATUS_BUFFER_TOO_SMALL);
+        WdfWaitLockRelease(endpointContext->InputLock);
         WdfObjectDereference(endpoint);
         return STATUS_BUFFER_TOO_SMALL;
     }
@@ -889,16 +910,17 @@ ViiperSubmitInputReport(
         urbRequest, urb, payload, input->PayloadLength, TRUE);
     if (!NT_SUCCESS(status)) {
         ViiperCompleteRetrievedInputUrb(urbRequest, status);
+        WdfWaitLockRelease(endpointContext->InputLock);
         WdfObjectDereference(endpoint);
         return status;
     }
 
     urb->UrbBulkOrInterruptTransfer.TransferBufferLength = input->PayloadLength;
     UdecxUrbSetBytesCompleted(urbRequest, input->PayloadLength);
-    InterlockedExchange64(&endpointContext->LastInputSequence, (LONG64)input->Sequence);
     InterlockedAdd64(&controllerContext->BytesFromDevice, input->PayloadLength);
     InterlockedIncrement64(&controllerContext->InputReportsCompleted);
     ViiperCompleteRetrievedInputUrb(urbRequest, STATUS_SUCCESS);
+    WdfWaitLockRelease(endpointContext->InputLock);
     WdfObjectDereference(endpoint);
     return STATUS_SUCCESS;
 }

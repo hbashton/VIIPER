@@ -143,6 +143,7 @@ WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(VIIPER_UDE_DEVICE_CONTEXT, ViiperGetDeviceCon
 typedef struct VIIPER_UDE_ENDPOINT_CONTEXT {
     UDECXUSBDEVICE Device;
     WDFQUEUE Queue;
+    WDFWAITLOCK InputLock;
     USB_ENDPOINT_DESCRIPTOR Descriptor;
     volatile LONG Purging;
     volatile LONG64 LastInputSequence;
