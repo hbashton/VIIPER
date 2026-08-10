@@ -68,8 +68,8 @@ ViiperHandleNegotiate(
     if (!fileContext->Negotiated) {
         ticks = KeQueryPerformanceCounter(NULL);
         fileContext->ClientNonce = input->ClientNonce;
-        fileContext->DriverNonce = ((uint64_t)ticks.QuadPart) ^
-            ((uint64_t)(ULONG_PTR)fileObject << 13) ^ input->ClientNonce;
+        fileContext->DriverNonce = ((ULONGLONG)ticks.QuadPart) ^
+            ((ULONGLONG)(ULONG_PTR)fileObject << 13) ^ input->ClientNonce;
         if (fileContext->DriverNonce == 0) {
             fileContext->DriverNonce = 1;
         }
@@ -125,19 +125,19 @@ ViiperHandleQueryStats(
     output->Header.Major = VIIPER_UDE_ABI_MAJOR;
     output->Header.Minor = VIIPER_UDE_ABI_MINOR;
     output->Header.Size = sizeof(*output);
-    output->OperationsDequeued = (uint64_t)ViiperReadCounter(&context->OperationsDequeued);
-    output->OperationsCompleted = (uint64_t)ViiperReadCounter(&context->OperationsCompleted);
-    output->OperationsCancelled = (uint64_t)ViiperReadCounter(&context->OperationsCancelled);
-    output->OperationsPurged = (uint64_t)ViiperReadCounter(&context->OperationsPurged);
-    output->LateCompletions = (uint64_t)ViiperReadCounter(&context->LateCompletions);
-    output->InvalidMessages = (uint64_t)ViiperReadCounter(&context->InvalidMessages);
-    output->QueueExhaustions = (uint64_t)ViiperReadCounter(&context->QueueExhaustions);
-    output->IsoPackets = (uint64_t)ViiperReadCounter(&context->IsoPackets);
-    output->BytesToDevice = (uint64_t)ViiperReadCounter(&context->BytesToDevice);
-    output->BytesFromDevice = (uint64_t)ViiperReadCounter(&context->BytesFromDevice);
-    output->ActiveDevices = (uint32_t)InterlockedCompareExchange(&context->ActiveDevices, 0, 0);
-    output->PendingOperations = (uint32_t)InterlockedCompareExchange(&context->PendingOperations, 0, 0);
-    output->WaitingDequeues = (uint32_t)InterlockedCompareExchange(&context->WaitingDequeueCount, 0, 0);
+    output->OperationsDequeued = (ULONGLONG)ViiperReadCounter(&context->OperationsDequeued);
+    output->OperationsCompleted = (ULONGLONG)ViiperReadCounter(&context->OperationsCompleted);
+    output->OperationsCancelled = (ULONGLONG)ViiperReadCounter(&context->OperationsCancelled);
+    output->OperationsPurged = (ULONGLONG)ViiperReadCounter(&context->OperationsPurged);
+    output->LateCompletions = (ULONGLONG)ViiperReadCounter(&context->LateCompletions);
+    output->InvalidMessages = (ULONGLONG)ViiperReadCounter(&context->InvalidMessages);
+    output->QueueExhaustions = (ULONGLONG)ViiperReadCounter(&context->QueueExhaustions);
+    output->IsoPackets = (ULONGLONG)ViiperReadCounter(&context->IsoPackets);
+    output->BytesToDevice = (ULONGLONG)ViiperReadCounter(&context->BytesToDevice);
+    output->BytesFromDevice = (ULONGLONG)ViiperReadCounter(&context->BytesFromDevice);
+    output->ActiveDevices = (ULONG)InterlockedCompareExchange(&context->ActiveDevices, 0, 0);
+    output->PendingOperations = (ULONG)InterlockedCompareExchange(&context->PendingOperations, 0, 0);
+    output->WaitingDequeues = (ULONG)InterlockedCompareExchange(&context->WaitingDequeueCount, 0, 0);
     WdfRequestSetInformation(Request, sizeof(*output));
     return STATUS_SUCCESS;
 }

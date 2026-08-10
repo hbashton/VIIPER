@@ -3,6 +3,8 @@
 #include <ntddk.h>
 #include <wdf.h>
 #include <usb.h>
+#include <usbioctl.h>
+#include <usbiodef.h>
 #include <wdfusb.h>
 #include <udecx.h>
 
@@ -38,8 +40,8 @@ WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(VIIPER_UDE_CONTROLLER_CONTEXT, ViiperGetContr
 typedef struct VIIPER_UDE_FILE_CONTEXT {
     BOOLEAN Negotiated;
     BOOLEAN Closing;
-    uint64_t ClientNonce;
-    uint64_t DriverNonce;
+    ULONGLONG ClientNonce;
+    ULONGLONG DriverNonce;
 } VIIPER_UDE_FILE_CONTEXT;
 
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(VIIPER_UDE_FILE_CONTEXT, ViiperGetFileContext)
@@ -47,9 +49,9 @@ WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(VIIPER_UDE_FILE_CONTEXT, ViiperGetFileContext
 typedef struct VIIPER_UDE_DEVICE_CONTEXT {
     WDFDEVICE Controller;
     WDFFILEOBJECT OwnerFile;
-    uint64_t DeviceId;
-    uint32_t Generation;
-    uint32_t Slot;
+    ULONGLONG DeviceId;
+    ULONG Generation;
+    ULONG Slot;
     BOOLEAN Plugged;
     BOOLEAN Purging;
     UDECXUSBENDPOINT DefaultEndpoint;

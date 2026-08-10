@@ -21,9 +21,9 @@
 static
 BOOLEAN
 ViiperRangeValid(
-    _In_ uint32_t Offset,
-    _In_ uint32_t Length,
-    _In_ uint32_t Total
+    _In_ ULONG Offset,
+    _In_ ULONG Length,
+    _In_ ULONG Total
     )
 {
     return Offset <= Total && Length <= Total - Offset;
@@ -37,8 +37,8 @@ ViiperValidateCreateDevice(
     )
 {
     const VIIPER_UDE_DESCRIPTOR_RECORD *records;
-    uint32_t recordsLength;
-    uint32_t index;
+    ULONG recordsLength;
+    ULONG index;
     BOOLEAN foundDevice = FALSE;
     BOOLEAN foundConfiguration = FALSE;
 
@@ -116,7 +116,7 @@ ViiperValidateOwner(
 static
 UDECX_USB_DEVICE_SPEED
 ViiperMapSpeed(
-    _In_ uint32_t Speed
+    _In_ ULONG Speed
     )
 {
     switch (Speed) {
@@ -138,12 +138,12 @@ NTSTATUS
 ViiperClaimDeviceSlot(
     _In_ VIIPER_UDE_CONTROLLER_CONTEXT *ControllerContext,
     _In_ UDECXUSBDEVICE Device,
-    _In_ uint64_t DeviceId,
-    _Out_ uint32_t *Slot
+    _In_ ULONGLONG DeviceId,
+    _Out_ ULONG *Slot
     )
 {
-    uint32_t index;
-    uint32_t freeSlot = VIIPER_UDE_MAX_DEVICES;
+    ULONG index;
+    ULONG freeSlot = VIIPER_UDE_MAX_DEVICES;
     NTSTATUS status = STATUS_INSUFFICIENT_RESOURCES;
 
     WdfWaitLockAcquire(ControllerContext->DeviceLock, NULL);
@@ -176,7 +176,7 @@ VOID
 ViiperReleaseDeviceSlot(
     _In_ VIIPER_UDE_CONTROLLER_CONTEXT *ControllerContext,
     _In_ UDECXUSBDEVICE Device,
-    _In_ uint32_t Slot
+    _In_ ULONG Slot
     )
 {
     WdfWaitLockAcquire(ControllerContext->DeviceLock, NULL);
@@ -198,14 +198,14 @@ ViiperCreateVirtualDevice(
     VIIPER_UDE_CREATE_DEVICE *input;
     size_t inputLength;
     WDFFILEOBJECT ownerFile;
-    _UDECXUSBDEVICE_INIT *deviceInit;
+    PUDECXUSBDEVICE_INIT deviceInit;
     UDECX_USB_DEVICE_STATE_CHANGE_CALLBACKS callbacks;
     UDECX_USB_DEVICE_SPEED speed;
     WDF_OBJECT_ATTRIBUTES attributes;
     UDECXUSBDEVICE device = WDF_NO_HANDLE;
     VIIPER_UDE_DEVICE_CONTEXT *deviceContext;
     UDECX_USB_DEVICE_PLUG_IN_OPTIONS plugOptions;
-    uint32_t slot;
+    ULONG slot;
 
     PAGED_CODE();
     status = ViiperValidateOwner(controller, Request, &ownerFile);
@@ -292,13 +292,13 @@ UDECXUSBDEVICE
 ViiperTakeDevice(
     _In_ VIIPER_UDE_CONTROLLER_CONTEXT *ControllerContext,
     _In_ WDFFILEOBJECT OwnerFile,
-    _In_ uint64_t DeviceId,
-    _In_ uint32_t Generation,
+    _In_ ULONGLONG DeviceId,
+    _In_ ULONG Generation,
     _In_ BOOLEAN MatchGeneration
     )
 {
     UDECXUSBDEVICE found = WDF_NO_HANDLE;
-    uint32_t index;
+    ULONG index;
 
     WdfWaitLockAcquire(ControllerContext->DeviceLock, NULL);
     for (index = 0; index < VIIPER_UDE_MAX_DEVICES; ++index) {
@@ -375,8 +375,8 @@ ViiperDestroyOwnedDevices(
     for (;;) {
         UDECXUSBDEVICE device;
         VIIPER_UDE_DEVICE_CONTEXT *deviceContext;
-        uint64_t deviceId = 0;
-        uint32_t index;
+        ULONGLONG deviceId = 0;
+        ULONG index;
 
         WdfWaitLockAcquire(controllerContext->DeviceLock, NULL);
         for (index = 0; index < VIIPER_UDE_MAX_DEVICES; ++index) {
@@ -543,7 +543,7 @@ ViiperEvtEndpointAdd(
 NTSTATUS
 ViiperEvtDefaultEndpointAdd(
     _In_ UDECXUSBDEVICE Device,
-    _In_ _UDECXUSBENDPOINT_INIT *EndpointInit
+    _In_ PUDECXUSBENDPOINT_INIT EndpointInit
     )
 {
     UDECX_USB_ENDPOINT_INIT_AND_METADATA endpointData;

@@ -1,26 +1,49 @@
 #pragma once
 
-#include <stdint.h>
-
 #if defined(_KERNEL_MODE)
+#include <ntdef.h>
 #include <devioctl.h>
+typedef UCHAR VIIPER_UDE_UINT8;
+typedef USHORT VIIPER_UDE_UINT16;
+typedef ULONG VIIPER_UDE_UINT32;
+typedef ULONGLONG VIIPER_UDE_UINT64;
+typedef LONG VIIPER_UDE_INT32;
+#define VIIPER_UDE_UINT16_C(value) value##U
+#define VIIPER_UDE_UINT32_C(value) value##UL
 #elif defined(_WIN32)
+#include <stdint.h>
 #include <winioctl.h>
+typedef uint8_t VIIPER_UDE_UINT8;
+typedef uint16_t VIIPER_UDE_UINT16;
+typedef uint32_t VIIPER_UDE_UINT32;
+typedef uint64_t VIIPER_UDE_UINT64;
+typedef int32_t VIIPER_UDE_INT32;
+#define VIIPER_UDE_UINT16_C(value) UINT16_C(value)
+#define VIIPER_UDE_UINT32_C(value) UINT32_C(value)
+#else
+#include <stdint.h>
+typedef uint8_t VIIPER_UDE_UINT8;
+typedef uint16_t VIIPER_UDE_UINT16;
+typedef uint32_t VIIPER_UDE_UINT32;
+typedef uint64_t VIIPER_UDE_UINT64;
+typedef int32_t VIIPER_UDE_INT32;
+#define VIIPER_UDE_UINT16_C(value) UINT16_C(value)
+#define VIIPER_UDE_UINT32_C(value) UINT32_C(value)
 #endif
 
-#define VIIPER_UDE_MAGIC UINT32_C(0x45445556) /* "VUDE" little-endian */
-#define VIIPER_UDE_ABI_MAJOR UINT16_C(1)
-#define VIIPER_UDE_ABI_MINOR UINT16_C(0)
+#define VIIPER_UDE_MAGIC VIIPER_UDE_UINT32_C(0x45445556) /* "VUDE" little-endian */
+#define VIIPER_UDE_ABI_MAJOR VIIPER_UDE_UINT16_C(1)
+#define VIIPER_UDE_ABI_MINOR VIIPER_UDE_UINT16_C(0)
 
-#define VIIPER_UDE_MAX_DEVICES UINT32_C(32)
-#define VIIPER_UDE_MAX_DESCRIPTOR_BYTES UINT32_C(262144)
-#define VIIPER_UDE_MAX_TRANSFER_BYTES UINT32_C(1048576)
-#define VIIPER_UDE_MAX_ISO_PACKETS UINT32_C(1024)
-#define VIIPER_UDE_MAX_PENDING_OPERATIONS UINT32_C(4096)
+#define VIIPER_UDE_MAX_DEVICES VIIPER_UDE_UINT32_C(32)
+#define VIIPER_UDE_MAX_DESCRIPTOR_BYTES VIIPER_UDE_UINT32_C(262144)
+#define VIIPER_UDE_MAX_TRANSFER_BYTES VIIPER_UDE_UINT32_C(1048576)
+#define VIIPER_UDE_MAX_ISO_PACKETS VIIPER_UDE_UINT32_C(1024)
+#define VIIPER_UDE_MAX_PENDING_OPERATIONS VIIPER_UDE_UINT32_C(4096)
 
-#define VIIPER_UDE_CAP_ISOCHRONOUS UINT32_C(0x00000001)
-#define VIIPER_UDE_CAP_STREAMS UINT32_C(0x00000002)
-#define VIIPER_UDE_CAP_DEVICE_LIFECYCLE UINT32_C(0x00000004)
+#define VIIPER_UDE_CAP_ISOCHRONOUS VIIPER_UDE_UINT32_C(0x00000001)
+#define VIIPER_UDE_CAP_STREAMS VIIPER_UDE_UINT32_C(0x00000002)
+#define VIIPER_UDE_CAP_DEVICE_LIFECYCLE VIIPER_UDE_UINT32_C(0x00000004)
 
 #if defined(_WIN32)
 #define VIIPER_UDE_IOCTL_BASE 0x900
@@ -35,30 +58,30 @@
 #pragma pack(push, 1)
 
 typedef struct VIIPER_UDE_HEADER {
-    uint32_t Magic;
-    uint16_t Major;
-    uint16_t Minor;
-    uint32_t Size;
-    uint32_t Flags;
+    VIIPER_UDE_UINT32 Magic;
+    VIIPER_UDE_UINT16 Major;
+    VIIPER_UDE_UINT16 Minor;
+    VIIPER_UDE_UINT32 Size;
+    VIIPER_UDE_UINT32 Flags;
 } VIIPER_UDE_HEADER;
 
 typedef struct VIIPER_UDE_NEGOTIATE_REQUEST {
     VIIPER_UDE_HEADER Header;
-    uint64_t ClientNonce;
-    uint32_t RequestedCapabilities;
-    uint32_t Reserved;
+    VIIPER_UDE_UINT64 ClientNonce;
+    VIIPER_UDE_UINT32 RequestedCapabilities;
+    VIIPER_UDE_UINT32 Reserved;
 } VIIPER_UDE_NEGOTIATE_REQUEST;
 
 typedef struct VIIPER_UDE_NEGOTIATE_RESPONSE {
     VIIPER_UDE_HEADER Header;
-    uint64_t ClientNonce;
-    uint64_t DriverNonce;
-    uint32_t Capabilities;
-    uint32_t MaxDevices;
-    uint32_t MaxDescriptorBytes;
-    uint32_t MaxTransferBytes;
-    uint32_t MaxIsoPackets;
-    uint32_t MaxPendingOperations;
+    VIIPER_UDE_UINT64 ClientNonce;
+    VIIPER_UDE_UINT64 DriverNonce;
+    VIIPER_UDE_UINT32 Capabilities;
+    VIIPER_UDE_UINT32 MaxDevices;
+    VIIPER_UDE_UINT32 MaxDescriptorBytes;
+    VIIPER_UDE_UINT32 MaxTransferBytes;
+    VIIPER_UDE_UINT32 MaxIsoPackets;
+    VIIPER_UDE_UINT32 MaxPendingOperations;
 } VIIPER_UDE_NEGOTIATE_RESPONSE;
 
 typedef enum VIIPER_UDE_DESCRIPTOR_KIND {
@@ -69,32 +92,32 @@ typedef enum VIIPER_UDE_DESCRIPTOR_KIND {
 } VIIPER_UDE_DESCRIPTOR_KIND;
 
 typedef struct VIIPER_UDE_DESCRIPTOR_RECORD {
-    uint16_t Kind;
-    uint16_t Index;
-    uint16_t LanguageId;
-    uint16_t Reserved;
-    uint32_t Offset;
-    uint32_t Length;
+    VIIPER_UDE_UINT16 Kind;
+    VIIPER_UDE_UINT16 Index;
+    VIIPER_UDE_UINT16 LanguageId;
+    VIIPER_UDE_UINT16 Reserved;
+    VIIPER_UDE_UINT32 Offset;
+    VIIPER_UDE_UINT32 Length;
 } VIIPER_UDE_DESCRIPTOR_RECORD;
 
 typedef struct VIIPER_UDE_CREATE_DEVICE {
     VIIPER_UDE_HEADER Header;
-    uint64_t DeviceId;
-    uint32_t Generation;
-    uint32_t Speed;
-    uint32_t DescriptorCount;
-    uint32_t DescriptorRecordsOffset;
-    uint32_t DescriptorDataOffset;
-    uint32_t DescriptorDataLength;
-    uint32_t MaxPendingOperations;
-    uint32_t Reserved;
+    VIIPER_UDE_UINT64 DeviceId;
+    VIIPER_UDE_UINT32 Generation;
+    VIIPER_UDE_UINT32 Speed;
+    VIIPER_UDE_UINT32 DescriptorCount;
+    VIIPER_UDE_UINT32 DescriptorRecordsOffset;
+    VIIPER_UDE_UINT32 DescriptorDataOffset;
+    VIIPER_UDE_UINT32 DescriptorDataLength;
+    VIIPER_UDE_UINT32 MaxPendingOperations;
+    VIIPER_UDE_UINT32 Reserved;
 } VIIPER_UDE_CREATE_DEVICE;
 
 typedef struct VIIPER_UDE_DEVICE_IDENTITY {
     VIIPER_UDE_HEADER Header;
-    uint64_t DeviceId;
-    uint32_t Generation;
-    uint32_t Reserved;
+    VIIPER_UDE_UINT64 DeviceId;
+    VIIPER_UDE_UINT32 Generation;
+    VIIPER_UDE_UINT32 Reserved;
 } VIIPER_UDE_DEVICE_IDENTITY;
 
 typedef enum VIIPER_UDE_OPERATION_KIND {
@@ -110,64 +133,64 @@ typedef enum VIIPER_UDE_OPERATION_KIND {
 } VIIPER_UDE_OPERATION_KIND;
 
 typedef struct VIIPER_UDE_ISO_PACKET {
-    uint32_t Offset;
-    uint32_t Length;
-    int32_t Status;
-    uint32_t Reserved;
+    VIIPER_UDE_UINT32 Offset;
+    VIIPER_UDE_UINT32 Length;
+    VIIPER_UDE_INT32 Status;
+    VIIPER_UDE_UINT32 Reserved;
 } VIIPER_UDE_ISO_PACKET;
 
 typedef struct VIIPER_UDE_OPERATION {
     VIIPER_UDE_HEADER Header;
-    uint64_t Token;
-    uint64_t DeviceId;
-    uint32_t Generation;
-    uint32_t Kind;
-    uint8_t EndpointAddress;
-    uint8_t Direction;
-    uint16_t Reserved0;
-    uint32_t UrbFunction;
-    uint32_t TransferFlags;
-    uint32_t StartFrame;
-    uint32_t IsoPacketCount;
-    uint32_t TransferLength;
-    uint32_t PayloadOffset;
-    uint32_t PayloadLength;
-    uint32_t IsoPacketsOffset;
-    uint8_t SetupPacket[8];
-    uint32_t Reserved1;
+    VIIPER_UDE_UINT64 Token;
+    VIIPER_UDE_UINT64 DeviceId;
+    VIIPER_UDE_UINT32 Generation;
+    VIIPER_UDE_UINT32 Kind;
+    VIIPER_UDE_UINT8 EndpointAddress;
+    VIIPER_UDE_UINT8 Direction;
+    VIIPER_UDE_UINT16 Reserved0;
+    VIIPER_UDE_UINT32 UrbFunction;
+    VIIPER_UDE_UINT32 TransferFlags;
+    VIIPER_UDE_UINT32 StartFrame;
+    VIIPER_UDE_UINT32 IsoPacketCount;
+    VIIPER_UDE_UINT32 TransferLength;
+    VIIPER_UDE_UINT32 PayloadOffset;
+    VIIPER_UDE_UINT32 PayloadLength;
+    VIIPER_UDE_UINT32 IsoPacketsOffset;
+    VIIPER_UDE_UINT8 SetupPacket[8];
+    VIIPER_UDE_UINT32 Reserved1;
 } VIIPER_UDE_OPERATION;
 
 typedef struct VIIPER_UDE_COMPLETION {
     VIIPER_UDE_HEADER Header;
-    uint64_t Token;
-    uint64_t DeviceId;
-    uint32_t Generation;
-    int32_t Status;
-    uint32_t UsbdStatus;
-    uint32_t TransferLength;
-    uint32_t IsoPacketCount;
-    uint32_t PayloadOffset;
-    uint32_t PayloadLength;
-    uint32_t IsoPacketsOffset;
-    uint32_t Reserved;
+    VIIPER_UDE_UINT64 Token;
+    VIIPER_UDE_UINT64 DeviceId;
+    VIIPER_UDE_UINT32 Generation;
+    VIIPER_UDE_INT32 Status;
+    VIIPER_UDE_UINT32 UsbdStatus;
+    VIIPER_UDE_UINT32 TransferLength;
+    VIIPER_UDE_UINT32 IsoPacketCount;
+    VIIPER_UDE_UINT32 PayloadOffset;
+    VIIPER_UDE_UINT32 PayloadLength;
+    VIIPER_UDE_UINT32 IsoPacketsOffset;
+    VIIPER_UDE_UINT32 Reserved;
 } VIIPER_UDE_COMPLETION;
 
 typedef struct VIIPER_UDE_STATS {
     VIIPER_UDE_HEADER Header;
-    uint64_t OperationsDequeued;
-    uint64_t OperationsCompleted;
-    uint64_t OperationsCancelled;
-    uint64_t OperationsPurged;
-    uint64_t LateCompletions;
-    uint64_t InvalidMessages;
-    uint64_t QueueExhaustions;
-    uint64_t IsoPackets;
-    uint64_t BytesToDevice;
-    uint64_t BytesFromDevice;
-    uint32_t ActiveDevices;
-    uint32_t PendingOperations;
-    uint32_t WaitingDequeues;
-    uint32_t Reserved;
+    VIIPER_UDE_UINT64 OperationsDequeued;
+    VIIPER_UDE_UINT64 OperationsCompleted;
+    VIIPER_UDE_UINT64 OperationsCancelled;
+    VIIPER_UDE_UINT64 OperationsPurged;
+    VIIPER_UDE_UINT64 LateCompletions;
+    VIIPER_UDE_UINT64 InvalidMessages;
+    VIIPER_UDE_UINT64 QueueExhaustions;
+    VIIPER_UDE_UINT64 IsoPackets;
+    VIIPER_UDE_UINT64 BytesToDevice;
+    VIIPER_UDE_UINT64 BytesFromDevice;
+    VIIPER_UDE_UINT32 ActiveDevices;
+    VIIPER_UDE_UINT32 PendingOperations;
+    VIIPER_UDE_UINT32 WaitingDequeues;
+    VIIPER_UDE_UINT32 Reserved;
 } VIIPER_UDE_STATS;
 
 #pragma pack(pop)
