@@ -832,7 +832,7 @@ ViiperSerializeOperation(
 }
 
 static
-VOID
+BOOLEAN
 ViiperQueueOwnedCompletion(
     _In_ VIIPER_UDE_CONTROLLER_CONTEXT *ControllerContext,
     _In_ ULONG Slot,
@@ -849,16 +849,49 @@ ViiperQueueOwnedCompletion(
     if (Slot < VIIPER_UDE_MAX_PENDING_OPERATIONS &&
         ViiperSlotMatches(&ControllerContext->PendingSlots[Slot], Request, Token) &&
         ControllerContext->PendingSlots[Slot].State == ViiperUdePendingCompleting) {
-        ControllerContext->PendingSlots[Slot].CompletionStatus = Status;
-        ControllerContext->PendingSlots[Slot].CompletionUsbdStatus = UsbdStatus;
-        ControllerContext->PendingSlots[Slot].CompleteWithNtStatus = CompleteWithNtStatus;
-        ControllerContext->PendingSlots[Slot].State = ViiperUdePendingDpcCompletion;
+        VIIPER_UDE_PENDING_SLOT *pending = &ControllerContext->PendingSlots[Slot];
+        if (pending->AbortPending) {
+            pending->CompletionStatus = pending->AbortStatus;
+            pending->CompletionUsbdStatus = USBD_STATUS_CANCELED;
+            pending->CompleteWithNtStatus = TRUE;
+        } else {
+            pending->CompletionStatus = Status;
+            pending->CompletionUsbdStatus = UsbdStatus;
+            pending->CompleteWithNtStatus = CompleteWithNtStatus;
+        }
+        pending->State = ViiperUdePendingDpcCompletion;
         queued = TRUE;
     }
     WdfSpinLockRelease(ControllerContext->BrokerLock);
     if (queued) {
         (VOID)WdfDpcEnqueue(ControllerContext->CompletionDpc);
     }
+    return queued;
+}
+
+static
+BOOLEAN
+ViiperExpectedLateAbortLocked(
+    _In_ const VIIPER_UDE_PENDING_SLOT *Pending,
+    _In_ ULONGLONG Token
+    )
+{
+    NTSTATUS abortStatus;
+
+    if (Pending->Token != Token ||
+        (Pending->State != ViiperUdePendingCompleting &&
+            Pending->State != ViiperUdePendingDpcCompletion) ||
+        (!Pending->AbortPending && !Pending->CompleteWithNtStatus)) {
+        return FALSE;
+    }
+
+    abortStatus = Pending->AbortPending
+        ? Pending->AbortStatus
+        : Pending->CompletionStatus;
+    return abortStatus == STATUS_CANCELLED ||
+        abortStatus == STATUS_DEVICE_REMOVED ||
+        abortStatus == STATUS_DEVICE_NOT_READY ||
+        abortStatus == STATUS_FILE_CLOSED;
 }
 
 static
@@ -1151,6 +1184,8 @@ ViiperCompleteOperation(
     ULONG index;
     ULONG isoPayloadLimit;
     NTSTATUS status;
+    BOOLEAN expectedLateAbort = FALSE;
+    BOOLEAN queued;
 
     status = ViiperValidateBrokerOwner(controller, CompletionRequest);
     if (!NT_SUCCESS(status)) {
@@ -1211,11 +1246,14 @@ ViiperCompleteOperation(
         urbRequest = controllerContext->PendingSlots[slot].Request;
         controllerContext->PendingSlots[slot].State = ViiperUdePendingCompleting;
         WdfObjectReference(urbRequest);
+    } else {
+        expectedLateAbort = ViiperExpectedLateAbortLocked(
+            &controllerContext->PendingSlots[slot], completion->Token);
     }
     WdfSpinLockRelease(controllerContext->BrokerLock);
     if (urbRequest == WDF_NO_HANDLE) {
         InterlockedIncrement64(&controllerContext->LateCompletions);
-        return STATUS_NOT_FOUND;
+        return expectedLateAbort ? STATUS_SUCCESS : STATUS_NOT_FOUND;
     }
 
     status = WdfRequestUnmarkCancelable(urbRequest);
@@ -1243,7 +1281,21 @@ ViiperCompleteOperation(
     }
     if (!NT_SUCCESS((NTSTATUS)completion->Status)) {
         status = (NTSTATUS)completion->Status;
-        goto CompleteWithNtStatus;
+        queued = ViiperQueueOwnedCompletion(
+            controllerContext,
+            slot,
+            urbRequest,
+            completion->Token,
+            status,
+            USBD_STATUS_INTERNAL_HC_ERROR,
+            TRUE);
+        WdfObjectDereference(urbRequest);
+        if (!queued) {
+            InterlockedIncrement64(&controllerContext->LateCompletions);
+            return STATUS_NOT_FOUND;
+        }
+        InterlockedIncrement64(&controllerContext->OperationsCompleted);
+        return STATUS_SUCCESS;
     }
 
     if (requestContext->DirectionIn && completion->PayloadLength > 0) {
@@ -1272,7 +1324,7 @@ ViiperCompleteOperation(
     }
 
     UdecxUrbSetBytesCompleted(urbRequest, completion->TransferLength);
-    ViiperQueueOwnedCompletion(
+    queued = ViiperQueueOwnedCompletion(
         controllerContext,
         slot,
         urbRequest,
@@ -1280,12 +1332,16 @@ ViiperCompleteOperation(
         STATUS_SUCCESS,
         (USBD_STATUS)completion->UsbdStatus,
         FALSE);
-    InterlockedIncrement64(&controllerContext->OperationsCompleted);
     WdfObjectDereference(urbRequest);
+    if (!queued) {
+        InterlockedIncrement64(&controllerContext->LateCompletions);
+        return STATUS_NOT_FOUND;
+    }
+    InterlockedIncrement64(&controllerContext->OperationsCompleted);
     return STATUS_SUCCESS;
 
 CompleteWithNtStatus:
-    ViiperQueueOwnedCompletion(
+    queued = ViiperQueueOwnedCompletion(
         controllerContext,
         slot,
         urbRequest,
@@ -1294,6 +1350,10 @@ CompleteWithNtStatus:
         USBD_STATUS_INTERNAL_HC_ERROR,
         TRUE);
     WdfObjectDereference(urbRequest);
+    if (!queued) {
+        InterlockedIncrement64(&controllerContext->LateCompletions);
+        return STATUS_NOT_FOUND;
+    }
     return status;
 }
 
@@ -1331,6 +1391,8 @@ ViiperAbortMatchingOperations(
                 pending->State != ViiperUdePendingCompleting) {
                 request = pending->Request;
                 token = pending->Token;
+                pending->AbortPending = TRUE;
+                pending->AbortStatus = Status;
                 pending->State = ViiperUdePendingCompleting;
                 WdfObjectReference(request);
             } else {
