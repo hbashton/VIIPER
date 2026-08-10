@@ -1,6 +1,7 @@
 package udecx
 
 import (
+	"bytes"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -11,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/Alia5/VIIPER/usb"
 )
 
 // These mirrors are never serialized through unsafe. They let CI prove that
@@ -182,19 +185,22 @@ func TestNativeProtocolHeaderMatchesGoContract(t *testing.T) {
 	header := nativeContractSource(t, "native", "udecx", "include", "ViiperUdeProtocol.h")
 
 	numbers := map[string]uint64{
-		"VIIPER_UDE_MAGIC":                  uint64(Magic),
-		"VIIPER_UDE_ABI_MAJOR":              uint64(ABIMajor),
-		"VIIPER_UDE_ABI_MINOR":              uint64(ABIMinor),
-		"VIIPER_UDE_MAX_DEVICES":            MaxDevices,
-		"VIIPER_UDE_MAX_DESCRIPTOR_BYTES":   MaxDescriptorBytes,
-		"VIIPER_UDE_MAX_TRANSFER_BYTES":     MaxTransferBytes,
-		"VIIPER_UDE_MAX_ISO_PACKETS":        MaxIsoPackets,
-		"VIIPER_UDE_MAX_INPUT_REPORT_BYTES": MaxInputReportBytes,
-		"VIIPER_UDE_MAX_PENDING_OPERATIONS": MaxPendingOperations,
-		"VIIPER_UDE_CAP_ISOCHRONOUS":        uint64(CapabilityIsochronous),
-		"VIIPER_UDE_CAP_STREAMS":            uint64(CapabilityStreams),
-		"VIIPER_UDE_CAP_DEVICE_LIFECYCLE":   uint64(CapabilityDeviceLifecycle),
-		"VIIPER_UDE_CAP_INPUT_REPORTS":      uint64(CapabilityInputReports),
+		"VIIPER_UDE_MAGIC":                       uint64(Magic),
+		"VIIPER_UDE_ABI_MAJOR":                   uint64(ABIMajor),
+		"VIIPER_UDE_ABI_MINOR":                   uint64(ABIMinor),
+		"VIIPER_UDE_MAX_DEVICES":                 MaxDevices,
+		"VIIPER_UDE_MAX_DESCRIPTOR_BYTES":        MaxDescriptorBytes,
+		"VIIPER_UDE_MAX_TRANSFER_BYTES":          MaxTransferBytes,
+		"VIIPER_UDE_MAX_ISO_PACKETS":             MaxIsoPackets,
+		"VIIPER_UDE_MAX_INPUT_REPORT_BYTES":      MaxInputReportBytes,
+		"VIIPER_UDE_MAX_PENDING_OPERATIONS":      MaxPendingOperations,
+		"VIIPER_UDE_MS_OS_10_STRING_INDEX":       uint64(MicrosoftOS10StringIndex),
+		"VIIPER_UDE_MS_OS_10_STRING_LENGTH":      MicrosoftOS10StringLength,
+		"VIIPER_UDE_MS_OS_10_VENDOR_CODE_OFFSET": MicrosoftOS10VendorCodeOffset,
+		"VIIPER_UDE_CAP_ISOCHRONOUS":             uint64(CapabilityIsochronous),
+		"VIIPER_UDE_CAP_STREAMS":                 uint64(CapabilityStreams),
+		"VIIPER_UDE_CAP_DEVICE_LIFECYCLE":        uint64(CapabilityDeviceLifecycle),
+		"VIIPER_UDE_CAP_INPUT_REPORTS":           uint64(CapabilityInputReports),
 	}
 	for name, want := range numbers {
 		if got := cDefineNumber(t, header, name); got != want {
@@ -296,6 +302,50 @@ func TestNativeProtocolHeaderMatchesGoContract(t *testing.T) {
 	}
 
 	verifyGUIDAndIOCTLContract(t, header)
+}
+
+func TestKernelMicrosoftOS10StringExceptionMatchesGoContract(t *testing.T) {
+	driver := nativeContractSource(t, "native", "udecx", "driver", "Device.c")
+	prefixMatch := regexp.MustCompile(
+		`(?s)static const UCHAR microsoftOS10StringPrefix\[\]\s*=\s*\{([^}]*)\};`,
+	).FindStringSubmatch(driver)
+	if prefixMatch == nil {
+		t.Fatal("kernel Microsoft OS 1.0 string prefix is missing")
+	}
+	var prefix []byte
+	for _, token := range regexp.MustCompile(`0x([0-9A-Fa-f]{2})`).FindAllStringSubmatch(prefixMatch[1], -1) {
+		value, err := strconv.ParseUint(token[1], 16, 8)
+		if err != nil {
+			t.Fatalf("parse kernel Microsoft OS 1.0 prefix byte %q: %v", token[1], err)
+		}
+		prefix = append(prefix, byte(value))
+	}
+	want := (usb.MicrosoftOS10Descriptor{VendorCode: 0x20}).StringDescriptor()
+	if len(want) != MicrosoftOS10StringLength ||
+		MicrosoftOS10VendorCodeOffset != len(want)-2 ||
+		!bytes.Equal(prefix, want[:MicrosoftOS10VendorCodeOffset]) {
+		t.Fatalf("kernel Microsoft OS 1.0 prefix=%x want=%x", prefix, want[:MicrosoftOS10VendorCodeOffset])
+	}
+
+	// Keep the exception exact: only the reserved index, LANGID zero, the
+	// canonical MSFT100 descriptor, a usable vendor code, and a zero pad pass.
+	// The final check also proves all other nonzero-index/LANGID-zero strings
+	// still take the original rejection path.
+	normalized := strings.Join(strings.Fields(driver), " ")
+	checks := []string{
+		"Record->Index == VIIPER_UDE_MS_OS_10_STRING_INDEX",
+		"Record->LanguageId == 0",
+		"Record->Length == VIIPER_UDE_MS_OS_10_STRING_LENGTH",
+		"Descriptor[VIIPER_UDE_MS_OS_10_VENDOR_CODE_OFFSET] != 0",
+		"Descriptor[VIIPER_UDE_MS_OS_10_STRING_LENGTH - 1] == 0",
+		"record->Index != 0 && record->LanguageId == 0 && !isMicrosoftOS10String",
+		"if (foundMicrosoftOS10String) { return FALSE; }",
+	}
+	for _, check := range checks {
+		if !strings.Contains(normalized, check) {
+			t.Errorf("kernel Microsoft OS 1.0 validation lost contract %q", check)
+		}
+	}
 }
 
 func evalGoInteger(expr ast.Expr, values map[string]uint64) (uint64, bool) {

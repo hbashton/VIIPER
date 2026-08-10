@@ -58,6 +58,31 @@ ViiperValidateDescriptorChain(
     return offset == Length;
 }
 
+static const UCHAR microsoftOS10StringPrefix[] = {
+    0x12, 0x03,
+    0x4d, 0x00, 0x53, 0x00, 0x46, 0x00, 0x54, 0x00,
+    0x31, 0x00, 0x30, 0x00, 0x30, 0x00
+};
+
+static
+BOOLEAN
+ViiperIsMicrosoftOS10StringDescriptor(
+    _In_ const VIIPER_UDE_DESCRIPTOR_RECORD *Record,
+    _In_reads_bytes_(Record->Length) const UCHAR *Descriptor
+    )
+{
+    return Record->Index == VIIPER_UDE_MS_OS_10_STRING_INDEX &&
+        Record->LanguageId == 0 &&
+        Record->Length == VIIPER_UDE_MS_OS_10_STRING_LENGTH &&
+        sizeof(microsoftOS10StringPrefix) == VIIPER_UDE_MS_OS_10_VENDOR_CODE_OFFSET &&
+        RtlCompareMemory(
+            Descriptor,
+            microsoftOS10StringPrefix,
+            sizeof(microsoftOS10StringPrefix)) == sizeof(microsoftOS10StringPrefix) &&
+        Descriptor[VIIPER_UDE_MS_OS_10_VENDOR_CODE_OFFSET] != 0 &&
+        Descriptor[VIIPER_UDE_MS_OS_10_STRING_LENGTH - 1] == 0;
+}
+
 static
 BOOLEAN
 ViiperValidateCreateDevice(
@@ -73,6 +98,7 @@ ViiperValidateCreateDevice(
     BOOLEAN foundBos = FALSE;
     BOOLEAN foundLanguageTable = FALSE;
     BOOLEAN foundLocalizedString = FALSE;
+    BOOLEAN foundMicrosoftOS10String = FALSE;
 
     if (InputLength < sizeof(*Input) ||
         InputLength > (size_t)VIIPER_UDE_MAX_DESCRIPTOR_BYTES * 2 + sizeof(*Input) ||
@@ -152,23 +178,33 @@ ViiperValidateCreateDevice(
             foundBos = TRUE;
             break;
         case ViiperUdeDescriptorString:
-            if (record->Index > MAXUCHAR || record->Length > MAXUCHAR ||
-                descriptor[0] != record->Length || descriptor[1] != USB_STRING_DESCRIPTOR_TYPE ||
-                (record->Length & 1) != 0 ||
-                (record->Index == 0 && record->LanguageId != 0) ||
-                (record->Index == 0 && record->Length < 4) ||
-                (record->Index != 0 && record->LanguageId == 0)) {
-                return FALSE;
-            }
-            if (record->Index == 0) {
-                if (foundLanguageTable) {
+            {
+                BOOLEAN isMicrosoftOS10String =
+                    ViiperIsMicrosoftOS10StringDescriptor(record, descriptor);
+                if (record->Index > MAXUCHAR || record->Length > MAXUCHAR ||
+                    descriptor[0] != record->Length || descriptor[1] != USB_STRING_DESCRIPTOR_TYPE ||
+                    (record->Length & 1) != 0 ||
+                    (record->Index == 0 && record->LanguageId != 0) ||
+                    (record->Index == 0 && record->Length < 4) ||
+                    (record->Index != 0 && record->LanguageId == 0 &&
+                        !isMicrosoftOS10String)) {
                     return FALSE;
                 }
-                foundLanguageTable = TRUE;
-            } else {
-                foundLocalizedString = TRUE;
+                if (record->Index == 0) {
+                    if (foundLanguageTable) {
+                        return FALSE;
+                    }
+                    foundLanguageTable = TRUE;
+                } else if (isMicrosoftOS10String) {
+                    if (foundMicrosoftOS10String) {
+                        return FALSE;
+                    }
+                    foundMicrosoftOS10String = TRUE;
+                } else {
+                    foundLocalizedString = TRUE;
+                }
+                break;
             }
-            break;
         default:
             return FALSE;
         }

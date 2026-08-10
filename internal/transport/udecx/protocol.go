@@ -38,6 +38,10 @@ const (
 	MaxIsoPackets        = 1024
 	MaxInputReportBytes  = 4096
 	MaxPendingOperations = 4096
+
+	MicrosoftOS10StringIndex      = 0x00EE
+	MicrosoftOS10StringLength     = 18
+	MicrosoftOS10VendorCodeOffset = 16
 )
 
 var (

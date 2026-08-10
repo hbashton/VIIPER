@@ -77,7 +77,7 @@ func TestSnapshotDevicePublishesMicrosoftOS10ReservedString(t *testing.T) {
 	}
 	var matches []DescriptorRecord
 	for _, record := range snapshot.Descriptors {
-		if record.Kind == DescriptorString && record.Index == 0xEE {
+		if record.Kind == DescriptorString && record.Index == MicrosoftOS10StringIndex {
 			matches = append(matches, record)
 		}
 	}
@@ -90,6 +90,12 @@ func TestSnapshotDevicePublishesMicrosoftOS10ReservedString(t *testing.T) {
 	}
 	got := snapshot.DescriptorData[record.Offset : record.Offset+record.Length]
 	want := msOS.StringDescriptor()
+	if len(got) != MicrosoftOS10StringLength || MicrosoftOS10VendorCodeOffset != len(got)-2 {
+		t.Fatalf("Microsoft OS string layout length=%d vendor-offset=%d", len(got), MicrosoftOS10VendorCodeOffset)
+	}
+	if got[MicrosoftOS10VendorCodeOffset] != msOS.EffectiveVendorCode() || got[len(got)-1] != 0 {
+		t.Fatalf("Microsoft OS string vendor/pad=%#x/%#x", got[MicrosoftOS10VendorCodeOffset], got[len(got)-1])
+	}
 	if string(got) != string(want) {
 		t.Fatalf("Microsoft OS string=%x want=%x", got, want)
 	}
