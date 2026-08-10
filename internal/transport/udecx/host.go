@@ -13,8 +13,12 @@ import (
 )
 
 const (
-	defaultDequeueWorkers  = 8
-	laneQueueDepth         = 128
+	defaultDequeueWorkers = 8
+	// A child cannot expose more operations than the pending-operation
+	// contract published to the kernel. Matching that bound here lets a busy
+	// endpoint absorb every operation the broker can legally own without ever
+	// making the central dispatcher wait for one controller.
+	laneQueueDepth         = defaultDevicePendingOperations
 	completionTimeout      = 2 * time.Second
 	terminalCleanupTimeout = 30 * time.Second
 	completedTokenHistory  = MaxPendingOperations * 2
@@ -84,11 +88,13 @@ type laneKey struct {
 }
 
 type operationLane struct {
-	key    laneKey
-	ctx    context.Context
-	cancel context.CancelFunc
-	input  chan Operation
-	done   chan struct{}
+	key         laneKey
+	ctx         context.Context
+	cancel      context.CancelFunc
+	input       chan Operation
+	done        chan struct{}
+	stateMu     sync.Mutex
+	terminalErr error
 }
 
 type operationState struct {
@@ -120,6 +126,7 @@ type Host struct {
 	devices     map[uint64]*registeredDevice
 	generations map[uint64]uint32
 	lanes       map[laneKey]*operationLane
+	failedLanes map[laneKey]error
 	runCtx      context.Context
 	runCancel   context.CancelFunc
 	fatal       chan error
@@ -143,6 +150,7 @@ func NewHost(driver Driver, processor OperationProcessor, workers int) (*Host, e
 		devices:     make(map[uint64]*registeredDevice),
 		generations: make(map[uint64]uint32),
 		lanes:       make(map[laneKey]*operationLane),
+		failedLanes: make(map[laneKey]error),
 		lifecycles:  make(map[uint64]*deviceLifecycleGate),
 		operations:  make(map[uint64]*operationState),
 	}
@@ -336,16 +344,21 @@ func (h *Host) Unregister(ctx context.Context, identity DeviceIdentity) error {
 			delete(h.lanes, key)
 		}
 	}
+	for key := range h.failedLanes {
+		if key.deviceID == identity.DeviceID && key.generation == identity.Generation {
+			delete(h.failedLanes, key)
+		}
+	}
 	h.mu.Unlock()
 
 	// Mark operations cancelled before their processing contexts are stopped.
 	// This prevents a processor waking on lane cancellation and racing a
 	// completion through an intentionally cancelled driver handle.
 	h.cancelDeviceOperations(identity)
-	entry.cancel()
 	for _, lane := range stoppingLanes {
-		lane.cancel()
+		stopLane(lane)
 	}
+	entry.cancel()
 	for _, lane := range stoppingLanes {
 		select {
 		case <-lane.done:
@@ -533,11 +546,16 @@ func (h *Host) Serve(ctx context.Context) error {
 	defer func() {
 		cancel()
 		h.mu.Lock()
+		stoppingLanes := make([]*operationLane, 0, len(h.lanes))
 		for key, lane := range h.lanes {
-			lane.cancel()
+			stoppingLanes = append(stoppingLanes, lane)
 			delete(h.lanes, key)
 		}
+		h.failedLanes = make(map[laneKey]error)
 		h.mu.Unlock()
+		for _, lane := range stoppingLanes {
+			stopLane(lane)
+		}
 		h.laneWG.Wait()
 		h.cancelAllOperations()
 		h.mu.Lock()
@@ -572,17 +590,36 @@ func (h *Host) Serve(ctx context.Context) error {
 			}
 		}()
 	}
+	finishFatal := func(err error) error {
+		cancel()
+		workers.Wait()
+		return fmt.Errorf("native UDE host session failed: %w", err)
+	}
 
 	for {
+		// Once a lane or publisher reports a fatal error, do not let an always-
+		// ready dequeue stream win repeated select lotteries. Cancelling here
+		// also releases every worker before another result is dispatched.
+		select {
+		case err := <-fatal:
+			return finishFatal(err)
+		default:
+		}
 		select {
 		case <-runCtx.Done():
 			workers.Wait()
 			return nil
 		case err := <-fatal:
-			cancel()
-			workers.Wait()
-			return fmt.Errorf("native UDE host session failed: %w", err)
+			return finishFatal(err)
 		case result := <-results:
+			// A worker result and a fatal lane notification can become ready in
+			// the same scheduling turn. Fatal is terminal; observe it before
+			// touching the newly dequeued operation.
+			select {
+			case err := <-fatal:
+				return finishFatal(err)
+			default:
+			}
 			if result.err != nil {
 				cancel()
 				workers.Wait()
@@ -606,6 +643,14 @@ func (h *Host) Serve(ctx context.Context) error {
 				}
 			}
 			if err := h.dispatch(runCtx, result.op); err != nil {
+				// Saturation terminates the affected lane and publishes fatal
+				// synchronously. Do not wait up to completionTimeout trying to
+				// reject that final request before cancelling the owner session.
+				select {
+				case fatalErr := <-fatal:
+					return finishFatal(fatalErr)
+				default:
+				}
 				if isLifecycleOperation(result.op.Kind) && result.op.Token != 0 {
 					if completeErr := h.completeLifecycle(runCtx, result.op, statusUnsuccessful); completeErr != nil {
 						h.reportFatal(fmt.Errorf("reject lifecycle token %d after dispatch failure %v: %w",
@@ -635,13 +680,20 @@ func (h *Host) dispatch(ctx context.Context, op Operation) error {
 	if op.EndpointSequence == 0 {
 		return errors.New("native UDE operation has zero endpoint sequence")
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	key := laneKey{deviceID: op.DeviceID, generation: op.Generation, endpoint: op.EndpointAddress}
 
 	h.mu.Lock()
 	entry := h.devices[op.DeviceID]
-	if entry == nil || entry.stopping || entry.identity.Generation != op.Generation {
+	if entry == nil || entry.stopping || entry.identity.Generation != op.Generation || entry.ctx.Err() != nil {
 		h.mu.Unlock()
 		return errors.New("native UDE operation targets a stale device generation")
+	}
+	if terminalErr := h.failedLanes[key]; terminalErr != nil {
+		h.mu.Unlock()
+		return terminalErr
 	}
 	lane := h.lanes[key]
 	if lane == nil {
@@ -656,19 +708,94 @@ func (h *Host) dispatch(ctx context.Context, op Operation) error {
 	}
 	h.mu.Unlock()
 
+	// Admission is deliberately nonblocking. A queue at the full kernel
+	// pending-operation contract means either an ABI/driver contract violation
+	// or a terminal endpoint; waiting here would let that one endpoint stall
+	// cancellations, lifecycle traffic, and every other controller.
+	lane.stateMu.Lock()
+	if lane.terminalErr != nil {
+		err := lane.terminalErr
+		lane.stateMu.Unlock()
+		return err
+	}
+	if err := lane.ctx.Err(); err != nil {
+		lane.stateMu.Unlock()
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		lane.stateMu.Unlock()
+		return err
+	}
 	select {
 	case lane.input <- op:
+		lane.stateMu.Unlock()
 		return nil
-	case <-lane.ctx.Done():
-		return lane.ctx.Err()
-	case <-ctx.Done():
-		return ctx.Err()
+	default:
+		err := fmt.Errorf(
+			"native UDE device %d generation %d endpoint 0x%02x lane is saturated at the %d-operation pending contract",
+			key.deviceID, key.generation, key.endpoint, laneQueueDepth)
+		lane.terminalErr = err
+		lane.cancel()
+		lane.stateMu.Unlock()
+		h.removeFailedLane(lane, err)
+		h.reportFatal(err)
+		return err
 	}
 }
 
+func stopLane(lane *operationLane) {
+	lane.stateMu.Lock()
+	if lane.terminalErr == nil {
+		lane.terminalErr = context.Canceled
+	}
+	lane.cancel()
+	lane.stateMu.Unlock()
+}
+
+// removeFailedLane installs a tombstone only when lane is still the exact
+// routed instance. An older goroutine can therefore never remove or poison a
+// replacement lane created for a later lifecycle.
+func (h *Host) removeFailedLane(lane *operationLane, err error) {
+	h.mu.Lock()
+	if h.lanes[lane.key] == lane {
+		delete(h.lanes, lane.key)
+		if h.failedLanes[lane.key] == nil {
+			h.failedLanes[lane.key] = err
+		}
+	}
+	h.mu.Unlock()
+}
+
+func (h *Host) failLane(lane *operationLane, err error) {
+	if err == nil {
+		return
+	}
+	lane.stateMu.Lock()
+	if lane.terminalErr != nil {
+		lane.stateMu.Unlock()
+		return
+	}
+	lane.terminalErr = err
+	lane.cancel()
+	lane.stateMu.Unlock()
+
+	h.removeFailedLane(lane, err)
+	h.reportFatal(err)
+}
+
+func (h *Host) retireLane(lane *operationLane) {
+	stopLane(lane)
+	h.mu.Lock()
+	if h.lanes[lane.key] == lane {
+		delete(h.lanes, lane.key)
+	}
+	h.mu.Unlock()
+	close(lane.done)
+	h.laneWG.Done()
+}
+
 func (h *Host) runLane(lane *operationLane, entry *registeredDevice) {
-	defer h.laneWG.Done()
-	defer close(lane.done)
+	defer h.retireLane(lane)
 	expected := uint64(1)
 	pending := make(map[uint64]Operation)
 	for {
@@ -676,19 +803,22 @@ func (h *Host) runLane(lane *operationLane, entry *registeredDevice) {
 		case <-lane.ctx.Done():
 			return
 		case op := <-lane.input:
+			if lane.ctx.Err() != nil {
+				return
+			}
 			if op.EndpointSequence < expected {
-				h.reportFatal(fmt.Errorf("endpoint 0x%02x sequence regressed from %d to %d",
+				h.failLane(lane, fmt.Errorf("endpoint 0x%02x sequence regressed from %d to %d",
 					lane.key.endpoint, expected, op.EndpointSequence))
 				return
 			}
 			if _, duplicate := pending[op.EndpointSequence]; duplicate {
-				h.reportFatal(fmt.Errorf("endpoint 0x%02x repeated pending sequence %d",
+				h.failLane(lane, fmt.Errorf("endpoint 0x%02x repeated pending sequence %d",
 					lane.key.endpoint, op.EndpointSequence))
 				return
 			}
 			pending[op.EndpointSequence] = op
 			if len(pending) > laneQueueDepth {
-				h.reportFatal(fmt.Errorf("endpoint 0x%02x exceeded the %d-operation reorder bound while waiting for sequence %d",
+				h.failLane(lane, fmt.Errorf("endpoint 0x%02x exceeded the %d-operation reorder bound while waiting for sequence %d",
 					lane.key.endpoint, laneQueueDepth, expected))
 				return
 			}
@@ -742,13 +872,13 @@ func (h *Host) runLane(lane *operationLane, entry *registeredDevice) {
 							status = statusUnsuccessful
 						}
 						if err := h.completeLifecycle(lane.ctx, current, status); err != nil {
-							h.reportFatal(fmt.Errorf("endpoint 0x%02x acknowledge lifecycle sequence %d: %w",
+							h.failLane(lane, fmt.Errorf("endpoint 0x%02x acknowledge lifecycle sequence %d: %w",
 								current.EndpointAddress, current.EndpointSequence, err))
 							return
 						}
 					}
 					if lifecycleErr != nil {
-						h.reportFatal(fmt.Errorf("endpoint 0x%02x lifecycle sequence %d: %w",
+						h.failLane(lane, fmt.Errorf("endpoint 0x%02x lifecycle sequence %d: %w",
 							lane.key.endpoint, current.EndpointSequence, lifecycleErr))
 						return
 					}
@@ -791,7 +921,7 @@ func (h *Host) runLane(lane *operationLane, entry *registeredDevice) {
 					}
 				} else {
 					if err := h.process(lane.ctx, entry.device, current); err != nil {
-						h.reportFatal(fmt.Errorf("endpoint 0x%02x complete sequence %d: %w",
+						h.failLane(lane, fmt.Errorf("endpoint 0x%02x complete sequence %d: %w",
 							lane.key.endpoint, current.EndpointSequence, err))
 						return
 					}

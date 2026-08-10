@@ -3,6 +3,7 @@ package udecx
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -175,6 +176,78 @@ func (*noopProcessor) Process(context.Context, usb.Device, Operation) (Completio
 }
 func (*noopProcessor) Lifecycle(context.Context, usb.Device, Operation) error { return nil }
 func (*noopProcessor) Reset(usb.Device, DeviceIdentity)                       {}
+
+type deviceGateProcessor struct {
+	blockedDevice uint64
+	started       chan struct{}
+	independent   chan uint64
+	startOnce     sync.Once
+}
+
+func (p *deviceGateProcessor) Process(
+	ctx context.Context, _ usb.Device, op Operation,
+) (Completion, error) {
+	if op.DeviceID == p.blockedDevice {
+		p.startOnce.Do(func() { close(p.started) })
+		<-ctx.Done()
+		return Completion{}, ctx.Err()
+	}
+	select {
+	case p.independent <- op.DeviceID:
+	case <-ctx.Done():
+		return Completion{}, ctx.Err()
+	}
+	return Completion{TransferLength: op.TransferLength}, nil
+}
+func (*deviceGateProcessor) Lifecycle(context.Context, usb.Device, Operation) error { return nil }
+func (*deviceGateProcessor) Reset(usb.Device, DeviceIdentity)                       {}
+
+type fatalLaneProcessor struct {
+	failingDevice   uint64
+	started         chan struct{}
+	release         chan struct{}
+	independent     chan uint64
+	queuedProcessed chan struct{}
+	startOnce       sync.Once
+}
+
+func (*fatalLaneProcessor) Process(context.Context, usb.Device, Operation) (Completion, error) {
+	return Completion{}, nil
+}
+func (p *fatalLaneProcessor) Lifecycle(ctx context.Context, _ usb.Device, op Operation) error {
+	if op.DeviceID != p.failingDevice {
+		select {
+		case p.independent <- op.DeviceID:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		return nil
+	}
+	if op.EndpointSequence != 1 {
+		select {
+		case p.queuedProcessed <- struct{}{}:
+		default:
+		}
+		return nil
+	}
+	p.startOnce.Do(func() { close(p.started) })
+	select {
+	case <-p.release:
+		return errors.New("injected lane failure")
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+func (*fatalLaneProcessor) Reset(usb.Device, DeviceIdentity) {}
+
+type cancellationOnlyCompletionDriver struct {
+	*fakeHostDriver
+}
+
+func (*cancellationOnlyCompletionDriver) Complete(ctx context.Context, _ Completion) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
 
 type resetGateProcessor struct {
 	started chan struct{}
@@ -1125,6 +1198,249 @@ func TestHostRestartsInputPublisherAfterEndpointPurgeWithoutResettingSequence(t 
 		}
 	case <-time.After(time.Second):
 		t.Fatal("host did not stop")
+	}
+}
+
+func trackAndDispatch(host *Host, op Operation) error {
+	if err := host.trackOperation(op); err != nil {
+		return fmt.Errorf("track token %d: %w", op.Token, err)
+	}
+	return host.dispatch(context.Background(), op)
+}
+
+func TestHostSaturatedLaneDoesNotBlockIndependentController(t *testing.T) {
+	if laneQueueDepth != defaultDevicePendingOperations {
+		t.Fatalf("lane queue depth=%d want kernel pending contract=%d",
+			laneQueueDepth, defaultDevicePendingOperations)
+	}
+	driver := newFakeHostDriver()
+	processor := &deviceGateProcessor{
+		blockedDevice: 91,
+		started:       make(chan struct{}),
+		independent:   make(chan uint64, 1),
+	}
+	host, err := NewHost(driver, processor, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocked, err := host.Register(context.Background(), processor.blockedDevice, hostTestDevice())
+	if err != nil {
+		t.Fatal(err)
+	}
+	independent, err := host.Register(context.Background(), 92, hostTestDevice())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		host.cancelAllOperations()
+		_ = host.Unregister(context.Background(), blocked)
+		_ = host.Unregister(context.Background(), independent)
+	})
+
+	first := Operation{
+		Token: 1, DeviceID: blocked.DeviceID, Generation: blocked.Generation,
+		EndpointAddress: 0x02, EndpointSequence: 1, Kind: OperationTransfer,
+	}
+	if err = trackAndDispatch(host, first); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-processor.started:
+	case <-time.After(time.Second):
+		t.Fatal("blocked lane did not start processing")
+	}
+
+	for sequence := uint64(2); sequence <= uint64(laneQueueDepth)+1; sequence++ {
+		op := Operation{
+			Token: sequence, DeviceID: blocked.DeviceID, Generation: blocked.Generation,
+			EndpointAddress: 0x02, EndpointSequence: sequence, Kind: OperationTransfer,
+		}
+		if err = trackAndDispatch(host, op); err != nil {
+			t.Fatalf("fill blocked lane at sequence %d: %v", sequence, err)
+		}
+	}
+	overflow := Operation{
+		Token:    uint64(laneQueueDepth) + 2,
+		DeviceID: blocked.DeviceID, Generation: blocked.Generation,
+		EndpointAddress: 0x02, EndpointSequence: uint64(laneQueueDepth) + 2,
+		Kind: OperationTransfer,
+	}
+	if err = trackAndDispatch(host, overflow); err == nil || !strings.Contains(err.Error(), "lane is saturated") {
+		t.Fatalf("overflow dispatch error=%v, want terminal saturation", err)
+	}
+
+	dispatched := make(chan error, 1)
+	go func() {
+		dispatched <- trackAndDispatch(host, Operation{
+			Token: 10000, DeviceID: independent.DeviceID, Generation: independent.Generation,
+			EndpointAddress: 0x02, EndpointSequence: 1, Kind: OperationTransfer,
+		})
+	}()
+	select {
+	case err = <-dispatched:
+		if err != nil {
+			t.Fatalf("independent dispatch failed: %v", err)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("saturated controller blocked the central dispatcher")
+	}
+	select {
+	case deviceID := <-processor.independent:
+		if deviceID != independent.DeviceID {
+			t.Fatalf("processed independent device=%d want=%d", deviceID, independent.DeviceID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("independent controller was not processed")
+	}
+}
+
+func TestHostFatalLaneWithQueuedWorkStaysTerminal(t *testing.T) {
+	driver := newFakeHostDriver()
+	processor := &fatalLaneProcessor{
+		failingDevice:   93,
+		started:         make(chan struct{}),
+		release:         make(chan struct{}),
+		independent:     make(chan uint64, 1),
+		queuedProcessed: make(chan struct{}, 1),
+	}
+	host, err := NewHost(driver, processor, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failing, err := host.Register(context.Background(), processor.failingDevice, hostTestDevice())
+	if err != nil {
+		t.Fatal(err)
+	}
+	independent, err := host.Register(context.Background(), 94, hostTestDevice())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = host.Unregister(context.Background(), failing)
+		_ = host.Unregister(context.Background(), independent)
+	})
+
+	first := Operation{
+		DeviceID: failing.DeviceID, Generation: failing.Generation,
+		EndpointAddress: 0x02, EndpointSequence: 1, Kind: OperationSetInterface,
+	}
+	if err = host.dispatch(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-processor.started:
+	case <-time.After(time.Second):
+		t.Fatal("failing lane did not enter its lifecycle processor")
+	}
+	key := laneKey{
+		deviceID: failing.DeviceID, generation: failing.Generation, endpoint: first.EndpointAddress,
+	}
+	host.mu.RLock()
+	failedLane := host.lanes[key]
+	host.mu.RUnlock()
+	if failedLane == nil {
+		t.Fatal("failing lane was not installed")
+	}
+	if err = host.dispatch(context.Background(), Operation{
+		DeviceID: failing.DeviceID, Generation: failing.Generation,
+		EndpointAddress: 0x02, EndpointSequence: 2, Kind: OperationSetInterface,
+	}); err != nil {
+		t.Fatalf("queue work behind failing operation: %v", err)
+	}
+	close(processor.release)
+	select {
+	case <-failedLane.done:
+	case <-time.After(time.Second):
+		t.Fatal("fatal lane did not cancel and stop")
+	}
+	select {
+	case <-processor.queuedProcessed:
+		t.Fatal("work queued behind a fatal operation was processed")
+	default:
+	}
+
+	host.mu.RLock()
+	routedLane := host.lanes[key]
+	terminalErr := host.failedLanes[key]
+	host.mu.RUnlock()
+	if routedLane != nil {
+		t.Fatal("fatal lane remained in the routing map")
+	}
+	if terminalErr == nil || !strings.Contains(terminalErr.Error(), "injected lane failure") {
+		t.Fatalf("terminal lane error=%v, want injected failure", terminalErr)
+	}
+	if err = host.dispatch(context.Background(), Operation{
+		DeviceID: failing.DeviceID, Generation: failing.Generation,
+		EndpointAddress: 0x02, EndpointSequence: 3, Kind: OperationSetInterface,
+	}); err == nil || !strings.Contains(err.Error(), "injected lane failure") {
+		t.Fatalf("dispatch to terminal lane error=%v, want original failure", err)
+	}
+	host.mu.RLock()
+	recreated := host.lanes[key]
+	host.mu.RUnlock()
+	if recreated != nil {
+		t.Fatal("dispatch recreated a terminal lane")
+	}
+
+	if err = host.dispatch(context.Background(), Operation{
+		DeviceID: independent.DeviceID, Generation: independent.Generation,
+		EndpointAddress: 0x02, EndpointSequence: 1, Kind: OperationSetInterface,
+	}); err != nil {
+		t.Fatalf("independent lifecycle dispatch failed: %v", err)
+	}
+	select {
+	case deviceID := <-processor.independent:
+		if deviceID != independent.DeviceID {
+			t.Fatalf("processed independent device=%d want=%d", deviceID, independent.DeviceID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("independent lane did not run after another lane failed")
+	}
+}
+
+func TestHostServeReturnsPromptlyOnLaneSaturation(t *testing.T) {
+	baseDriver := newFakeHostDriver()
+	baseDriver.operations = make(chan Operation, laneQueueDepth+4)
+	driver := &cancellationOnlyCompletionDriver{fakeHostDriver: baseDriver}
+	processor := &deviceGateProcessor{
+		blockedDevice: 95,
+		started:       make(chan struct{}),
+		independent:   make(chan uint64, 1),
+	}
+	host, err := NewHost(driver, processor, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := host.Register(context.Background(), processor.blockedDevice, hostTestDevice())
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- host.Serve(context.Background()) }()
+
+	baseDriver.operations <- Operation{
+		Token: 1, DeviceID: identity.DeviceID, Generation: identity.Generation,
+		EndpointAddress: 0x02, EndpointSequence: 1, Kind: OperationTransfer,
+	}
+	select {
+	case <-processor.started:
+	case <-time.After(time.Second):
+		t.Fatal("saturation test lane did not start processing")
+	}
+	for sequence := uint64(2); sequence <= uint64(laneQueueDepth)+2; sequence++ {
+		baseDriver.operations <- Operation{
+			Token: sequence, DeviceID: identity.DeviceID, Generation: identity.Generation,
+			EndpointAddress: 0x02, EndpointSequence: sequence, Kind: OperationTransfer,
+		}
+	}
+
+	select {
+	case err = <-done:
+		if err == nil || !strings.Contains(err.Error(), "lane is saturated") {
+			t.Fatalf("Serve error=%v, want lane saturation failure", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Serve waited on failure completion instead of promptly observing lane fatal")
 	}
 }
 
