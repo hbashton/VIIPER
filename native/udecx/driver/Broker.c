@@ -1033,7 +1033,7 @@ ViiperReserveIsoStartFrame(
         return RequestedStartFrame;
     }
 
-    currentFrame = (ULONG)(KeQueryInterruptTime() / 10000ULL);
+    currentFrame = (ULONG)(KeQueryInterruptTimePrecise(NULL) / 10000ULL);
     for (;;) {
         observed = InterlockedCompareExchange64(
             &EndpointContext->NextIsoStartFrame, 0, 0);

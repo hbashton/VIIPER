@@ -38,6 +38,12 @@ const (
 	MaxIsoPackets        = 1024
 	MaxInputReportBytes  = 4096
 	MaxPendingOperations = 4096
+	// TransferFlagDirectionIn is the wire value of
+	// USBD_TRANSFER_DIRECTION_IN from usb.h.
+	TransferFlagDirectionIn uint32 = 0x00000001
+	// TransferFlagStartIsoASAP is the wire value of
+	// USBD_START_ISO_TRANSFER_ASAP from usb.h.
+	TransferFlagStartIsoASAP uint32 = 0x00000004
 
 	MicrosoftOS10StringIndex      = 0x00EE
 	MicrosoftOS10StringLength     = 18

@@ -16,6 +16,9 @@ type nativeLaneKey struct {
 	deviceID   uint64
 	generation uint32
 	endpoint   uint8
+	attributes uint8
+	interval   uint8
+	maxPacket  uint16
 }
 
 type nativeSessionKey struct {
@@ -35,6 +38,23 @@ type nativeSessionState struct {
 	active map[nativeEndpointSignature]struct{}
 }
 
+type nativeClockSample struct {
+	now   time.Time
+	frame uint32
+}
+
+type nativeIsoEndpoint struct {
+	number    uint32
+	direction uint32
+	interval  time.Duration
+	key       nativeLaneKey
+}
+
+const (
+	// USBD_ISO_START_FRAME_RANGE from usb.h.
+	usbdIsoStartFrameRange = int64(1024)
+)
+
 // NativeProcessor adapts the native UdeCx broker to the same control and
 // transfer engine used by USB/IP. Transport-specific clocks live here; device
 // state, feedback, HID, audio, and descriptor behavior remain in usb.Device.
@@ -44,6 +64,8 @@ type NativeProcessor struct {
 	next     map[nativeLaneKey]time.Time
 	lastIn   map[nativeLaneKey][]byte
 	sessions map[nativeSessionKey]*nativeSessionState
+	clock    func() nativeClockSample
+	wait     func(context.Context, time.Time) bool
 }
 
 func NewNativeProcessor(server *Server) (*NativeProcessor, error) {
@@ -55,6 +77,8 @@ func NewNativeProcessor(server *Server) (*NativeProcessor, error) {
 		next:     make(map[nativeLaneKey]time.Time),
 		lastIn:   make(map[nativeLaneKey][]byte),
 		sessions: make(map[nativeSessionKey]*nativeSessionState),
+		clock:    nativeClockSnapshot,
+		wait:     waitUntilContext,
 	}, nil
 }
 
@@ -108,6 +132,11 @@ func (p *NativeProcessor) clearDeviceTransportLocked(identity udecx.DeviceIdenti
 			delete(p.lastIn, key)
 		}
 	}
+	for key := range p.lastIn {
+		if key.deviceID == identity.DeviceID && key.generation == identity.Generation {
+			delete(p.lastIn, key)
+		}
+	}
 	p.mu.Unlock()
 	clear(session.active)
 }
@@ -119,20 +148,22 @@ func (p *NativeProcessor) Lifecycle(_ context.Context, dev usbdevice.Device, op 
 	defer session.mu.Unlock()
 	key := nativeLaneKey{
 		deviceID: op.DeviceID, generation: op.Generation, endpoint: op.EndpointAddress,
+		attributes: op.EndpointAttributes, interval: op.EndpointInterval,
+		maxPacket: op.EndpointMaxPacketSize,
 	}
 
 	switch op.Kind {
 	case udecx.OperationEndpointStart:
-		p.clearLane(key)
+		p.clearEndpointLanes(key)
 		p.activateEndpointLocked(dev, op, session)
 	case udecx.OperationEndpointPurge:
-		p.clearLane(key)
+		p.clearEndpointLanes(key)
 		if resetter, ok := dev.(usbdevice.EndpointResetDevice); ok {
 			resetter.ResetEndpoint(op.EndpointAddress)
 		}
 		p.deactivateEndpointLocked(dev, op, session)
 	case udecx.OperationEndpointReset:
-		p.clearLane(key)
+		p.clearEndpointLanes(key)
 		if resetter, ok := dev.(usbdevice.EndpointResetDevice); ok {
 			resetter.ResetEndpoint(op.EndpointAddress)
 		}
@@ -287,14 +318,107 @@ func (p *NativeProcessor) clearDeviceLanes(identity udecx.DeviceIdentity) {
 			delete(p.lastIn, key)
 		}
 	}
+	for key := range p.lastIn {
+		if key.deviceID == identity.DeviceID && key.generation == identity.Generation {
+			delete(p.lastIn, key)
+		}
+	}
 	p.mu.Unlock()
 }
 
-func (p *NativeProcessor) clearLane(key nativeLaneKey) {
+func (p *NativeProcessor) clearEndpointLanes(endpoint nativeLaneKey) {
 	p.mu.Lock()
-	delete(p.next, key)
-	delete(p.lastIn, key)
+	for key := range p.next {
+		if key.deviceID == endpoint.deviceID && key.generation == endpoint.generation &&
+			key.endpoint == endpoint.endpoint {
+			delete(p.next, key)
+			delete(p.lastIn, key)
+		}
+	}
+	for key := range p.lastIn {
+		if key.deviceID == endpoint.deviceID && key.generation == endpoint.generation &&
+			key.endpoint == endpoint.endpoint {
+			delete(p.lastIn, key)
+		}
+	}
 	p.mu.Unlock()
+}
+
+func nativeLaneKeyFromOperation(op udecx.Operation) nativeLaneKey {
+	return nativeLaneKey{
+		deviceID: op.DeviceID, generation: op.Generation, endpoint: op.EndpointAddress,
+		attributes: op.EndpointAttributes, interval: op.EndpointInterval,
+		maxPacket: op.EndpointMaxPacketSize,
+	}
+}
+
+func descriptorHasEndpointSignature(desc *usbdevice.Descriptor, signature nativeEndpointSignature) bool {
+	if desc == nil {
+		return false
+	}
+	for _, iface := range desc.Interfaces {
+		for _, endpoint := range iface.Endpoints {
+			if signatureFromDescriptor(endpoint) == signature {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func nativeIsoServiceInterval(speed uint32, bInterval uint8) (time.Duration, error) {
+	if bInterval == 0 {
+		return 0, errors.New("native ISO endpoint has zero bInterval")
+	}
+	if speed == uint32(udecx.DeviceSpeedLow) {
+		return 0, errors.New("low-speed USB does not support isochronous endpoints")
+	}
+	if speed >= uint32(udecx.DeviceSpeedHigh) {
+		if bInterval > 16 {
+			return 0, fmt.Errorf("native high-speed ISO bInterval %d exceeds 16", bInterval)
+		}
+		return time.Duration(1<<(bInterval-1)) * 125 * time.Microsecond, nil
+	}
+	return time.Duration(bInterval) * time.Millisecond, nil
+}
+
+func resolveNativeIsoEndpoint(dev usbdevice.Device, op udecx.Operation) (nativeIsoEndpoint, error) {
+	desc := dev.GetDescriptor()
+	if desc == nil {
+		return nativeIsoEndpoint{}, errors.New("native ISO operation has no device descriptor")
+	}
+	signature := signatureFromOperation(op)
+	if signature.address == 0 || signature.attributes&0x03 != 0x01 {
+		return nativeIsoEndpoint{}, fmt.Errorf(
+			"native ISO operation has invalid endpoint signature %+v", signature)
+	}
+	direction := uint8(0)
+	usbDirection := uint32(usbip.DirOut)
+	if signature.address&0x80 != 0 {
+		direction = 1
+		usbDirection = usbip.DirIn
+	}
+	flagDirection := uint8(0)
+	if op.TransferFlags&udecx.TransferFlagDirectionIn != 0 {
+		flagDirection = 1
+	}
+	if op.Direction != direction || flagDirection != direction {
+		return nativeIsoEndpoint{}, fmt.Errorf(
+			"native ISO endpoint 0x%02x direction %d disagrees with operation %d/flags %d",
+			signature.address, direction, op.Direction, flagDirection)
+	}
+	if !descriptorHasEndpointSignature(desc, signature) {
+		return nativeIsoEndpoint{}, fmt.Errorf(
+			"native ISO endpoint signature %+v is not present in the device descriptor", signature)
+	}
+	interval, err := nativeIsoServiceInterval(desc.Device.Speed, signature.interval)
+	if err != nil {
+		return nativeIsoEndpoint{}, err
+	}
+	return nativeIsoEndpoint{
+		number: uint32(signature.address & 0x0f), direction: usbDirection, interval: interval,
+		key: nativeLaneKeyFromOperation(op),
+	}, nil
 }
 
 func (p *NativeProcessor) Process(ctx context.Context, dev usbdevice.Device, op udecx.Operation) (udecx.Completion, error) {
@@ -304,26 +428,37 @@ func (p *NativeProcessor) Process(ctx context.Context, dev usbdevice.Device, op 
 	if op.TransferLength > udecx.MaxTransferBytes || len(op.Payload) > udecx.MaxTransferBytes {
 		return udecx.Completion{}, udecx.ErrLimitExceeded
 	}
+	if len(op.IsoPackets) != 0 {
+		if op.Kind != udecx.OperationTransfer {
+			return udecx.Completion{}, fmt.Errorf(
+				"native operation kind %d carries ISO packets", op.Kind)
+		}
+		for index, packet := range op.IsoPackets {
+			if packet.Offset > op.TransferLength ||
+				packet.Length > op.TransferLength-packet.Offset {
+				return udecx.Completion{}, fmt.Errorf(
+					"native ISO packet %d is outside transfer buffer", index)
+			}
+		}
+		endpoint, err := resolveNativeIsoEndpoint(dev, op)
+		if err != nil {
+			return udecx.Completion{}, err
+		}
+		if endpoint.direction == usbip.DirIn {
+			return p.processIsoIn(ctx, dev, op, endpoint)
+		}
+		return p.processIsoOut(ctx, dev, op, endpoint)
+	}
 	ep := uint32(op.EndpointAddress & 0x0f)
 	dir := uint32(usbip.DirOut)
 	if op.Direction != 0 {
 		dir = usbip.DirIn
 	}
-	key := nativeLaneKey{deviceID: op.DeviceID, generation: op.Generation, endpoint: op.EndpointAddress}
-	if len(op.IsoPackets) != 0 {
-		// The first ISO URB is itself authoritative proof that Windows activated
-		// this endpoint. This also closes the scheduling race where a transfer is
-		// dequeued before the endpoint-start notification reaches another worker.
-		p.activateEndpoint(dev, op)
-	}
+	key := nativeLaneKeyFromOperation(op)
 
 	switch {
 	case op.Kind == udecx.OperationControl:
 		return p.processControl(ctx, dev, op, ep, dir)
-	case len(op.IsoPackets) != 0 && dir == usbip.DirIn:
-		return p.processIsoIn(ctx, dev, op, ep, dir, key)
-	case len(op.IsoPackets) != 0:
-		return p.processIsoOut(ctx, dev, op, ep, dir, key)
 	case dir == usbip.DirIn:
 		return p.processInterruptIn(ctx, dev, op, ep, dir, key)
 	default:
@@ -405,11 +540,22 @@ func (p *NativeProcessor) processInterruptIn(ctx context.Context, dev usbdevice.
 }
 
 func (p *NativeProcessor) processIsoOut(ctx context.Context, dev usbdevice.Device,
-	op udecx.Operation, ep, dir uint32, key nativeLaneKey) (udecx.Completion, error) {
-	duration := isoCompletionDelay(dev.GetDescriptor(), ep, len(op.IsoPackets))
-	deadline := p.reserveCompletionDeadline(key, duration)
-	p.server.processSubmit(ctx, dev, ep, dir, nil, op.Payload)
-	if !waitUntilContext(ctx, deadline) {
+	op udecx.Operation, endpoint nativeIsoEndpoint) (udecx.Completion, error) {
+	duration := time.Duration(len(op.IsoPackets)) * endpoint.interval
+	serviceStart, serviceEnd, err := p.reserveIsoServiceWindow(
+		endpoint.key, op.StartFrame, op.TransferFlags, duration)
+	if err != nil {
+		return udecx.Completion{}, err
+	}
+	// The operation's full endpoint signature is the authoritative active
+	// UdeCx identity. Applying it only after frame validation avoids mutating
+	// alternate-setting state for a rejected explicit schedule.
+	p.activateEndpoint(dev, op)
+	if !p.wait(ctx, serviceStart) {
+		return udecx.Completion{}, ctx.Err()
+	}
+	p.server.processSubmit(ctx, dev, endpoint.number, endpoint.direction, nil, op.Payload)
+	if !p.wait(ctx, serviceEnd) {
 		return udecx.Completion{}, ctx.Err()
 	}
 	packets := make([]udecx.IsoPacket, len(op.IsoPackets))
@@ -420,30 +566,28 @@ func (p *NativeProcessor) processIsoOut(ctx context.Context, dev usbdevice.Devic
 }
 
 func (p *NativeProcessor) processIsoIn(ctx context.Context, dev usbdevice.Device,
-	op udecx.Operation, ep, dir uint32, key nativeLaneKey) (udecx.Completion, error) {
-	interval := isoPacketInterval(dev.GetDescriptor(), ep)
-	if interval <= 0 {
-		interval = time.Millisecond
+	op udecx.Operation, endpoint nativeIsoEndpoint) (udecx.Completion, error) {
+	duration := time.Duration(len(op.IsoPackets)) * endpoint.interval
+	serviceStart, _, err := p.reserveIsoServiceWindow(
+		endpoint.key, op.StartFrame, op.TransferFlags, duration)
+	if err != nil {
+		return udecx.Completion{}, err
 	}
-	duration := time.Duration(len(op.IsoPackets)) * interval
-	serviceStart := p.reserveServiceWindow(key, duration, interval)
+	p.activateEndpoint(dev, op)
 	payload := make([]byte, op.TransferLength)
 	packets := make([]udecx.IsoPacket, len(op.IsoPackets))
 	actualTotal := uint32(0)
 	serviceTime := serviceStart
 	reader, direct := dev.(usbdevice.IsochronousInputDevice)
 	for i, packet := range op.IsoPackets {
-		if packet.Offset > op.TransferLength || packet.Length > op.TransferLength-packet.Offset {
-			return udecx.Completion{}, fmt.Errorf("native ISO packet %d is outside transfer buffer", i)
-		}
-		if !waitUntilContext(ctx, serviceTime) {
+		if !p.wait(ctx, serviceTime) {
 			return udecx.Completion{}, ctx.Err()
 		}
-		serviceTime = serviceTime.Add(interval)
+		serviceTime = serviceTime.Add(endpoint.interval)
 		var packetData []byte
 		if direct {
 			packetRegion := payload[packet.Offset : packet.Offset+packet.Length]
-			written, readErr := reader.ReadIsochronousInput(ctx, ep, packetRegion)
+			written, readErr := reader.ReadIsochronousInput(ctx, endpoint.number, packetRegion)
 			if readErr != nil {
 				return udecx.Completion{}, readErr
 			}
@@ -454,8 +598,9 @@ func (p *NativeProcessor) processIsoIn(ctx context.Context, dev usbdevice.Device
 			}
 			packetData = packetRegion[:written]
 		} else {
-			attemptCtx, cancel := context.WithTimeout(ctx, interval)
-			packetData = p.server.processSubmit(attemptCtx, dev, ep, dir, nil, nil)
+			attemptCtx, cancel := context.WithTimeout(ctx, endpoint.interval)
+			packetData = p.server.processSubmit(
+				attemptCtx, dev, endpoint.number, endpoint.direction, nil, nil)
 			cancel()
 		}
 		if ctx.Err() != nil {
@@ -474,8 +619,19 @@ func (p *NativeProcessor) processIsoIn(ctx context.Context, dev usbdevice.Device
 		}
 		packets[i] = udecx.IsoPacket{Offset: packet.Offset, Length: actual}
 		actualTotal += actual
+		serviceTime = reanchorMissedIsoPacketSlot(
+			serviceTime, endpoint.interval, p.clock().now)
 	}
+	p.extendIsoServiceWindow(endpoint.key, serviceTime)
 	return successCompletion(op, actualTotal, payload, packets), nil
+}
+
+func (p *NativeProcessor) extendIsoServiceWindow(key nativeLaneKey, serviceEnd time.Time) {
+	p.mu.Lock()
+	if serviceEnd.After(p.next[key]) {
+		p.next[key] = serviceEnd
+	}
+	p.mu.Unlock()
 }
 
 func (p *NativeProcessor) reserveServiceTime(key nativeLaneKey, interval time.Duration) time.Time {
@@ -490,33 +646,41 @@ func (p *NativeProcessor) reserveServiceTime(key nativeLaneKey, interval time.Du
 	return serviceTime
 }
 
-func (p *NativeProcessor) reserveCompletionDeadline(key nativeLaneKey, duration time.Duration) time.Time {
-	if duration <= 0 {
-		return time.Now()
+func (p *NativeProcessor) reserveIsoServiceWindow(
+	key nativeLaneKey, startFrame, transferFlags uint32, duration time.Duration,
+) (time.Time, time.Time, error) {
+	sample := p.clock()
+	delta := int64(int32(startFrame - sample.frame))
+	explicit := transferFlags&udecx.TransferFlagStartIsoASAP == 0
+	if explicit && (delta <= 0 || delta >= usbdIsoStartFrameRange) {
+		return time.Time{}, time.Time{}, fmt.Errorf(
+			"native explicit ISO start frame %d is outside the future frame range from %d",
+			startFrame, sample.frame)
 	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	now := time.Now()
-	deadline := p.next[key]
-	if deadline.IsZero() || now.Sub(deadline) >= duration {
-		deadline = now.Add(duration)
-	} else {
-		deadline = deadline.Add(duration)
+	plannedStart := sample.now.Add(time.Duration(delta) * time.Millisecond)
+	if plannedStart.Before(sample.now) {
+		// A delayed ASAP dequeue must not replay elapsed USB frames in a burst.
+		// Explicit frames take the range-error path above instead.
+		plannedStart = sample.now
 	}
-	p.next[key] = deadline
-	return deadline
-}
+	// For ASAP URBs the kernel has already discarded the caller's input value
+	// and replaced StartFrame with its ordered output reservation. This mapping
+	// gates host-side service only; controller media-clock correction remains in
+	// the device engine.
 
-func (p *NativeProcessor) reserveServiceWindow(key nativeLaneKey, duration, interval time.Duration) time.Time {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	now := time.Now()
-	start := p.next[key]
-	if start.IsZero() || (interval > 0 && now.Sub(start) >= interval) {
-		start = now
+	if previousEnd := p.next[key]; previousEnd.After(plannedStart) {
+		if explicit {
+			return time.Time{}, time.Time{}, fmt.Errorf(
+				"native explicit ISO start frame %d overlaps the previous endpoint window",
+				startFrame)
+		}
+		plannedStart = previousEnd
 	}
-	p.next[key] = start.Add(duration)
-	return start
+	serviceEnd := plannedStart.Add(duration)
+	p.next[key] = serviceEnd
+	return plannedStart, serviceEnd, nil
 }
 
 func successCompletion(op udecx.Operation, transferLength uint32, payload []byte,

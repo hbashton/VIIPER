@@ -447,10 +447,11 @@ func productionIsoOperation(token uint64, endpoint uint8, input bool, payload []
 	op := udecx.Operation{
 		Token: token, DeviceID: 1, Generation: 1, Kind: udecx.OperationTransfer,
 		EndpointAddress: endpoint, TransferLength: uint32(packetCount) * packetLength,
-		IsoPackets: packets, Payload: payload,
+		TransferFlags: udecx.TransferFlagStartIsoASAP, IsoPackets: packets, Payload: payload,
 	}
 	if input {
 		op.Direction = 1
+		op.TransferFlags |= udecx.TransferFlagDirectionIn
 	}
 	return op
 }
@@ -518,7 +519,7 @@ func processNativeIso(t *testing.T, processor *serverusb.NativeProcessor,
 	op := udecx.Operation{
 		Token: 100, DeviceID: 1, Generation: 1, Kind: udecx.OperationTransfer,
 		EndpointAddress: endpoint, TransferLength: transferLength,
-		IsoPackets: packets, Payload: payload,
+		TransferFlags: udecx.TransferFlagStartIsoASAP, IsoPackets: packets, Payload: payload,
 	}
 	for _, iface := range dev.GetDescriptor().Interfaces {
 		for _, descEndpoint := range iface.Endpoints {
@@ -531,6 +532,7 @@ func processNativeIso(t *testing.T, processor *serverusb.NativeProcessor,
 	}
 	if input {
 		op.Direction = 1
+		op.TransferFlags |= udecx.TransferFlagDirectionIn
 	}
 	completion, err := processor.Process(context.Background(), dev, op)
 	if err != nil {
