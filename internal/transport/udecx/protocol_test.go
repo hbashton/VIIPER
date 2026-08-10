@@ -38,6 +38,7 @@ func TestHeaderRejectsMalformedInput(t *testing.T) {
 		{"magic", func(b []byte) []byte { binary.LittleEndian.PutUint32(b, 0); return b }, ErrBadMagic},
 		{"major", func(b []byte) []byte { binary.LittleEndian.PutUint16(b[4:6], ABIMajor+1); return b }, ErrIncompatibleMajor},
 		{"minor", func(b []byte) []byte { binary.LittleEndian.PutUint16(b[6:8], ABIMinor+1); return b }, ErrIncompatibleMinor},
+		{"flags", func(b []byte) []byte { binary.LittleEndian.PutUint32(b[12:16], 1); return b }, ErrInvalidRange},
 		{"size below header", func(b []byte) []byte { binary.LittleEndian.PutUint32(b[8:12], 15); return b }, ErrInvalidSize},
 		{"size beyond buffer", func(b []byte) []byte { binary.LittleEndian.PutUint32(b[8:12], 17); return b }, ErrInvalidSize},
 	}
@@ -207,6 +208,24 @@ func FuzzParseOperation(f *testing.F) {
 	binary.LittleEndian.PutUint32(valid[72:76], OperationSize)
 	f.Add(valid)
 	f.Fuzz(func(t *testing.T, raw []byte) {
+		_, _ = ParseOperation(raw)
+	})
+}
+
+func FuzzProtocolDecoders(f *testing.F) {
+	f.Add([]byte{})
+	negotiation := make([]byte, NegotiateResponseSize)
+	h, _ := NewHeader(len(negotiation))
+	putHeader(negotiation, h)
+	f.Add(negotiation)
+	stats := make([]byte, StatsSize)
+	h, _ = NewHeader(len(stats))
+	putHeader(stats, h)
+	f.Add(stats)
+	f.Fuzz(func(t *testing.T, raw []byte) {
+		_, _ = ParseHeader(raw)
+		_, _ = ParseNegotiateResponse(raw)
+		_, _ = ParseStats(raw)
 		_, _ = ParseOperation(raw)
 	})
 }

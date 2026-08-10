@@ -1252,6 +1252,8 @@ ViiperCompleteOperation(
     ULONG slot;
     ULONG index;
     ULONG isoPayloadLimit;
+    ULONG isoBytes;
+    ULONG expectedSize;
     NTSTATUS status;
     BOOLEAN expectedLateAbort = FALSE;
     BOOLEAN queued;
@@ -1268,11 +1270,25 @@ ViiperCompleteOperation(
     if (inputLength != sizeof(*completion) || completion->Header.Magic != VIIPER_UDE_MAGIC ||
         completion->Header.Major != VIIPER_UDE_ABI_MAJOR ||
         completion->Header.Minor != VIIPER_UDE_ABI_MINOR ||
+        completion->Header.Flags != 0 ||
         completion->Header.Size < sizeof(*completion) || completion->Token == 0 ||
         completion->DeviceId == 0 || completion->Generation == 0 ||
         completion->TransferLength > VIIPER_UDE_MAX_TRANSFER_BYTES ||
         completion->PayloadLength > VIIPER_UDE_MAX_TRANSFER_BYTES ||
-        completion->IsoPacketCount > VIIPER_UDE_MAX_ISO_PACKETS) {
+        completion->IsoPacketCount > VIIPER_UDE_MAX_ISO_PACKETS ||
+        completion->Reserved != 0) {
+        InterlockedIncrement64(&controllerContext->InvalidMessages);
+        return STATUS_INVALID_PARAMETER;
+    }
+    isoBytes = completion->IsoPacketCount * sizeof(VIIPER_UDE_ISO_PACKET);
+    if (completion->PayloadLength > MAXULONG - sizeof(*completion) - isoBytes) {
+        InterlockedIncrement64(&controllerContext->InvalidMessages);
+        return STATUS_INTEGER_OVERFLOW;
+    }
+    expectedSize = sizeof(*completion) + isoBytes + completion->PayloadLength;
+    if (completion->Header.Size != expectedSize ||
+        completion->IsoPacketsOffset != sizeof(*completion) ||
+        completion->PayloadOffset != sizeof(*completion) + isoBytes) {
         InterlockedIncrement64(&controllerContext->InvalidMessages);
         return STATUS_INVALID_PARAMETER;
     }
@@ -1286,7 +1302,7 @@ ViiperCompleteOperation(
     }
     if (!ViiperRangeValid(
             completion->IsoPacketsOffset,
-            completion->IsoPacketCount * sizeof(VIIPER_UDE_ISO_PACKET),
+            isoBytes,
             completion->Header.Size) ||
         !ViiperRangeValid(
             completion->PayloadOffset, completion->PayloadLength, completion->Header.Size) ||

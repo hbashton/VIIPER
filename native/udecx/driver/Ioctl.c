@@ -8,10 +8,11 @@ ViiperValidateHeader(
     _In_ size_t ExpectedSize
     )
 {
-    return BufferLength >= ExpectedSize &&
+    return BufferLength == ExpectedSize &&
         Header->Magic == VIIPER_UDE_MAGIC &&
         Header->Major == VIIPER_UDE_ABI_MAJOR &&
         Header->Minor == VIIPER_UDE_ABI_MINOR &&
+        Header->Flags == 0 &&
         Header->Size == ExpectedSize;
 }
 
@@ -50,7 +51,10 @@ ViiperHandleNegotiate(
         return status;
     }
     if (!ViiperValidateHeader(&input->Header, inputLength, sizeof(*input)) ||
-        input->ClientNonce == 0) {
+        input->ClientNonce == 0 || input->Reserved != 0 ||
+        (input->RequestedCapabilities & ~(VIIPER_UDE_CAP_ISOCHRONOUS |
+            VIIPER_UDE_CAP_STREAMS | VIIPER_UDE_CAP_DEVICE_LIFECYCLE |
+            VIIPER_UDE_CAP_INPUT_REPORTS)) != 0) {
         return STATUS_INVALID_PARAMETER;
     }
 

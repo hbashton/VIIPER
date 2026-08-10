@@ -89,6 +89,9 @@ func ParseHeader(src []byte) (Header, error) {
 	if h.Minor != ABIMinor {
 		return Header{}, fmt.Errorf("%w: driver=%d client=%d", ErrIncompatibleMinor, h.Minor, ABIMinor)
 	}
+	if h.Flags != 0 {
+		return Header{}, fmt.Errorf("%w: unsupported header flags %#x", ErrInvalidRange, h.Flags)
+	}
 	if h.Size < HeaderSize || uint64(h.Size) > uint64(len(src)) {
 		return Header{}, ErrInvalidSize
 	}

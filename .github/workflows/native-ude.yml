@@ -40,6 +40,8 @@ jobs:
         run: go test ./...
       - name: Vet complete VIIPER tree
         run: go vet ./...
+      - name: Fuzz native protocol decoders
+        run: go test -run=^$ -fuzz=FuzzProtocolDecoders -fuzztime=20s ./internal/transport/udecx
 
   race:
     runs-on: ubuntu-latest

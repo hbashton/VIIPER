@@ -32,6 +32,33 @@ ViiperRangeValid(
 
 static
 BOOLEAN
+ViiperValidateDescriptorChain(
+    _In_reads_bytes_(Length) const UCHAR *Descriptor,
+    _In_ ULONG Length,
+    _In_ UCHAR ExpectedType
+    )
+{
+    ULONG offset = 0;
+
+    if (Length < 2 || Descriptor[1] != ExpectedType) {
+        return FALSE;
+    }
+    while (offset < Length) {
+        ULONG itemLength;
+        if (Length - offset < 2) {
+            return FALSE;
+        }
+        itemLength = Descriptor[offset];
+        if (itemLength < 2 || itemLength > Length - offset) {
+            return FALSE;
+        }
+        offset += itemLength;
+    }
+    return offset == Length;
+}
+
+static
+BOOLEAN
 ViiperValidateCreateDevice(
     _In_reads_bytes_(InputLength) const VIIPER_UDE_CREATE_DEVICE *Input,
     _In_ size_t InputLength
@@ -51,14 +78,17 @@ ViiperValidateCreateDevice(
         Input->Header.Magic != VIIPER_UDE_MAGIC ||
         Input->Header.Major != VIIPER_UDE_ABI_MAJOR ||
         Input->Header.Minor != VIIPER_UDE_ABI_MINOR ||
+        Input->Header.Flags != 0 ||
         Input->Header.Size != InputLength ||
         Input->DeviceId == 0 || Input->Generation == 0 ||
+        Input->Speed < 1 || Input->Speed > 4 ||
         Input->DescriptorCount == 0 ||
         Input->DescriptorCount > VIIPER_UDE_MAX_DESCRIPTOR_BYTES / sizeof(*records) ||
         Input->DescriptorDataLength == 0 ||
         Input->DescriptorDataLength > VIIPER_UDE_MAX_DESCRIPTOR_BYTES ||
         Input->MaxPendingOperations == 0 ||
-        Input->MaxPendingOperations > VIIPER_UDE_MAX_PENDING_OPERATIONS) {
+        Input->MaxPendingOperations > VIIPER_UDE_MAX_PENDING_OPERATIONS ||
+        Input->Reserved != 0) {
         return FALSE;
     }
 
@@ -81,6 +111,7 @@ ViiperValidateCreateDevice(
         const VIIPER_UDE_DESCRIPTOR_RECORD *record = &records[index];
         const UCHAR *descriptor;
         if (record->Length < 2 || record->Length > MAXUSHORT ||
+            record->Reserved != 0 ||
             !ViiperRangeValid(record->Offset, record->Length, Input->DescriptorDataLength)) {
             return FALSE;
         }
@@ -100,14 +131,21 @@ ViiperValidateCreateDevice(
                 record->Length < sizeof(USB_CONFIGURATION_DESCRIPTOR) ||
                 descriptor[0] != sizeof(USB_CONFIGURATION_DESCRIPTOR) ||
                 descriptor[1] != USB_CONFIGURATION_DESCRIPTOR_TYPE ||
-                ((USHORT)descriptor[2] | ((USHORT)descriptor[3] << 8)) != (USHORT)record->Length) {
+                ((USHORT)descriptor[2] | ((USHORT)descriptor[3] << 8)) != (USHORT)record->Length ||
+                !ViiperValidateDescriptorChain(
+                    descriptor, record->Length, USB_CONFIGURATION_DESCRIPTOR_TYPE)) {
                 return FALSE;
             }
             foundConfiguration = TRUE;
             break;
         case ViiperUdeDescriptorBos:
             if (foundBos || record->Index != 0 ||
-                descriptor[1] != USB_BOS_DESCRIPTOR_TYPE) {
+                record->Length < sizeof(USB_BOS_DESCRIPTOR) ||
+                descriptor[0] != sizeof(USB_BOS_DESCRIPTOR) ||
+                descriptor[1] != USB_BOS_DESCRIPTOR_TYPE ||
+                ((USHORT)descriptor[2] | ((USHORT)descriptor[3] << 8)) != (USHORT)record->Length ||
+                !ViiperValidateDescriptorChain(
+                    descriptor, record->Length, USB_BOS_DESCRIPTOR_TYPE)) {
                 return FALSE;
             }
             foundBos = TRUE;
@@ -477,11 +515,12 @@ ViiperDestroyVirtualDevice(
     if (!NT_SUCCESS(status)) {
         return status;
     }
-    if (inputLength < sizeof(*input) || input->Header.Magic != VIIPER_UDE_MAGIC ||
+    if (inputLength != sizeof(*input) || input->Header.Magic != VIIPER_UDE_MAGIC ||
         input->Header.Major != VIIPER_UDE_ABI_MAJOR ||
         input->Header.Minor != VIIPER_UDE_ABI_MINOR ||
+        input->Header.Flags != 0 ||
         input->Header.Size != sizeof(*input) ||
-        input->DeviceId == 0 || input->Generation == 0) {
+        input->DeviceId == 0 || input->Generation == 0 || input->Reserved != 0) {
         InterlockedIncrement64(&controllerContext->InvalidMessages);
         return STATUS_INVALID_PARAMETER;
     }
@@ -822,6 +861,7 @@ ViiperSubmitInputReport(
         input->Header.Magic != VIIPER_UDE_MAGIC ||
         input->Header.Major != VIIPER_UDE_ABI_MAJOR ||
         input->Header.Minor != VIIPER_UDE_ABI_MINOR ||
+        input->Header.Flags != 0 ||
         input->Header.Size != sizeof(*input) + input->PayloadLength ||
         input->DeviceId == 0 || input->Generation == 0 || input->Sequence == 0 ||
         input->Sequence > MAXLONGLONG ||
