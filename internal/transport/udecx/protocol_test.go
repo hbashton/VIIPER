@@ -127,6 +127,33 @@ func TestCompletionMarshalling(t *testing.T) {
 	}
 }
 
+func TestIdentityAndStatsLayout(t *testing.T) {
+	identity, err := (DeviceIdentity{DeviceID: 0x1122334455667788, Generation: 7}).MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(identity) != DeviceIdentitySize || binary.LittleEndian.Uint64(identity[16:24]) != 0x1122334455667788 {
+		t.Fatalf("invalid identity layout: %x", identity)
+	}
+
+	raw := make([]byte, StatsSize)
+	h, _ := NewHeader(StatsSize)
+	putHeader(raw, h)
+	binary.LittleEndian.PutUint64(raw[16:24], 11)
+	binary.LittleEndian.PutUint64(raw[88:96], 29)
+	binary.LittleEndian.PutUint32(raw[96:100], 3)
+	binary.LittleEndian.PutUint32(raw[100:104], 5)
+	binary.LittleEndian.PutUint32(raw[104:108], 7)
+	stats, err := ParseStats(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.OperationsDequeued != 11 || stats.BytesFromDevice != 29 ||
+		stats.ActiveDevices != 3 || stats.PendingOperations != 5 || stats.WaitingDequeues != 7 {
+		t.Fatalf("unexpected stats: %+v", stats)
+	}
+}
+
 func FuzzParseOperation(f *testing.F) {
 	f.Add([]byte{})
 	valid := make([]byte, OperationSize)

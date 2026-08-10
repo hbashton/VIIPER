@@ -170,6 +170,26 @@ const (
 	DeviceSpeedSuper
 )
 
+type DeviceIdentity struct {
+	DeviceID   uint64
+	Generation uint32
+}
+
+func (m DeviceIdentity) MarshalBinary() ([]byte, error) {
+	if m.DeviceID == 0 || m.Generation == 0 {
+		return nil, fmt.Errorf("%w: zero device identity", ErrInvalidRange)
+	}
+	h, err := NewHeader(DeviceIdentitySize)
+	if err != nil {
+		return nil, err
+	}
+	dst := make([]byte, DeviceIdentitySize)
+	putHeader(dst, h)
+	binary.LittleEndian.PutUint64(dst[16:24], m.DeviceID)
+	binary.LittleEndian.PutUint32(dst[24:28], m.Generation)
+	return dst, nil
+}
+
 type CreateDevice struct {
 	DeviceID             uint64
 	Generation           uint32
@@ -314,6 +334,47 @@ type Completion struct {
 	USBDStatus uint32
 	IsoPackets []IsoPacket
 	Payload    []byte
+}
+
+type Stats struct {
+	OperationsDequeued  uint64
+	OperationsCompleted uint64
+	OperationsCancelled uint64
+	OperationsPurged    uint64
+	LateCompletions     uint64
+	InvalidMessages     uint64
+	QueueExhaustions    uint64
+	IsoPackets          uint64
+	BytesToDevice       uint64
+	BytesFromDevice     uint64
+	ActiveDevices       uint32
+	PendingOperations   uint32
+	WaitingDequeues     uint32
+}
+
+func ParseStats(src []byte) (Stats, error) {
+	h, err := ParseHeader(src)
+	if err != nil {
+		return Stats{}, err
+	}
+	if h.Size != StatsSize {
+		return Stats{}, ErrInvalidSize
+	}
+	return Stats{
+		OperationsDequeued:  binary.LittleEndian.Uint64(src[16:24]),
+		OperationsCompleted: binary.LittleEndian.Uint64(src[24:32]),
+		OperationsCancelled: binary.LittleEndian.Uint64(src[32:40]),
+		OperationsPurged:    binary.LittleEndian.Uint64(src[40:48]),
+		LateCompletions:     binary.LittleEndian.Uint64(src[48:56]),
+		InvalidMessages:     binary.LittleEndian.Uint64(src[56:64]),
+		QueueExhaustions:    binary.LittleEndian.Uint64(src[64:72]),
+		IsoPackets:          binary.LittleEndian.Uint64(src[72:80]),
+		BytesToDevice:       binary.LittleEndian.Uint64(src[80:88]),
+		BytesFromDevice:     binary.LittleEndian.Uint64(src[88:96]),
+		ActiveDevices:       binary.LittleEndian.Uint32(src[96:100]),
+		PendingOperations:   binary.LittleEndian.Uint32(src[100:104]),
+		WaitingDequeues:     binary.LittleEndian.Uint32(src[104:108]),
+	}, nil
 }
 
 func (m Completion) MarshalBinary() ([]byte, error) {

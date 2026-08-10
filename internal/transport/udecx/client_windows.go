@@ -49,6 +49,7 @@ var (
 
 type Client struct {
 	mu           sync.RWMutex
+	inflight     sync.WaitGroup
 	handle       windows.Handle
 	driverNonce  uint64
 	capabilities Capabilities
@@ -93,13 +94,16 @@ func Open(ctx context.Context) (*Client, error) {
 
 func (c *Client) Close() error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if c.handle == 0 || c.handle == windows.InvalidHandle {
+		c.mu.Unlock()
 		return nil
 	}
 	handle := c.handle
 	c.handle = windows.InvalidHandle
+	c.mu.Unlock()
+
 	_ = windows.CancelIoEx(handle, nil)
+	c.inflight.Wait()
 	return windows.CloseHandle(handle)
 }
 
@@ -157,13 +161,77 @@ func (c *Client) negotiate(ctx context.Context) error {
 	return nil
 }
 
-func (c *Client) ioctl(ctx context.Context, code uint32, input, output []byte) (uint32, error) {
+func (c *Client) CreateDevice(ctx context.Context, device CreateDevice) error {
+	request, err := device.MarshalBinary()
+	if err != nil {
+		return err
+	}
+	_, err = c.ioctl(ctx, ioctlCreateDevice, request, nil)
+	return err
+}
+
+func (c *Client) DestroyDevice(ctx context.Context, identity DeviceIdentity) error {
+	request, err := identity.MarshalBinary()
+	if err != nil {
+		return err
+	}
+	_, err = c.ioctl(ctx, ioctlDestroyDevice, request, nil)
+	return err
+}
+
+func (c *Client) Dequeue(ctx context.Context, buffer []byte) (Operation, error) {
+	if len(buffer) < OperationSize {
+		return Operation{}, ErrShortMessage
+	}
+	written, err := c.ioctl(ctx, ioctlDequeueOperation, nil, buffer)
+	if err != nil {
+		return Operation{}, err
+	}
+	if written < OperationSize || written > uint32(len(buffer)) {
+		return Operation{}, ErrInvalidSize
+	}
+	return ParseOperation(buffer[:written])
+}
+
+func (c *Client) Complete(ctx context.Context, completion Completion) error {
+	request, err := completion.MarshalBinary()
+	if err != nil {
+		return err
+	}
+	// METHOD_IN_DIRECT keeps the fixed metadata in the system buffer and maps
+	// the variable packet/payload tail read-only into the driver.
+	_, err = c.ioctl(ctx, ioctlCompleteOperation, request[:CompletionSize], request[CompletionSize:])
+	return err
+}
+
+func (c *Client) QueryStats(ctx context.Context) (Stats, error) {
+	buffer := make([]byte, StatsSize)
+	written, err := c.ioctl(ctx, ioctlQueryStats, nil, buffer)
+	if err != nil {
+		return Stats{}, err
+	}
+	if written != StatsSize {
+		return Stats{}, ErrInvalidSize
+	}
+	return ParseStats(buffer)
+}
+
+func (c *Client) beginIO() (windows.Handle, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	handle := c.handle
-	if handle == 0 || handle == windows.InvalidHandle {
-		return 0, windows.ERROR_INVALID_HANDLE
+	if c.handle == 0 || c.handle == windows.InvalidHandle {
+		return windows.InvalidHandle, windows.ERROR_INVALID_HANDLE
 	}
+	c.inflight.Add(1)
+	return c.handle, nil
+}
+
+func (c *Client) ioctl(ctx context.Context, code uint32, input, output []byte) (uint32, error) {
+	handle, err := c.beginIO()
+	if err != nil {
+		return 0, err
+	}
+	defer c.inflight.Done()
 
 	event, err := windows.CreateEvent(nil, 1, 0, nil)
 	if err != nil {
