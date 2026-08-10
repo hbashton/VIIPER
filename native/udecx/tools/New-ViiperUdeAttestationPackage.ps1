@@ -15,6 +15,10 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$OutputPath,
 
+    [Parameter(Mandatory = $true)]
+    [ValidatePattern('^[0-9a-fA-F]{40,64}$')]
+    [string]$SourceRevision,
+
     [switch]$AcknowledgeTestingOnly,
 
     [switch]$Force
@@ -165,6 +169,7 @@ try {
         purpose = 'Microsoft Hardware Dev Center controlled-test attestation submission; not a retail release package'
         releaseEligible = $false
         requiredProductionRoute = 'HLK/WHCP dashboard signing'
+        sourceRevision = $SourceRevision.ToLowerInvariant()
         cabinet = [System.IO.Path]::GetFileName($outputFullPath)
         cabinetSha256 = (Get-FileHash -LiteralPath $outputFullPath -Algorithm SHA256).Hash
         packageFolder = $packageFolder

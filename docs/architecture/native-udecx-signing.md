@@ -20,7 +20,8 @@ the public VIIPER driver.
    paths to those four artifacts and `-AcknowledgeTestingOnly`. The script
    validates the INF contract,
    creates the required non-root `ViiperUde` folder in the CAB, re-extracts the
-   CAB, verifies every SHA-256 hash, and writes a sidecar hash manifest.
+   CAB, verifies every SHA-256 hash, and writes a sidecar hash manifest bound
+   to the required source revision.
 3. Sign the CAB with a SHA-256 code-signing certificate registered to the
    organization's Hardware Dev Center account. Establishing that account and
    submitting attestation packages requires a currently valid EV certificate.

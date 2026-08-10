@@ -161,6 +161,7 @@ jobs:
             -PdbPath native/udecx/x64/Release/ViiperUde.pdb `
             -CatalogPath native/udecx/x64/Release/ViiperUde/viiperude.cat `
             -OutputPath native/udecx/x64/Release/ViiperUdeAttestationStructure.cab `
+            -SourceRevision $env:GITHUB_SHA `
             -AcknowledgeTestingOnly
       - name: Analyze native driver and setup helper
         uses: github/codeql-action/analyze@v4
