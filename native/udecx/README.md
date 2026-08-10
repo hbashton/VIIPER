@@ -21,6 +21,11 @@ Directory contract:
   production controller through the real UdeCx host, direct interrupt-input
   path, generation teardown, and driver fault counters. It never installs or
   changes a driver.
+- `tools/Enable-ViiperUdeVerifierForNextBoot.ps1` stages Microsoft standard
+  Driver Verifier checks for `ViiperUde.sys` for exactly one boot. It refuses
+  daily-use machines unless the disposable-machine acknowledgement is given,
+  refuses to replace another driver's verifier configuration, and never
+  restarts the machine.
 - ABI, lifecycle, descriptor, cancellation, and fault tests live beside the Go
   broker packages and in the native-driver CI gates.
 
@@ -59,3 +64,19 @@ publishes input, and removes every child concurrently. A subprocess then exits
 without running cleanup; the driver must remove its child, drain pending URBs,
 release exclusive ownership, and accept a fresh session. Normal CI never opts
 into this live test.
+
+The Driver Verifier pass is a separate, explicit disposable-machine gate:
+
+```powershell
+.\native\udecx\tools\Enable-ViiperUdeVerifierForNextBoot.ps1 `
+  -SignedPackageDirectory C:\ViiperUde\MicrosoftSigned `
+  -DisposableTestMachine
+# Restart once, then:
+.\native\udecx\tools\Invoke-ViiperUdeLiveValidation.ps1 `
+  -SignedPackageDirectory C:\ViiperUde\MicrosoftSigned `
+  -Iterations 10 `
+  -RequireDriverVerifier
+```
+
+Microsoft warns that Driver Verifier can intentionally bugcheck a machine;
+this workflow is never run by ordinary CI, an installer, or DS4Windows.

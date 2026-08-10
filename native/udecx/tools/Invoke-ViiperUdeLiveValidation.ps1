@@ -6,7 +6,9 @@ param(
     [ValidateRange(1, 100)]
     [int]$Iterations = 1,
 
-    [string]$RepositoryRoot
+    [string]$RepositoryRoot,
+
+    [switch]$RequireDriverVerifier
 )
 
 Set-StrictMode -Version Latest
@@ -71,6 +73,16 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
     throw 'Live VIIPER UDE validation must run from an elevated PowerShell session.'
 }
 
+if ($RequireDriverVerifier) {
+    $verifierOutput = (& verifier.exe /query 2>&1 | Out-String)
+    if ($LASTEXITCODE -ne 0) {
+        throw "Driver Verifier query failed with exit code $LASTEXITCODE.`n$verifierOutput"
+    }
+    if ($verifierOutput -notmatch '(?im)\bViiperUde\.sys\b') {
+        throw 'Driver Verifier is not currently active for ViiperUde.sys. Configure one-boot verification, restart, and retry.'
+    }
+}
+
 $go = Get-Command go.exe -ErrorAction Stop
 $oldLive = [Environment]::GetEnvironmentVariable('VIIPER_UDE_LIVE', 'Process')
 $oldIterations = [Environment]::GetEnvironmentVariable('VIIPER_UDE_LIVE_ITERATIONS', 'Process')
@@ -95,4 +107,5 @@ finally {
     [Environment]::SetEnvironmentVariable('VIIPER_UDE_LIVE_ITERATIONS', $oldIterations, 'Process')
 }
 
-Write-Host "VIIPER UDE live lifecycle/input validation passed for $Iterations iteration(s)."
+$verifierSuffix = if ($RequireDriverVerifier) { ' with Driver Verifier active' } else { '' }
+Write-Host "VIIPER UDE live lifecycle/input validation passed for $Iterations iteration(s)$verifierSuffix."

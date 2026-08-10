@@ -75,10 +75,18 @@ counters unchanged. The script does not install a driver or enable Driver
 Verifier. It also kills a subprocess that owns an enumerated DualSense and
 requires kernel file cleanup to remove the child, drain pending operations,
 release exclusive ownership, and accept a fresh session. Driver Verifier
-remains an explicit disposable-machine operation.
+remains an explicit disposable-machine operation. The companion
+`Enable-ViiperUdeVerifierForNextBoot.ps1` script first repeats the signed
+package/service hash binding, refuses to replace verifier settings for another
+driver, and stages Microsoft's standard checks for `ViiperUde.sys` in
+`oneboot` mode. After the restart, live validation with
+`-RequireDriverVerifier` refuses to run unless `verifier /query` proves the
+driver is actually being verified. Neither script restarts the computer.
 
 ## Primary Microsoft references
 
 - [Driver code-signing requirements](https://learn.microsoft.com/windows-hardware/drivers/dashboard/code-signing-reqs)
 - [Attestation-sign Windows drivers](https://learn.microsoft.com/windows-hardware/drivers/dashboard/code-signing-attestation)
 - [Driver-signing options and best practices](https://learn.microsoft.com/windows-hardware/drivers/dashboard/driver-signing-offerings)
+- [Driver Verifier](https://learn.microsoft.com/windows-hardware/drivers/devtest/driver-verifier)
+- [Driver Verifier command syntax](https://learn.microsoft.com/windows-hardware/drivers/devtest/verifier-command-line)
