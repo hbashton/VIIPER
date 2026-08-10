@@ -30,16 +30,20 @@ type nativeEndpointSignature struct {
 	maxPacket  uint16
 }
 
+type nativeSessionState struct {
+	mu     sync.Mutex
+	active map[nativeEndpointSignature]struct{}
+}
+
 // NativeProcessor adapts the native UdeCx broker to the same control and
 // transfer engine used by USB/IP. Transport-specific clocks live here; device
 // state, feedback, HID, audio, and descriptor behavior remain in usb.Device.
 type NativeProcessor struct {
-	server      *Server
-	mu          sync.Mutex
-	lifecycleMu sync.Mutex
-	next        map[nativeLaneKey]time.Time
-	lastIn      map[nativeLaneKey][]byte
-	active      map[nativeSessionKey]map[nativeEndpointSignature]struct{}
+	server   *Server
+	mu       sync.Mutex
+	next     map[nativeLaneKey]time.Time
+	lastIn   map[nativeLaneKey][]byte
+	sessions map[nativeSessionKey]*nativeSessionState
 }
 
 func NewNativeProcessor(server *Server) (*NativeProcessor, error) {
@@ -47,20 +51,50 @@ func NewNativeProcessor(server *Server) (*NativeProcessor, error) {
 		return nil, errors.New("native UDE processor requires a USB server engine")
 	}
 	return &NativeProcessor{
-		server: server,
-		next:   make(map[nativeLaneKey]time.Time),
-		lastIn: make(map[nativeLaneKey][]byte),
-		active: make(map[nativeSessionKey]map[nativeEndpointSignature]struct{}),
+		server:   server,
+		next:     make(map[nativeLaneKey]time.Time),
+		lastIn:   make(map[nativeLaneKey][]byte),
+		sessions: make(map[nativeSessionKey]*nativeSessionState),
 	}, nil
 }
 
 func (p *NativeProcessor) Reset(dev usbdevice.Device, identity udecx.DeviceIdentity) {
-	p.lifecycleMu.Lock()
-	defer p.lifecycleMu.Unlock()
-	p.resetDeviceLocked(dev, identity)
+	key := nativeSessionKey{deviceID: identity.DeviceID, generation: identity.Generation}
+	session := p.lockSession(key)
+	p.resetDeviceLocked(dev, identity, session)
+	p.mu.Lock()
+	if p.sessions[key] == session {
+		delete(p.sessions, key)
+	}
+	p.mu.Unlock()
+	session.mu.Unlock()
 }
 
-func (p *NativeProcessor) resetDeviceLocked(dev usbdevice.Device, identity udecx.DeviceIdentity) {
+func (p *NativeProcessor) lockSession(key nativeSessionKey) *nativeSessionState {
+	for {
+		p.mu.Lock()
+		session := p.sessions[key]
+		if session == nil {
+			session = &nativeSessionState{active: make(map[nativeEndpointSignature]struct{})}
+			p.sessions[key] = session
+		}
+		p.mu.Unlock()
+
+		session.mu.Lock()
+		p.mu.Lock()
+		current := p.sessions[key]
+		p.mu.Unlock()
+		if current == session {
+			return session
+		}
+		// Reset retired this state while this goroutine waited. Retry against
+		// the current generation-owned state rather than mutating an orphan.
+		session.mu.Unlock()
+	}
+}
+
+func (p *NativeProcessor) resetDeviceLocked(dev usbdevice.Device, identity udecx.DeviceIdentity,
+	session *nativeSessionState) {
 	p.server.resetInterfaceAlts(dev)
 	p.mu.Lock()
 	for key := range p.next {
@@ -70,14 +104,14 @@ func (p *NativeProcessor) resetDeviceLocked(dev usbdevice.Device, identity udecx
 		}
 	}
 	p.mu.Unlock()
-	delete(p.active, nativeSessionKey{deviceID: identity.DeviceID, generation: identity.Generation})
+	clear(session.active)
 }
 
 func (p *NativeProcessor) Lifecycle(_ context.Context, dev usbdevice.Device, op udecx.Operation) error {
-	p.lifecycleMu.Lock()
-	defer p.lifecycleMu.Unlock()
-
 	identity := udecx.DeviceIdentity{DeviceID: op.DeviceID, Generation: op.Generation}
+	sessionKey := nativeSessionKey{deviceID: op.DeviceID, generation: op.Generation}
+	session := p.lockSession(sessionKey)
+	defer session.mu.Unlock()
 	key := nativeLaneKey{
 		deviceID: op.DeviceID, generation: op.Generation, endpoint: op.EndpointAddress,
 	}
@@ -85,20 +119,20 @@ func (p *NativeProcessor) Lifecycle(_ context.Context, dev usbdevice.Device, op 
 	switch op.Kind {
 	case udecx.OperationEndpointStart:
 		p.clearLane(key)
-		p.activateEndpointLocked(dev, op)
+		p.activateEndpointLocked(dev, op, session)
 	case udecx.OperationEndpointPurge:
 		p.clearLane(key)
 		if resetter, ok := dev.(usbdevice.EndpointResetDevice); ok {
 			resetter.ResetEndpoint(op.EndpointAddress)
 		}
-		p.deactivateEndpointLocked(dev, op)
+		p.deactivateEndpointLocked(dev, op, session)
 	case udecx.OperationEndpointReset:
 		p.clearLane(key)
 		if resetter, ok := dev.(usbdevice.EndpointResetDevice); ok {
 			resetter.ResetEndpoint(op.EndpointAddress)
 		}
 	case udecx.OperationDeviceReset:
-		p.resetDeviceLocked(dev, identity)
+		p.resetDeviceLocked(dev, identity, session)
 	case udecx.OperationDeviceD0Entry, udecx.OperationDeviceD0Exit:
 		// A link-power transition is not a USB reset. Preserve the selected
 		// audio interfaces and controller state, but discard stale service-clock
@@ -190,46 +224,38 @@ func descriptorInterfaceAltIsActive(desc *usbdevice.Descriptor, interfaceNumber,
 }
 
 func (p *NativeProcessor) activateEndpoint(dev usbdevice.Device, op udecx.Operation) {
-	p.lifecycleMu.Lock()
-	defer p.lifecycleMu.Unlock()
-	p.activateEndpointLocked(dev, op)
+	key := nativeSessionKey{deviceID: op.DeviceID, generation: op.Generation}
+	session := p.lockSession(key)
+	defer session.mu.Unlock()
+	p.activateEndpointLocked(dev, op, session)
 }
 
-func (p *NativeProcessor) activateEndpointLocked(dev usbdevice.Device, op udecx.Operation) {
+func (p *NativeProcessor) activateEndpointLocked(dev usbdevice.Device, op udecx.Operation,
+	session *nativeSessionState) {
 	signature := signatureFromOperation(op)
 	interfaceNumber, alternateSetting, ok := descriptorInterfaceAltForEndpoint(
 		dev.GetDescriptor(), signature)
 	if !ok {
 		return
 	}
-	identity := nativeSessionKey{deviceID: op.DeviceID, generation: op.Generation}
-	active := p.active[identity]
-	if active == nil {
-		active = make(map[nativeEndpointSignature]struct{})
-		p.active[identity] = active
-	}
-	active[signature] = struct{}{}
+	session.active[signature] = struct{}{}
 	if p.server.getInterfaceAlt(dev, interfaceNumber) != alternateSetting {
 		p.server.setInterfaceAlt(dev, interfaceNumber, alternateSetting)
 		p.server.notifyInterfaceAlt(dev, interfaceNumber, alternateSetting)
 	}
 }
 
-func (p *NativeProcessor) deactivateEndpointLocked(dev usbdevice.Device, op udecx.Operation) {
+func (p *NativeProcessor) deactivateEndpointLocked(dev usbdevice.Device, op udecx.Operation,
+	session *nativeSessionState) {
 	signature := signatureFromOperation(op)
 	interfaceNumber, alternateSetting, ok := descriptorInterfaceAltForEndpoint(
 		dev.GetDescriptor(), signature)
 	if !ok {
 		return
 	}
-	identity := nativeSessionKey{deviceID: op.DeviceID, generation: op.Generation}
-	active := p.active[identity]
-	delete(active, signature)
-	if len(active) == 0 {
-		delete(p.active, identity)
-	}
+	delete(session.active, signature)
 	if p.server.getInterfaceAlt(dev, interfaceNumber) == alternateSetting &&
-		!descriptorInterfaceAltIsActive(dev.GetDescriptor(), interfaceNumber, alternateSetting, active) {
+		!descriptorInterfaceAltIsActive(dev.GetDescriptor(), interfaceNumber, alternateSetting, session.active) {
 		p.server.setInterfaceAlt(dev, interfaceNumber, 0)
 		p.server.notifyInterfaceAlt(dev, interfaceNumber, 0)
 	}

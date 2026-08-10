@@ -193,7 +193,9 @@ interface fields are only hints for alternates that contain no endpoints.
 - User mode serializes controller-engine lifecycle mutations as one complete
   transaction. Endpoint reset cannot overlap an endpoint start/purge, device
   reset, or alternate-setting change, while ordinary HID and media transfers
-  remain concurrent on their independent endpoint lanes.
+  remain concurrent on their independent endpoint lanes. The serialization
+  object belongs to one `(device ID, generation)` session; a blocked reset on
+  one controller cannot stall lifecycle or media activation on another.
 - Each endpoint owns a drain event covering both broker-forwarded URBs and the
   direct interrupt-IN fast path. UdeCx itself owns and purges the framework
   endpoint queue; VIIPER never starts or purges that queue. The purge callback

@@ -349,6 +349,67 @@ func TestNativeProcessorSerializesEndpointResetWithEndpointStart(t *testing.T) {
 	}
 }
 
+func TestNativeProcessorDoesNotGloballySerializeIndependentDevices(t *testing.T) {
+	desc := &usbdevice.Descriptor{Interfaces: []usbdevice.InterfaceConfig{
+		{Descriptor: usbdevice.InterfaceDescriptor{BInterfaceNumber: 2}},
+		{Descriptor: usbdevice.InterfaceDescriptor{
+			BInterfaceNumber: 2, BAlternateSetting: 1, BNumEndpoints: 1,
+		}, Endpoints: []usbdevice.EndpointDescriptor{{
+			BEndpointAddress: 0x02, BMAttributes: 0x05,
+			WMaxPacketSize: 4, BInterval: 1,
+		}}},
+	}}
+	blocked := &lifecycleGateDevice{
+		desc: desc, resetStarted: make(chan struct{}), resetRelease: make(chan struct{}),
+		altChanged: make(chan [2]uint8, 1),
+	}
+	independent := &lifecycleGateDevice{
+		desc: desc, resetStarted: make(chan struct{}), resetRelease: make(chan struct{}),
+		altChanged: make(chan [2]uint8, 1),
+	}
+	processor := nativeProcessorForTest(t)
+	resetDone := make(chan error, 1)
+	go func() {
+		resetDone <- processor.Lifecycle(context.Background(), blocked, udecx.Operation{
+			DeviceID: 101, Generation: 3, Kind: udecx.OperationEndpointReset,
+			EndpointAddress: 0x02, EndpointAttributes: 0x05,
+			EndpointInterval: 1, EndpointMaxPacketSize: 4,
+		})
+	}()
+	select {
+	case <-blocked.resetStarted:
+	case <-time.After(time.Second):
+		t.Fatal("first controller did not enter its blocked endpoint reset")
+	}
+
+	startDone := make(chan error, 1)
+	go func() {
+		startDone <- processor.Lifecycle(context.Background(), independent, udecx.Operation{
+			DeviceID: 102, Generation: 8, Kind: udecx.OperationEndpointStart,
+			EndpointAddress: 0x02, EndpointAttributes: 0x05,
+			EndpointInterval: 1, EndpointMaxPacketSize: 4,
+		})
+	}()
+	select {
+	case event := <-independent.altChanged:
+		if event != [2]uint8{2, 1} {
+			close(blocked.resetRelease)
+			t.Fatalf("independent alternate setting event=%v want=[2 1]", event)
+		}
+	case <-time.After(100 * time.Millisecond):
+		close(blocked.resetRelease)
+		t.Fatal("one controller's reset blocked an independent controller")
+	}
+	if err := <-startDone; err != nil {
+		close(blocked.resetRelease)
+		t.Fatal(err)
+	}
+	close(blocked.resetRelease)
+	if err := <-resetDone; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestNativeProcessorConcurrentMediaAndLifecycleSoak(t *testing.T) {
 	desc := &usbdevice.Descriptor{Interfaces: []usbdevice.InterfaceConfig{
 		{Descriptor: usbdevice.InterfaceDescriptor{BInterfaceNumber: 2}},
@@ -414,9 +475,7 @@ func TestNativeProcessorConcurrentMediaAndLifecycleSoak(t *testing.T) {
 	if len(processor.next) != 0 || len(processor.lastIn) != 0 {
 		t.Fatalf("reset retained clocks=%d cached-input=%d", len(processor.next), len(processor.lastIn))
 	}
-	processor.lifecycleMu.Lock()
-	defer processor.lifecycleMu.Unlock()
-	if len(processor.active) != 0 {
-		t.Fatalf("reset retained %d active native sessions", len(processor.active))
+	if len(processor.sessions) != 0 {
+		t.Fatalf("reset retained %d native sessions", len(processor.sessions))
 	}
 }
