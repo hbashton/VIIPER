@@ -157,10 +157,16 @@ func (p *NativeProcessor) Lifecycle(_ context.Context, dev usbdevice.Device, op 
 		p.activateEndpointLocked(dev, op, session)
 	case udecx.OperationEndpointPurge:
 		p.clearEndpointLanes(key)
-		if resetter, ok := dev.(usbdevice.EndpointResetDevice); ok {
+		// Closing the last endpoint of an alternate setting already establishes
+		// the controller's media-generation boundary through
+		// SetInterfaceAltSetting(0). Reset the individual pipe only when the
+		// interface stays active (or the endpoint cannot be mapped). Otherwise a
+		// native purge would flush the PlayStation stream twice while USB/IP
+		// closes it once.
+		resetByInterfaceClose := p.deactivateEndpointLocked(dev, op, session)
+		if resetter, ok := dev.(usbdevice.EndpointResetDevice); ok && !resetByInterfaceClose {
 			resetter.ResetEndpoint(op.EndpointAddress)
 		}
-		p.deactivateEndpointLocked(dev, op, session)
 	case udecx.OperationEndpointReset:
 		p.clearEndpointLanes(key)
 		if resetter, ok := dev.(usbdevice.EndpointResetDevice); ok {
@@ -281,19 +287,21 @@ func (p *NativeProcessor) activateEndpointLocked(dev usbdevice.Device, op udecx.
 }
 
 func (p *NativeProcessor) deactivateEndpointLocked(dev usbdevice.Device, op udecx.Operation,
-	session *nativeSessionState) {
+	session *nativeSessionState) bool {
 	signature := signatureFromOperation(op)
 	interfaceNumber, alternateSetting, ok := descriptorInterfaceAltForEndpoint(
 		dev.GetDescriptor(), signature)
 	if !ok {
-		return
+		return false
 	}
 	delete(session.active, signature)
 	if p.server.getInterfaceAlt(dev, interfaceNumber) == alternateSetting &&
 		!descriptorInterfaceAltIsActive(dev.GetDescriptor(), interfaceNumber, alternateSetting, session.active) {
 		p.server.setInterfaceAlt(dev, interfaceNumber, 0)
 		p.server.notifyInterfaceAlt(dev, interfaceNumber, 0)
+		return true
 	}
+	return false
 }
 
 func (p *NativeProcessor) applyInterfaceHintLocked(dev usbdevice.Device, op udecx.Operation) {
