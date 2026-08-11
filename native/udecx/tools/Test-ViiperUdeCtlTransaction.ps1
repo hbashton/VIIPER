@@ -39,6 +39,10 @@ $requiredContracts = [ordered]@{
     'same-ABI stale-kernel rejection' = 'expectedBuildIdentity'
     'install rollback' = 'RollbackInstall\('
     'broker health transaction' = 'RunBrokerInstall\('
+    'canonical broker proof parser' = 'ParseBrokerCommitProof\('
+    'bounded broker proof channel' = 'kMaximumBrokerProofBytes'
+    'explicit inherited broker handles' = 'PROC_THREAD_ATTRIBUTE_HANDLE_LIST'
+    'indeterminate broker wait retention' = 'GetExitCodeProcess\(processHandle\.get\(\), &observedExit\)'
     'production broker requirement' = 'broker-required'
     'staged broker hash binding' = '--broker-sha256'
     'protected package token binding' = '--broker-token-sha256'
@@ -51,7 +55,32 @@ $requiredContracts = [ordered]@{
     'protected rollback directory' = 'kRollbackDirectorySecurity'
     'inherited rollback protection' = 'O:BAD:P\(A;OICI;FA;;;SY\)\(A;OICI;FA;;;BA\)'
     'unpredictable rollback directory' = 'CryptGenRandom\('
+    'verified protected rollback ACLs' = 'VerifyProtectedFileSystemSecurity\('
+    'protected exact rollback file copy' = 'CopyProtectedBackupFile\('
+    'exact rollback package tree' = 'ValidateExactPackageDirectory\(destination'
+    'durable rollback package payloads' = 'rollback-backup-file-flush'
     'immutable rollback package files' = 'LockPackageFiles\(destination, &locks'
+    'pre-mutation rollback preservation' = 'ArmPreservation\('
+    'protected recovery record' = 'kRecoveryRecordSecurity'
+    'private recovery record staging name' = 'kRecoveryRecordTemporaryName'
+    'explicit recovery record flush' = 'FlushFileBuffers\(file\.get\(\)\)'
+    'atomic recovery record publish' =
+        'MoveFileExW\([\s\S]{0,180}MOVEFILE_WRITE_THROUGH'
+    'recovery record read-back verification' = 'recovery-record-verify'
+    'prepared write-ahead recovery state' =
+        '\\"state\\":\\"prepared-remove-transaction\\"'
+    'manual-only recovery policy' = '\\"automaticRestore\\":false'
+    'recovery signature and hash revalidation' =
+        '\\"requiredValidation\\":\[\\"inf-signature\\"[\s\S]{0,180}\\"cat-sha256\\"\]'
+    'recovery record path emission' = 'recoveryRecordWritten='
+    'retained backup path emission' = 'recoveryBackupRetained='
+    'pre-journal retained backup reporting' = 'recovery-record-not-published'
+    'recovery relative path confinement' = 'IsSafeRecoveryRelativePath\('
+    'unique devnode package recovery binding' = '\\"packageIndex\\":'
+    'checked rollback backup cleanup' = 'if \(!backupRoot\.Cleanup\(&backups'
+    'top-level exception boundary' = 'catch \(\.\.\.\)'
+    'exception-safe active recovery path' = 'gActiveRecoveryRecordWritten'
+    'exception-safe mutation classification' = 'gTransactionMutationStarted'
     'remove deadline parser' = 'ParseRemoveOptions\('
     'remove mutation deadline' = 'remove-deadline-before-device'
     'finite remove rollback ceiling' = 'kDriverRollbackCeilingMs'
@@ -66,6 +95,22 @@ $requiredContracts = [ordered]@{
     'deadline cancellation' = 'CancelIoEx\('
     'cancelled IO drain ceiling' = 'kCancelledIoDrainMs'
     'finite broker rollback ceiling' = 'kBrokerRollbackCeilingMs'
+    'nested rollback budget composition' = '3ULL \* 60ULL \* 1000ULL'
+    'forward root mutation deadline' = 'transaction-deadline-before-root-registration'
+    'forward root property deadline' = 'transaction-deadline-before-root-properties'
+    'device binding mutation deadline' = 'transaction-deadline-before-device-binding'
+    'driver package mutation deadline' = 'transaction-deadline-before-driver-install'
+    'selected driver mutation deadline' = 'transaction-deadline-before-driver-selection'
+    'owned generated root namespace' = 'kRootDeviceName\[\] = L"VIIPERUDE"'
+    'legacy generated root rollback namespace' = 'kLegacyRootDeviceName\[\] = L"USB"'
+    'exact generated root identity validation' = 'IsOwnedGeneratedRootInstanceId\('
+    'forward generated root identity verification' = 'verify-generated-root-instance-id'
+    'post-registration cleanup state' = 'registrationSucceeded'
+    'captured root namespace validation' = 'device-instance-ownership'
+    'actual remove-device mutation deadline' = 'remove-deadline-before-device-mutation'
+    'rollback remove-device mutation deadline' = 'rollback-deadline-before-device-removal'
+    'rollback root property deadline' = 'rollback-deadline-before-root-properties'
+    'rollback root registration deadline' = 'rollback-deadline-before-root-registration'
     'exact rollback devnode identity' = 'RegisterRootDeviceExact\('
     'rollback identity verification' = 'rollback-identity-verification'
     'structured reboot exit' = 'ERROR_SUCCESS_REBOOT_REQUIRED'
@@ -78,12 +123,53 @@ foreach ($entry in $requiredContracts.GetEnumerator()) {
     }
 }
 
+$orderedMutationContracts = [ordered]@{
+    'driver package deadline immediately precedes mutation' =
+        'CheckTransactionDeadline\(options,[\s\S]{0,180}transaction-deadline-before-driver-install[\s\S]{0,800}DiInstallDriverW\('
+    'root property deadline immediately precedes mutation' =
+        'transaction-deadline-before-root-properties[\s\S]{0,240}mutationStarted[\s\S]{0,180}SetupDiSetDeviceRegistryPropertyW\('
+    'root registration deadline immediately precedes mutation' =
+        'transaction-deadline-before-root-registration[\s\S]{0,240}SetupDiCallClassInstaller\(DIF_REGISTERDEVICE'
+    'device binding deadline immediately precedes mutation' =
+        'transaction-deadline-before-device-binding[\s\S]{0,500}DiInstallDevice\('
+    'selected driver deadline immediately precedes mutation' =
+        'transaction-deadline-before-driver-selection[\s\S]{0,300}mutationStarted[\s\S]{0,180}SetupDiSetSelectedDriverW\('
+    'remove deadline immediately precedes device mutation' =
+        'CheckTransactionDeadline\(transactionDeadlineUnixMs, deadlinePhase, error\)[\s\S]{0,300}mutationStarted[\s\S]{0,180}DiUninstallDevice\('
+    'first-time root creation uses the owned device name' =
+        'SetupDiCreateDeviceInfoW\([\s\S]{0,120}kRootDeviceName[\s\S]{0,120}DICD_GENERATE_ID'
+    'registered devnode cleanup state survives post-registration validation' =
+        'registeredAndVerified[\s\S]{0,300}createdHere = registrationSucceeded;[\s\S]{0,120}if \(registeredAndVerified\)'
+    'recovery journal is published and preservation armed before mutation' =
+        'BuildRemoveRecoveryRecord\([\s\S]{0,300}WriteProtectedRecoveryRecord\([\s\S]{0,240}ArmPreservation\([\s\S]{0,700}RemoveAllExactDevices\('
+    'failed remove rollback preserves published evidence before return' =
+        'AttachRecoveryRecord\(&rollbackError\);[\s\S]{0,180}outcome\.rollback = L"failed";[\s\S]{0,300}return outcome;'
+    'verified rollback performs checked evidence cleanup' =
+        'outcome\.rollback = L"succeeded";[\s\S]{0,300}backupRoot\.Cleanup\(&backups, &cleanupError\)[\s\S]{0,300}return outcome;'
+    'committed removal performs checked evidence cleanup before success' =
+        'if \(!backupRoot\.Cleanup\(&backups, &cleanupError\)\)[\s\S]{0,240}ExitCode::RollbackFailed;[\s\S]{0,180}return outcome;[\s\S]{0,100}outcome\.success = true;'
+    'preservation disarms only after verified evidence absence' =
+        'std::filesystem::exists\(path_, presenceError\)[\s\S]{0,260}if \(removalError \|\| presenceError \|\| remains\)[\s\S]{0,900}preserve_ = false;[\s\S]{0,100}ClearActiveRecoveryEvidence\(\);'
+    'exception outcome distinguishes preflight from mutation' =
+        'const bool changed = gTransactionMutationStarted;[\s\S]{0,180}changed[\s\S]{0,100}ExitCode::RollbackFailed : ExitCode::PreflightRejected;'
+}
+
+foreach ($entry in $orderedMutationContracts.GetEnumerator()) {
+    if ($source -notmatch $entry.Value) {
+        throw "ViiperUdeCtl violates its $($entry.Key) ordering contract."
+    }
+}
+
 if ($source -match 'SUOI_FORCEDELETE') {
     throw 'ViiperUdeCtl must never force-delete a published INF.'
 }
 
 if ($source -match 'TerminateProcess\(') {
     throw 'ViiperUdeCtl must never hard-terminate the mutating broker transaction.'
+}
+
+if ($source -match 'std::filesystem::copy_file') {
+    throw 'Rollback packages must use the protected, write-through, verified exact-file copy path.'
 }
 
 foreach ($runtimeExport in @(
@@ -108,6 +194,10 @@ if ([regex]::Matches($source, ',\s*DICD_GENERATE_ID\s*,').Count -ne 1) {
     throw 'Generated root identities are allowed only for first-time forward creation, never rollback.'
 }
 
+if ($source -match 'SetupDiCreateDeviceInfoW\([\s\S]{0,120}className\.c_str\(\)') {
+    throw 'Forward root creation must use the VIIPER-owned device-name namespace, not the INF class name.'
+}
+
 if ([regex]::Matches($source, '\bRemoveAllExactDevices\(').Count -ne 2) {
     throw 'All-device removal is allowed only for explicit forward uninstall, never rollback.'
 }
@@ -123,8 +213,8 @@ if ($forceInfUses -ne 1 -or
 }
 
 $forceBindUses = [regex]::Matches($source, '\bINSTALLFLAG_FORCE\b').Count
-if ($forceBindUses -ne 2) {
-    throw "Expected force binding only in controlled downgrade and the shared exact-identity rollback path; found $forceBindUses uses."
+if ($forceBindUses -ne 0) {
+    throw "Selected preinstalled package binding and rollback must not use INSTALLFLAG_FORCE; found $forceBindUses uses."
 }
 
 if (-not [string]::IsNullOrWhiteSpace($BinaryPath)) {

@@ -48,11 +48,17 @@ func TestNativeLiveReleaseGateRequiresCompleteEvidence(t *testing.T) {
 		"$nativeIdentityLdflags",
 		"internal/transport/udecx.nativeSourceRevision=",
 		"$ExpectedSourceRevision.ToLowerInvariant()",
+		"Win32_PnPEntity",
+		"@($_.HardwareID) -contains 'ROOT\\VIIPER\\UDE'",
+		"$ownedRootDevices[0].PNPDeviceID",
 		"Go reported success without executing required live test",
 	} {
 		if !strings.Contains(contract, required) {
 			t.Fatalf("native release gate omitted %q", required)
 		}
+	}
+	if strings.Contains(contract, "DeviceID -like 'ROOT\\VIIPER\\UDE*'") {
+		t.Fatal("native release gate confuses the INF hardware ID with the generated PnP instance ID")
 	}
 }
 

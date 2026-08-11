@@ -560,12 +560,12 @@ func validReport(t *testing.T) *Report {
 				LoadedDriverBuildIdentity:    report.Provenance.NativeDriverBuildIdentity,
 			}
 			run.Controller.PNPInstanceID = `HID\VID_045E&PID_028E\2`
-			run.Controller.PNPAncestorIDs = []string{run.Controller.PNPInstanceID, `USB\VID_045E&PID_028E\2`, `ROOT\VIIPER\UDE\0000`}
+			run.Controller.PNPAncestorIDs = []string{run.Controller.PNPInstanceID, `USB\VID_045E&PID_028E\2`, `ROOT\VIIPERUDE\0000`}
 			run.Controller.PNPAncestorServices = []string{"HidUsb", "WUDFRd", "ViiperUde"}
 			run.Controller.PNPAncestorHardwareIDs = [][]string{{`HID_DEVICE_SYSTEM_GAME`}, {`USB\VID_045E&PID_028E`}, {`ROOT\VIIPER\UDE`}}
 			run.Controller.PNPAncestorLocationInfo = []string{"", "", ""}
 			run.Controller.PNPAncestorLocationPaths = [][]string{{}, {}, {}}
-			run.Controller.TransportAnchorInstanceID = `ROOT\VIIPER\UDE\0000`
+			run.Controller.TransportAnchorInstanceID = `ROOT\VIIPERUDE\0000`
 			run.Controller.TransportAnchorService = "ViiperUde"
 		}
 		transportOffset := 0

@@ -15,7 +15,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -27,7 +26,7 @@ import (
 	"golang.org/x/sys/windows/svc/mgr"
 )
 
-const nativePackageMutexName = `Global\VIIPER.NativePackage.Install.v1`
+const nativePackageMutexName = "VIIPER.NativePackage.Install.v1"
 const nativePackageTokenSDDL = "O:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)"
 
 var nativePackageDriverFiles = []string{
@@ -35,13 +34,19 @@ var nativePackageDriverFiles = []string{
 }
 
 type windowsNativePackageTransaction struct {
-	logger  *slog.Logger
-	request nativePackageRequest
+	logger             *slog.Logger
+	request            nativePackageRequest
+	nestedBrokerCommit bool
 
-	releaseMutex func()
-	inputHandles []windows.Handle
-	sourceHandle windows.Handle
-	helperHandle windows.Handle
+	releaseMutex                 func()
+	releaseServiceMutex          func()
+	inputHandles                 []windows.Handle
+	sourceHandle                 windows.Handle
+	helperHandle                 windows.Handle
+	nestedBrokerHealthy          bool
+	nestedMutationStarted        bool
+	nestedRollbackSucceeded      bool
+	nestedServiceRollbackSettled bool
 
 	programFiles string
 	destination  string
@@ -78,61 +83,101 @@ func installNativePackage(
 
 func commitNativePackageBroker(
 	logger *slog.Logger,
-	tokenPath, expectedTokenSHA256, targetUserSID, deadlineUnixMS string,
-) error {
+	tokenPath, expectedTokenSHA256, expectedBrokerSHA256, targetUserSID, deadlineUnixMS string,
+) (nativePackageBrokerCommitResult, error) {
+	preflightFailure := func(err error) (nativePackageBrokerCommitResult, error) {
+		return nativePackageBrokerPreflightFailure(err)
+	}
 	deadlineMilliseconds, err := strconv.ParseInt(deadlineUnixMS, 10, 64)
 	if err != nil || deadlineMilliseconds <= 0 {
-		return errors.New("native package transaction deadline must be positive Unix milliseconds")
+		return preflightFailure(errors.New("native package transaction deadline must be positive Unix milliseconds"))
 	}
 	deadline := time.UnixMilli(deadlineMilliseconds)
 	if !deadline.After(time.Now()) || deadline.After(time.Now().Add(nativePackageTransactionTimeout)) {
-		return errors.New("native package transaction deadline is expired or outside the package budget")
+		return preflightFailure(errors.New("native package transaction deadline is expired or outside the package budget"))
 	}
 	if !filepath.IsAbs(tokenPath) || strings.IndexByte(tokenPath, 0) >= 0 {
-		return errors.New("native package transaction token path must be absolute and contain no NUL")
+		return preflightFailure(errors.New("native package transaction token path must be absolute and contain no NUL"))
 	}
 	if _, err := validateNativeInstallingUserSID(targetUserSID); err != nil {
-		return fmt.Errorf("validate package transaction target SID: %w", err)
+		return preflightFailure(fmt.Errorf("validate package transaction target SID: %w", err))
 	}
 	programFiles, err := windows.KnownFolderPath(windows.FOLDERID_ProgramFiles, windows.KF_FLAG_DEFAULT)
 	if err != nil {
-		return fmt.Errorf("resolve Program Files: %w", err)
+		return preflightFailure(fmt.Errorf("resolve Program Files: %w", err))
 	}
 	expectedParent := filepath.Join(filepath.Clean(programFiles), "VIIPER")
 	base := filepath.Base(tokenPath)
 	if !strings.EqualFold(filepath.Dir(filepath.Clean(tokenPath)), expectedParent) ||
 		!strings.HasPrefix(strings.ToLower(base), ".viiper.transaction.") ||
 		!strings.HasSuffix(strings.ToLower(base), ".token") {
-		return fmt.Errorf("package transaction token escaped the managed VIIPER directory: %s", tokenPath)
+		return preflightFailure(fmt.Errorf("package transaction token escaped the managed VIIPER directory: %s", tokenPath))
 	}
 	handle, err := lockNativePackageInput(tokenPath)
 	if err != nil {
-		return fmt.Errorf("lock package transaction token: %w", err)
+		return preflightFailure(fmt.Errorf("lock package transaction token: %w", err))
 	}
 	defer windows.CloseHandle(handle) //nolint:errcheck
 	if err := validateNativeSecurityDescriptor(handle, nativePackageTokenSDDL); err != nil {
-		return fmt.Errorf("validate package transaction token ACL: %w", err)
+		return preflightFailure(fmt.Errorf("validate package transaction token ACL: %w", err))
 	}
 	hash, err := hashNativePackageHandle(handle)
 	if err != nil {
-		return fmt.Errorf("hash package transaction token: %w", err)
+		return preflightFailure(fmt.Errorf("hash package transaction token: %w", err))
 	}
 	if !strings.EqualFold(hash, expectedTokenSHA256) {
-		return errors.New("package transaction token SHA-256 does not match the active installer")
+		return preflightFailure(errors.New("package transaction token SHA-256 does not match the active installer"))
+	}
+	if !nativePackageSHA256.MatchString(expectedBrokerSHA256) {
+		return preflightFailure(errors.New("package transaction broker SHA-256 is malformed"))
 	}
 	held, err := nativePackageMutexHeldByAnotherOwner(nativePackageMutexName)
 	if err != nil {
-		return fmt.Errorf("verify outer package transaction mutex: %w", err)
+		return preflightFailure(fmt.Errorf("verify outer package transaction mutex: %w", err))
 	}
 	if !held {
-		return errors.New("outer native package transaction mutex is not held")
+		return preflightFailure(errors.New("outer native package transaction mutex is not held"))
 	}
-	return installNativeBrokerUntil(logger, targetUserSID, deadline)
+	executable, err := currentExecutable()
+	if err != nil {
+		return preflightFailure(fmt.Errorf("resolve nested broker executable: %w", err))
+	}
+	transaction := &windowsNativePackageTransaction{
+		logger: logger,
+		request: nativePackageRequest{
+			brokerSource: executable, expectedBrokerSHA256: expectedBrokerSHA256,
+			targetUserSID: targetUserSID,
+		},
+		nestedBrokerCommit: true,
+	}
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
+	defer cancel()
+	err = runNativePackageTransaction(ctx, logger, transaction)
+	if err == nil {
+		return nativePackageBrokerCommitResult{
+			success: true, changed: transaction.nestedMutationStarted,
+			rollback: "not-needed", exitCode: 0,
+		}, nil
+	}
+	if !transaction.nestedMutationStarted {
+		return nativePackageBrokerPreflightFailure(err)
+	}
+	if transaction.nestedRollbackSucceeded {
+		return nativePackageBrokerCommitResult{
+			changed: true, rollback: "succeeded", exitCode: 1,
+		}, err
+	}
+	return nativePackageBrokerCommitResult{
+		changed: true, rollback: "failed", exitCode: 3,
+	}, err
 }
 
 func (t *windowsNativePackageTransaction) Preflight(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if t.nestedBrokerCommit {
+		return t.preflightNestedBrokerCommit()
 	}
 	mutexBudget := nativePackageTransactionTimeout
 	if deadline, ok := ctx.Deadline(); ok {
@@ -211,11 +256,18 @@ func (t *windowsNativePackageTransaction) Preflight(ctx context.Context) error {
 		if matches != 1 {
 			return fmt.Errorf("signed driver package must contain one case-exact regular %s", expected)
 		}
-		handle, lockErr := lockNativePackageInput(filepath.Join(t.request.packageDirectory, expected))
+		expectedHash := map[string]string{
+			"ViiperUde.inf": t.request.expectedInfSHA256,
+			"ViiperUde.sys": t.request.expectedSysSHA256,
+			"ViiperUde.cat": t.request.expectedCatSHA256,
+		}[expected]
+		handle, lockErr := t.lockAndVerifyInput(
+			filepath.Join(t.request.packageDirectory, expected), expectedHash, false,
+		)
 		if lockErr != nil {
-			return fmt.Errorf("lock signed driver file %s: %w", expected, lockErr)
+			return fmt.Errorf("verify installer-bound signed driver file %s: %w", expected, lockErr)
 		}
-		t.inputHandles = append(t.inputHandles, handle)
+		_ = handle
 	}
 	manifestHandle, err := t.lockAndVerifyInput(
 		t.request.submissionManifest, t.request.expectedManifestSHA256, false,
@@ -225,9 +277,6 @@ func (t *windowsNativePackageTransaction) Preflight(ctx context.Context) error {
 	}
 	_ = manifestHandle
 
-	if err := t.runDriverHelper(ctx, "verify", false); err != nil {
-		return fmt.Errorf("source-bound Microsoft driver verification: %w", err)
-	}
 	if attributes, attrErr := nativePathAttributes(t.parent); attrErr == nil {
 		if attributes&windows.FILE_ATTRIBUTE_DIRECTORY == 0 ||
 			attributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
@@ -250,9 +299,61 @@ func (t *windowsNativePackageTransaction) Preflight(ctx context.Context) error {
 	return nil
 }
 
+func (t *windowsNativePackageTransaction) preflightNestedBrokerCommit() error {
+	t.nestedServiceRollbackSettled = true
+	if _, err := validateNativeInstallingUserSID(t.request.targetUserSID); err != nil {
+		return fmt.Errorf("validate nested broker target SID: %w", err)
+	}
+	programFiles, err := windows.KnownFolderPath(windows.FOLDERID_ProgramFiles, windows.KF_FLAG_DEFAULT)
+	if err != nil {
+		return fmt.Errorf("resolve Program Files known folder: %w", err)
+	}
+	t.programFiles = filepath.Clean(programFiles)
+	t.parent = filepath.Join(t.programFiles, "VIIPER")
+	t.destination = filepath.Join(t.parent, "viiper.exe")
+	if _, err := nativeServiceExecutableParent(t.programFiles, t.destination); err != nil {
+		return err
+	}
+	programFilesHandle, err := openNativePathWithoutReparse(
+		t.programFiles, windows.FILE_READ_ATTRIBUTES, true,
+	)
+	if err != nil {
+		return fmt.Errorf("lock Program Files root: %w", err)
+	}
+	t.inputHandles = append(t.inputHandles, programFilesHandle)
+	handles, err := lockNativePackageDirectoryChain(filepath.Dir(t.request.brokerSource))
+	if err != nil {
+		return fmt.Errorf("lock nested broker source directory chain: %w", err)
+	}
+	t.inputHandles = append(t.inputHandles, handles...)
+	t.sourceHandle, err = t.lockAndVerifyInput(
+		t.request.brokerSource, t.request.expectedBrokerSHA256, true,
+	)
+	if err != nil {
+		return fmt.Errorf("verify installer-bound nested VIIPER broker: %w", err)
+	}
+	return nil
+}
+
 func (t *windowsNativePackageTransaction) InspectService(
 	ctx context.Context,
 ) (nativePackageServiceSnapshot, error) {
+	if !t.nestedBrokerCommit {
+		t.serviceSnapshot = nativePackageServiceSnapshot{disposition: nativePackageServiceAbsent}
+		return t.serviceSnapshot, nil
+	}
+	budget := nativePackageTransactionTimeout
+	if deadline, ok := ctx.Deadline(); ok {
+		budget = time.Until(deadline)
+		if budget <= 0 {
+			return nativePackageServiceSnapshot{}, context.DeadlineExceeded
+		}
+	}
+	release, err := acquireNativeInstallMutex(budget)
+	if err != nil {
+		return nativePackageServiceSnapshot{}, fmt.Errorf("lock nested native broker transaction: %w", err)
+	}
+	t.releaseServiceMutex = release
 	manager, err := mgr.Connect()
 	if err != nil {
 		return nativePackageServiceSnapshot{}, fmt.Errorf("connect to SCM: %w", err)
@@ -261,7 +362,7 @@ func (t *windowsNativePackageTransaction) InspectService(
 	service, err := t.manager.OpenService(NativeBrokerServiceName)
 	if errors.Is(err, windows.ERROR_SERVICE_DOES_NOT_EXIST) {
 		t.serviceSnapshot = nativePackageServiceSnapshot{disposition: nativePackageServiceAbsent}
-		return t.serviceSnapshot, nil
+		return t.finalizeServiceInspection(ctx, t.serviceSnapshot)
 	}
 	if err != nil {
 		return nativePackageServiceSnapshot{}, fmt.Errorf("open %s: %w", NativeBrokerServiceName, err)
@@ -337,7 +438,76 @@ func (t *windowsNativePackageTransaction) InspectService(
 		disposition: disposition,
 		wasRunning:  status.State == svc.Running,
 	}
-	return t.serviceSnapshot, nil
+	return t.finalizeServiceInspection(ctx, t.serviceSnapshot)
+}
+
+func (t *windowsNativePackageTransaction) finalizeServiceInspection(
+	ctx context.Context,
+	snapshot nativePackageServiceSnapshot,
+) (nativePackageServiceSnapshot, error) {
+	if snapshot.disposition == nativePackageServiceTrusted && snapshot.wasRunning {
+		healthy, err := t.verifyExactBrokerHealth(ctx)
+		if err != nil {
+			if ctx.Err() != nil {
+				return nativePackageServiceSnapshot{}, ctx.Err()
+			}
+			t.logger.Info("Exact native broker requires transactional repair", "reason", err)
+		} else {
+			t.nestedBrokerHealthy = healthy
+		}
+	}
+	t.serviceSnapshot = snapshot
+	return snapshot, nil
+}
+
+func (t *windowsNativePackageTransaction) verifyExactBrokerHealth(ctx context.Context) (bool, error) {
+	if t.service == nil || !strings.EqualFold(t.priorServiceExecutable, t.destination) {
+		return false, errors.New("native broker service does not use the canonical package executable")
+	}
+	handle, err := lockNativePackageInput(t.priorServiceExecutable)
+	if err != nil {
+		return false, fmt.Errorf("lock exact native broker image: %w", err)
+	}
+	hash, hashErr := hashNativePackageHandle(handle)
+	closeErr := windows.CloseHandle(handle)
+	if hashErr != nil {
+		return false, fmt.Errorf("hash exact native broker image: %w", hashErr)
+	}
+	if closeErr != nil {
+		return false, fmt.Errorf("close exact native broker image: %w", closeErr)
+	}
+	if !strings.EqualFold(hash, t.request.expectedBrokerSHA256) {
+		return false, fmt.Errorf("native broker SHA-256=%s expected=%s", hash, t.request.expectedBrokerSHA256)
+	}
+
+	credential, err := readNativeCredentialReadOnly(t.request.targetUserSID)
+	if err != nil {
+		return false, fmt.Errorf("read protected native broker credential: %w", err)
+	}
+	legacy, err := snapshotNativeLegacyStartup(ctx, t.request.targetUserSID)
+	if err != nil {
+		return false, fmt.Errorf("inspect legacy native broker ownership: %w", err)
+	}
+	if legacy.release != nil {
+		defer legacy.release()
+	}
+	if nativeLegacyStartupOwnsRuntime(legacy) {
+		return false, errors.New("active legacy VIIPER startup ownership is still registered")
+	}
+
+	servicePID, err := requireNativeServiceProcess(t.service, 0)
+	if err != nil {
+		return false, err
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	if err := verifyNativeBrokerOnce(probeCtx, strings.TrimSpace(string(credential))); err != nil {
+		return false, err
+	}
+	if _, err := requireNativeServiceProcess(t.service, servicePID); err != nil {
+		return false, fmt.Errorf("revalidate exact native broker after authenticated ping: %w", err)
+	}
+	return true, nil
 }
 
 func isCanonicalNativePackageService(
@@ -362,6 +532,16 @@ func (t *windowsNativePackageTransaction) Prepare(
 		snapshot.wasRunning != t.serviceSnapshot.wasRunning {
 		return errors.New("native service snapshot changed before preparation")
 	}
+	if !t.nestedBrokerCommit {
+		return t.preparePackageCoordination()
+	}
+	if t.nestedBrokerHealthy {
+		return nil
+	}
+	// From this point onward the nested callback may stop/delete SCM state or
+	// publish the canonical broker image. Any failure must prove rollback before
+	// the still-running helper may touch its captured driver snapshot again.
+	t.nestedMutationStarted = true
 	if t.service != nil && snapshot.disposition == nativePackageServiceWeakExactOwned {
 		if snapshot.wasRunning {
 			if err := stopNativeService(ctx, t.service, waitContext); err != nil {
@@ -404,8 +584,29 @@ func (t *windowsNativePackageTransaction) InstallDriverAndBroker(ctx context.Con
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := t.runDriverHelper(ctx, "install", true); err != nil {
-		return err
+	if t.nestedBrokerCommit {
+		if t.releaseServiceMutex == nil {
+			return errors.New("nested native broker transaction does not hold the service mutex")
+		}
+		if !t.nestedBrokerHealthy {
+			var evidence nativeBrokerInstallEvidence
+			if err := installNativeBrokerTransactionWithEvidence(
+				ctx, t.logger, t.destination,
+				productionNativeInstallDependencies(t.request.targetUserSID),
+				&evidence,
+			); err != nil {
+				t.nestedServiceRollbackSettled =
+					!evidence.mutationStarted || evidence.rollbackSucceeded
+				return fmt.Errorf("repair native broker transaction: %w", err)
+			}
+		}
+	} else {
+		if t.releaseServiceMutex != nil {
+			return errors.New("outer native package transaction unexpectedly holds the service mutex")
+		}
+		if err := t.runDriverHelper(ctx); err != nil {
+			return err
+		}
 	}
 	// A deadline that expires after the synchronous mutating helper starts must
 	// not turn its authenticated success into a contradictory outer rollback.
@@ -416,6 +617,15 @@ func (t *windowsNativePackageTransaction) InstallDriverAndBroker(ctx context.Con
 }
 
 func (t *windowsNativePackageTransaction) VerifyAuthenticatedHealth(ctx context.Context) error {
+	if t.nestedBrokerCommit && t.nestedBrokerHealthy {
+		healthy, err := t.verifyExactBrokerHealth(ctx)
+		if err != nil {
+			return fmt.Errorf("reverify exact native package no-op: %w", err)
+		}
+		if !healthy {
+			return errors.New("exact native package lost authenticated health before no-op commit")
+		}
+	}
 	// ViiperUdeCtl does not return success until the staged broker's native
 	// service transaction has performed authenticated ABI/capability health,
 	// removed legacy ownership, and authenticated a second time. Preserve that
@@ -459,7 +669,13 @@ func (t *windowsNativePackageTransaction) Commit(context.Context) error {
 	return nil
 }
 
-func (t *windowsNativePackageTransaction) Rollback(ctx context.Context) error {
+func (t *windowsNativePackageTransaction) Rollback(ctx context.Context) (resultErr error) {
+	defer func() {
+		if t.nestedBrokerCommit && t.nestedMutationStarted && resultErr == nil &&
+			t.nestedServiceRollbackSettled {
+			t.nestedRollbackSucceeded = true
+		}
+	}()
 	var rollbackErrors []error
 	if t.destinationRelease != nil {
 		t.destinationRelease()
@@ -468,6 +684,16 @@ func (t *windowsNativePackageTransaction) Rollback(ctx context.Context) error {
 	if err := t.releaseCoordinationToken(); err != nil {
 		rollbackErrors = append(rollbackErrors,
 			fmt.Errorf("remove package transaction token: %w", err))
+	}
+	if t.nestedBrokerCommit && t.nestedMutationStarted &&
+		!t.nestedServiceRollbackSettled {
+		// The inner SCM transaction deliberately leaves an indeterminate service
+		// stopped. Do not delete/replace the image it may still reference, restore
+		// a prior image under an indeterminate configuration, or restart it. Keep
+		// both protected images for explicit external reconciliation.
+		rollbackErrors = append(rollbackErrors, errors.New(
+			"nested native broker service rollback is unsettled; retaining staged and prior broker images and leaving the service stopped for external reconciliation"))
+		return errors.Join(rollbackErrors...)
 	}
 	restored := true
 	if err := t.restoreBrokerExecutable(); err != nil {
@@ -524,8 +750,13 @@ func (t *windowsNativePackageTransaction) Close() error {
 	for index := len(t.inputHandles) - 1; index >= 0; index-- {
 		windows.CloseHandle(t.inputHandles[index]) //nolint:errcheck
 	}
+	if t.releaseServiceMutex != nil {
+		t.releaseServiceMutex()
+		t.releaseServiceMutex = nil
+	}
 	if t.releaseMutex != nil {
 		t.releaseMutex()
+		t.releaseMutex = nil
 	}
 	return nil
 }
@@ -577,29 +808,50 @@ func (t *windowsNativePackageTransaction) lockAndVerifyInput(
 	return handle, nil
 }
 
-func (t *windowsNativePackageTransaction) runDriverHelper(
-	ctx context.Context, operation string, broker bool,
-) error {
+func (t *windowsNativePackageTransaction) runDriverHelper(ctx context.Context) error {
+	text, err := t.executeDriverHelper(ctx)
+	processExitCode := 0
+	if err != nil {
+		var exitError *exec.ExitError
+		if !errors.As(err, &exitError) {
+			return fmt.Errorf("wait for native driver helper: %w: %s", err, text)
+		}
+		processExitCode = exitError.ExitCode()
+	}
+	proof, proofErr := parseNativePackageInstallProof(text, processExitCode)
+	if proofErr != nil {
+		return fmt.Errorf("validate native driver helper proof: %w: %s", proofErr, text)
+	}
+	if proof.exitCode == nativePackageRebootRequiredCode {
+		return &nativePackageRebootRequiredError{cause: fmt.Errorf("%w: %s", err, text)}
+	}
+	if !proof.success {
+		return fmt.Errorf("native driver helper failed with exit %d: %w: %s",
+			proof.exitCode, err, text)
+	}
+	return nil
+}
+
+func (t *windowsNativePackageTransaction) executeDriverHelper(ctx context.Context) (string, error) {
 	deadline, ok := ctx.Deadline()
 	if !ok || !deadline.After(time.Now()) {
-		return context.DeadlineExceeded
+		return "", context.DeadlineExceeded
 	}
 	arguments := []string{
-		operation, filepath.Join(t.request.packageDirectory, "ViiperUde.inf"),
+		"install", filepath.Join(t.request.packageDirectory, "ViiperUde.inf"),
 		"--manifest", t.request.submissionManifest,
 		"--manifest-sha256", t.request.expectedManifestSHA256,
 		"--source-revision", t.request.sourceRevision,
 		"--validation-mode", "production",
+		"--expected-inf-sha256", t.request.expectedInfSHA256,
+		"--expected-sys-sha256", t.request.expectedSysSHA256,
+		"--expected-cat-sha256", t.request.expectedCatSHA256,
 		"--transaction-deadline-unix-ms", strconv.FormatInt(deadline.UnixMilli(), 10),
-	}
-	if broker {
-		arguments = append(arguments,
-			"--broker-executable", t.destination,
-			"--broker-sha256", t.request.expectedBrokerSHA256,
-			"--broker-token", t.tokenPath,
-			"--broker-token-sha256", t.tokenSHA256,
-			"--target-user-sid", t.request.targetUserSID,
-		)
+		"--broker-executable", t.request.brokerSource,
+		"--broker-sha256", t.request.expectedBrokerSHA256,
+		"--broker-token", t.tokenPath,
+		"--broker-token-sha256", t.tokenSHA256,
+		"--target-user-sid", t.request.targetUserSID,
 	}
 	// Do not use CommandContext: killing ViiperUdeCtl could interrupt its in-memory
 	// DriverStore rollback or the broker's deferred SCM/credential rollback.
@@ -609,40 +861,13 @@ func (t *windowsNativePackageTransaction) runDriverHelper(
 	command.Stdout = &output
 	command.Stderr = &output
 	if err := command.Start(); err != nil {
-		return err
+		return "", err
 	}
-	var err error
-	if operation == "verify" {
-		// This process is strictly read-only. It is safe to stop if signature or
-		// manifest inspection wedges; the mutating install path is never killed.
-		done := make(chan error, 1)
-		go func() { done <- command.Wait() }()
-		select {
-		case err = <-done:
-		case <-ctx.Done():
-			_ = command.Process.Kill()
-			<-done
-			return ctx.Err()
-		}
-	} else {
-		// The helper owns the driver snapshot and nested broker rollback. Its
-		// propagated absolute deadline is cooperative; never terminate it here.
-		err = command.Wait()
-	}
+	// The helper owns the driver snapshot and nested broker rollback. Its
+	// propagated absolute deadline is cooperative; never terminate it here.
+	err := waitNativePackageHelper(command)
 	text := strings.TrimSpace(output.String())
-	expected := "result=success operation=" + operation
-	var exitError *exec.ExitError
-	if operation == "install" && errors.As(err, &exitError) &&
-		exitError.ExitCode() == nativePackageRebootRequiredCode {
-		return &nativePackageRebootRequiredError{cause: fmt.Errorf("%w: %s", err, text)}
-	}
-	if err != nil || !strings.Contains(text, expected) {
-		if err == nil {
-			err = errors.New("driver helper did not emit its structured success proof")
-		}
-		return fmt.Errorf("%w: %s", err, text)
-	}
-	return nil
+	return text, err
 }
 
 func reconcileNativePackageServiceRunning(ctx context.Context, service nativeManagedService) error {
@@ -723,7 +948,10 @@ func (t *windowsNativePackageTransaction) stageCoordinationToken() error {
 	return nil
 }
 
-func (t *windowsNativePackageTransaction) stageBrokerExecutable() error {
+func (t *windowsNativePackageTransaction) ensureManagedPackageDirectory() error {
+	if t.parentHandle != 0 {
+		return nil
+	}
 	if attributes, err := nativePathAttributes(t.parent); err != nil {
 		if !errors.Is(err, windows.ERROR_FILE_NOT_FOUND) &&
 			!errors.Is(err, windows.ERROR_PATH_NOT_FOUND) {
@@ -755,10 +983,33 @@ func (t *windowsNativePackageTransaction) stageBrokerExecutable() error {
 	if err := validateNativeSecurityDescriptor(parent, nativeBrokerDirectorySDDL); err != nil {
 		return fmt.Errorf("validate protected VIIPER directory: %w", err)
 	}
+	return nil
+}
+
+func (t *windowsNativePackageTransaction) preparePackageCoordination() error {
+	if t.nestedBrokerCommit {
+		return errors.New("nested broker transaction cannot create the outer coordination token")
+	}
+	if err := t.ensureManagedPackageDirectory(); err != nil {
+		return err
+	}
+	if t.tokenPath != "" || t.tokenHandle != 0 {
+		return errors.New("native package coordination token is already staged")
+	}
 	if err := t.stageCoordinationToken(); err != nil {
 		return err
 	}
+	return nil
+}
 
+func (t *windowsNativePackageTransaction) stageBrokerExecutable() error {
+	if !t.nestedBrokerCommit {
+		return errors.New("broker image staging is owned by the nested service transaction")
+	}
+	if err := t.ensureManagedPackageDirectory(); err != nil {
+		return err
+	}
+	var err error
 	if existing, openErr := openNativePathWithoutReparse(
 		t.destination, windows.GENERIC_READ|windows.READ_CONTROL, false,
 	); openErr == nil {
@@ -783,13 +1034,17 @@ func (t *windowsNativePackageTransaction) stageBrokerExecutable() error {
 			t.destinationRelease = release
 			return nil
 		}
-		t.backupPath, err = t.uniqueManagedPath("rollback")
+		backupPath, err := t.uniqueManagedPath("rollback")
 		if err != nil {
 			return err
 		}
-		if err := moveNativePackageFile(t.destination, t.backupPath, false); err != nil {
+		if err := moveNativePackageFile(t.destination, backupPath, false); err != nil {
 			return fmt.Errorf("retain prior broker for rollback: %w", err)
 		}
+		// Publish rollback ownership only after the atomic rename succeeds. On a
+		// failed rename the canonical prior image is still in place and may be
+		// safely revalidated/restarted by Rollback.
+		t.backupPath = backupPath
 	} else if !errors.Is(openErr, windows.ERROR_FILE_NOT_FOUND) &&
 		!errors.Is(openErr, windows.ERROR_PATH_NOT_FOUND) {
 		return fmt.Errorf("inspect existing broker: %w", openErr)
@@ -875,42 +1130,9 @@ func (t *windowsNativePackageTransaction) uniqueManagedPath(label string) (strin
 }
 
 func acquireNamedNativePackageMutex(name string, timeout time.Duration) (func(), error) {
-	// Win32 mutex ownership belongs to an OS thread, not a Go goroutine. Pin
-	// the caller until the release closure runs or ReleaseMutex can execute on
-	// a different thread and silently strand/abandon the package lock.
-	runtime.LockOSThread()
-	pointer, err := windows.UTF16PtrFromString(name)
-	if err != nil {
-		runtime.UnlockOSThread()
-		return nil, err
-	}
-	descriptor, err := windows.SecurityDescriptorFromString("D:P(A;;GA;;;SY)(A;;GA;;;BA)")
-	if err != nil {
-		runtime.UnlockOSThread()
-		return nil, err
-	}
-	attributes := windows.SecurityAttributes{
-		Length: uint32(unsafe.Sizeof(windows.SecurityAttributes{})), SecurityDescriptor: descriptor,
-	}
-	handle, err := createNamedNativeMutex(&attributes, pointer)
-	if err != nil {
-		runtime.UnlockOSThread()
-		return nil, err
-	}
-	status, err := windows.WaitForSingleObject(handle, uint32(timeout/time.Millisecond))
-	if err != nil || (status != windows.WAIT_OBJECT_0 && status != windows.WAIT_ABANDONED) {
-		windows.CloseHandle(handle) //nolint:errcheck
-		runtime.UnlockOSThread()
-		if err != nil {
-			return nil, err
-		}
-		return nil, errors.New("another VIIPER native package transaction is still running")
-	}
-	return func() {
-		windows.ReleaseMutex(handle) //nolint:errcheck
-		windows.CloseHandle(handle)  //nolint:errcheck
-		runtime.UnlockOSThread()
-	}, nil
+	return acquireNativeNamedMutex(
+		name, timeout, "another VIIPER native package transaction is still running",
+	)
 }
 
 // nativePackageMutexHeldByAnotherOwner proves that this short-lived broker
@@ -919,34 +1141,7 @@ func acquireNamedNativePackageMutex(name string, timeout time.Duration) (func(),
 // zero-time wait must instead report WAIT_TIMEOUT. If the mutex is absent,
 // abandoned, or acquirable, no authorized outer transaction exists.
 func nativePackageMutexHeldByAnotherOwner(name string) (bool, error) {
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
-	pointer, err := windows.UTF16PtrFromString(name)
-	if err != nil {
-		return false, err
-	}
-	handle, err := windows.OpenMutex(windows.SYNCHRONIZE|windows.MUTEX_MODIFY_STATE,
-		false, pointer)
-	if err != nil {
-		if errors.Is(err, windows.ERROR_FILE_NOT_FOUND) {
-			return false, nil
-		}
-		return false, err
-	}
-	defer windows.CloseHandle(handle) //nolint:errcheck
-	status, err := windows.WaitForSingleObject(handle, 0)
-	if err != nil {
-		return false, err
-	}
-	switch status {
-	case uint32(windows.WAIT_TIMEOUT):
-		return true, nil
-	case uint32(windows.WAIT_OBJECT_0), uint32(windows.WAIT_ABANDONED):
-		windows.ReleaseMutex(handle) //nolint:errcheck
-		return false, nil
-	default:
-		return false, fmt.Errorf("unexpected package mutex wait status: 0x%08x", status)
-	}
+	return nativeNamedMutexHeldByAnotherOwner(name)
 }
 
 func lockNativePackageInput(path string) (windows.Handle, error) {

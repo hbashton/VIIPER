@@ -370,8 +370,9 @@ func TestNativeInstallRejectsWeakPriorServiceSecurityBeforeMutation(t *testing.T
 	}
 	manager := newFakeNativeSCM(service, &events)
 	dependencies := fakeNativeInstallDependencies(manager, nativeLegacyState{}, &events)
-	err := installNativeBrokerTransaction(context.Background(), testLogger(),
-		`C:\Program Files\VIIPER\viiper.exe`, dependencies)
+	var evidence nativeBrokerInstallEvidence
+	err := installNativeBrokerTransactionWithEvidence(context.Background(), testLogger(),
+		`C:\Program Files\VIIPER\viiper.exe`, dependencies, &evidence)
 	if err == nil || !strings.Contains(err.Error(), "untrusted service security descriptor") {
 		t.Fatalf("error=%v", err)
 	}
@@ -383,6 +384,9 @@ func TestNativeInstallRejectsWeakPriorServiceSecurityBeforeMutation(t *testing.T
 	}
 	if !reflect.DeepEqual(events, []string{"service-open"}) {
 		t.Fatalf("weak prior service caused mutation before rejection: %v", events)
+	}
+	if evidence.mutationStarted || evidence.rollbackSucceeded {
+		t.Fatalf("preflight rejection reported mutation evidence: %+v", evidence)
 	}
 }
 
@@ -692,13 +696,17 @@ func TestNativeInstallRestoresRunningServiceAfterStopWaitFails(t *testing.T) {
 		}
 	}
 
-	err := installNativeBrokerTransaction(context.Background(), testLogger(),
-		`C:\Program Files\VIIPER\viiper.exe`, dependencies)
+	var evidence nativeBrokerInstallEvidence
+	err := installNativeBrokerTransactionWithEvidence(context.Background(), testLogger(),
+		`C:\Program Files\VIIPER\viiper.exe`, dependencies, &evidence)
 	if err == nil {
 		t.Fatal("expected the forward stop failure")
 	}
 	if service.status.State != svc.Running || service.startCalls != 1 {
 		t.Fatalf("prior running state was not reconciled: status=%v starts=%d", service.status.State, service.startCalls)
+	}
+	if !evidence.mutationStarted || !evidence.rollbackSucceeded {
+		t.Fatalf("settled rollback evidence=%+v", evidence)
 	}
 }
 
@@ -719,8 +727,9 @@ func TestNativeRollbackDoesNotStartServiceAfterConfigRestoreFailure(t *testing.T
 		credentialRolledBack = true
 		return nil
 	}
-	err := installNativeBrokerTransaction(context.Background(), testLogger(),
-		`C:\Program Files\VIIPER\viiper.exe`, dependencies)
+	var evidence nativeBrokerInstallEvidence
+	err := installNativeBrokerTransactionWithEvidence(context.Background(), testLogger(),
+		`C:\Program Files\VIIPER\viiper.exe`, dependencies, &evidence)
 	if err == nil {
 		t.Fatal("expected update and rollback failure")
 	}
@@ -729,6 +738,9 @@ func TestNativeRollbackDoesNotStartServiceAfterConfigRestoreFailure(t *testing.T
 	}
 	if credentialRolledBack {
 		t.Fatal("credential was invalidated while the replacement service configuration remained installed")
+	}
+	if !evidence.mutationStarted || evidence.rollbackSucceeded {
+		t.Fatalf("indeterminate rollback evidence=%+v", evidence)
 	}
 }
 

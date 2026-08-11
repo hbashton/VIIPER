@@ -38,6 +38,8 @@ func TestProductionTraceAndWrapperFailClosedContract(t *testing.T) {
 		"github.com/Alia5/VIIPER/internal/transport/udecx.nativeSourceRevision=$headRevision",
 		"Get-WinEvent -FilterHashtable", "ProviderName = 'VIIPER-LatencyGate'",
 		"trace_marker_id", "start_qpc_ticks", "trace_marker_qpc_ticks",
+		"Win32_PnPEntity", "@($_.HardwareID) -contains 'ROOT\\VIIPER\\UDE'",
+		"$ownedRootDevices[0].PNPDeviceID",
 		"Dropped\\s+Event", "Buffers?\\s+Lost",
 	} {
 		if !strings.Contains(wrapperText, want) {
@@ -46,6 +48,9 @@ func TestProductionTraceAndWrapperFailClosedContract(t *testing.T) {
 	}
 	if strings.Contains(wrapperText, "GeneralProfile.Verbose") {
 		t.Fatal("production wrapper regressed to an inbox circular profile")
+	}
+	if strings.Contains(wrapperText, "DeviceID -like 'ROOT\\VIIPER\\UDE*'") {
+		t.Fatal("production wrapper confuses the INF hardware ID with the generated PnP instance ID")
 	}
 	liveHarness, err := os.ReadFile("../latency_gate_windows_test.go")
 	if err != nil {

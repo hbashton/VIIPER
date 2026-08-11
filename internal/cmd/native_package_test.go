@@ -164,13 +164,18 @@ func TestNativePackageTransactionCancellationReconcilesWithBoundedRollback(t *te
 func TestNativePackageBrokerCommitRejectsUnboundTokenBeforePlatformCall(t *testing.T) {
 	t.Parallel()
 	command := NativePackageBrokerCommit{
-		TokenFile:           `C:\Program Files\VIIPER\.viiper.transaction.test.token`,
-		ExpectedTokenSHA256: "not-a-hash",
-		TargetUserSID:       "S-1-5-21-1-2-3-1001",
+		TokenFile:            `C:\Program Files\VIIPER\.viiper.transaction.test.token`,
+		ExpectedTokenSHA256:  "not-a-hash",
+		ExpectedBrokerSHA256: strings.Repeat("b", 64),
+		TargetUserSID:        "S-1-5-21-1-2-3-1001",
 	}
 	err := command.Run(nativePackageTestLogger())
 	if err == nil || !strings.Contains(err.Error(), "64 hexadecimal") {
 		t.Fatalf("error=%v", err)
+	}
+	var exitCoder interface{ ExitCode() int }
+	if !errors.As(err, &exitCoder) || exitCoder.ExitCode() != 4 {
+		t.Fatalf("preflight error lost exit 4 contract: %v", err)
 	}
 }
 
@@ -179,12 +184,126 @@ func TestNativePackageBrokerCommitRejectsInvalidDeadlineBeforePlatformCall(t *te
 	command := NativePackageBrokerCommit{
 		TokenFile:                 `C:\Program Files\VIIPER\.viiper.transaction.test.token`,
 		ExpectedTokenSHA256:       strings.Repeat("a", 64),
+		ExpectedBrokerSHA256:      strings.Repeat("b", 64),
 		TargetUserSID:             "S-1-5-21-1-2-3-1001",
 		TransactionDeadlineUnixMS: "not-a-deadline",
 	}
 	err := command.Run(nativePackageTestLogger())
 	if err == nil || !strings.Contains(err.Error(), "deadline") {
 		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestNativePackageBrokerCommitProofIsCanonical(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name   string
+		result nativePackageBrokerCommitResult
+		want   string
+	}{
+		{
+			name: "healthy no-op", result: nativePackageBrokerCommitResult{
+				success: true, rollback: "not-needed", exitCode: 0,
+			},
+			want: "result=success operation=native-package-broker-commit changed=0 rollback=not-needed exitCode=0\n",
+		},
+		{
+			name: "healthy repair", result: nativePackageBrokerCommitResult{
+				success: true, changed: true, rollback: "not-needed", exitCode: 0,
+			},
+			want: "result=success operation=native-package-broker-commit changed=1 rollback=not-needed exitCode=0\n",
+		},
+		{
+			name: "preflight", result: nativePackageBrokerCommitResult{
+				rollback: "not-needed", exitCode: 4,
+			},
+			want: "result=error operation=native-package-broker-commit changed=0 rollback=not-needed exitCode=4\n",
+		},
+		{
+			name: "settled rollback", result: nativePackageBrokerCommitResult{
+				changed: true, rollback: "succeeded", exitCode: 1,
+			},
+			want: "result=error operation=native-package-broker-commit changed=1 rollback=succeeded exitCode=1\n",
+		},
+		{
+			name: "indeterminate rollback", result: nativePackageBrokerCommitResult{
+				changed: true, rollback: "failed", exitCode: 3,
+			},
+			want: "result=error operation=native-package-broker-commit changed=1 rollback=failed exitCode=3\n",
+		},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if got := test.result.proofLine(); got != test.want {
+				t.Fatalf("proof=%q want=%q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestNativePackageInstallProofFailsClosed(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name        string
+		output      string
+		processExit int
+		wantErr     bool
+		wantSuccess bool
+		wantReboot  bool
+	}{
+		{
+			name: "healthy no-op", processExit: 0, wantSuccess: true,
+			output: "result=success operation=install changed=0 rebootRequired=0 rollback=not-needed exitCode=0\n",
+		},
+		{
+			name: "healthy repair", processExit: 0, wantSuccess: true,
+			output: "result=success operation=install changed=1 rebootRequired=0 rollback=not-needed exitCode=0\r\n",
+		},
+		{
+			name: "reboot boundary", processExit: nativePackageRebootRequiredCode, wantReboot: true,
+			output: `result=error operation=install changed=1 rebootRequired=1 rollback=succeeded exitCode=3010 phase="broker-reboot-boundary" win32Error=3010 message="restart required"` + "\n",
+		},
+		{
+			name: "settled failure", processExit: 1,
+			output: "result=error operation=install changed=1 rebootRequired=0 rollback=succeeded exitCode=1\n",
+		},
+		{
+			name: "preflight", processExit: 4,
+			output: "result=error operation=install changed=0 rebootRequired=0 rollback=not-needed exitCode=4\n",
+		},
+		{
+			name: "indeterminate", processExit: 3,
+			output: "result=error operation=install changed=1 rebootRequired=0 rollback=failed exitCode=3\n",
+		},
+		{
+			name: "missing", processExit: 0, wantErr: true,
+			output: "not a proof\n",
+		},
+		{
+			name: "duplicate", processExit: 0, wantErr: true,
+			output: strings.Repeat("result=success operation=install changed=0 rebootRequired=0 rollback=not-needed exitCode=0\n", 2),
+		},
+		{
+			name: "exit mismatch", processExit: 1, wantErr: true,
+			output: "result=success operation=install changed=0 rebootRequired=0 rollback=not-needed exitCode=0\n",
+		},
+		{
+			name: "unsafe reboot", processExit: nativePackageRebootRequiredCode, wantErr: true,
+			output: "result=error operation=install changed=1 rebootRequired=1 rollback=failed exitCode=3010\n",
+		},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			proof, err := parseNativePackageInstallProof(test.output, test.processExit)
+			if (err != nil) != test.wantErr {
+				t.Fatalf("error=%v wantErr=%v proof=%+v", err, test.wantErr, proof)
+			}
+			if err == nil && (proof.success != test.wantSuccess || proof.rebootRequired != test.wantReboot) {
+				t.Fatalf("proof=%+v wantSuccess=%v wantReboot=%v", proof, test.wantSuccess, test.wantReboot)
+			}
+		})
 	}
 }
 
@@ -222,6 +341,8 @@ func TestNativePackageRequestFailsClosed(t *testing.T) {
 		driverHelper: `C:\bundle\ViiperUdeCtl.exe`, expectedBrokerSHA256: strings.Repeat("b", 64),
 		expectedHelperSHA256: strings.Repeat("c", 64), targetUserSID: "S-1-5-21-1-2-3-1001",
 		expectedManifestSHA256: strings.Repeat("d", 64),
+		expectedInfSHA256:      strings.Repeat("e", 64), expectedSysSHA256: strings.Repeat("f", 64),
+		expectedCatSHA256: strings.Repeat("0", 64),
 	}
 	if err := base.validate(); err != nil {
 		t.Fatalf("valid request: %v", err)
@@ -230,6 +351,9 @@ func TestNativePackageRequestFailsClosed(t *testing.T) {
 		"relative package": func(r *nativePackageRequest) { r.packageDirectory = `driver` },
 		"short revision":   func(r *nativePackageRequest) { r.sourceRevision = "abc" },
 		"bad broker hash":  func(r *nativePackageRequest) { r.expectedBrokerSHA256 = strings.Repeat("z", 64) },
+		"bad INF hash":     func(r *nativePackageRequest) { r.expectedInfSHA256 = strings.Repeat("z", 64) },
+		"bad SYS hash":     func(r *nativePackageRequest) { r.expectedSysSHA256 = strings.Repeat("z", 64) },
+		"bad CAT hash":     func(r *nativePackageRequest) { r.expectedCatSHA256 = strings.Repeat("z", 64) },
 		"embedded NUL":     func(r *nativePackageRequest) { r.submissionManifest += "\x00evil" },
 	}
 	for name, mutate := range cases {

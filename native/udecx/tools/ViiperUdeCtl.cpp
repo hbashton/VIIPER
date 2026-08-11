@@ -25,13 +25,16 @@
 #include <sddl.h>
 #include <softpub.h>
 #include <wintrust.h>
+#include <aclapi.h>
 
 #include "../include/ViiperUdeProtocol.h"
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <cerrno>
 #include <cctype>
+#include <cstdio>
 #include <cstdint>
 #include <cstring>
 #include <cwchar>
@@ -41,11 +44,13 @@
 #include <iostream>
 #include <iterator>
 #include <map>
+#include <memory>
 #include <optional>
 #include <set>
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -73,6 +78,11 @@ namespace {
 
 constexpr wchar_t kHardwareId[] = L"ROOT\\VIIPER\\UDE";
 constexpr wchar_t kEnumerator[] = L"ROOT";
+// DICD_GENERATE_ID derives ROOT\\<DeviceName>\\#### from this value. Keep
+// new devnodes in a VIIPER-owned instance namespace instead of the USB class
+// namespace used by older builds.
+constexpr wchar_t kRootDeviceName[] = L"VIIPERUDE";
+constexpr wchar_t kLegacyRootDeviceName[] = L"USB";
 constexpr wchar_t kServiceName[] = L"ViiperUde";
 constexpr wchar_t kProviderName[] = L"VIIPER Project";
 constexpr wchar_t kCatalogName[] = L"ViiperUde.cat";
@@ -86,15 +96,44 @@ constexpr wchar_t kTransactionObjectSecurity[] =
     L"D:P(A;;GA;;;SY)(A;;GA;;;BA)";
 constexpr size_t kMaximumManifestBytes = 1024U * 1024U;
 constexpr uint64_t kMaximumTransactionDurationMs = 4ULL * 60ULL * 1000ULL;
-constexpr uint64_t kBrokerRollbackCeilingMs = 60ULL * 1000ULL;
+// The child can spend 45 seconds in its inner SCM/credential rollback and then
+// up to two minutes in the outer protected-image rollback. Keep a bounded
+// margin beyond both budgets while retaining the driver mutex until exit.
+constexpr uint64_t kBrokerRollbackCeilingMs = 3ULL * 60ULL * 1000ULL;
 constexpr uint64_t kDriverRollbackCeilingMs = 2ULL * 60ULL * 1000ULL;
 constexpr DWORD kCancelledIoDrainMs = 5000;
+constexpr size_t kMaximumBrokerProofBytes = 64U * 1024U;
 constexpr wchar_t kRollbackDirectorySecurity[] =
     L"O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)";
+constexpr wchar_t kRecoveryRecordSecurity[] =
+    L"O:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)";
+constexpr wchar_t kRecoveryRecordName[] = L"recovery-v1.json";
+constexpr wchar_t kRecoveryRecordTemporaryName[] = L"recovery-v1.json.tmp";
+constexpr size_t kMaximumRecoveryRecordBytes = 256U * 1024U;
 constexpr std::string_view kHardwareVerificationOid = "1.3.6.1.4.1.311.10.3.5";
 constexpr std::string_view kAttestationVerificationOid = "1.3.6.1.4.1.311.10.3.5.1";
 
 uint64_t CurrentUnixMilliseconds();
+
+// A fixed-size, allocation-free copy lets the top-level exception boundary
+// report the protected write-ahead record after C++ stack unwinding has closed
+// all transaction handles. Only one helper transaction exists per process.
+std::array<wchar_t, MAX_PATH> gActiveRecoveryRecord{};
+bool gActiveRecoveryRecordWritten = false;
+std::array<wchar_t, MAX_PATH> gActiveBackupRoot{};
+bool gActiveBackupRootRetained = false;
+bool gTransactionMutationStarted = false;
+
+void MarkTransactionMutationStarted() noexcept {
+    gTransactionMutationStarted = true;
+}
+
+void ClearActiveRecoveryEvidence() noexcept {
+    gActiveRecoveryRecord.fill(L'\0');
+    gActiveRecoveryRecordWritten = false;
+    gActiveBackupRoot.fill(L'\0');
+    gActiveBackupRootRetained = false;
+}
 
 constexpr GUID kViiperInterfaceGuid = {
     0x32d03f48, 0x725b, 0x4baa, {0x97, 0x0f, 0x7f, 0x5d, 0xe6, 0xc4, 0x46, 0x87}};
@@ -112,7 +151,19 @@ struct Error {
     DWORD code = ERROR_SUCCESS;
     std::wstring phase;
     std::wstring message;
+    std::wstring recoveryRecord;
+    bool recoveryRecordWritten = false;
+    DWORD recoveryRecordError = ERROR_SUCCESS;
+    std::wstring recoveryRecordPhase;
+    std::wstring recoveryRecordMessage;
+    std::wstring recoveryBackup;
+    bool recoveryBackupRetained = false;
 };
+
+bool CheckTransactionDeadline(uint64_t deadlineUnixMs, const wchar_t* phase, Error* error);
+bool IsGeneratedRootInstanceIdForDeviceName(
+    const std::wstring& instanceId, const wchar_t* deviceName);
+bool IsOwnedGeneratedRootInstanceId(const std::wstring& instanceId);
 
 struct Outcome {
     bool success = false;
@@ -167,6 +218,24 @@ void EmitOutcome(const wchar_t* operation, const Outcome& outcome) {
         stream << L" phase=" << std::quoted(outcome.error.phase)
                << L" win32Error=" << outcome.error.code
                << L" message=" << std::quoted(outcome.error.message);
+        if (!outcome.error.recoveryRecord.empty()) {
+            stream << L" recoveryRecord=" << std::quoted(outcome.error.recoveryRecord)
+                   << L" recoveryRecordWritten="
+                   << (outcome.error.recoveryRecordWritten ? 1 : 0);
+            if (!outcome.error.recoveryRecordWritten) {
+                stream << L" recoveryRecordPhase="
+                       << std::quoted(outcome.error.recoveryRecordPhase)
+                       << L" recoveryRecordWin32Error="
+                       << outcome.error.recoveryRecordError
+                       << L" recoveryRecordMessage="
+                       << std::quoted(outcome.error.recoveryRecordMessage);
+            }
+        }
+        if (!outcome.error.recoveryBackup.empty()) {
+            stream << L" recoveryBackup=" << std::quoted(outcome.error.recoveryBackup)
+                   << L" recoveryBackupRetained="
+                   << (outcome.error.recoveryBackupRetained ? 1 : 0);
+        }
     }
     stream << L"\n";
 }
@@ -410,6 +479,30 @@ bool IsHexRevision(const std::string& value) {
     return std::all_of(value.begin(), value.end(), [](unsigned char character) {
         return std::isxdigit(character) != 0;
     });
+}
+
+bool CopySha256Argument(
+    const wchar_t* value,
+    const wchar_t* name,
+    std::string* destination,
+    Error* error) {
+    const std::wstring wide = value;
+    destination->clear();
+    destination->reserve(wide.size());
+    for (const wchar_t character : wide) {
+        if (character > 0x7f) {
+            return SetError(error, L"arguments", ERROR_INVALID_PARAMETER,
+                std::wstring(name) + L" SHA-256 must contain ASCII hexadecimal characters");
+        }
+        destination->push_back(static_cast<char>(character));
+    }
+    if (destination->size() != 64 ||
+        !std::all_of(destination->begin(), destination->end(),
+            [](unsigned char character) { return std::isxdigit(character) != 0; })) {
+        return SetError(error, L"arguments", ERROR_INVALID_PARAMETER,
+            std::wstring(name) + L" SHA-256 must contain exactly 64 hexadecimal characters");
+    }
+    return true;
 }
 
 struct JsonValue {
@@ -1043,7 +1136,24 @@ struct PackageInfo {
     std::wstring publishedName;
     Version version{};
     std::string infSha256;
+    std::string sysSha256;
+    std::string catSha256;
 };
+
+bool SamePackageBytes(const PackageInfo& left, const PackageInfo& right) {
+    return left.infSha256 == right.infSha256 &&
+        left.sysSha256 == right.sysSha256 &&
+        left.catSha256 == right.catSha256;
+}
+
+std::string PackageBytesKey(const PackageInfo& package) {
+    return package.infSha256 + ":" + package.sysSha256 + ":" + package.catSha256;
+}
+
+bool GetDriverStoreInfPath(
+    const std::filesystem::path& publishedPath,
+    std::filesystem::path* storePath,
+    Error* error);
 
 bool InspectInfContract(
     const std::filesystem::path& infPath,
@@ -1257,13 +1367,22 @@ bool VerifyMicrosoftHardwareInfSigner(
             L"driver catalog signer is not Microsoft Windows Hardware Compatibility Publisher");
     }
 
+    std::filesystem::path packageInfPath = infPath;
+    if (_wcsicmp(infPath.filename().c_str(), L"ViiperUde.inf") != 0 &&
+        !GetDriverStoreInfPath(infPath, &packageInfPath, error)) {
+        return false;
+    }
+    std::filesystem::path catalogPath = signer.CatalogFile;
+    if (catalogPath.is_relative()) {
+        catalogPath = packageInfPath.parent_path() / catalogPath.filename();
+    }
+
     DWORD encoding = 0;
     HCERTSTORE store = nullptr;
     HCRYPTMSG message = nullptr;
-    const std::filesystem::path catalogPath = infPath.parent_path() / kCatalogName;
     if (!VerifyDriverCatalogMember(catalogPath, infPath, error) ||
         !VerifyDriverCatalogMember(catalogPath,
-            infPath.parent_path() / kDriverFileName, error)) {
+            packageInfPath.parent_path() / kDriverFileName, error)) {
         return false;
     }
     if (!CryptQueryObject(CERT_QUERY_OBJECT_FILE, catalogPath.c_str(),
@@ -1371,16 +1490,31 @@ bool LoadOwnedPackage(
         *owned = false;
         return true;
     }
-    if (!VerifyInfSignature(path, nullptr, error)) {
+    std::filesystem::path catalogPath;
+    if (!VerifyInfSignature(path, &catalogPath, error)) {
         return false;
     }
-    std::string hash;
-    if (!Sha256File(path, &hash, error)) {
+    std::filesystem::path packageInfPath = path;
+    if (_wcsicmp(path.filename().c_str(), L"ViiperUde.inf") != 0 &&
+        !GetDriverStoreInfPath(path, &packageInfPath, error)) {
+        return false;
+    }
+    if (catalogPath.is_relative()) {
+        catalogPath = packageInfPath.parent_path() / catalogPath.filename();
+    }
+    std::string infHash;
+    std::string sysHash;
+    std::string catHash;
+    if (!Sha256File(path, &infHash, error) ||
+        !Sha256File(packageInfPath.parent_path() / kDriverFileName, &sysHash, error) ||
+        !Sha256File(catalogPath, &catHash, error)) {
         return false;
     }
     package->infPath = path;
     package->version = version;
-    package->infSha256 = std::move(hash);
+    package->infSha256 = std::move(infHash);
+    package->sysSha256 = std::move(sysHash);
+    package->catSha256 = std::move(catHash);
     *owned = true;
     return true;
 }
@@ -1522,7 +1656,7 @@ bool FindPublishedCandidate(
     }
     size_t matches = 0;
     for (const PackageInfo& package : packages) {
-        if (package.version == candidate.version && package.infSha256 == candidate.infSha256) {
+        if (package.version == candidate.version && SamePackageBytes(package, candidate)) {
             *published = package;
             ++matches;
         }
@@ -1709,6 +1843,73 @@ struct Snapshot {
     std::vector<PackageInfo> packages;
 };
 
+enum class CandidateDisposition {
+    InstallRequired,
+    Exact,
+};
+
+bool ClassifyCandidatePackage(
+    const PackageInfo& candidate,
+    const std::vector<PackageInfo>& installedPackages,
+    const std::optional<Version>& expectedDowngradeFrom,
+    CandidateDisposition* disposition,
+    bool* downgrade,
+    Error* error) {
+    if (disposition == nullptr || downgrade == nullptr) {
+        return SetError(error, L"version-policy", ERROR_INVALID_PARAMETER,
+            L"candidate package classification requires output storage");
+    }
+    *disposition = CandidateDisposition::InstallRequired;
+    *downgrade = false;
+
+    const bool conflictingSameVersion = std::any_of(
+        installedPackages.begin(), installedPackages.end(), [&](const PackageInfo& package) {
+            return package.version == candidate.version &&
+                !SamePackageBytes(package, candidate);
+        });
+    if (conflictingSameVersion) {
+        return SetError(error, L"version-policy", ERROR_REVISION_MISMATCH,
+            L"same-version INF, SYS, or signing catalog replacement is rejected; increment DriverVer");
+    }
+
+    std::optional<PackageInfo> highest;
+    for (const PackageInfo& package : installedPackages) {
+        if (!highest || highest->version < package.version) {
+            highest = package;
+        }
+    }
+    if (!highest) {
+        if (expectedDowngradeFrom) {
+            return SetError(error, L"version-policy", ERROR_INVALID_PARAMETER,
+                L"controlled downgrade guard is valid only for an actual downgrade");
+        }
+        return true;
+    }
+
+    if (candidate.version < highest->version) {
+        *downgrade = true;
+        if (!expectedDowngradeFrom || !(*expectedDowngradeFrom == highest->version)) {
+            return SetError(error, L"version-policy", ERROR_REVISION_MISMATCH,
+                L"downgrade rejected; pass --allow-controlled-downgrade with the exact installed version " +
+                VersionToString(highest->version));
+        }
+        return true;
+    }
+    if (candidate.version == highest->version) {
+        if (expectedDowngradeFrom) {
+            return SetError(error, L"version-policy", ERROR_INVALID_PARAMETER,
+                L"controlled downgrade guard is valid only for an actual downgrade");
+        }
+        *disposition = CandidateDisposition::Exact;
+        return true;
+    }
+    if (expectedDowngradeFrom) {
+        return SetError(error, L"version-policy", ERROR_INVALID_PARAMETER,
+            L"controlled downgrade guard is valid only for an actual downgrade");
+    }
+    return true;
+}
+
 bool CaptureSnapshot(Snapshot* snapshot, Error* error) {
     snapshot->devices.clear();
     if (!EnumerateOwnedPackages(&snapshot->packages, error)) {
@@ -1728,6 +1929,10 @@ bool CaptureSnapshot(Snapshot* snapshot, Error* error) {
     }
     for (auto& match : matches) {
         DeviceState& device = match.second;
+        if (!IsOwnedGeneratedRootInstanceId(device.instanceId)) {
+            return SetError(error, L"device-instance-ownership", ERROR_INVALID_DATA,
+                L"ROOT\\VIIPER\\UDE has an instance ID outside the VIIPER or legacy generated root namespace");
+        }
         if (_wcsicmp(device.service.c_str(), kServiceName) != 0 ||
             !IsSafePublishedInfName(device.publishedInf)) {
             return SetError(error, L"device-ownership", ERROR_NOT_FOUND,
@@ -1749,7 +1954,22 @@ bool CaptureSnapshot(Snapshot* snapshot, Error* error) {
     return true;
 }
 
-bool RemoveDevice(HDEVINFO set, SP_DEVINFO_DATA& data, bool* rebootRequired, Error* error) {
+bool RemoveDevice(
+    HDEVINFO set,
+    SP_DEVINFO_DATA& data,
+    uint64_t transactionDeadlineUnixMs,
+    const wchar_t* deadlinePhase,
+    bool* mutationStarted,
+    bool* rebootRequired,
+    Error* error) {
+    if (transactionDeadlineUnixMs != 0 &&
+        !CheckTransactionDeadline(transactionDeadlineUnixMs, deadlinePhase, error)) {
+        return false;
+    }
+    MarkTransactionMutationStarted();
+    if (mutationStarted != nullptr) {
+        *mutationStarted = true;
+    }
     BOOL reboot = FALSE;
     if (!DiUninstallDevice(nullptr, set, &data, 0, &reboot)) {
         return SetLastErrorDetail(error, L"remove-devnode");
@@ -1758,7 +1978,11 @@ bool RemoveDevice(HDEVINFO set, SP_DEVINFO_DATA& data, bool* rebootRequired, Err
     return true;
 }
 
-bool RemoveAllExactDevices(bool* rebootRequired, Error* error) {
+bool RemoveAllExactDevices(
+    uint64_t transactionDeadlineUnixMs,
+    bool* mutationStarted,
+    bool* rebootRequired,
+    Error* error) {
     DeviceInfoSet set = OpenRootDevices();
     if (!set) {
         return SetLastErrorDetail(error, L"open-root-devices");
@@ -1773,7 +1997,8 @@ bool RemoveAllExactDevices(bool* rebootRequired, Error* error) {
     }
     for (auto& match : matches) {
         DeviceState& device = match.second;
-        if (_wcsicmp(device.service.c_str(), kServiceName) != 0 ||
+        if (!IsOwnedGeneratedRootInstanceId(device.instanceId) ||
+            _wcsicmp(device.service.c_str(), kServiceName) != 0 ||
             !IsSafePublishedInfName(device.publishedInf)) {
             return SetError(error, L"remove-ownership", ERROR_ACCESS_DENIED,
                 L"refusing to remove an exact hardware ID not owned by the signed VIIPER package");
@@ -1785,7 +2010,9 @@ bool RemoveAllExactDevices(bool* rebootRequired, Error* error) {
         }
     }
     for (auto& match : matches) {
-        if (!RemoveDevice(set.get(), match.first, rebootRequired, error)) {
+        if (!RemoveDevice(set.get(), match.first, transactionDeadlineUnixMs,
+                L"remove-deadline-before-device-mutation", mutationStarted,
+                rebootRequired, error)) {
             return false;
         }
     }
@@ -1794,10 +2021,15 @@ bool RemoveAllExactDevices(bool* rebootRequired, Error* error) {
 
 bool RegisterRootDevice(
     const GUID& classGuid,
-    const std::wstring& className,
+    uint64_t transactionDeadlineUnixMs,
+    bool* mutationStarted,
+    bool* registrationSucceeded,
     DeviceInfoSet* set,
     SP_DEVINFO_DATA* data,
     Error* error) {
+    if (registrationSucceeded != nullptr) {
+        *registrationSucceeded = false;
+    }
     *set = DeviceInfoSet(SetupDiCreateDeviceInfoList(&classGuid, nullptr));
     if (!*set) {
         return SetLastErrorDetail(error, L"create-device-info-list");
@@ -1805,36 +2037,192 @@ bool RegisterRootDevice(
     *data = SP_DEVINFO_DATA{};
     data->cbSize = sizeof(*data);
     if (!SetupDiCreateDeviceInfoW(
-            set->get(), className.c_str(), &classGuid, nullptr, nullptr,
+            set->get(), kRootDeviceName, &classGuid, nullptr, nullptr,
             DICD_GENERATE_ID, data)) {
         return SetLastErrorDetail(error, L"create-root-devnode");
     }
     const size_t idCharacters = std::size(kHardwareId) + 1;
     std::vector<wchar_t> identifiers(idCharacters, L'\0');
     std::copy(std::begin(kHardwareId), std::end(kHardwareId), identifiers.begin());
+    if (!CheckTransactionDeadline(transactionDeadlineUnixMs,
+            L"transaction-deadline-before-root-properties", error)) {
+        return false;
+    }
+    MarkTransactionMutationStarted();
+    if (mutationStarted != nullptr) {
+        *mutationStarted = true;
+    }
     if (!SetupDiSetDeviceRegistryPropertyW(
             set->get(), data, SPDRP_HARDWAREID,
             reinterpret_cast<const BYTE*>(identifiers.data()),
             static_cast<DWORD>(identifiers.size() * sizeof(wchar_t)))) {
         return SetLastErrorDetail(error, L"set-root-hardware-id");
     }
+    if (!CheckTransactionDeadline(transactionDeadlineUnixMs,
+            L"transaction-deadline-before-root-registration", error)) {
+        return false;
+    }
+    MarkTransactionMutationStarted();
+    if (mutationStarted != nullptr) {
+        *mutationStarted = true;
+    }
     if (!SetupDiCallClassInstaller(DIF_REGISTERDEVICE, set->get(), data)) {
         return SetLastErrorDetail(error, L"register-root-devnode");
     }
+    if (registrationSucceeded != nullptr) {
+        *registrationSucceeded = true;
+    }
+    wchar_t instanceId[MAX_DEVICE_ID_LEN]{};
+    if (!SetupDiGetDeviceInstanceIdW(
+            set->get(), data, instanceId, static_cast<DWORD>(std::size(instanceId)), nullptr)) {
+        return SetLastErrorDetail(error, L"verify-generated-root-instance-id");
+    }
+    if (!IsGeneratedRootInstanceIdForDeviceName(instanceId, kRootDeviceName)) {
+        return SetError(error, L"verify-generated-root-instance-id", ERROR_INVALID_DATA,
+            L"SetupAPI generated a root identity outside the VIIPER-owned namespace");
+    }
     return true;
+}
+
+bool DriverInfoUsesPublishedPackage(
+    const std::filesystem::path& driverInfPath,
+    const std::wstring& expectedPublishedName) {
+    if (IsSafePublishedInfName(driverInfPath.filename().wstring())) {
+        return _wcsicmp(
+            driverInfPath.filename().c_str(), expectedPublishedName.c_str()) == 0;
+    }
+    std::filesystem::path publishedPath;
+    Error ignored;
+    return GetPublishedInfPath(driverInfPath, &publishedPath, &ignored) &&
+        _wcsicmp(publishedPath.filename().c_str(), expectedPublishedName.c_str()) == 0;
+}
+
+bool InstallPreinstalledDriverOnDevice(
+    HDEVINFO set,
+    SP_DEVINFO_DATA* device,
+    const PackageInfo& publishedPackage,
+    uint64_t transactionDeadlineUnixMs,
+    bool* mutationStarted,
+    bool* rebootRequired,
+    Error* error) {
+    if (!SetupDiBuildDriverInfoList(set, device, SPDIT_COMPATDRIVER)) {
+        return SetLastErrorDetail(error, L"repair-build-compatible-driver-list");
+    }
+    const auto destroyList = [&]() {
+        return SetupDiDestroyDriverInfoList(set, device, SPDIT_COMPATDRIVER) != FALSE;
+    };
+
+    SP_DRVINFO_DATA_W selected{};
+    size_t exactMatches = 0;
+    for (DWORD index = 0;; ++index) {
+        SP_DRVINFO_DATA_W driver{};
+        driver.cbSize = sizeof(driver);
+        if (!SetupDiEnumDriverInfoW(set, device, SPDIT_COMPATDRIVER, index, &driver)) {
+            if (GetLastError() != ERROR_NO_MORE_ITEMS) {
+                const DWORD code = GetLastError();
+                destroyList();
+                return SetError(error, L"repair-enumerate-compatible-driver", code);
+            }
+            break;
+        }
+        DWORD required = 0;
+        SP_DRVINFO_DETAIL_DATA_W probe{};
+        probe.cbSize = sizeof(probe);
+        if (!SetupDiGetDriverInfoDetailW(
+                set, device, &driver, &probe, sizeof(probe), &required) &&
+            GetLastError() != ERROR_INSUFFICIENT_BUFFER) {
+            const DWORD code = GetLastError();
+            destroyList();
+            return SetError(error, L"repair-compatible-driver-detail", code);
+        }
+        const DWORD detailBytes = std::max<DWORD>(
+            required, static_cast<DWORD>(sizeof(SP_DRVINFO_DETAIL_DATA_W)));
+        std::vector<BYTE> detailBuffer(detailBytes);
+        auto* detail = reinterpret_cast<SP_DRVINFO_DETAIL_DATA_W*>(detailBuffer.data());
+        detail->cbSize = sizeof(SP_DRVINFO_DETAIL_DATA_W);
+        if (!SetupDiGetDriverInfoDetailW(
+                set, device, &driver, detail, detailBytes, nullptr)) {
+            const DWORD code = GetLastError();
+            destroyList();
+            return SetError(error, L"repair-compatible-driver-detail", code);
+        }
+        if (DriverInfoUsesPublishedPackage(
+                detail->InfFileName, publishedPackage.publishedName)) {
+            selected = driver;
+            ++exactMatches;
+        }
+    }
+    if (exactMatches != 1) {
+        destroyList();
+        return SetError(error, L"repair-exact-driver-selection",
+            exactMatches == 0 ? ERROR_NOT_FOUND : ERROR_DUPLICATE_SERVICE_NAME,
+            L"compatible driver list must contain exactly one node for the exact preinstalled package");
+    }
+    if (transactionDeadlineUnixMs != 0 &&
+        !CheckTransactionDeadline(transactionDeadlineUnixMs,
+            L"transaction-deadline-before-driver-selection", error)) {
+        destroyList();
+        return false;
+    }
+    MarkTransactionMutationStarted();
+    if (mutationStarted != nullptr) {
+        *mutationStarted = true;
+    }
+    if (!SetupDiSetSelectedDriverW(set, device, &selected)) {
+        const DWORD code = GetLastError();
+        destroyList();
+        return SetError(error, L"repair-select-exact-driver", code);
+    }
+    if (transactionDeadlineUnixMs != 0 &&
+        !CheckTransactionDeadline(transactionDeadlineUnixMs,
+            L"transaction-deadline-before-device-binding", error)) {
+        destroyList();
+        return false;
+    }
+    BOOL reboot = FALSE;
+    if (!DiInstallDevice(nullptr, set, device, &selected, 0, &reboot)) {
+        const DWORD code = GetLastError();
+        destroyList();
+        return SetError(error, L"repair-install-preinstalled-driver", code);
+    }
+    if (!destroyList()) {
+        return SetLastErrorDetail(error, L"repair-destroy-compatible-driver-list");
+    }
+    *rebootRequired = *rebootRequired || reboot != FALSE;
+    return true;
+}
+
+bool IsGeneratedRootInstanceIdForDeviceName(
+    const std::wstring& instanceId,
+    const wchar_t* deviceName) {
+    const std::wstring prefix = std::wstring(L"ROOT\\") + deviceName + L"\\";
+    if (instanceId.size() != prefix.size() + 4 ||
+        _wcsnicmp(instanceId.c_str(), prefix.c_str(), prefix.size()) != 0) {
+        return false;
+    }
+    for (size_t index = prefix.size(); index < instanceId.size(); ++index) {
+        if (instanceId[index] < L'0' || instanceId[index] > L'9') {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool IsOwnedGeneratedRootInstanceId(const std::wstring& instanceId) {
+    return IsGeneratedRootInstanceIdForDeviceName(instanceId, kRootDeviceName) ||
+        IsGeneratedRootInstanceIdForDeviceName(instanceId, kLegacyRootDeviceName);
 }
 
 bool RegisterRootDeviceExact(
     const GUID& classGuid,
     const std::wstring& instanceId,
+    uint64_t transactionDeadlineUnixMs,
     DeviceInfoSet* set,
     SP_DEVINFO_DATA* data,
     Error* error) {
-    const std::wstring expectedPrefix = std::wstring(kHardwareId) + L"\\";
-    if (instanceId.size() <= expectedPrefix.size() ||
-        _wcsnicmp(instanceId.c_str(), expectedPrefix.c_str(), expectedPrefix.size()) != 0) {
+    if (!IsOwnedGeneratedRootInstanceId(instanceId)) {
         return SetError(error, L"rollback-instance-id", ERROR_INVALID_DATA,
-            L"captured root devnode identity is outside the exact VIIPER hardware namespace");
+            L"captured root devnode identity is outside the VIIPER or legacy generated root namespace");
     }
     *set = DeviceInfoSet(SetupDiCreateDeviceInfoList(&classGuid, nullptr));
     if (!*set) {
@@ -1851,11 +2239,23 @@ bool RegisterRootDeviceExact(
     const size_t idCharacters = std::size(kHardwareId) + 1;
     std::vector<wchar_t> identifiers(idCharacters, L'\0');
     std::copy(std::begin(kHardwareId), std::end(kHardwareId), identifiers.begin());
+    if (transactionDeadlineUnixMs != 0 &&
+        !CheckTransactionDeadline(transactionDeadlineUnixMs,
+            L"rollback-deadline-before-root-properties", error)) {
+        return false;
+    }
+    MarkTransactionMutationStarted();
     if (!SetupDiSetDeviceRegistryPropertyW(set->get(), data, SPDRP_HARDWAREID,
             reinterpret_cast<const BYTE*>(identifiers.data()),
             static_cast<DWORD>(identifiers.size() * sizeof(wchar_t)))) {
         return SetLastErrorDetail(error, L"rollback-set-root-hardware-id");
     }
+    if (transactionDeadlineUnixMs != 0 &&
+        !CheckTransactionDeadline(transactionDeadlineUnixMs,
+            L"rollback-deadline-before-root-registration", error)) {
+        return false;
+    }
+    MarkTransactionMutationStarted();
     if (!SetupDiCallClassInstaller(DIF_REGISTERDEVICE, set->get(), data)) {
         return SetLastErrorDetail(error, L"rollback-register-exact-root-devnode");
     }
@@ -2024,12 +2424,10 @@ bool VerifyAbiHealth(
     return true;
 }
 
-bool VerifyInstalled(
+bool VerifyInstalledBinding(
     const PackageInfo& candidate,
     const std::wstring& publishedName,
     bool allowStopped,
-    uint64_t healthDeadlineUnixMs,
-    const std::string* expectedBuildIdentity,
     Error* error) {
     Snapshot snapshot;
     if (!CaptureSnapshot(&snapshot, error)) {
@@ -2038,7 +2436,7 @@ bool VerifyInstalled(
     if (snapshot.devices.size() != 1 || !snapshot.devices[0].present ||
         _wcsicmp(snapshot.devices[0].publishedInf.c_str(), publishedName.c_str()) != 0 ||
         !(snapshot.devices[0].version == candidate.version) ||
-        snapshot.devices[0].package.infSha256 != candidate.infSha256) {
+        !SamePackageBytes(snapshot.devices[0].package, candidate)) {
         return SetError(error, L"install-verification", ERROR_REVISION_MISMATCH,
             L"installed devnode is not bound to the exact candidate package");
     }
@@ -2046,12 +2444,24 @@ bool VerifyInstalled(
         return SetError(error, L"install-start", ERROR_DEVICE_NOT_AVAILABLE,
             L"installed driver did not start; problem=" + std::to_wstring(snapshot.devices[0].problem));
     }
-    return allowStopped || VerifyAbiHealth(
-        healthDeadlineUnixMs, expectedBuildIdentity, error);
+    return true;
+}
+
+bool VerifyInstalled(
+    const PackageInfo& candidate,
+    const std::wstring& publishedName,
+    bool allowStopped,
+    uint64_t healthDeadlineUnixMs,
+    const std::string* expectedBuildIdentity,
+    Error* error) {
+    return VerifyInstalledBinding(candidate, publishedName, allowStopped, error) &&
+        (allowStopped || VerifyAbiHealth(
+            healthDeadlineUnixMs, expectedBuildIdentity, error));
 }
 
 bool UninstallPackage(const PackageInfo& package, bool* rebootRequired, Error* error) {
     BOOL reboot = FALSE;
+    MarkTransactionMutationStarted();
     if (!DiUninstallDriverW(nullptr, package.infPath.c_str(), 0, &reboot)) {
         return SetLastErrorDetail(error, L"remove-driver-package");
     }
@@ -2088,7 +2498,11 @@ std::vector<size_t> NewPackageIndices(
     return indices;
 }
 
-bool RestorePriorBinding(const Snapshot& prior, bool* rebootRequired, Error* error) {
+bool RestorePriorBinding(
+    const Snapshot& prior,
+    uint64_t transactionDeadlineUnixMs,
+    bool* rebootRequired,
+    Error* error) {
     if (prior.devices.size() > 1) {
         return SetError(error, L"rollback-topology", ERROR_DUPLICATE_SERVICE_NAME,
             L"rollback refuses an unsupported multi-devnode native topology");
@@ -2121,7 +2535,9 @@ bool RestorePriorBinding(const Snapshot& prior, bool* rebootRequired, Error* err
             return false;
         }
         bool removalReboot = false;
-        if (!RemoveDevice(set.get(), matches[0].first, &removalReboot, error)) {
+        if (!RemoveDevice(set.get(), matches[0].first, transactionDeadlineUnixMs,
+                L"rollback-deadline-before-device-removal", nullptr,
+                &removalReboot, error)) {
             return false;
         }
         *rebootRequired = *rebootRequired || removalReboot;
@@ -2140,6 +2556,9 @@ bool RestorePriorBinding(const Snapshot& prior, bool* rebootRequired, Error* err
 
     const DeviceState& expected = prior.devices[0];
     const PackageInfo& package = expected.package;
+    DeviceInfoSet target;
+    SP_DEVINFO_DATA targetData{};
+    targetData.cbSize = sizeof(targetData);
     if (!keepCurrent) {
         GUID classGuid{};
         wchar_t className[MAX_CLASS_NAME_LEN]{};
@@ -2147,25 +2566,36 @@ bool RestorePriorBinding(const Snapshot& prior, bool* rebootRequired, Error* err
                 MAX_CLASS_NAME_LEN, nullptr)) {
             return SetLastErrorDetail(error, L"rollback-inf-class");
         }
-        DeviceInfoSet created;
-        SP_DEVINFO_DATA createdData{};
-        createdData.cbSize = sizeof(createdData);
         if (!RegisterRootDeviceExact(classGuid, expected.instanceId,
-                &created, &createdData, error)) {
+                transactionDeadlineUnixMs,
+                &target, &targetData, error)) {
             return false;
         }
+    } else {
+        target = OpenRootDevices();
+        if (!target) {
+            return SetLastErrorDetail(error, L"rollback-open-retained-root-device");
+        }
+        std::vector<std::pair<SP_DEVINFO_DATA, DeviceState>> matches;
+        if (!FindExactDevices(target.get(), &matches, error) || matches.size() != 1 ||
+            !sameIdentity(matches[0].second.instanceId, expected.instanceId)) {
+            if (error->code == ERROR_SUCCESS) {
+                SetError(error, L"rollback-retained-root-identity", ERROR_REVISION_MISMATCH);
+            }
+            return false;
+        }
+        targetData = matches[0].first;
     }
-    BOOL reboot = FALSE;
-    if (!UpdateDriverForPlugAndPlayDevicesW(
-            nullptr, kHardwareId, package.infPath.c_str(), INSTALLFLAG_FORCE, &reboot)) {
-        return SetLastErrorDetail(error, L"rollback-bind-prior");
+    if (!InstallPreinstalledDriverOnDevice(
+            target.get(), &targetData, package, transactionDeadlineUnixMs, nullptr,
+            rebootRequired, error)) {
+        return false;
     }
-    *rebootRequired = *rebootRequired || reboot != FALSE;
 
     Snapshot restored;
     if (!CaptureSnapshot(&restored, error) || restored.devices.size() != 1 ||
         !sameIdentity(restored.devices[0].instanceId, expected.instanceId) ||
-        restored.devices[0].package.infSha256 != expected.package.infSha256) {
+        !SamePackageBytes(restored.devices[0].package, expected.package)) {
         if (error->code == ERROR_SUCCESS) {
             SetError(error, L"rollback-identity-verification", ERROR_REVISION_MISMATCH,
                 L"rollback did not restore the exact captured devnode identity and package binding");
@@ -2176,7 +2606,7 @@ bool RestorePriorBinding(const Snapshot& prior, bool* rebootRequired, Error* err
 }
 
 bool RollbackInstall(const Snapshot& prior, bool* rebootRequired, Error* error) {
-    if (!RestorePriorBinding(prior, rebootRequired, error)) {
+    if (!RestorePriorBinding(prior, 0, rebootRequired, error)) {
         return false;
     }
     std::vector<PackageInfo> current;
@@ -2189,9 +2619,10 @@ bool RollbackInstall(const Snapshot& prior, bool* rebootRequired, Error* error) 
         }
     }
     if (!prior.devices.empty() && !*rebootRequired) {
-        return VerifyInstalled(
-            prior.devices[0].package, prior.devices[0].publishedInf, false,
-            CurrentUnixMilliseconds() + 15000, nullptr, error);
+        // Driver rollback can prove exact instance/package binding, but the
+        // prior transient started/problem state is not a restorable identity.
+        return VerifyInstalledBinding(
+            prior.devices[0].package, prior.devices[0].publishedInf, true, error);
     }
     return true;
 }
@@ -2255,6 +2686,9 @@ struct InstallOptions {
     std::filesystem::path manifestPath;
     std::string manifestSha256;
     std::string sourceRevision;
+    std::string expectedInfSha256;
+    std::string expectedSysSha256;
+    std::string expectedCatSha256;
     bool production = true;
     std::optional<Version> expectedDowngradeFrom;
     std::filesystem::path brokerExecutable;
@@ -2337,6 +2771,12 @@ bool ValidateCandidateInputs(
         (options.production && !VerifyMicrosoftHardwareInfSigner(lockedInfPath, error))) {
         return false;
     }
+    if (_stricmp(candidate->infSha256.c_str(), options.expectedInfSha256.c_str()) != 0 ||
+        _stricmp(candidate->sysSha256.c_str(), options.expectedSysSha256.c_str()) != 0 ||
+        _stricmp(candidate->catSha256.c_str(), options.expectedCatSha256.c_str()) != 0) {
+        return SetError(error, L"package-runtime-hash", ERROR_CRC,
+            L"INF, SYS, or CAT does not match the installer-reviewed runtime package bytes");
+    }
     WinHandle manifest(CreateFileW(options.manifestPath.c_str(), GENERIC_READ, FILE_SHARE_READ,
         nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
     if (!manifest) {
@@ -2415,8 +2855,131 @@ std::wstring QuoteWindowsArgument(const std::wstring& value) {
     return quoted;
 }
 
-bool RunBrokerInstall(const InstallOptions& options, bool* transactionSettled, Error* error) {
-    *transactionSettled = false;
+struct BrokerCommitProof {
+    bool success = false;
+    bool changed = false;
+    std::string rollback;
+    DWORD exitCode = ERROR_GEN_FAILURE;
+    bool driverRollbackAuthorized = false;
+};
+
+bool ParseBrokerCommitProof(
+    const std::string& output,
+    DWORD processExitCode,
+    BrokerCommitProof* proof,
+    Error* error) {
+    struct CanonicalProof {
+        std::string_view record;
+        bool success;
+        bool changed;
+        std::string_view rollback;
+        DWORD exitCode;
+        bool driverRollbackAuthorized;
+    };
+    static constexpr std::array<CanonicalProof, 5> canonicalProofs = {{
+        {"result=success operation=native-package-broker-commit changed=0 rollback=not-needed exitCode=0",
+            true, false, "not-needed", ERROR_SUCCESS, false},
+        {"result=success operation=native-package-broker-commit changed=1 rollback=not-needed exitCode=0",
+            true, true, "not-needed", ERROR_SUCCESS, false},
+        {"result=error operation=native-package-broker-commit changed=0 rollback=not-needed exitCode=4",
+            false, false, "not-needed", 4, true},
+        {"result=error operation=native-package-broker-commit changed=1 rollback=succeeded exitCode=1",
+            false, true, "succeeded", 1, true},
+        {"result=error operation=native-package-broker-commit changed=1 rollback=failed exitCode=3",
+            false, true, "failed", 3, false},
+    }};
+    std::optional<BrokerCommitProof> parsed;
+    size_t cursor = 0;
+    while (cursor < output.size()) {
+        const size_t newline = output.find('\n', cursor);
+        const bool terminated = newline != std::string::npos;
+        std::string line = output.substr(
+            cursor, terminated ? newline - cursor : output.size() - cursor);
+        if (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
+        if (line.starts_with("result=")) {
+            if (!terminated || parsed) {
+                return SetError(error, L"broker-proof", ERROR_INVALID_DATA,
+                    L"nested broker must emit exactly one newline-terminated canonical outcome");
+            }
+            const auto match = std::find_if(
+                canonicalProofs.begin(), canonicalProofs.end(),
+                [&](const CanonicalProof& candidate) {
+                    return candidate.record == line;
+                });
+            if (match == canonicalProofs.end()) {
+                return SetError(error, L"broker-proof", ERROR_INVALID_DATA,
+                    L"nested broker outcome is not in canonical byte form");
+            }
+            parsed = BrokerCommitProof{
+                match->success,
+                match->changed,
+                std::string(match->rollback),
+                match->exitCode,
+                match->driverRollbackAuthorized,
+            };
+        }
+        if (!terminated) {
+            break;
+        }
+        cursor = newline + 1;
+    }
+    if (!parsed || parsed->exitCode != processExitCode) {
+        return SetError(error, L"broker-proof", ERROR_INVALID_DATA,
+            L"nested broker process exit and structured outcome are missing or inconsistent");
+    }
+    *proof = std::move(*parsed);
+    return true;
+}
+
+bool DrainBrokerProofPipe(
+    HANDLE pipe,
+    std::string* output,
+    bool* overflow,
+    Error* error) {
+    for (;;) {
+        DWORD available = 0;
+        if (!PeekNamedPipe(pipe, nullptr, 0, nullptr, &available, nullptr)) {
+            const DWORD code = GetLastError();
+            if (code == ERROR_BROKEN_PIPE) {
+                return true;
+            }
+            return SetError(error, L"broker-proof-read", code);
+        }
+        if (available == 0) {
+            return true;
+        }
+        std::array<char, 4096> buffer{};
+        const DWORD requested = std::min<DWORD>(
+            available, static_cast<DWORD>(buffer.size()));
+        DWORD read = 0;
+        if (!ReadFile(pipe, buffer.data(), requested, &read, nullptr)) {
+            const DWORD code = GetLastError();
+            if (code == ERROR_BROKEN_PIPE) {
+                return true;
+            }
+            return SetError(error, L"broker-proof-read", code);
+        }
+        const size_t retained = std::min<size_t>(
+            read, kMaximumBrokerProofBytes -
+                std::min(output->size(), kMaximumBrokerProofBytes));
+        output->append(buffer.data(), retained);
+        if (retained != read) {
+            *overflow = true;
+        }
+    }
+}
+
+bool RunBrokerInstall(
+    const InstallOptions& options,
+    bool* driverRollbackAuthorized,
+    bool* brokerChanged,
+    Error* error) {
+    // Until CreateProcess succeeds, no nested SCM/image mutation can have
+    // started, so the caller may safely restore its captured driver snapshot.
+    *driverRollbackAuthorized = true;
+    *brokerChanged = false;
     if (options.brokerExecutable.empty() || !options.brokerExecutable.is_absolute() ||
         options.brokerExecutable.filename().wstring() != L"viiper.exe" ||
         options.brokerToken.empty() || !options.brokerToken.is_absolute() ||
@@ -2465,55 +3028,173 @@ bool RunBrokerInstall(const InstallOptions& options, bool* transactionSettled, E
         L" --expected-token-sha256 " +
         QuoteWindowsArgument(std::wstring(
             options.brokerTokenSha256.begin(), options.brokerTokenSha256.end())) +
+        L" --expected-broker-sha256 " +
+        QuoteWindowsArgument(std::wstring(
+            options.brokerSha256.begin(), options.brokerSha256.end())) +
         L" --target-user-sid " +
         QuoteWindowsArgument(options.targetUserSid) +
         L" --transaction-deadline-unix-ms " +
         QuoteWindowsArgument(std::to_wstring(options.transactionDeadlineUnixMs));
     std::vector<wchar_t> mutableCommand(commandLine.begin(), commandLine.end());
     mutableCommand.push_back(L'\0');
-    STARTUPINFOW startup{};
-    startup.cb = sizeof(startup);
+    SECURITY_ATTRIBUTES inheritedSecurity{};
+    inheritedSecurity.nLength = sizeof(inheritedSecurity);
+    inheritedSecurity.bInheritHandle = TRUE;
+    HANDLE rawProofRead = INVALID_HANDLE_VALUE;
+    HANDLE rawProofWrite = INVALID_HANDLE_VALUE;
+    if (!CreatePipe(
+            &rawProofRead, &rawProofWrite, &inheritedSecurity, 0)) {
+        return SetLastErrorDetail(error, L"broker-proof-pipe");
+    }
+    WinHandle proofRead(rawProofRead);
+    WinHandle proofWrite(rawProofWrite);
+    if (!SetHandleInformation(
+            proofRead.get(), HANDLE_FLAG_INHERIT, 0)) {
+        return SetLastErrorDetail(error, L"broker-proof-pipe-inheritance");
+    }
+    WinHandle nullInput(CreateFileW(
+        L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+        &inheritedSecurity, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
+    if (!nullInput) {
+        return SetLastErrorDetail(error, L"broker-null-input");
+    }
+
+    SIZE_T attributeBytes = 0;
+    InitializeProcThreadAttributeList(nullptr, 1, 0, &attributeBytes);
+    if (attributeBytes == 0 || GetLastError() != ERROR_INSUFFICIENT_BUFFER) {
+        return SetLastErrorDetail(error, L"broker-handle-list-size");
+    }
+    std::vector<BYTE> attributeStorage(attributeBytes);
+    STARTUPINFOEXW startup{};
+    startup.StartupInfo.cb = sizeof(startup);
+    startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+    startup.StartupInfo.hStdInput = nullInput.get();
+    startup.StartupInfo.hStdOutput = proofWrite.get();
+    startup.StartupInfo.hStdError = proofWrite.get();
+    startup.lpAttributeList = reinterpret_cast<PPROC_THREAD_ATTRIBUTE_LIST>(
+        attributeStorage.data());
+    if (!InitializeProcThreadAttributeList(
+            startup.lpAttributeList, 1, 0, &attributeBytes)) {
+        return SetLastErrorDetail(error, L"broker-handle-list-init");
+    }
+    const auto deleteAttributeList = [&]() {
+        DeleteProcThreadAttributeList(startup.lpAttributeList);
+    };
+    HANDLE inheritedHandles[] = {nullInput.get(), proofWrite.get()};
+    if (!UpdateProcThreadAttribute(
+            startup.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+            inheritedHandles, sizeof(inheritedHandles), nullptr, nullptr)) {
+        const DWORD code = GetLastError();
+        deleteAttributeList();
+        return SetError(error, L"broker-handle-list-update", code);
+    }
     PROCESS_INFORMATION process{};
     if (!CreateProcessW(options.brokerExecutable.c_str(), mutableCommand.data(), nullptr, nullptr,
-            FALSE, CREATE_NO_WINDOW, nullptr, options.brokerExecutable.parent_path().c_str(),
-            &startup, &process)) {
-        return SetLastErrorDetail(error, L"broker-start");
+            TRUE, CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT, nullptr,
+            options.brokerExecutable.parent_path().c_str(),
+            &startup.StartupInfo, &process)) {
+        const DWORD code = GetLastError();
+        deleteAttributeList();
+        return SetError(error, L"broker-start", code);
     }
+    MarkTransactionMutationStarted();
+    deleteAttributeList();
+    // From this point forward, only an exact child proof may authorize driver
+    // rollback. A crash, malformed output, or late/indeterminate exit must not
+    // compound an unknown SCM transaction with a second SetupAPI mutation.
+    *driverRollbackAuthorized = false;
     WinHandle processHandle(process.hProcess);
     WinHandle threadHandle(process.hThread);
+    proofWrite.reset();
+    nullInput.reset();
     // The child shares the exact outer deadline and owns a separately bounded
-    // rollback. Poll rather than hard-terminate: cancellation is cooperative,
-    // and the helper retains its driver snapshot until that rollback settles.
+    // rollback. Poll and drain rather than hard-terminate: cancellation is
+    // cooperative, and this helper retains the driver mutex until the child
+    // exits so a foreign helper cannot overlap an indeterminate SCM mutation.
     const uint64_t brokerCeiling =
         options.transactionDeadlineUnixMs + kBrokerRollbackCeilingMs;
+    bool exceededCeiling = false;
+    bool proofOverflow = false;
+    bool proofReadFailed = false;
+    bool waitFailed = false;
+    Error proofReadError;
+    Error waitError;
+    std::string brokerOutput;
     for (;;) {
+        if (!proofReadFailed && !DrainBrokerProofPipe(
+                proofRead.get(), &brokerOutput, &proofOverflow, &proofReadError)) {
+            proofReadFailed = true;
+            proofRead.reset();
+        }
         const uint64_t now = CurrentUnixMilliseconds();
-        if (now >= brokerCeiling) {
-            // Never terminate a mutating installer child. Its independently
-            // bounded rollback owns reconciliation; the parent reports an
-            // indeterminate transaction and deliberately does not race it by
-            // attempting driver rollback in parallel.
-            return SetError(error, L"broker-wait-ceiling", ERROR_TIMEOUT,
-                L"native broker exceeded its transaction deadline and rollback ceiling; external reconciliation is required");
+        if (now >= brokerCeiling && !exceededCeiling) {
+            exceededCeiling = true;
+            std::wcerr
+                << L"native broker exceeded its transaction and rollback deadline; "
+                   L"retaining the driver transaction lock until the child exits\n";
         }
         const DWORD waitSlice = static_cast<DWORD>(
-            std::min<uint64_t>(250, brokerCeiling - now));
+            exceededCeiling ? 250 : std::min<uint64_t>(250, brokerCeiling - now));
         const DWORD wait = WaitForSingleObject(processHandle.get(), waitSlice);
         if (wait == WAIT_OBJECT_0) {
-            *transactionSettled = true;
             break;
         }
         if (wait != WAIT_TIMEOUT) {
-            return SetLastErrorDetail(error, L"broker-wait");
+            if (!waitFailed) {
+                DWORD code = GetLastError();
+                if (code == ERROR_SUCCESS) {
+                    code = ERROR_GEN_FAILURE;
+                }
+                waitError = Error{code, L"broker-wait", FormatError(code)};
+                waitFailed = true;
+            }
+            // A failed wait is ambiguous, not permission to release the driver
+            // transaction mutex while the nested SCM child may still mutate.
+            // Retain ownership and use the process exit query only as a
+            // termination observation; the final outcome remains indeterminate.
+            DWORD observedExit = STILL_ACTIVE;
+            if (GetExitCodeProcess(processHandle.get(), &observedExit) &&
+                observedExit != STILL_ACTIVE) {
+                break;
+            }
+            Sleep(250);
         }
+    }
+    if (!proofReadFailed && !DrainBrokerProofPipe(
+            proofRead.get(), &brokerOutput, &proofOverflow, &proofReadError)) {
+        proofReadFailed = true;
     }
     DWORD exitCode = ERROR_GEN_FAILURE;
     if (!GetExitCodeProcess(processHandle.get(), &exitCode)) {
         return SetLastErrorDetail(error, L"broker-exit");
     }
-    if (exitCode != ERROR_SUCCESS) {
+    if (exceededCeiling) {
+        return SetError(error, L"broker-wait-ceiling", ERROR_TIMEOUT,
+            L"native broker exited only after its transaction and rollback deadline; external reconciliation is required");
+    }
+    if (waitFailed) {
+        *error = std::move(waitError);
+        return false;
+    }
+    if (proofReadFailed) {
+        *error = std::move(proofReadError);
+        return false;
+    }
+    if (proofOverflow) {
+        return SetError(error, L"broker-proof", ERROR_BUFFER_OVERFLOW,
+            L"nested broker output exceeded the bounded proof channel");
+    }
+    BrokerCommitProof proof;
+    if (!ParseBrokerCommitProof(brokerOutput, exitCode, &proof, error)) {
+        return false;
+    }
+    *driverRollbackAuthorized = proof.driverRollbackAuthorized;
+    *brokerChanged = proof.changed;
+    if (!proof.success) {
         return SetError(error, L"broker-health", exitCode,
-            L"native broker transaction did not reach authenticated healthy state");
+            proof.driverRollbackAuthorized
+                ? L"nested broker transaction failed after proving a settled state"
+                : L"nested broker transaction failed with indeterminate service state");
     }
     return true;
 }
@@ -2561,45 +3242,14 @@ Outcome Install(const InstallOptions& options) {
         outcome.exitCode = ExitCode::PreflightRejected;
         return outcome;
     }
-    std::optional<PackageInfo> highest;
-    for (const PackageInfo& package : prior.packages) {
-        if (!highest || highest->version < package.version) {
-            highest = package;
-        }
-    }
+    CandidateDisposition disposition = CandidateDisposition::InstallRequired;
     bool downgrade = false;
-    if (highest) {
-        if (candidate.version < highest->version) {
-            downgrade = true;
-            if (!options.expectedDowngradeFrom ||
-                !(*options.expectedDowngradeFrom == highest->version)) {
-                SetError(&outcome.error, L"version-policy", ERROR_REVISION_MISMATCH,
-                    L"downgrade rejected; pass --allow-controlled-downgrade with the exact installed version " +
-                    VersionToString(highest->version));
-                outcome.exitCode = ExitCode::PreflightRejected;
-                return outcome;
-            }
-        } else if (candidate.version == highest->version) {
-            const bool conflictingSameVersion = std::any_of(
-                prior.packages.begin(), prior.packages.end(), [&](const PackageInfo& package) {
-                    return package.version == candidate.version &&
-                        package.infSha256 != candidate.infSha256;
-                });
-            if (conflictingSameVersion) {
-                SetError(&outcome.error, L"version-policy", ERROR_REVISION_MISMATCH,
-                    L"same-version package replacement is rejected; increment DriverVer");
-                outcome.exitCode = ExitCode::PreflightRejected;
-                return outcome;
-            }
-        }
-    }
-    if (options.expectedDowngradeFrom && !downgrade) {
-        SetError(&outcome.error, L"version-policy", ERROR_INVALID_PARAMETER,
-            L"controlled downgrade guard is valid only for an actual downgrade");
+    if (!ClassifyCandidatePackage(
+            candidate, prior.packages, options.expectedDowngradeFrom,
+            &disposition, &downgrade, &outcome.error)) {
         outcome.exitCode = ExitCode::PreflightRejected;
         return outcome;
     }
-
     // Re-enumerate at the last possible point before SetupAPI reopens the
     // package paths. The four leaf handles already deny write/delete sharing.
     if (!ValidateExactPackageDirectory(packageDirectory, &outcome.error) ||
@@ -2607,73 +3257,138 @@ Outcome Install(const InstallOptions& options) {
         outcome.exitCode = ExitCode::PreflightRejected;
         return outcome;
     }
-    outcome.changed = true;
-    BOOL installReboot = FALSE;
-    const DWORD installFlags = downgrade ? DIIRFLAG_FORCE_INF : 0;
-    if (!DiInstallDriverW(nullptr, candidate.infPath.c_str(), installFlags, &installReboot)) {
-        const DWORD installCode = GetLastError();
-        const Error installError{installCode, L"install-driver-package", FormatError(installCode)};
-        Error rollbackError;
-        bool rollbackReboot = false;
-        if (RollbackInstall(prior, &rollbackReboot, &rollbackError)) {
-            outcome.rollback = L"succeeded";
-            outcome.rebootRequired = rollbackReboot;
-            outcome.error = installError;
+    PackageInfo publishedCandidate;
+    bool exactBindingHealthy = false;
+    if (disposition == CandidateDisposition::Exact) {
+        if (!FindPublishedCandidate(candidate, &publishedCandidate, &outcome.error) ||
+            (options.production && !VerifyMicrosoftHardwareInfSigner(
+                publishedCandidate.infPath, &outcome.error))) {
+            outcome.exitCode = ExitCode::PreflightRejected;
             return outcome;
         }
-        outcome.rollback = L"failed";
-        outcome.rebootRequired = rollbackReboot;
-        outcome.error = std::move(rollbackError);
-        outcome.exitCode = ExitCode::RollbackFailed;
-        return outcome;
+        exactBindingHealthy = prior.devices.size() == 1 && prior.devices[0].present &&
+            prior.devices[0].started &&
+            _wcsicmp(prior.devices[0].publishedInf.c_str(),
+                publishedCandidate.publishedName.c_str()) == 0 &&
+            prior.devices[0].version == candidate.version &&
+            SamePackageBytes(prior.devices[0].package, candidate);
     }
-    outcome.rebootRequired = installReboot != FALSE;
+
+    // Same-version bytes are immutable. An exact package with a missing,
+    // stopped, or stale binding may repair only the ROOT topology from the
+    // already-published exact INF. It selects that preinstalled package for the
+    // specific devnode and calls DiInstallDevice; it never calls
+    // DiInstallDriverW or UpdateDriverForPlugAndPlayDevicesW and therefore
+    // cannot replace same-version DriverStore content.
+    const bool topologyRepair =
+        disposition == CandidateDisposition::Exact && !exactBindingHealthy;
+    const bool driverMutation =
+        disposition == CandidateDisposition::InstallRequired || topologyRepair;
+    bool driverMutationStarted = false;
+    if (disposition == CandidateDisposition::InstallRequired) {
+        if (!CheckTransactionDeadline(options,
+                L"transaction-deadline-before-driver-install", &outcome.error)) {
+            outcome.exitCode = ExitCode::PreflightRejected;
+            return outcome;
+        }
+        driverMutationStarted = true;
+        outcome.changed = true;
+        BOOL installReboot = FALSE;
+        const DWORD installFlags = downgrade ? DIIRFLAG_FORCE_INF : 0;
+        MarkTransactionMutationStarted();
+        if (!DiInstallDriverW(nullptr, candidate.infPath.c_str(), installFlags, &installReboot)) {
+            const DWORD installCode = GetLastError();
+            const Error installError{installCode, L"install-driver-package", FormatError(installCode)};
+            Error rollbackError;
+            bool rollbackReboot = false;
+            if (RollbackInstall(prior, &rollbackReboot, &rollbackError)) {
+                outcome.rollback = L"succeeded";
+                outcome.rebootRequired = rollbackReboot;
+                outcome.error = installError;
+                return outcome;
+            }
+            outcome.rollback = L"failed";
+            outcome.rebootRequired = rollbackReboot;
+            outcome.error = std::move(rollbackError);
+            outcome.exitCode = ExitCode::RollbackFailed;
+            return outcome;
+        }
+        outcome.rebootRequired = installReboot != FALSE;
+        if (!FindPublishedCandidate(candidate, &publishedCandidate, &outcome.error)) {
+            // Exact Driver Store inventory recorded the failure.
+        } else if (options.production && !VerifyMicrosoftHardwareInfSigner(
+                       publishedCandidate.infPath, &outcome.error)) {
+            // The staged package must retain its exact production HLK/WHCP policy.
+        }
+    }
 
     DeviceInfoSet created;
     SP_DEVINFO_DATA createdData{};
     createdData.cbSize = sizeof(createdData);
     bool createdHere = false;
-    if (prior.devices.empty()) {
+    bool registrationSucceeded = false;
+    if (outcome.error.code == ERROR_SUCCESS && driverMutation && prior.devices.empty()) {
         GUID classGuid{};
         wchar_t className[MAX_CLASS_NAME_LEN]{};
         if (!SetupDiGetINFClassW(candidate.infPath.c_str(), &classGuid, className, MAX_CLASS_NAME_LEN, nullptr)) {
             SetLastErrorDetail(&outcome.error, L"candidate-inf-class");
         } else {
-            if (RegisterRootDevice(classGuid, className, &created, &createdData, &outcome.error)) {
-                createdHere = true;
-                BOOL bindReboot = FALSE;
-                const DWORD bindFlags = downgrade ? INSTALLFLAG_FORCE : 0;
-                if (UpdateDriverForPlugAndPlayDevicesW(
-                        nullptr, kHardwareId, candidate.infPath.c_str(), bindFlags, &bindReboot)) {
-                    outcome.rebootRequired = outcome.rebootRequired || bindReboot != FALSE;
-                    outcome.error = {};
-                } else {
-                    SetLastErrorDetail(&outcome.error, L"bind-root-devnode");
-                }
+            const bool registeredAndVerified = RegisterRootDevice(
+                classGuid, options.transactionDeadlineUnixMs,
+                &driverMutationStarted, &registrationSucceeded,
+                &created, &createdData, &outcome.error);
+            createdHere = registrationSucceeded;
+            if (registeredAndVerified) {
+                InstallPreinstalledDriverOnDevice(
+                    created.get(), &createdData, publishedCandidate,
+                    options.transactionDeadlineUnixMs, &driverMutationStarted,
+                    &outcome.rebootRequired, &outcome.error);
             }
+            outcome.changed = outcome.changed || driverMutationStarted;
         }
     }
 
-    PackageInfo publishedCandidate;
-    if (outcome.error.code == ERROR_SUCCESS &&
-        !FindPublishedCandidate(candidate, &publishedCandidate, &outcome.error)) {
-        // Candidate inventory recorded the exact failure.
+    if (outcome.error.code == ERROR_SUCCESS && topologyRepair && !prior.devices.empty()) {
+        DeviceInfoSet repairSet = OpenRootDevices();
+        std::vector<std::pair<SP_DEVINFO_DATA, DeviceState>> repairDevices;
+        if (!repairSet) {
+            SetLastErrorDetail(&outcome.error, L"repair-open-root-devices");
+        } else if (!FindExactDevices(repairSet.get(), &repairDevices, &outcome.error)) {
+            // Exact enumeration recorded the failure.
+        } else if (repairDevices.size() != 1 ||
+            _wcsicmp(repairDevices[0].second.instanceId.c_str(),
+                prior.devices[0].instanceId.c_str()) != 0) {
+            SetError(&outcome.error, L"repair-root-identity", ERROR_REVISION_MISMATCH,
+                L"root devnode identity changed before exact topology repair");
+        } else {
+            InstallPreinstalledDriverOnDevice(
+                repairSet.get(), &repairDevices[0].first, publishedCandidate,
+                options.transactionDeadlineUnixMs, &driverMutationStarted,
+                &outcome.rebootRequired, &outcome.error);
+            outcome.changed = outcome.changed || driverMutationStarted;
+        }
     }
+
     if (outcome.error.code == ERROR_SUCCESS) {
         CheckTransactionDeadline(options, L"transaction-deadline-before-verify", &outcome.error);
     }
     if (outcome.error.code == ERROR_SUCCESS &&
-        !VerifyInstalled(candidate, publishedCandidate.publishedName, outcome.rebootRequired,
-            options.transactionDeadlineUnixMs, &expectedBuildIdentity, &outcome.error)) {
+        !(options.brokerExecutable.empty()
+            ? VerifyInstalled(candidate, publishedCandidate.publishedName,
+                outcome.rebootRequired, options.transactionDeadlineUnixMs,
+                &expectedBuildIdentity, &outcome.error)
+            : VerifyInstalledBinding(candidate, publishedCandidate.publishedName,
+                outcome.rebootRequired, &outcome.error))) {
         // Verification recorded the exact failure.
     }
-    if (outcome.error.code != ERROR_SUCCESS) {
+    if (outcome.error.code != ERROR_SUCCESS && driverMutationStarted) {
         const Error installError = outcome.error;
         Error rollbackError;
         bool rollbackReboot = outcome.rebootRequired;
         if (createdHere) {
             Error cleanupError;
-            if (!RemoveDevice(created.get(), createdData, &rollbackReboot, &cleanupError)) {
+            if (!RemoveDevice(created.get(), createdData, 0, nullptr, nullptr,
+                    &rollbackReboot, &cleanupError)) {
                 outcome.rollback = L"failed";
                 outcome.rebootRequired = rollbackReboot;
                 outcome.error = std::move(cleanupError);
@@ -2693,32 +3408,47 @@ Outcome Install(const InstallOptions& options) {
         outcome.exitCode = ExitCode::RollbackFailed;
         return outcome;
     }
+    if (outcome.error.code != ERROR_SUCCESS) {
+        outcome.exitCode = ExitCode::PreflightRejected;
+        return outcome;
+    }
 
     if (!options.brokerExecutable.empty()) {
         Error brokerError;
-        bool brokerTransactionSettled = true;
+        bool driverRollbackAuthorized = true;
+        bool brokerChanged = false;
         if (outcome.rebootRequired) {
             SetError(&brokerError, L"broker-reboot-boundary", ERROR_SUCCESS_REBOOT_REQUIRED,
                 L"driver activation requires a restart; legacy ownership remains active and broker migration was not attempted");
         } else if (!CheckTransactionDeadline(
                 options, L"transaction-deadline-before-broker", &brokerError) ||
-            !RunBrokerInstall(options, &brokerTransactionSettled, &brokerError)) {
+            !RunBrokerInstall(
+                options, &driverRollbackAuthorized, &brokerChanged, &brokerError)) {
             // The broker command includes authenticated health verification and
             // rolls back its own SCM/credential/legacy transaction. Keep the
             // driver snapshot alive in this process until that proof succeeds.
         }
+        outcome.changed = outcome.changed || brokerChanged;
         if (brokerError.code != ERROR_SUCCESS) {
-            if (!brokerTransactionSettled) {
+            if (!driverRollbackAuthorized) {
                 outcome.rollback = L"failed";
                 outcome.error = std::move(brokerError);
                 outcome.exitCode = ExitCode::RollbackFailed;
+                return outcome;
+            }
+            if (!driverMutationStarted) {
+                outcome.rollback = brokerChanged ? L"succeeded" : L"not-needed";
+                outcome.error = std::move(brokerError);
+                outcome.exitCode = outcome.error.code == ERROR_SUCCESS_REBOOT_REQUIRED
+                    ? ExitCode::RebootRequired : ExitCode::Failure;
                 return outcome;
             }
             Error rollbackError;
             bool rollbackReboot = outcome.rebootRequired;
             if (createdHere) {
                 Error cleanupError;
-                if (!RemoveDevice(created.get(), createdData, &rollbackReboot, &cleanupError)) {
+                if (!RemoveDevice(created.get(), createdData, 0, nullptr, nullptr,
+                        &rollbackReboot, &cleanupError)) {
                     outcome.rollback = L"failed";
                     outcome.rebootRequired = rollbackReboot;
                     outcome.error = std::move(cleanupError);
@@ -2755,13 +3485,256 @@ struct PackageBackup {
     std::vector<WinHandle> locks;
 };
 
+class LocalSecurityDescriptor final {
+public:
+    ~LocalSecurityDescriptor() {
+        if (value_ != nullptr) {
+            LocalFree(value_);
+        }
+    }
+
+    LocalSecurityDescriptor(const LocalSecurityDescriptor&) = delete;
+    LocalSecurityDescriptor& operator=(const LocalSecurityDescriptor&) = delete;
+
+    bool Initialize(const wchar_t* sddl, const wchar_t* phase, Error* error) {
+        if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                sddl, SDDL_REVISION_1, &value_, nullptr)) {
+            return SetLastErrorDetail(error, phase);
+        }
+        attributes_ = SECURITY_ATTRIBUTES{};
+        attributes_.nLength = sizeof(attributes_);
+        attributes_.lpSecurityDescriptor = value_;
+        attributes_.bInheritHandle = FALSE;
+        return true;
+    }
+
+    SECURITY_ATTRIBUTES* attributes() noexcept { return &attributes_; }
+
+private:
+    PSECURITY_DESCRIPTOR value_ = nullptr;
+    SECURITY_ATTRIBUTES attributes_{};
+};
+
+bool VerifyProtectedFileSystemSecurity(
+    HANDLE handle,
+    bool directory,
+    const wchar_t* phase,
+    Error* error) {
+    PSID owner = nullptr;
+    PACL dacl = nullptr;
+    PSECURITY_DESCRIPTOR descriptor = nullptr;
+    const DWORD securityError = GetSecurityInfo(
+        handle, SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+        &owner, nullptr, &dacl, nullptr, &descriptor);
+    if (securityError != ERROR_SUCCESS) {
+        return SetError(error, phase, securityError);
+    }
+    const auto fail = [&](DWORD code, std::wstring message) {
+        LocalFree(descriptor);
+        return SetError(error, phase, code, std::move(message));
+    };
+
+    BYTE administratorsBuffer[SECURITY_MAX_SID_SIZE]{};
+    DWORD administratorsSize = sizeof(administratorsBuffer);
+    BYTE systemBuffer[SECURITY_MAX_SID_SIZE]{};
+    DWORD systemSize = sizeof(systemBuffer);
+    if (!CreateWellKnownSid(WinBuiltinAdministratorsSid, nullptr,
+            administratorsBuffer, &administratorsSize) ||
+        !CreateWellKnownSid(WinLocalSystemSid, nullptr,
+            systemBuffer, &systemSize)) {
+        const DWORD code = GetLastError();
+        return fail(code, L"could not construct protected backup principals");
+    }
+    SECURITY_DESCRIPTOR_CONTROL control = 0;
+    DWORD revision = 0;
+    ACL_SIZE_INFORMATION information{};
+    if (owner == nullptr || !EqualSid(owner, administratorsBuffer) || dacl == nullptr ||
+        !GetSecurityDescriptorControl(descriptor, &control, &revision) ||
+        (control & SE_DACL_PROTECTED) == 0 ||
+        !GetAclInformation(dacl, &information, sizeof(information), AclSizeInformation) ||
+        information.AceCount != 2) {
+        return fail(ERROR_INVALID_SECURITY_DESCR,
+            L"protected backup owner or DACL is not exact");
+    }
+
+    const BYTE expectedFlags = directory
+        ? static_cast<BYTE>(OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE) : 0;
+    bool administratorsSeen = false;
+    bool systemSeen = false;
+    for (DWORD index = 0; index < information.AceCount; ++index) {
+        void* rawAce = nullptr;
+        if (!GetAce(dacl, index, &rawAce) || rawAce == nullptr) {
+            const DWORD code = GetLastError();
+            return fail(code == ERROR_SUCCESS ? ERROR_INVALID_ACL : code,
+                L"protected backup DACL could not be enumerated");
+        }
+        const auto* ace = static_cast<const ACCESS_ALLOWED_ACE*>(rawAce);
+        if (ace->Header.AceType != ACCESS_ALLOWED_ACE_TYPE ||
+            ace->Header.AceFlags != expectedFlags || ace->Mask != FILE_ALL_ACCESS) {
+            return fail(ERROR_INVALID_ACL,
+                L"protected backup DACL contains an unexpected access rule");
+        }
+        PSID sid = const_cast<DWORD*>(&ace->SidStart);
+        if (EqualSid(sid, administratorsBuffer)) {
+            if (administratorsSeen) {
+                return fail(ERROR_INVALID_ACL,
+                    L"protected backup DACL duplicates the Administrators rule");
+            }
+            administratorsSeen = true;
+        } else if (EqualSid(sid, systemBuffer)) {
+            if (systemSeen) {
+                return fail(ERROR_INVALID_ACL,
+                    L"protected backup DACL duplicates the LocalSystem rule");
+            }
+            systemSeen = true;
+        } else {
+            return fail(ERROR_INVALID_ACL,
+                L"protected backup DACL grants an unexpected principal");
+        }
+    }
+    LocalFree(descriptor);
+    if (!administratorsSeen || !systemSeen) {
+        return SetError(error, phase, ERROR_INVALID_ACL,
+            L"protected backup DACL is missing an exact principal");
+    }
+    return true;
+}
+
+bool CreateProtectedBackupDirectory(
+    const std::filesystem::path& path,
+    Error* error) {
+    LocalSecurityDescriptor security;
+    if (!security.Initialize(
+            kRollbackDirectorySecurity, L"rollback-backup-directory-security", error)) {
+        return false;
+    }
+    if (!CreateDirectoryW(path.c_str(), security.attributes())) {
+        return SetLastErrorDetail(error, L"rollback-backup-create");
+    }
+    WinHandle directory(CreateFileW(
+        path.c_str(), FILE_READ_ATTRIBUTES | READ_CONTROL,
+        FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT |
+            FILE_FLAG_BACKUP_SEMANTICS,
+        nullptr));
+    if (!directory) {
+        return SetLastErrorDetail(error, L"rollback-backup-directory-open");
+    }
+    FILE_ATTRIBUTE_TAG_INFO attributes{};
+    if (!GetFileInformationByHandleEx(
+            directory.get(), FileAttributeTagInfo, &attributes, sizeof(attributes)) ||
+        (attributes.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0 ||
+        (attributes.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+        return SetError(error, L"rollback-backup-directory-open",
+            ERROR_REPARSE_TAG_MISMATCH);
+    }
+    return VerifyProtectedFileSystemSecurity(
+        directory.get(), true, L"rollback-backup-directory-security", error);
+}
+
+bool CopyProtectedBackupFile(
+    const std::filesystem::path& sourcePath,
+    const std::filesystem::path& destinationPath,
+    Error* error) {
+    WinHandle source(CreateFileW(
+        sourcePath.c_str(), GENERIC_READ | FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT |
+            FILE_FLAG_SEQUENTIAL_SCAN,
+        nullptr));
+    if (!source) {
+        return SetLastErrorDetail(error, L"rollback-backup-source-open");
+    }
+    FILE_ATTRIBUTE_TAG_INFO sourceAttributes{};
+    if (!GetFileInformationByHandleEx(
+            source.get(), FileAttributeTagInfo, &sourceAttributes,
+            sizeof(sourceAttributes)) ||
+        (sourceAttributes.FileAttributes &
+            (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0) {
+        return SetError(error, L"rollback-backup-source-open",
+            ERROR_REPARSE_TAG_MISMATCH,
+            L"rollback sources must be regular non-reparse files");
+    }
+
+    LocalSecurityDescriptor security;
+    if (!security.Initialize(
+            kRecoveryRecordSecurity, L"rollback-backup-file-security", error)) {
+        return false;
+    }
+    WinHandle destination(CreateFileW(
+        destinationPath.c_str(),
+        GENERIC_READ | GENERIC_WRITE | FILE_READ_ATTRIBUTES | READ_CONTROL,
+        FILE_SHARE_READ, security.attributes(), CREATE_NEW,
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT |
+            FILE_FLAG_SEQUENTIAL_SCAN | FILE_FLAG_WRITE_THROUGH,
+        nullptr));
+    if (!destination) {
+        return SetLastErrorDetail(error, L"rollback-backup-file-create");
+    }
+    FILE_ATTRIBUTE_TAG_INFO destinationAttributes{};
+    const BOOL queriedDestination = GetFileInformationByHandleEx(
+        destination.get(), FileAttributeTagInfo, &destinationAttributes,
+        sizeof(destinationAttributes));
+    const DWORD destinationQueryError = queriedDestination
+        ? ERROR_SUCCESS : GetLastError();
+    if (!queriedDestination ||
+        (destinationAttributes.FileAttributes &
+            (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0) {
+        return SetError(error, L"rollback-backup-file-create",
+            queriedDestination ? ERROR_REPARSE_TAG_MISMATCH : destinationQueryError);
+    }
+    if (!VerifyProtectedFileSystemSecurity(
+            destination.get(), false, L"rollback-backup-file-security", error)) {
+        return false;
+    }
+
+    std::array<BYTE, 64U * 1024U> buffer{};
+    for (;;) {
+        DWORD read = 0;
+        if (!ReadFile(source.get(), buffer.data(),
+                static_cast<DWORD>(buffer.size()), &read, nullptr)) {
+            return SetLastErrorDetail(error, L"rollback-backup-file-read");
+        }
+        if (read == 0) {
+            break;
+        }
+        DWORD offset = 0;
+        while (offset < read) {
+            DWORD written = 0;
+            if (!WriteFile(destination.get(), buffer.data() + offset,
+                    read - offset, &written, nullptr) || written == 0) {
+                const DWORD writeError = GetLastError();
+                const DWORD code = writeError == ERROR_SUCCESS
+                    ? ERROR_WRITE_FAULT : writeError;
+                return SetError(error, L"rollback-backup-file-write", code);
+            }
+            offset += written;
+        }
+    }
+    if (!FlushFileBuffers(destination.get())) {
+        return SetLastErrorDetail(error, L"rollback-backup-file-flush");
+    }
+    return true;
+}
+
 class BackupDirectory final {
 public:
-    ~BackupDirectory() {
-        if (!path_.empty()) {
-            root_.reset();
-            std::error_code ignored;
-            std::filesystem::remove_all(path_, ignored);
+    ~BackupDirectory() noexcept {
+        try {
+            if (!path_.empty() && !preserve_) {
+                root_.reset();
+                std::error_code removalError;
+                std::filesystem::remove_all(path_, removalError);
+                std::error_code presenceError;
+                const bool remains = std::filesystem::exists(path_, presenceError);
+                if (!removalError && !presenceError && !remains) {
+                    path_.clear();
+                    ClearActiveRecoveryEvidence();
+                }
+            }
+        } catch (...) {
+            // The top-level boundary must remain able to emit the fixed active
+            // evidence path after unwinding; a destructor must never terminate it.
         }
     }
 
@@ -2838,6 +3811,35 @@ public:
                 LocalFree(descriptor);
                 return SetError(error, L"rollback-backup-root", code);
             }
+            try {
+                path_ = candidate;
+            } catch (...) {
+                RemoveDirectoryW(candidate.c_str());
+                CryptReleaseContext(provider, 0);
+                LocalFree(descriptor);
+                throw;
+            }
+            const std::wstring& rootValue = path_.native();
+            constexpr size_t recordNameLength = std::size(kRecoveryRecordName) - 1;
+            const size_t recordLength = rootValue.size() + 1 + recordNameLength;
+            if (rootValue.empty() || rootValue.size() >= gActiveBackupRoot.size() ||
+                recordLength >= gActiveRecoveryRecord.size()) {
+                if (RemoveDirectoryW(candidate.c_str())) {
+                    path_.clear();
+                }
+                CryptReleaseContext(provider, 0);
+                LocalFree(descriptor);
+                return SetError(error, L"rollback-backup-root",
+                    ERROR_FILENAME_EXCED_RANGE,
+                    L"protected rollback paths exceed the exception-safe reporting bound");
+            }
+            ClearActiveRecoveryEvidence();
+            std::copy(rootValue.begin(), rootValue.end(), gActiveBackupRoot.begin());
+            gActiveBackupRootRetained = true;
+            std::copy(rootValue.begin(), rootValue.end(), gActiveRecoveryRecord.begin());
+            gActiveRecoveryRecord[rootValue.size()] = L'\\';
+            std::copy_n(kRecoveryRecordName, recordNameLength,
+                gActiveRecoveryRecord.begin() + rootValue.size() + 1);
             root_.reset(CreateFileW(
                 candidate.c_str(), FILE_READ_ATTRIBUTES | READ_CONTROL,
                 FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
@@ -2846,7 +3848,10 @@ public:
                 nullptr));
             if (!root_) {
                 const DWORD code = GetLastError();
-                RemoveDirectoryW(candidate.c_str());
+                if (RemoveDirectoryW(candidate.c_str())) {
+                    path_.clear();
+                    ClearActiveRecoveryEvidence();
+                }
                 CryptReleaseContext(provider, 0);
                 LocalFree(descriptor);
                 return SetError(error, L"rollback-backup-root-lock", code);
@@ -2858,13 +3863,26 @@ public:
                 (rootAttributes.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0 ||
                 (rootAttributes.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
                 root_.reset();
-                RemoveDirectoryW(candidate.c_str());
+                if (RemoveDirectoryW(candidate.c_str())) {
+                    path_.clear();
+                    ClearActiveRecoveryEvidence();
+                }
                 CryptReleaseContext(provider, 0);
                 LocalFree(descriptor);
                 return SetError(error, L"rollback-backup-root-lock",
                     ERROR_REPARSE_TAG_MISMATCH);
             }
-            path_ = candidate;
+            if (!VerifyProtectedFileSystemSecurity(
+                    root_.get(), true, L"rollback-backup-root-security", error)) {
+                root_.reset();
+                if (RemoveDirectoryW(candidate.c_str())) {
+                    path_.clear();
+                    ClearActiveRecoveryEvidence();
+                }
+                CryptReleaseContext(provider, 0);
+                LocalFree(descriptor);
+                return false;
+            }
             CryptReleaseContext(provider, 0);
             LocalFree(descriptor);
             return true;
@@ -2877,10 +3895,84 @@ public:
 
     const std::filesystem::path& path() const noexcept { return path_; }
 
+    std::filesystem::path RecoveryRecordPath() const {
+        return path_ / kRecoveryRecordName;
+    }
+
+    bool ArmPreservation(const std::filesystem::path& recoveryPath, Error* error) {
+        const std::wstring& value = recoveryPath.native();
+        if (!gActiveBackupRootRetained || gActiveRecoveryRecord[0] == L'\0' ||
+            value != gActiveRecoveryRecord.data()) {
+            return SetError(error, L"recovery-record-path", ERROR_INVALID_DATA,
+                L"published recovery record does not match the tracked protected backup root");
+        }
+        gActiveRecoveryRecordWritten = true;
+        preserve_ = true;
+        return true;
+    }
+
+    void AttachRecoveryRecord(Error* error) const {
+        if (error == nullptr) {
+            return;
+        }
+        if (gActiveBackupRootRetained && gActiveBackupRoot[0] != L'\0') {
+            error->recoveryBackup = gActiveBackupRoot.data();
+            error->recoveryBackupRetained = true;
+        } else if (!path_.empty()) {
+            error->recoveryBackup = path_.wstring();
+            error->recoveryBackupRetained = true;
+        }
+        if (gActiveRecoveryRecord[0] != L'\0') {
+            error->recoveryRecord = gActiveRecoveryRecord.data();
+            error->recoveryRecordWritten = gActiveRecoveryRecordWritten;
+        } else if (!path_.empty()) {
+            error->recoveryRecord = RecoveryRecordPath().wstring();
+            error->recoveryRecordWritten = false;
+        }
+        if (!error->recoveryRecord.empty() && !error->recoveryRecordWritten) {
+            error->recoveryRecordError = ERROR_FILE_NOT_FOUND;
+            error->recoveryRecordPhase = L"recovery-record-not-published";
+            error->recoveryRecordMessage =
+                L"the retained backup predates a verified write-ahead recovery record";
+        }
+    }
+
+    bool Cleanup(std::vector<PackageBackup>* backups, Error* error) {
+        if (backups != nullptr) {
+            backups->clear();
+        }
+        root_.reset();
+        if (path_.empty()) {
+            preserve_ = false;
+            ClearActiveRecoveryEvidence();
+            return true;
+        }
+        std::error_code removalError;
+        std::filesystem::remove_all(path_, removalError);
+        std::error_code presenceError;
+        const bool remains = std::filesystem::exists(path_, presenceError);
+        if (removalError || presenceError || remains) {
+            preserve_ = true;
+            const DWORD code = removalError
+                ? static_cast<DWORD>(removalError.value())
+                : presenceError ? static_cast<DWORD>(presenceError.value())
+                                : ERROR_DIR_NOT_EMPTY;
+            SetError(error, L"rollback-backup-cleanup", code,
+                L"protected rollback backup cleanup could not be verified");
+            AttachRecoveryRecord(error);
+            return false;
+        }
+        path_.clear();
+        preserve_ = false;
+        ClearActiveRecoveryEvidence();
+        return true;
+    }
+
 private:
     std::filesystem::path path_;
     WinHandle parent_;
     WinHandle root_;
+    bool preserve_ = false;
 };
 
 bool BackupPackages(
@@ -2906,55 +3998,37 @@ bool BackupPackages(
             return false;
         }
         const std::filesystem::path destination = root->path() / std::to_wstring(index);
-        std::error_code copyError;
-        std::filesystem::create_directory(destination, copyError);
-        if (copyError) {
-            return SetError(error, L"rollback-backup-create", static_cast<DWORD>(copyError.value()));
-        }
-        for (std::filesystem::recursive_directory_iterator iterator(storeInf.parent_path(), copyError), end;
-             iterator != end && !copyError; iterator.increment(copyError)) {
-            const std::filesystem::path relative =
-                std::filesystem::relative(iterator->path(), storeInf.parent_path(), copyError);
-            if (copyError) break;
-            const std::filesystem::path target = destination / relative;
-            if (iterator->is_directory()) {
-                std::filesystem::create_directories(target, copyError);
-            } else if (iterator->is_regular_file()) {
-                std::filesystem::create_directories(target.parent_path(), copyError);
-                if (!copyError) {
-                    std::filesystem::copy_file(iterator->path(), target,
-                        std::filesystem::copy_options::overwrite_existing, copyError);
-                }
-            }
-        }
-        if (copyError) {
-            return SetError(error, L"rollback-backup-copy", static_cast<DWORD>(copyError.value()));
-        }
         std::filesystem::path signerCatalog;
-        if (!VerifyInfSignature(packages[index].infPath, &signerCatalog, error)) {
+        if (!VerifyInfSignature(storeInf, &signerCatalog, error)) {
             return false;
         }
-        const std::filesystem::path adjacentCatalog = destination / kCatalogName;
-        const bool hasAdjacentCatalog = std::filesystem::is_regular_file(adjacentCatalog, copyError);
-        if (copyError) {
-            return SetError(error, L"rollback-backup-catalog", static_cast<DWORD>(copyError.value()));
+        if (signerCatalog.is_relative()) {
+            signerCatalog = storeInf.parent_path() / signerCatalog.filename();
         }
-        if (!hasAdjacentCatalog) {
-            if (signerCatalog.empty() || !std::filesystem::is_regular_file(signerCatalog, copyError)) {
-                return SetError(error, L"rollback-backup-catalog", ERROR_FILE_NOT_FOUND,
-                    L"cannot construct a self-contained signed rollback package");
-            }
-            std::filesystem::copy_file(signerCatalog, adjacentCatalog,
-                std::filesystem::copy_options::overwrite_existing, copyError);
-            if (copyError) {
-                return SetError(error, L"rollback-backup-catalog", static_cast<DWORD>(copyError.value()));
-            }
+        if (signerCatalog.empty()) {
+            return SetError(error, L"rollback-backup-catalog", ERROR_FILE_NOT_FOUND,
+                L"signed rollback package did not resolve a catalog payload");
         }
-        const std::filesystem::path backupInf = destination / storeInf.filename();
+        const std::filesystem::path backupInf = destination / L"ViiperUde.inf";
+        if (!CreateProtectedBackupDirectory(destination, error) ||
+            !CopyProtectedBackupFile(storeInf, backupInf, error) ||
+            !CopyProtectedBackupFile(
+                storeInf.parent_path() / kDriverFileName,
+                destination / kDriverFileName, error) ||
+            !CopyProtectedBackupFile(
+                signerCatalog, destination / kCatalogName, error) ||
+            !ValidateExactPackageDirectory(destination, error)) {
+            return false;
+        }
         PackageInfo verified;
         bool owned = false;
         if (!LoadOwnedPackage(backupInf, true, &verified, &owned, error) || !owned) {
             return false;
+        }
+        if (!(verified.version == packages[index].version) ||
+            !SamePackageBytes(verified, packages[index])) {
+            return SetError(error, L"rollback-backup-identity", ERROR_REVISION_MISMATCH,
+                L"protected rollback copy does not match the captured signed package");
         }
         std::vector<WinHandle> locks;
         if (!LockPackageFiles(destination, &locks, error)) {
@@ -2963,6 +4037,357 @@ bool BackupPackages(
         }
         backups->push_back(PackageBackup{
             packages[index], destination, backupInf, std::move(locks)});
+    }
+    return true;
+}
+
+bool IsSha256Digest(std::string_view value) {
+    return value.size() == 64 &&
+        std::all_of(value.begin(), value.end(), [](unsigned char character) {
+            return std::isxdigit(character) != 0;
+        });
+}
+
+void AppendJsonString(std::string* output, std::wstring_view value) {
+    static constexpr char digits[] = "0123456789abcdef";
+    output->push_back('"');
+    for (wchar_t character : value) {
+        const uint32_t codePoint = static_cast<uint32_t>(character);
+        if (codePoint == '"' || codePoint == '\\') {
+            output->push_back('\\');
+            output->push_back(static_cast<char>(codePoint));
+        } else if (codePoint >= 0x20U && codePoint <= 0x7eU) {
+            output->push_back(static_cast<char>(codePoint));
+        } else if (codePoint <= 0xffffU) {
+            output->append("\\u");
+            output->push_back(digits[(codePoint >> 12U) & 0x0fU]);
+            output->push_back(digits[(codePoint >> 8U) & 0x0fU]);
+            output->push_back(digits[(codePoint >> 4U) & 0x0fU]);
+            output->push_back(digits[codePoint & 0x0fU]);
+        } else {
+            const uint32_t supplementary = codePoint - 0x10000U;
+            const uint32_t high = 0xd800U + (supplementary >> 10U);
+            const uint32_t low = 0xdc00U + (supplementary & 0x3ffU);
+            for (uint32_t surrogate : {high, low}) {
+                output->append("\\u");
+                output->push_back(digits[(surrogate >> 12U) & 0x0fU]);
+                output->push_back(digits[(surrogate >> 8U) & 0x0fU]);
+                output->push_back(digits[(surrogate >> 4U) & 0x0fU]);
+                output->push_back(digits[surrogate & 0x0fU]);
+            }
+        }
+    }
+    output->push_back('"');
+}
+
+void AppendJsonAsciiString(std::string* output, std::string_view value) {
+    std::wstring wide;
+    wide.reserve(value.size());
+    for (unsigned char character : value) {
+        wide.push_back(static_cast<wchar_t>(character));
+    }
+    AppendJsonString(output, wide);
+}
+
+bool IsSafeRecoveryRelativePath(const std::filesystem::path& path) {
+    if (path.empty() || path.is_absolute() || path.has_root_name() ||
+        path.has_root_directory() || path.lexically_normal() != path) {
+        return false;
+    }
+    size_t components = 0;
+    for (const std::filesystem::path& component : path) {
+        const std::wstring value = component.wstring();
+        if (value.empty() || value == L"." || value == L".." ||
+            value.find(L':') != std::wstring::npos ||
+            std::any_of(value.begin(), value.end(), [](wchar_t character) {
+                return character < 0x20;
+            })) {
+            return false;
+        }
+        ++components;
+    }
+    return components != 0;
+}
+
+bool RecoveryRelativePath(
+    const std::filesystem::path& root,
+    const std::filesystem::path& target,
+    std::wstring* relative,
+    Error* error) {
+    const std::filesystem::path candidate = target.lexically_relative(root);
+    if (!IsSafeRecoveryRelativePath(candidate) ||
+        (root / candidate).lexically_normal() != target.lexically_normal()) {
+        return SetError(error, L"recovery-record-path", ERROR_INVALID_NAME,
+            L"rollback recovery paths must remain relative to the protected backup root");
+    }
+    *relative = candidate.generic_wstring();
+    return true;
+}
+
+bool BuildRemoveRecoveryRecord(
+    const Snapshot& prior,
+    const std::vector<PackageBackup>& backups,
+    const std::filesystem::path& root,
+    std::string* record,
+    Error* error) {
+    if (backups.size() != prior.packages.size()) {
+        return SetError(error, L"recovery-record-binding", ERROR_INVALID_DATA,
+            L"rollback backup count does not match the captured package inventory");
+    }
+    record->clear();
+    record->append(
+        "{\"schema\":1,\"kind\":\"VIIPER-UDE-remove-rollback-recovery\","
+        "\"state\":\"prepared-remove-transaction\","
+        "\"hardwareId\":\"ROOT\\\\VIIPER\\\\UDE\",\"automaticRestore\":false,"
+        "\"requiredValidation\":[\"inf-signature\",\"inf-catalog-membership\","
+        "\"sys-catalog-membership\",\"inf-sha256\",\"sys-sha256\",\"cat-sha256\"],"
+        "\"devices\":[");
+    for (size_t index = 0; index < prior.devices.size(); ++index) {
+        const DeviceState& device = prior.devices[index];
+        size_t packageIndex = prior.packages.size();
+        size_t packageMatches = 0;
+        for (size_t candidate = 0; candidate < prior.packages.size(); ++candidate) {
+            const PackageInfo& package = prior.packages[candidate];
+            if (_wcsicmp(package.publishedName.c_str(), device.publishedInf.c_str()) == 0 &&
+                package.version == device.version &&
+                SamePackageBytes(package, device.package)) {
+                packageIndex = candidate;
+                ++packageMatches;
+            }
+        }
+        if (!IsOwnedGeneratedRootInstanceId(device.instanceId) ||
+            !IsSafePublishedInfName(device.publishedInf) ||
+            _wcsicmp(device.service.c_str(), kServiceName) != 0 ||
+            !(device.version == device.package.version) ||
+            _wcsicmp(device.package.publishedName.c_str(), device.publishedInf.c_str()) != 0 ||
+            packageMatches != 1 || packageIndex >= backups.size() ||
+            _wcsicmp(backups[packageIndex].original.publishedName.c_str(),
+                device.publishedInf.c_str()) != 0 ||
+            !(backups[packageIndex].original.version == device.version) ||
+            !SamePackageBytes(backups[packageIndex].original, device.package) ||
+            !IsSha256Digest(device.package.infSha256) ||
+            !IsSha256Digest(device.package.sysSha256) ||
+            !IsSha256Digest(device.package.catSha256)) {
+            return SetError(error, L"recovery-record-device", ERROR_INVALID_DATA,
+                L"captured devnode identity is not safe for a recovery record");
+        }
+        if (index != 0) record->push_back(',');
+        record->append("{\"instanceId\":");
+        AppendJsonString(record, device.instanceId);
+        record->append(",\"present\":");
+        record->append(device.present ? "true" : "false");
+        record->append(",\"started\":");
+        record->append(device.started ? "true" : "false");
+        record->append(",\"problem\":");
+        record->append(std::to_string(device.problem));
+        record->append(",\"service\":");
+        AppendJsonString(record, device.service);
+        record->append(",\"publishedInf\":");
+        AppendJsonString(record, device.publishedInf);
+        record->append(",\"packageIndex\":");
+        record->append(std::to_string(packageIndex));
+        record->append(",\"version\":");
+        AppendJsonString(record, VersionToString(device.version));
+        record->append(",\"infSha256\":");
+        AppendJsonAsciiString(record, LowerAscii(device.package.infSha256));
+        record->append(",\"sysSha256\":");
+        AppendJsonAsciiString(record, LowerAscii(device.package.sysSha256));
+        record->append(",\"catSha256\":");
+        AppendJsonAsciiString(record, LowerAscii(device.package.catSha256));
+        record->push_back('}');
+    }
+    record->append("],\"packages\":[");
+    for (size_t index = 0; index < prior.packages.size(); ++index) {
+        const PackageInfo& package = prior.packages[index];
+        const PackageBackup& backup = backups[index];
+        const bool duplicatePublishedName = std::any_of(
+            prior.packages.begin(), prior.packages.end(), [&](const PackageInfo& candidate) {
+                return &candidate != &package &&
+                    _wcsicmp(candidate.publishedName.c_str(), package.publishedName.c_str()) == 0;
+            });
+        if (!IsSafePublishedInfName(package.publishedName) ||
+            duplicatePublishedName ||
+            !(backup.original.version == package.version) ||
+            _wcsicmp(backup.original.publishedName.c_str(), package.publishedName.c_str()) != 0 ||
+            backup.infPath.parent_path() != backup.directory ||
+            _wcsicmp(backup.infPath.filename().c_str(), L"ViiperUde.inf") != 0 ||
+            !SamePackageBytes(backup.original, package) ||
+            !IsSha256Digest(package.infSha256) ||
+            !IsSha256Digest(package.sysSha256) ||
+            !IsSha256Digest(package.catSha256)) {
+            return SetError(error, L"recovery-record-package", ERROR_INVALID_DATA,
+                L"protected rollback package does not match the captured inventory");
+        }
+        std::wstring relativeDirectory;
+        std::wstring relativeInf;
+        std::wstring relativeSys;
+        std::wstring relativeCat;
+        if (!RecoveryRelativePath(root, backup.directory, &relativeDirectory, error) ||
+            relativeDirectory != std::to_wstring(index) ||
+            !RecoveryRelativePath(root, backup.infPath, &relativeInf, error) ||
+            !RecoveryRelativePath(root, backup.directory / kDriverFileName, &relativeSys, error) ||
+            !RecoveryRelativePath(root, backup.directory / kCatalogName, &relativeCat, error)) {
+            if (error->code == ERROR_SUCCESS) {
+                SetError(error, L"recovery-record-path", ERROR_INVALID_NAME);
+            }
+            return false;
+        }
+        if (index != 0) record->push_back(',');
+        record->append("{\"publishedInf\":");
+        AppendJsonString(record, package.publishedName);
+        record->append(",\"version\":");
+        AppendJsonString(record, VersionToString(package.version));
+        record->append(",\"infSha256\":");
+        AppendJsonAsciiString(record, LowerAscii(package.infSha256));
+        record->append(",\"sysSha256\":");
+        AppendJsonAsciiString(record, LowerAscii(package.sysSha256));
+        record->append(",\"catSha256\":");
+        AppendJsonAsciiString(record, LowerAscii(package.catSha256));
+        record->append(",\"backupInf\":");
+        AppendJsonString(record, relativeInf);
+        record->append(",\"backupSys\":");
+        AppendJsonString(record, relativeSys);
+        record->append(",\"backupCat\":");
+        AppendJsonString(record, relativeCat);
+        record->push_back('}');
+    }
+    record->append("]}\n");
+    if (record->size() > kMaximumRecoveryRecordBytes) {
+        return SetError(error, L"recovery-record-size", ERROR_FILE_TOO_LARGE);
+    }
+    return true;
+}
+
+bool WriteProtectedRecoveryRecord(
+    const std::filesystem::path& path,
+    std::string_view record,
+    Error* error) {
+    if (path.filename() != kRecoveryRecordName ||
+        record.empty() || record.size() > kMaximumRecoveryRecordBytes) {
+        return SetError(error, L"recovery-record-create", ERROR_INVALID_PARAMETER);
+    }
+    const std::filesystem::path temporaryPath =
+        path.parent_path() / kRecoveryRecordTemporaryName;
+    LocalSecurityDescriptor security;
+    if (!security.Initialize(
+            kRecoveryRecordSecurity, L"recovery-record-security", error)) {
+        return false;
+    }
+    WinHandle file(CreateFileW(temporaryPath.c_str(),
+        GENERIC_READ | GENERIC_WRITE | FILE_READ_ATTRIBUTES | READ_CONTROL,
+        FILE_SHARE_READ, security.attributes(), CREATE_NEW,
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH |
+            FILE_FLAG_OPEN_REPARSE_POINT,
+        nullptr));
+    const DWORD createError = GetLastError();
+    if (!file) {
+        return SetError(error, L"recovery-record-create", createError);
+    }
+    const auto discardTemporary = [&]() noexcept {
+        file.reset();
+        DeleteFileW(temporaryPath.c_str());
+    };
+    FILE_ATTRIBUTE_TAG_INFO attributes{};
+    const BOOL queriedAttributes = GetFileInformationByHandleEx(
+        file.get(), FileAttributeTagInfo, &attributes, sizeof(attributes));
+    const DWORD attributeError = queriedAttributes ? ERROR_SUCCESS : GetLastError();
+    if (!queriedAttributes ||
+        (attributes.FileAttributes &
+            (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0) {
+        const DWORD code = queriedAttributes
+            ? ERROR_REPARSE_TAG_MISMATCH : attributeError;
+        SetError(error, L"recovery-record-create", code,
+            L"recovery record must be a regular non-reparse file");
+        discardTemporary();
+        return false;
+    }
+    if (!VerifyProtectedFileSystemSecurity(
+            file.get(), false, L"recovery-record-security", error)) {
+        discardTemporary();
+        return false;
+    }
+    size_t offset = 0;
+    while (offset < record.size()) {
+        const DWORD requested = static_cast<DWORD>(std::min<size_t>(
+            record.size() - offset, MAXDWORD));
+        DWORD written = 0;
+        if (!WriteFile(file.get(), record.data() + offset, requested,
+                &written, nullptr) || written == 0) {
+            const DWORD writeError = GetLastError();
+            const DWORD code = writeError == ERROR_SUCCESS
+                ? ERROR_WRITE_FAULT : writeError;
+            SetError(error, L"recovery-record-write", code);
+            discardTemporary();
+            return false;
+        }
+        offset += written;
+    }
+    if (!FlushFileBuffers(file.get())) {
+        SetLastErrorDetail(error, L"recovery-record-flush");
+        discardTemporary();
+        return false;
+    }
+    file.reset();
+    if (!MoveFileExW(
+            temporaryPath.c_str(), path.c_str(), MOVEFILE_WRITE_THROUGH)) {
+        const DWORD code = GetLastError();
+        DeleteFileW(temporaryPath.c_str());
+        return SetError(error, L"recovery-record-publish", code);
+    }
+
+    file.reset(CreateFileW(path.c_str(),
+        GENERIC_READ | GENERIC_WRITE | FILE_READ_ATTRIBUTES | READ_CONTROL,
+        FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH |
+            FILE_FLAG_OPEN_REPARSE_POINT,
+        nullptr));
+    if (!file) {
+        return SetLastErrorDetail(error, L"recovery-record-reopen");
+    }
+    attributes = {};
+    const BOOL queriedPublished = GetFileInformationByHandleEx(
+        file.get(), FileAttributeTagInfo, &attributes, sizeof(attributes));
+    const DWORD publishedQueryError = queriedPublished
+        ? ERROR_SUCCESS : GetLastError();
+    if (!queriedPublished ||
+        (attributes.FileAttributes &
+            (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0) {
+        const DWORD code = queriedPublished
+            ? ERROR_REPARSE_TAG_MISMATCH : publishedQueryError;
+        return SetError(error, L"recovery-record-reopen", code,
+            L"published recovery record must be a regular non-reparse file");
+    }
+    if (!VerifyProtectedFileSystemSecurity(
+            file.get(), false, L"recovery-record-security", error)) {
+        return false;
+    }
+    offset = 0;
+    std::array<char, 4096> verification{};
+    while (offset < record.size()) {
+        const DWORD requested = static_cast<DWORD>(std::min<size_t>(
+            verification.size(), record.size() - offset));
+        DWORD read = 0;
+        if (!ReadFile(file.get(), verification.data(), requested, &read, nullptr)) {
+            return SetLastErrorDetail(error, L"recovery-record-verify");
+        }
+        if (read != requested ||
+            std::memcmp(verification.data(), record.data() + offset, read) != 0) {
+            return SetError(error, L"recovery-record-verify", ERROR_CRC,
+                L"published recovery record bytes do not match the flushed transaction journal");
+        }
+        offset += read;
+    }
+    char trailing = 0;
+    DWORD trailingRead = 0;
+    if (!ReadFile(file.get(), &trailing, 1, &trailingRead, nullptr)) {
+        return SetLastErrorDetail(error, L"recovery-record-verify");
+    }
+    if (trailingRead != 0) {
+        return SetError(error, L"recovery-record-verify", ERROR_FILE_INVALID,
+            L"published recovery record contains trailing bytes");
+    }
+    if (!FlushFileBuffers(file.get())) {
+        return SetLastErrorDetail(error, L"recovery-record-published-flush");
     }
     return true;
 }
@@ -2979,6 +4404,7 @@ bool RollbackRemove(
             return false;
         }
         BOOL reboot = FALSE;
+        MarkTransactionMutationStarted();
         if (!DiInstallDriverW(nullptr, backup.infPath.c_str(), 0, &reboot)) {
             return SetLastErrorDetail(error, L"remove-rollback-package");
         }
@@ -2996,7 +4422,7 @@ bool RollbackRemove(
     for (DeviceState& device : restorablePrior.devices) {
         const auto package = std::find_if(reinstalledPackages.begin(), reinstalledPackages.end(),
             [&](const PackageInfo& candidate) {
-                return candidate.infSha256 == device.package.infSha256 &&
+                return SamePackageBytes(candidate, device.package) &&
                     candidate.version == device.package.version;
             });
         if (package == reinstalledPackages.end()) {
@@ -3006,7 +4432,8 @@ bool RollbackRemove(
         device.package = *package;
         device.publishedInf = package->publishedName;
     }
-    if (!RestorePriorBinding(restorablePrior, rebootRequired, error)) {
+    if (!RestorePriorBinding(
+            restorablePrior, rollbackDeadlineUnixMs, rebootRequired, error)) {
         return false;
     }
 
@@ -3021,10 +4448,10 @@ bool RollbackRemove(
     std::multiset<std::pair<Version, std::string>> expectedPackages;
     std::multiset<std::pair<Version, std::string>> actualPackages;
     for (const PackageInfo& package : prior.packages) {
-        expectedPackages.emplace(package.version, package.infSha256);
+        expectedPackages.emplace(package.version, PackageBytesKey(package));
     }
     for (const PackageInfo& package : restored.packages) {
-        actualPackages.emplace(package.version, package.infSha256);
+        actualPackages.emplace(package.version, PackageBytesKey(package));
     }
     if (expectedPackages != actualPackages || restored.devices.size() != prior.devices.size()) {
         return SetError(error, L"remove-rollback-verification", ERROR_REVISION_MISMATCH,
@@ -3032,7 +4459,7 @@ bool RollbackRemove(
     }
     if (!prior.devices.empty()) {
         if (_wcsicmp(restored.devices[0].instanceId.c_str(), prior.devices[0].instanceId.c_str()) != 0 ||
-            restored.devices[0].package.infSha256 != prior.devices[0].package.infSha256) {
+            !SamePackageBytes(restored.devices[0].package, prior.devices[0].package)) {
             return SetError(error, L"remove-rollback-verification", ERROR_REVISION_MISMATCH,
                 L"rollback restored a different devnode identity or active package");
         }
@@ -3095,19 +4522,42 @@ Outcome Remove(const RemoveOptions& options) {
     }
     BackupDirectory backupRoot;
     std::vector<PackageBackup> backups;
-    if (!BackupPackages(prior.packages, &backupRoot, &backups, &outcome.error)) {
+    const auto rejectBeforeMutation = [&](Error failure) {
+        Error cleanupError;
+        if (!backupRoot.Cleanup(&backups, &cleanupError)) {
+            outcome.error = std::move(cleanupError);
+        } else {
+            outcome.error = std::move(failure);
+        }
         outcome.exitCode = ExitCode::PreflightRejected;
+    };
+    if (!BackupPackages(prior.packages, &backupRoot, &backups, &outcome.error)) {
+        Error failure = std::move(outcome.error);
+        rejectBeforeMutation(std::move(failure));
+        return outcome;
+    }
+    std::string recoveryRecord;
+    const std::filesystem::path recoveryPath = backupRoot.RecoveryRecordPath();
+    Error recoveryError;
+    if (!BuildRemoveRecoveryRecord(
+            prior, backups, backupRoot.path(), &recoveryRecord, &recoveryError) ||
+        !WriteProtectedRecoveryRecord(recoveryPath, recoveryRecord, &recoveryError) ||
+        !backupRoot.ArmPreservation(recoveryPath, &recoveryError)) {
+        rejectBeforeMutation(std::move(recoveryError));
         return outcome;
     }
     if (!CheckTransactionDeadline(
             options.transactionDeadlineUnixMs, L"remove-deadline-before-device", &outcome.error)) {
-        outcome.exitCode = ExitCode::PreflightRejected;
+        Error failure = std::move(outcome.error);
+        rejectBeforeMutation(std::move(failure));
         return outcome;
     }
-    outcome.changed = true;
+    bool mutationStarted = false;
     bool reboot = false;
     Error mutationError;
-    bool mutationSucceeded = RemoveAllExactDevices(&reboot, &mutationError);
+    bool mutationSucceeded = RemoveAllExactDevices(
+        options.transactionDeadlineUnixMs, &mutationStarted, &reboot, &mutationError);
+    outcome.changed = mutationStarted;
     if (mutationSucceeded && !CheckTransactionDeadline(
             options.transactionDeadlineUnixMs, L"remove-deadline-after-device", &mutationError)) {
         mutationSucceeded = false;
@@ -3119,6 +4569,8 @@ Outcome Remove(const RemoveOptions& options) {
                 mutationSucceeded = false;
                 break;
             }
+            mutationStarted = true;
+            outcome.changed = true;
             if (!UninstallPackage(package, &reboot, &mutationError)) {
                 mutationSucceeded = false;
                 break;
@@ -3147,6 +4599,10 @@ Outcome Remove(const RemoveOptions& options) {
         }
     }
     if (!mutationSucceeded) {
+        if (!mutationStarted) {
+            rejectBeforeMutation(std::move(mutationError));
+            return outcome;
+        }
         Error rollbackError;
         bool rollbackReboot = reboot;
         // Forward work owns the caller's absolute deadline. Rollback receives
@@ -3159,12 +4615,26 @@ Outcome Remove(const RemoveOptions& options) {
                 prior, backups, rollbackDeadline, &rollbackReboot, &rollbackError)) {
             outcome.rollback = L"succeeded";
             outcome.rebootRequired = rollbackReboot;
-            outcome.error = mutationError;
+            Error cleanupError;
+            if (!backupRoot.Cleanup(&backups, &cleanupError)) {
+                outcome.error = std::move(cleanupError);
+                return outcome;
+            }
+            outcome.error = std::move(mutationError);
             return outcome;
         }
+        backupRoot.AttachRecoveryRecord(&rollbackError);
         outcome.rollback = L"failed";
         outcome.rebootRequired = rollbackReboot;
         outcome.error = std::move(rollbackError);
+        outcome.exitCode = ExitCode::RollbackFailed;
+        return outcome;
+    }
+    Error cleanupError;
+    if (!backupRoot.Cleanup(&backups, &cleanupError)) {
+        outcome.rollback = L"failed";
+        outcome.rebootRequired = reboot;
+        outcome.error = std::move(cleanupError);
         outcome.exitCode = ExitCode::RollbackFailed;
         return outcome;
     }
@@ -3215,12 +4685,100 @@ Outcome SelfTest() {
         SetError(&outcome.error, L"self-test-version", ERROR_INVALID_DATA);
         return outcome;
     }
+    PackageInfo candidate;
+    candidate.version = two;
+    candidate.infSha256 = "candidate-inf";
+    candidate.sysSha256 = "candidate-sys";
+    candidate.catSha256 = "candidate-cat";
+    CandidateDisposition disposition = CandidateDisposition::Exact;
+    bool downgrade = true;
+    Error classificationError;
+    if (!ClassifyCandidatePackage(
+            candidate, {}, std::nullopt, &disposition, &downgrade, &classificationError) ||
+        disposition != CandidateDisposition::InstallRequired || downgrade) {
+        SetError(&outcome.error, L"self-test-package-classification", ERROR_INVALID_DATA,
+            L"an absent candidate was not classified as an install");
+        return outcome;
+    }
+    PackageInfo exact = candidate;
+    classificationError = {};
+    if (!ClassifyCandidatePackage(
+            candidate, {exact}, std::nullopt, &disposition, &downgrade, &classificationError) ||
+        disposition != CandidateDisposition::Exact || downgrade) {
+        SetError(&outcome.error, L"self-test-package-classification", ERROR_INVALID_DATA,
+            L"an exact same-version candidate was not classified as repair-only");
+        return outcome;
+    }
+    PackageInfo conflict = candidate;
+    conflict.infSha256 = "different-inf";
+    classificationError = {};
+    if (ClassifyCandidatePackage(
+            candidate, {conflict}, std::nullopt,
+            &disposition, &downgrade, &classificationError) ||
+        classificationError.phase != L"version-policy") {
+        SetError(&outcome.error, L"self-test-package-classification", ERROR_INVALID_DATA,
+            L"same-version content replacement was not rejected");
+        return outcome;
+    }
+    conflict = candidate;
+    conflict.sysSha256 = "different-sys";
+    classificationError = {};
+    if (ClassifyCandidatePackage(
+            candidate, {conflict}, std::nullopt,
+            &disposition, &downgrade, &classificationError) ||
+        classificationError.phase != L"version-policy") {
+        SetError(&outcome.error, L"self-test-package-classification", ERROR_INVALID_DATA,
+            L"same-version SYS replacement was not rejected");
+        return outcome;
+    }
+    conflict = candidate;
+    conflict.catSha256 = "different-cat";
+    classificationError = {};
+    if (ClassifyCandidatePackage(
+            candidate, {conflict}, std::nullopt,
+            &disposition, &downgrade, &classificationError) ||
+        classificationError.phase != L"version-policy") {
+        SetError(&outcome.error, L"self-test-package-classification", ERROR_INVALID_DATA,
+            L"same-version catalog replacement was not rejected");
+        return outcome;
+    }
+    PackageInfo newer = candidate;
+    newer.version.parts[3] += 1;
+    classificationError = {};
+    if (ClassifyCandidatePackage(
+            candidate, {newer}, std::nullopt,
+            &disposition, &downgrade, &classificationError) ||
+        classificationError.phase != L"version-policy") {
+        SetError(&outcome.error, L"self-test-package-classification", ERROR_INVALID_DATA,
+            L"implicit downgrade was not rejected");
+        return outcome;
+    }
+    classificationError = {};
+    if (!ClassifyCandidatePackage(
+            candidate, {newer}, newer.version,
+            &disposition, &downgrade, &classificationError) ||
+        disposition != CandidateDisposition::InstallRequired || !downgrade) {
+        SetError(&outcome.error, L"self-test-package-classification", ERROR_INVALID_DATA,
+            L"exact controlled-downgrade guard was not honored");
+        return outcome;
+    }
+    Version wrongDowngradeGuard = newer.version;
+    ++wrongDowngradeGuard.parts[3];
+    classificationError = {};
+    if (ClassifyCandidatePackage(
+            candidate, {newer}, wrongDowngradeGuard,
+            &disposition, &downgrade, &classificationError) ||
+        classificationError.phase != L"version-policy") {
+        SetError(&outcome.error, L"self-test-package-classification", ERROR_INVALID_DATA,
+            L"incorrect controlled-downgrade guard was accepted");
+        return outcome;
+    }
     std::string buildIdentity;
     if (!DeriveDriverBuildIdentity(
             "0123456789abcdef0123456789abcdef01234567",
             &buildIdentity, &outcome.error) ||
         buildIdentity !=
-            "285af3f561a066e0298411cbc7432ae9e804109e8911a18212513cf945f712ed") {
+            "5a303ea9407bac958ab81eef7023cd108adbed1a478b88a863ea440cd097f1fe") {
         if (outcome.error.code == ERROR_SUCCESS) {
             SetError(&outcome.error, L"self-test-build-identity", ERROR_INVALID_DATA);
         }
@@ -3235,6 +4793,15 @@ Outcome SelfTest() {
         SetError(&outcome.error, L"self-test-contract", ERROR_INVALID_DATA);
         return outcome;
     }
+    if (!IsOwnedGeneratedRootInstanceId(L"ROOT\\VIIPERUDE\\0000") ||
+        !IsOwnedGeneratedRootInstanceId(L"root\\usb\\0042") ||
+        IsOwnedGeneratedRootInstanceId(L"ROOT\\VIIPER\\UDE\\0000") ||
+        IsOwnedGeneratedRootInstanceId(L"ROOT\\USB\\42") ||
+        IsOwnedGeneratedRootInstanceId(L"ROOT\\USB\\00A0")) {
+        SetError(&outcome.error, L"self-test-root-instance-id", ERROR_INVALID_DATA,
+            L"generated root instance namespace validation is not exact");
+        return outcome;
+    }
     PackageInfo priorPackage;
     priorPackage.publishedName = L"OEM7.INF";
     PackageInfo preservedPackage;
@@ -3247,12 +4814,162 @@ Outcome SelfTest() {
         SetError(&outcome.error, L"self-test-rollback-cleanup", ERROR_INVALID_DATA);
         return outcome;
     }
+    const std::filesystem::path recoveryRoot =
+        LR"(C:\Windows\Temp\VIIPER-UDE-rollback-self-test)";
+    if (!IsSafeRecoveryRelativePath(
+            std::filesystem::path(L"0") / L"ViiperUde.inf") ||
+        IsSafeRecoveryRelativePath(std::filesystem::path(L"..") / L"escape") ||
+        IsSafeRecoveryRelativePath(
+            std::filesystem::path(L"0") / L".." / L"escape") ||
+        IsSafeRecoveryRelativePath(std::filesystem::path(LR"(C:\escape)")) ||
+        IsSafeRecoveryRelativePath(
+            std::filesystem::path(L"0") / L"ViiperUde.inf:stream")) {
+        SetError(&outcome.error, L"self-test-recovery-path", ERROR_INVALID_DATA,
+            L"rollback recovery relative-path validation is not fail-closed");
+        return outcome;
+    }
+    PackageInfo recoveryPackage;
+    recoveryPackage.infPath = LR"(C:\Windows\INF\oem7.inf)";
+    recoveryPackage.publishedName = L"oem7.inf";
+    recoveryPackage.version.parts = {0, 1, 0, 6};
+    recoveryPackage.infSha256 = std::string(64, 'A');
+    recoveryPackage.sysSha256 = std::string(64, 'B');
+    recoveryPackage.catSha256 = std::string(64, 'C');
+    DeviceState recoveryDevice;
+    recoveryDevice.instanceId = LR"(ROOT\VIIPERUDE\0000)";
+    recoveryDevice.present = true;
+    recoveryDevice.started = true;
+    recoveryDevice.service = kServiceName;
+    recoveryDevice.publishedInf = recoveryPackage.publishedName;
+    recoveryDevice.version = recoveryPackage.version;
+    recoveryDevice.package = recoveryPackage;
+    Snapshot recoverySnapshot;
+    recoverySnapshot.devices.push_back(std::move(recoveryDevice));
+    recoverySnapshot.packages.push_back(recoveryPackage);
+    std::vector<PackageBackup> recoveryBackups;
+    recoveryBackups.push_back(PackageBackup{
+        recoveryPackage,
+        recoveryRoot / L"0",
+        recoveryRoot / L"0" / L"ViiperUde.inf",
+        {}});
+    std::string firstRecoveryRecord;
+    std::string secondRecoveryRecord;
+    Error recoveryRecordError;
+    JsonValue recoveryRecordValue;
+    std::string recoveryRecordParseError;
+    if (!BuildRemoveRecoveryRecord(
+            recoverySnapshot, recoveryBackups, recoveryRoot,
+            &firstRecoveryRecord, &recoveryRecordError) ||
+        !BuildRemoveRecoveryRecord(
+            recoverySnapshot, recoveryBackups, recoveryRoot,
+            &secondRecoveryRecord, &recoveryRecordError) ||
+        firstRecoveryRecord != secondRecoveryRecord ||
+        !JsonParser(firstRecoveryRecord).Parse(
+            &recoveryRecordValue, &recoveryRecordParseError) ||
+        firstRecoveryRecord.find("\"automaticRestore\":false") == std::string::npos ||
+        firstRecoveryRecord.find(
+            "\"requiredValidation\":[\"inf-signature\"") == std::string::npos ||
+        firstRecoveryRecord.find("\"state\":\"prepared-remove-transaction\"") ==
+            std::string::npos ||
+        firstRecoveryRecord.find("\"packageIndex\":0") == std::string::npos ||
+        firstRecoveryRecord.find("\"backupInf\":\"0/ViiperUde.inf\"") ==
+            std::string::npos ||
+        firstRecoveryRecord.find("C:") != std::string::npos) {
+        if (recoveryRecordError.code == ERROR_SUCCESS) {
+            SetError(&recoveryRecordError, L"self-test-recovery-record", ERROR_INVALID_DATA,
+                L"rollback recovery record is not canonical and relative-path bound");
+        }
+        outcome.error = std::move(recoveryRecordError);
+        return outcome;
+    }
     if (!IsSafeTargetUserSid(L"S-1-5-21-1-2-3-1001") ||
         IsSafeTargetUserSid(L"S-1-5-21-bad") ||
         QuoteWindowsArgument(LR"(C:\Program Files\VIIPER\viiper.exe)") !=
             LR"("C:\Program Files\VIIPER\viiper.exe")" ||
         QuoteWindowsArgument(LR"(value\"quoted)") != LR"("value\\\"quoted")") {
         SetError(&outcome.error, L"self-test-broker-command", ERROR_INVALID_DATA);
+        return outcome;
+    }
+    const std::string brokerSuccess =
+        "result=success operation=native-package-broker-commit changed=0 "
+        "rollback=not-needed exitCode=0\n";
+    BrokerCommitProof brokerProof;
+    Error brokerProofError;
+    if (!ParseBrokerCommitProof(
+            brokerSuccess, ERROR_SUCCESS, &brokerProof, &brokerProofError) ||
+        !brokerProof.success || brokerProof.changed ||
+        brokerProof.driverRollbackAuthorized ||
+        brokerProof.rollback != "not-needed") {
+        SetError(&outcome.error, L"self-test-broker-proof", ERROR_INVALID_DATA,
+            L"valid broker success proof was rejected or misclassified");
+        return outcome;
+    }
+    brokerProof = {};
+    brokerProofError = {};
+    if (!ParseBrokerCommitProof(
+            "result=error operation=native-package-broker-commit changed=0 "
+            "rollback=not-needed exitCode=4\n",
+            4, &brokerProof, &brokerProofError) ||
+        brokerProof.success || brokerProof.changed ||
+        !brokerProof.driverRollbackAuthorized) {
+        SetError(&outcome.error, L"self-test-broker-proof", ERROR_INVALID_DATA,
+            L"pre-mutation broker failure proof was rejected or misclassified");
+        return outcome;
+    }
+    brokerProof = {};
+    brokerProofError = {};
+    if (!ParseBrokerCommitProof(
+            "result=error operation=native-package-broker-commit changed=1 "
+            "rollback=succeeded exitCode=1\n",
+            1, &brokerProof, &brokerProofError) ||
+        brokerProof.success || !brokerProof.changed ||
+        !brokerProof.driverRollbackAuthorized) {
+        SetError(&outcome.error, L"self-test-broker-proof", ERROR_INVALID_DATA,
+            L"settled broker rollback proof was rejected or misclassified");
+        return outcome;
+    }
+    brokerProof = {};
+    brokerProofError = {};
+    if (!ParseBrokerCommitProof(
+            "result=error operation=native-package-broker-commit changed=1 "
+            "rollback=failed exitCode=3\n",
+            3, &brokerProof, &brokerProofError) ||
+        brokerProof.success || !brokerProof.changed ||
+        brokerProof.driverRollbackAuthorized) {
+        SetError(&outcome.error, L"self-test-broker-proof", ERROR_INVALID_DATA,
+            L"indeterminate broker rollback proof was not kept fail-closed");
+        return outcome;
+    }
+    brokerProof = {};
+    brokerProofError = {};
+    if (ParseBrokerCommitProof(
+            brokerSuccess + brokerSuccess, ERROR_SUCCESS,
+            &brokerProof, &brokerProofError) ||
+        brokerProofError.phase != L"broker-proof") {
+        SetError(&outcome.error, L"self-test-broker-proof", ERROR_INVALID_DATA,
+            L"duplicate broker outcomes were not rejected");
+        return outcome;
+    }
+    brokerProof = {};
+    brokerProofError = {};
+    if (ParseBrokerCommitProof(
+            "result=error exitCode=04 rollback=not-needed changed=0 "
+            "operation=native-package-broker-commit\n",
+            4, &brokerProof, &brokerProofError) ||
+        brokerProofError.phase != L"broker-proof") {
+        SetError(&outcome.error, L"self-test-broker-proof", ERROR_INVALID_DATA,
+            L"noncanonical broker outcome was accepted");
+        return outcome;
+    }
+    brokerProof = {};
+    brokerProofError = {};
+    if (ParseBrokerCommitProof(
+            "result=error operation=native-package-broker-commit changed=0 "
+            "rollback=not-needed exitCode=4",
+            4, &brokerProof, &brokerProofError) ||
+        brokerProofError.phase != L"broker-proof") {
+        SetError(&outcome.error, L"self-test-broker-proof", ERROR_INVALID_DATA,
+            L"unterminated broker outcome was accepted");
         return outcome;
     }
     if (!IsProductionHardwareVerificationUsage({kHardwareVerificationOid}) ||
@@ -3277,6 +4994,9 @@ bool ParseInstallOptions(int argc, wchar_t** argv, InstallOptions* options, Erro
     bool manifestHashSeen = false;
     bool revisionSeen = false;
     bool modeSeen = false;
+    bool infHashSeen = false;
+    bool sysHashSeen = false;
+    bool catHashSeen = false;
     bool brokerSeen = false;
     bool brokerHashSeen = false;
     bool brokerTokenSeen = false;
@@ -3336,6 +5056,27 @@ bool ParseInstallOptions(int argc, wchar_t** argv, InstallOptions* options, Erro
                     L"validation mode must be production or controlled-test");
             }
             modeSeen = true;
+        } else if (_wcsicmp(argument.c_str(), L"--expected-inf-sha256") == 0 &&
+            index + 1 < argc && !infHashSeen) {
+            if (!CopySha256Argument(
+                    argv[++index], L"runtime INF", &options->expectedInfSha256, error)) {
+                return false;
+            }
+            infHashSeen = true;
+        } else if (_wcsicmp(argument.c_str(), L"--expected-sys-sha256") == 0 &&
+            index + 1 < argc && !sysHashSeen) {
+            if (!CopySha256Argument(
+                    argv[++index], L"runtime SYS", &options->expectedSysSha256, error)) {
+                return false;
+            }
+            sysHashSeen = true;
+        } else if (_wcsicmp(argument.c_str(), L"--expected-cat-sha256") == 0 &&
+            index + 1 < argc && !catHashSeen) {
+            if (!CopySha256Argument(
+                    argv[++index], L"runtime CAT", &options->expectedCatSha256, error)) {
+                return false;
+            }
+            catHashSeen = true;
         } else if (_wcsicmp(argument.c_str(), L"--allow-controlled-downgrade") == 0 &&
             index + 1 < argc && !options->expectedDowngradeFrom) {
             Version expected{};
@@ -3420,11 +5161,12 @@ bool ParseInstallOptions(int argc, wchar_t** argv, InstallOptions* options, Erro
         }
     }
     if (!manifestSeen || !manifestHashSeen || !revisionSeen || !modeSeen ||
+        !infHashSeen || !sysHashSeen || !catHashSeen ||
         !transactionDeadlineSeen ||
         brokerSeen != targetUserSeen || brokerSeen != brokerHashSeen ||
         brokerSeen != brokerTokenSeen || brokerSeen != brokerTokenHashSeen) {
         return SetError(error, L"arguments", ERROR_INVALID_PARAMETER,
-            L"manifest, its installer hash, source revision, and validation mode are required; broker executable, hashes, protected token, and target SID must be supplied together");
+            L"manifest, its installer hash, source revision, validation mode, and exact INF/SYS/CAT hashes are required; broker executable, hashes, protected token, and target SID must be supplied together");
     }
     return true;
 }
@@ -3465,6 +5207,8 @@ void Usage() {
         << L"usage:\n"
         << L"  ViiperUdeCtl.exe install <ViiperUde.inf> --manifest <submission.json> --manifest-sha256 <64 hex> "
            L"--source-revision <40-or-64 hex> --validation-mode <production|controlled-test> "
+           L"--expected-inf-sha256 <64 hex> --expected-sys-sha256 <64 hex> "
+           L"--expected-cat-sha256 <64 hex> "
            L"--transaction-deadline-unix-ms <positive integer> "
            L"[--allow-controlled-downgrade <exact-installed-version>] "
            L"--broker-executable <managed-viiper.exe> --broker-sha256 <64 hex> "
@@ -3472,6 +5216,8 @@ void Usage() {
            L"--target-user-sid <SID>\n"
         << L"  ViiperUdeCtl.exe verify <ViiperUde.inf> --manifest <submission.json> --manifest-sha256 <64 hex> "
            L"--source-revision <40-or-64 hex> --validation-mode <production|controlled-test> "
+           L"--expected-inf-sha256 <64 hex> --expected-sys-sha256 <64 hex> "
+           L"--expected-cat-sha256 <64 hex> "
            L"--transaction-deadline-unix-ms <positive integer>\n"
         << L"  ViiperUdeCtl.exe remove [--transaction-deadline-unix-ms <positive integer>]\n"
         << L"  ViiperUdeCtl.exe status\n"
@@ -3480,7 +5226,9 @@ void Usage() {
 
 } // namespace
 
-int wmain(int argc, wchar_t** argv) {
+int RunViiperUdeCtl(int argc, wchar_t** argv) {
+    ClearActiveRecoveryEvidence();
+    gTransactionMutationStarted = false;
     if (argc >= 3 &&
         (_wcsicmp(argv[1], L"install") == 0 || _wcsicmp(argv[1], L"verify") == 0)) {
         InstallOptions options;
@@ -3502,7 +5250,8 @@ int wmain(int argc, wchar_t** argv) {
             EmitOutcome(argv[1], outcome);
             return static_cast<int>(outcome.exitCode);
         }
-        Outcome outcome = _wcsicmp(argv[1], L"verify") == 0 ? Verify(options) : Install(options);
+        Outcome outcome =
+            _wcsicmp(argv[1], L"verify") == 0 ? Verify(options) : Install(options);
         EmitOutcome(argv[1], outcome);
         return static_cast<int>(outcome.exitCode);
     }
@@ -3537,4 +5286,51 @@ int wmain(int argc, wchar_t** argv) {
     outcome.exitCode = ExitCode::Usage;
     EmitOutcome(L"unknown", outcome);
     return static_cast<int>(outcome.exitCode);
+}
+
+const wchar_t* ExceptionOperation(int argc, wchar_t** argv) noexcept {
+    if (argc < 2 || argv == nullptr || argv[1] == nullptr) {
+        return L"unknown";
+    }
+    for (const wchar_t* operation :
+            {L"install", L"verify", L"remove", L"status", L"self-test"}) {
+        if (_wcsicmp(argv[1], operation) == 0) {
+            return operation;
+        }
+    }
+    return L"unknown";
+}
+
+int wmain(int argc, wchar_t** argv) {
+    try {
+        return RunViiperUdeCtl(argc, argv);
+    } catch (...) {
+        const wchar_t* operation = ExceptionOperation(argc, argv);
+        const bool changed = gTransactionMutationStarted;
+        const ExitCode exitCode = changed
+            ? ExitCode::RollbackFailed : ExitCode::PreflightRejected;
+        std::fwprintf(stderr,
+            L"result=error operation=%ls changed=%d rebootRequired=0 "
+            L"rollback=%ls exitCode=%d phase=\"unhandled-cpp-exception\" "
+            L"win32Error=%lu message=\"%ls\"",
+            operation, changed ? 1 : 0, changed ? L"failed" : L"not-needed",
+            static_cast<int>(exitCode), static_cast<unsigned long>(ERROR_GEN_FAILURE),
+            changed
+                ? L"unhandled C++ exception after transaction mutation; external reconciliation is required"
+                : L"unhandled C++ exception before transaction mutation");
+        if (gActiveRecoveryRecord[0] != L'\0') {
+            std::fwprintf(stderr,
+                L" recoveryRecord=\"%ls\" recoveryRecordWritten=%d",
+                gActiveRecoveryRecord.data(),
+                gActiveRecoveryRecordWritten ? 1 : 0);
+        }
+        if (gActiveBackupRootRetained && gActiveBackupRoot[0] != L'\0') {
+            std::fwprintf(stderr,
+                L" recoveryBackup=\"%ls\" recoveryBackupRetained=1",
+                gActiveBackupRoot.data());
+        }
+        std::fwprintf(stderr, L"\n");
+        std::fflush(stderr);
+        return static_cast<int>(exitCode);
+    }
 }

@@ -5,14 +5,19 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
 
 var nativePackageHexRevision = regexp.MustCompile(`^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$`)
 var nativePackageSHA256 = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
+var nativePackageInstallProofPattern = regexp.MustCompile(
+	`(?m)^result=(success|error) operation=install changed=([01]) rebootRequired=([01]) rollback=(not-needed|succeeded|failed) exitCode=([0-9]+)(?: .*)?\r?$`,
+)
 
 const (
 	nativePackageTransactionTimeout = 4 * time.Minute
@@ -40,13 +45,16 @@ func (e *nativePackageRebootRequiredError) ExitCode() int {
 // native UDE package. It is hidden because normal users enter through the
 // signed DS4Windows installer, which embeds the reviewed hashes passed here.
 type NativePackageInstall struct {
-	PackageDirectory       string `help:"Directory containing the four Microsoft-returned VIIPER UDE files." required:""`
+	PackageDirectory       string `help:"Directory containing the exact Microsoft-returned INF, SYS, and CAT runtime files." required:""`
 	SubmissionManifest     string `help:"Source-bound HLK/WHCP submission manifest." required:""`
 	SourceRevision         string `help:"Reviewed 40- or 64-character source revision." required:""`
 	DriverHelper           string `help:"Path to the packaged ViiperUdeCtl.exe." required:""`
 	ExpectedBrokerSHA256   string `help:"Installer-embedded SHA-256 of this VIIPER executable." required:""`
 	ExpectedHelperSHA256   string `help:"Installer-embedded SHA-256 of ViiperUdeCtl.exe." required:""`
 	ExpectedManifestSHA256 string `help:"Installer-embedded SHA-256 of the reviewed HLK/WHCP manifest." required:""`
+	ExpectedInfSHA256      string `help:"Installer-embedded SHA-256 of the Microsoft-returned ViiperUde.inf." required:""`
+	ExpectedSysSHA256      string `help:"Installer-embedded SHA-256 of the Microsoft-returned ViiperUde.sys." required:""`
+	ExpectedCatSHA256      string `help:"Installer-embedded SHA-256 of the Microsoft-returned ViiperUde.cat." required:""`
 	TargetUserSID          string `help:"Interactive Windows user SID that owns legacy startup state." required:""`
 }
 
@@ -55,17 +63,126 @@ type NativePackageInstall struct {
 type NativePackageBrokerCommit struct {
 	TokenFile                 string `help:"Protected package-transaction token path." required:""`
 	ExpectedTokenSHA256       string `help:"SHA-256 of the protected transaction token." required:""`
+	ExpectedBrokerSHA256      string `help:"Installer-bound SHA-256 of the broker being committed." required:""`
 	TargetUserSID             string `help:"Interactive Windows user SID that owns legacy startup state." required:""`
 	TransactionDeadlineUnixMS string `help:"Outer package transaction deadline as Unix milliseconds." required:""`
 }
 
-func (c *NativePackageBrokerCommit) Run(logger *slog.Logger) error {
-	if !nativePackageSHA256.MatchString(strings.TrimSpace(c.ExpectedTokenSHA256)) {
-		return errors.New("native package transaction token SHA-256 must contain exactly 64 hexadecimal characters")
+type nativePackageBrokerCommitResult struct {
+	success  bool
+	changed  bool
+	rollback string
+	exitCode int
+}
+
+type nativePackageInstallProof struct {
+	success        bool
+	changed        bool
+	rebootRequired bool
+	rollback       string
+	exitCode       int
+}
+
+func parseNativePackageInstallProof(output string, processExitCode int) (nativePackageInstallProof, error) {
+	matches := nativePackageInstallProofPattern.FindAllStringSubmatch(output, -1)
+	if len(matches) != 1 {
+		return nativePackageInstallProof{}, errors.New("driver helper did not emit exactly one structured install outcome")
 	}
-	return commitNativePackageBroker(logger, strings.TrimSpace(c.TokenFile),
-		strings.ToLower(strings.TrimSpace(c.ExpectedTokenSHA256)), strings.TrimSpace(c.TargetUserSID),
-		strings.TrimSpace(c.TransactionDeadlineUnixMS))
+	proofExitCode, err := strconv.Atoi(matches[0][5])
+	if err != nil {
+		return nativePackageInstallProof{}, fmt.Errorf("parse driver helper install exit code: %w", err)
+	}
+	proof := nativePackageInstallProof{
+		success:        matches[0][1] == "success",
+		changed:        matches[0][2] == "1",
+		rebootRequired: matches[0][3] == "1",
+		rollback:       matches[0][4],
+		exitCode:       proofExitCode,
+	}
+	if proof.exitCode != processExitCode {
+		return nativePackageInstallProof{}, fmt.Errorf(
+			"driver helper install process exit %d disagreed with structured exit %d",
+			processExitCode, proof.exitCode,
+		)
+	}
+	switch proof.exitCode {
+	case 0:
+		if !proof.success || proof.rebootRequired || proof.rollback != "not-needed" {
+			return nativePackageInstallProof{}, errors.New("driver helper emitted an invalid success install outcome")
+		}
+	case nativePackageRebootRequiredCode:
+		if proof.success || !proof.changed || !proof.rebootRequired || proof.rollback != "succeeded" {
+			return nativePackageInstallProof{}, errors.New("driver helper emitted an invalid reboot-boundary install outcome")
+		}
+	case 4:
+		if proof.success || proof.changed || proof.rebootRequired || proof.rollback != "not-needed" {
+			return nativePackageInstallProof{}, errors.New("driver helper emitted an invalid preflight install outcome")
+		}
+	case 1:
+		settledMutation := proof.changed && proof.rollback == "succeeded"
+		preMutationFailure := !proof.changed && proof.rollback == "not-needed"
+		if proof.success || (!settledMutation && !preMutationFailure) {
+			return nativePackageInstallProof{}, errors.New("driver helper emitted an invalid failed install outcome")
+		}
+	case 3:
+		if proof.success || !proof.changed || proof.rollback != "failed" {
+			return nativePackageInstallProof{}, errors.New("driver helper emitted an invalid indeterminate install outcome")
+		}
+	default:
+		return nativePackageInstallProof{}, fmt.Errorf(
+			"driver helper returned unsupported structured install exit %d", proof.exitCode,
+		)
+	}
+	return proof, nil
+}
+
+func (r nativePackageBrokerCommitResult) proofLine() string {
+	status := "error"
+	if r.success {
+		status = "success"
+	}
+	changed := 0
+	if r.changed {
+		changed = 1
+	}
+	return fmt.Sprintf(
+		"result=%s operation=native-package-broker-commit changed=%d rollback=%s exitCode=%d\n",
+		status, changed, r.rollback, r.exitCode,
+	)
+}
+
+type nativePackageBrokerCommitError struct {
+	cause    error
+	exitCode int
+}
+
+func (e *nativePackageBrokerCommitError) Error() string { return e.cause.Error() }
+func (e *nativePackageBrokerCommitError) Unwrap() error { return e.cause }
+func (e *nativePackageBrokerCommitError) ExitCode() int { return e.exitCode }
+
+func nativePackageBrokerPreflightFailure(err error) (nativePackageBrokerCommitResult, error) {
+	return nativePackageBrokerCommitResult{rollback: "not-needed", exitCode: 4}, err
+}
+
+func (c *NativePackageBrokerCommit) Run(logger *slog.Logger) error {
+	var result nativePackageBrokerCommitResult
+	var err error
+	if !nativePackageSHA256.MatchString(strings.TrimSpace(c.ExpectedTokenSHA256)) ||
+		!nativePackageSHA256.MatchString(strings.TrimSpace(c.ExpectedBrokerSHA256)) {
+		result, err = nativePackageBrokerPreflightFailure(
+			errors.New("native package token and broker SHA-256 values must contain exactly 64 hexadecimal characters"),
+		)
+	} else {
+		result, err = commitNativePackageBroker(logger, strings.TrimSpace(c.TokenFile),
+			strings.ToLower(strings.TrimSpace(c.ExpectedTokenSHA256)),
+			strings.ToLower(strings.TrimSpace(c.ExpectedBrokerSHA256)), strings.TrimSpace(c.TargetUserSID),
+			strings.TrimSpace(c.TransactionDeadlineUnixMS))
+	}
+	fmt.Fprint(os.Stdout, result.proofLine())
+	if err != nil {
+		return &nativePackageBrokerCommitError{cause: err, exitCode: result.exitCode}
+	}
+	return nil
 }
 
 func (c *NativePackageInstall) Run(logger *slog.Logger) error {
@@ -85,6 +202,9 @@ func (c *NativePackageInstall) Run(logger *slog.Logger) error {
 		expectedBrokerSHA256:   strings.ToLower(strings.TrimSpace(c.ExpectedBrokerSHA256)),
 		expectedHelperSHA256:   strings.ToLower(strings.TrimSpace(c.ExpectedHelperSHA256)),
 		expectedManifestSHA256: strings.ToLower(strings.TrimSpace(c.ExpectedManifestSHA256)),
+		expectedInfSHA256:      strings.ToLower(strings.TrimSpace(c.ExpectedInfSHA256)),
+		expectedSysSHA256:      strings.ToLower(strings.TrimSpace(c.ExpectedSysSHA256)),
+		expectedCatSHA256:      strings.ToLower(strings.TrimSpace(c.ExpectedCatSHA256)),
 		targetUserSID:          strings.TrimSpace(c.TargetUserSID),
 	}
 	if err := request.validate(); err != nil {
@@ -104,6 +224,9 @@ type nativePackageRequest struct {
 	expectedBrokerSHA256   string
 	expectedHelperSHA256   string
 	expectedManifestSHA256 string
+	expectedInfSHA256      string
+	expectedSysSHA256      string
+	expectedCatSHA256      string
 	targetUserSID          string
 }
 
@@ -125,8 +248,11 @@ func (r nativePackageRequest) validate() error {
 	}
 	if !nativePackageSHA256.MatchString(r.expectedBrokerSHA256) ||
 		!nativePackageSHA256.MatchString(r.expectedHelperSHA256) ||
-		!nativePackageSHA256.MatchString(r.expectedManifestSHA256) {
-		return errors.New("native package broker, helper, and manifest SHA-256 values must contain exactly 64 hexadecimal characters")
+		!nativePackageSHA256.MatchString(r.expectedManifestSHA256) ||
+		!nativePackageSHA256.MatchString(r.expectedInfSHA256) ||
+		!nativePackageSHA256.MatchString(r.expectedSysSHA256) ||
+		!nativePackageSHA256.MatchString(r.expectedCatSHA256) {
+		return errors.New("native package broker, helper, manifest, INF, SYS, and CAT SHA-256 values must contain exactly 64 hexadecimal characters")
 	}
 	for name, path := range map[string]string{
 		"broker source": r.brokerSource, "driver package": r.packageDirectory,

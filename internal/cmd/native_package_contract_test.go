@@ -19,6 +19,10 @@ func TestNativePackageProductionSourceContract(t *testing.T) {
 		filepath.Join(root, "internal", "cmd", "native_package_windows.go"))
 	uninstallWindowsSource := readNativePackageContractFile(t,
 		filepath.Join(root, "internal", "cmd", "native_package_uninstall_windows.go"))
+	processWaitSource := readNativePackageContractFile(t,
+		filepath.Join(root, "internal", "cmd", "native_package_process_windows.go"))
+	mutexSource := readNativePackageContractFile(t,
+		filepath.Join(root, "internal", "cmd", "native_mutex_windows.go"))
 	helperSource := readNativePackageContractFile(t,
 		filepath.Join(root, "native", "udecx", "tools", "ViiperUdeCtl.cpp"))
 	transactionSource := readNativePackageContractFile(t,
@@ -29,9 +33,10 @@ func TestNativePackageProductionSourceContract(t *testing.T) {
 		filepath.Join(root, "internal", "cmd", "native_service_install_windows.go"))
 
 	requiredWindows := []string{
-		`runDriverHelper(ctx, "verify", false)`,
 		"expectedManifestSHA256",
+		"expectedInfSHA256", "expectedSysSHA256", "expectedCatSHA256",
 		"--manifest-sha256",
+		"--expected-inf-sha256", "--expected-sys-sha256", "--expected-cat-sha256",
 		"nativeBrokerDirectorySDDL",
 		"nativeBrokerExecutableSDDL",
 		"nativePackageServiceWeakExactOwned",
@@ -40,15 +45,18 @@ func TestNativePackageProductionSourceContract(t *testing.T) {
 		"slices.Equal(recovery, nativeServiceRecoveryActions)",
 		"service.Delete()",
 		"lockNativeServiceExecutableReadOnly",
-		`runDriverHelper(ctx, "install", true)`,
+		`runDriverHelper(ctx)`,
+		"nestedBrokerCommit", "nestedBrokerHealthy", "nestedMutationStarted",
+		"nestedRollbackSucceeded", "verifyExactBrokerHealth(ctx)",
+		"nested native broker service rollback is unsettled",
 		"MOVEFILE_WRITE_THROUGH",
 		"VerifyAuthenticatedHealth",
 		"nativePackageTokenSDDL",
 		"nativePackageMutexHeldByAnotherOwner",
-		"runtime.LockOSThread()",
 		"lockNativePackageDirectoryChain",
 		"--broker-token-sha256",
 		"nativePackageRebootRequiredError",
+		"parseNativePackageInstallProof(text, processExitCode)",
 	}
 	for _, fragment := range requiredWindows {
 		if !strings.Contains(windowsSource, fragment) {
@@ -72,10 +80,35 @@ func TestNativePackageProductionSourceContract(t *testing.T) {
 		"errors.Is(err, windows.ERROR_SERVICE_MARKED_FOR_DELETE)",
 		"nativePackageUninstallIsCurrentExecutable(file)",
 		"windows.MOVEFILE_DELAY_UNTIL_REBOOT|windows.MOVEFILE_WRITE_THROUGH",
+		"renameNativePackageUninstallFileToTombstone(file)",
 	}
 	for _, fragment := range requiredUninstallWindows {
 		if !strings.Contains(uninstallWindowsSource, fragment) {
 			t.Errorf("Windows package uninstall orchestrator lost %q", fragment)
+		}
+	}
+	for name, source := range map[string]string{
+		"package install":   windowsSource,
+		"package uninstall": uninstallWindowsSource,
+	} {
+		if strings.Contains(source, "command.Wait()") {
+			t.Errorf("%s bypasses the retained process-handle join", name)
+		}
+		if !strings.Contains(source, "waitNativePackageHelper(command)") {
+			t.Errorf("%s lost the retained process-handle join", name)
+		}
+	}
+	if strings.Contains(uninstallWindowsSource,
+		"scheduleNativePackageUninstallFileAtReboot(file.path)") {
+		t.Error("native uninstall schedules a reusable canonical broker path for reboot deletion")
+	}
+	for _, fragment := range []string{
+		"process.WithHandle(", "windows.DuplicateHandle(", "windows.SYNCHRONIZE",
+		"windows.WaitForSingleObject", "windows.INFINITE",
+		"join.complete(command.Wait())", "nativePackageProcessWaitIndeterminateError",
+	} {
+		if !strings.Contains(processWaitSource, fragment) {
+			t.Errorf("native package helper process join lost %q", fragment)
 		}
 	}
 	if strings.Index(uninstallWindowsSource, "acquireNamedNativePackageMutex(nativePackageMutexName") >
@@ -85,7 +118,10 @@ func TestNativePackageProductionSourceContract(t *testing.T) {
 	requiredHelper := []string{
 		"Outcome Verify(", "ValidateCandidateInputs(", "RunBrokerInstall(",
 		"--manifest-sha256", "manifest-installer-hash", "--broker-sha256",
+		"--expected-inf-sha256", "--expected-sys-sha256", "--expected-cat-sha256",
 		"--broker-token-sha256", "native-package-broker-commit",
+		"ParseBrokerCommitProof", "driverRollbackAuthorized", "CreatePipe(",
+		"PROC_THREAD_ATTRIBUTE_HANDLE_LIST", "kMaximumBrokerProofBytes",
 		"RollbackInstall(prior", "broker-reboot-boundary",
 		"--transaction-deadline-unix-ms", "kBrokerRollbackCeilingMs",
 		"CreatePrivateNamespaceW", "WAIT_ABANDONED", "ReleaseMutex",
@@ -102,6 +138,22 @@ func TestNativePackageProductionSourceContract(t *testing.T) {
 		if !strings.Contains(helperSource, fragment) {
 			t.Errorf("driver helper lost %q", fragment)
 		}
+	}
+	if strings.Contains(helperSource, "UpdateDriverForPlugAndPlayDevicesW(") {
+		t.Error("driver helper must bind only an exact selected preinstalled package with DiInstallDevice")
+	}
+	if !strings.Contains(helperSource, "InstallPreinstalledDriverOnDevice(") ||
+		!strings.Contains(helperSource, "DiInstallDevice(") {
+		t.Error("driver helper lost exact preinstalled-driver selection and DiInstallDevice binding")
+	}
+	if strings.Contains(windowsSource, `strings.Contains(text, "result=success operation=install")`) {
+		t.Error("native package install must parse one exact helper outcome instead of accepting a success substring")
+	}
+	backupMove := strings.Index(windowsSource,
+		"moveNativePackageFile(t.destination, backupPath, false)")
+	backupPublish := strings.Index(windowsSource, "t.backupPath = backupPath")
+	if backupMove < 0 || backupPublish < 0 || backupPublish < backupMove {
+		t.Error("native package rollback path is published before the prior broker rename succeeds")
 	}
 	requiredTransaction := []string{
 		"transaction.Preflight(ctx)", "transaction.InspectService(ctx)",
@@ -128,11 +180,17 @@ func TestNativePackageProductionSourceContract(t *testing.T) {
 			t.Errorf("package uninstall transaction lost %q", fragment)
 		}
 	}
+	if !strings.Contains(serviceSource, "func acquireNativeInstallMutex(") {
+		t.Error("native broker service mutex wrapper was removed")
+	}
 	for _, fragment := range []string{
-		"func acquireNativeInstallMutex(", "runtime.LockOSThread()", "runtime.UnlockOSThread()",
+		"CreateBoundaryDescriptorW", "AddSIDToBoundaryDescriptor",
+		"CreatePrivateNamespaceW", "OpenPrivateNamespaceW",
+		"windows.WinBuiltinAdministratorsSid", "nativeMutexObjectSDDL",
+		"runtime.LockOSThread()", "runtime.UnlockOSThread()",
 	} {
-		if !strings.Contains(serviceSource, fragment) {
-			t.Errorf("native broker service mutex lost %q", fragment)
+		if !strings.Contains(mutexSource, fragment) {
+			t.Errorf("shared native private mutex namespace lost %q", fragment)
 		}
 	}
 	for name, source := range map[string]string{

@@ -16,7 +16,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"sort"
 	"strconv"
@@ -44,7 +43,7 @@ const (
 	nativeServiceRecoveryResetSecond = 15 * 60
 	nativeServiceInstallTimeout      = 45 * time.Second
 	nativeServiceStatePoll           = 100 * time.Millisecond
-	nativeInstallMutexName           = `Global\VIIPER.NativeBroker.Install.v1`
+	nativeInstallMutexName           = "VIIPER.NativeBroker.Install.v1"
 	nativeBrokerServiceSDDL          = "O:BAD:P(A;;GA;;;SY)(A;;GA;;;BA)"
 	nativeBrokerDirectorySDDL        = "O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;GRGX;;;BU)"
 	nativeBrokerExecutableSDDL       = "O:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;GRGX;;;BU)"
@@ -327,6 +326,14 @@ type nativeLegacyState struct {
 	commands            []nativeLegacyCommand
 }
 
+func nativeLegacyStartupOwnsRuntime(state nativeLegacyState) bool {
+	return state.runValue != nil ||
+		(state.scheduledAction != nil && (state.scheduledActive || state.scheduledEnabled)) ||
+		slices.ContainsFunc(state.commands, func(command nativeLegacyCommand) bool {
+			return command.running
+		})
+}
+
 type nativeRunRegistration struct {
 	value     string
 	valueType uint32
@@ -546,12 +553,43 @@ func uninstallNativeBrokerTransaction(
 	return nil
 }
 
+type nativeBrokerInstallEvidence struct {
+	mutationStarted   bool
+	rollbackSucceeded bool
+}
+
 func installNativeBrokerTransaction(
 	ctx context.Context,
 	logger *slog.Logger,
 	executable string,
 	dependencies nativeInstallDependencies,
+) error {
+	return installNativeBrokerTransactionWithEvidence(
+		ctx, logger, executable, dependencies, nil,
+	)
+}
+
+func installNativeBrokerTransactionWithEvidence(
+	ctx context.Context,
+	logger *slog.Logger,
+	executable string,
+	dependencies nativeInstallDependencies,
+	evidence *nativeBrokerInstallEvidence,
 ) (resultErr error) {
+	rollbackFailed := false
+	if evidence != nil {
+		*evidence = nativeBrokerInstallEvidence{}
+		defer func() {
+			if resultErr != nil && evidence.mutationStarted {
+				evidence.rollbackSucceeded = !rollbackFailed
+			}
+		}()
+	}
+	markMutation := func() {
+		if evidence != nil {
+			evidence.mutationStarted = true
+		}
+	}
 	if !filepath.IsAbs(executable) {
 		return fmt.Errorf("native broker executable must be an absolute path: %s", executable)
 	}
@@ -585,6 +623,7 @@ func installNativeBrokerTransaction(
 			return
 		}
 		if rollbackErr := rollbackCredential(); rollbackErr != nil {
+			rollbackFailed = true
 			resultErr = errors.Join(resultErr, fmt.Errorf("roll back native broker credential: %w", rollbackErr))
 		}
 	}()
@@ -644,7 +683,11 @@ func installNativeBrokerTransaction(
 				rollbackCtx, manager, service, before, dependencies.wait, rollbackCredential,
 			)
 			if rollbackErr != nil {
+				rollbackFailed = true
 				rollbackErrors = append(rollbackErrors, rollbackErr)
+			}
+			if !safeToRestartLegacy {
+				rollbackFailed = true
 			}
 			if !safeToRestartLegacy && credentialProvisioned && !credentialFinalized {
 				// The replacement could still own the key path. Retain the new
@@ -656,6 +699,7 @@ func installNativeBrokerTransaction(
 					errors.New("retained native credential because service ownership could not be rolled back safely"))
 			}
 		} else if rollbackErr := rollbackCredential(); rollbackErr != nil {
+			rollbackFailed = true
 			safeToRestartLegacy = false
 			rollbackErrors = append(rollbackErrors,
 				fmt.Errorf("restore native broker credential before legacy restart: %w", rollbackErr))
@@ -665,12 +709,14 @@ func installNativeBrokerTransaction(
 		// safe for that process to exist again.
 		if registrationsMayHaveChanged && safeToRestartLegacy {
 			if rollbackErr := dependencies.restoreLegacy(rollbackCtx, legacy); rollbackErr != nil {
+				rollbackFailed = true
 				safeToRestartLegacy = false
 				rollbackErrors = append(rollbackErrors, rollbackErr)
 			}
 		}
 		if legacyStopped && safeToRestartLegacy {
 			if rollbackErr := dependencies.restartLegacy(rollbackCtx, legacy); rollbackErr != nil {
+				rollbackFailed = true
 				rollbackErrors = append(rollbackErrors, fmt.Errorf("restart prior legacy VIIPER process: %w", rollbackErr))
 			}
 		}
@@ -683,11 +729,13 @@ func installNativeBrokerTransaction(
 		// Control(STOP) is itself a mutation. Even if the subsequent wait or
 		// status query fails, rollback must reconcile the snapshotted state.
 		serviceChanged = true
+		markMutation()
 		if err := stopNativeService(ctx, service, dependencies.wait); err != nil {
 			return fmt.Errorf("stop previous %s service: %w", NativeBrokerServiceName, err)
 		}
 	}
 	legacyStopped = true
+	markMutation()
 	stopLegacyErr := dependencies.stopLegacy(ctx, &legacy, logger)
 	registrationsMayHaveChanged = legacy.scheduledDisabled
 	if stopLegacyErr != nil {
@@ -702,6 +750,7 @@ func installNativeBrokerTransaction(
 	// Existing bytes are retained solely for rollback; they are never trusted as
 	// the new service secret because an unprivileged user may have pre-seeded the
 	// ProgramData path before its ACL was hardened.
+	markMutation()
 	credential, err = dependencies.provisionCredential()
 	if err != nil {
 		return fmt.Errorf("provision native broker credential: %w", err)
@@ -720,6 +769,7 @@ func installNativeBrokerTransaction(
 		// x/sys. Mark the service dirty before the call because a later optional
 		// configuration failure can occur after the base configuration changed.
 		serviceChanged = true
+		markMutation()
 		if err := service.UpdateConfig(config); err != nil {
 			return fmt.Errorf("update %s service: %w", NativeBrokerServiceName, err)
 		}
@@ -732,6 +782,7 @@ func installNativeBrokerTransaction(
 		baseConfig.Description = ""
 		baseConfig.SidType = windows.SERVICE_SID_TYPE_NONE
 		baseConfig.DelayedAutoStart = false
+		markMutation()
 		service, err = manager.CreateService(NativeBrokerServiceName, executable, baseConfig, arguments...)
 		if err != nil {
 			return fmt.Errorf("create %s service: %w", NativeBrokerServiceName, err)
@@ -771,6 +822,7 @@ func installNativeBrokerTransaction(
 	// are removed last so a failed native migration can still restart the exact
 	// legacy command without reconstructing startup ownership.
 	registrationsMayHaveChanged = true
+	markMutation()
 	if err := dependencies.removeLegacy(ctx, legacy); err != nil {
 		return fmt.Errorf("remove legacy VIIPER startup after native verification: %w", err)
 	}
@@ -1222,6 +1274,21 @@ func verifyNativeBroker(ctx context.Context, password string) error {
 	}
 }
 
+func verifyNativeBrokerOnce(ctx context.Context, password string) error {
+	if strings.TrimSpace(password) == "" {
+		return errors.New("native broker credential is empty")
+	}
+	client := viiperclient.NewWithConfig(api.DefaultListenAddress, &viiperclient.Config{
+		DialTimeout: time.Second, ReadTimeout: 2 * time.Second,
+		WriteTimeout: 2 * time.Second, Password: password,
+	})
+	response, err := client.PingCtx(ctx)
+	if err != nil {
+		return fmt.Errorf("authenticate exact native broker: %w", err)
+	}
+	return validateNativeBrokerPing(response)
+}
+
 func validateNativeBrokerPing(response *viipertypes.PingResponse) error {
 	expected, err := udecx.ExpectedBuildIdentity()
 	if err != nil {
@@ -1288,45 +1355,10 @@ func waitContext(ctx context.Context, delay time.Duration) error {
 }
 
 func acquireNativeInstallMutex(timeout time.Duration) (func(), error) {
-	// Win32 mutexes are owned by OS threads. Keep this goroutine pinned through
-	// its deferred release so the Go scheduler cannot move ReleaseMutex to a
-	// non-owner thread and leave service installation permanently serialized.
-	runtime.LockOSThread()
-	name, err := windows.UTF16PtrFromString(nativeInstallMutexName)
-	if err != nil {
-		runtime.UnlockOSThread()
-		return nil, err
-	}
-	descriptor, err := windows.SecurityDescriptorFromString("D:P(A;;GA;;;SY)(A;;GA;;;BA)")
-	if err != nil {
-		runtime.UnlockOSThread()
-		return nil, fmt.Errorf("create native install mutex security descriptor: %w", err)
-	}
-	attributes := windows.SecurityAttributes{
-		Length:             uint32(unsafe.Sizeof(windows.SecurityAttributes{})),
-		SecurityDescriptor: descriptor,
-	}
-	handle, err := createNamedNativeMutex(&attributes, name)
-	if err != nil {
-		runtime.UnlockOSThread()
-		return nil, fmt.Errorf("create native install mutex: %w", err)
-	}
-	status, err := windows.WaitForSingleObject(handle, uint32(timeout/time.Millisecond))
-	if err != nil {
-		windows.CloseHandle(handle) //nolint:errcheck
-		runtime.UnlockOSThread()
-		return nil, fmt.Errorf("wait for native install mutex: %w", err)
-	}
-	if status != windows.WAIT_OBJECT_0 && status != windows.WAIT_ABANDONED {
-		windows.CloseHandle(handle) //nolint:errcheck
-		runtime.UnlockOSThread()
-		return nil, errors.New("another VIIPER native install, update, or uninstall is still running")
-	}
-	return func() {
-		windows.ReleaseMutex(handle) //nolint:errcheck
-		windows.CloseHandle(handle)  //nolint:errcheck
-		runtime.UnlockOSThread()
-	}, nil
+	return acquireNativeNamedMutex(
+		nativeInstallMutexName, timeout,
+		"another VIIPER native install, update, or uninstall is still running",
+	)
 }
 
 type nativeFileAttributeTagInfo struct {
@@ -1970,6 +2002,74 @@ func readNativeCredential(path, userSID string) ([]byte, bool, error) {
 		return nil, false, fmt.Errorf("credential is unexpectedly large: more than %d bytes", 64*1024)
 	}
 	return contents, true, nil
+}
+
+func readNativeCredentialReadOnly(userSID string) ([]byte, error) {
+	if _, err := validateNativeInstallingUserSID(userSID); err != nil {
+		return nil, err
+	}
+	path, err := nativeServiceKeyFilePath()
+	if err != nil {
+		return nil, err
+	}
+	programData, err := windows.KnownFolderPath(windows.FOLDERID_ProgramData, windows.KF_FLAG_DEFAULT)
+	if err != nil {
+		return nil, fmt.Errorf("resolve ProgramData known folder: %w", err)
+	}
+	programData = filepath.Clean(programData)
+	directory := filepath.Join(programData, "VIIPER")
+	if !strings.EqualFold(filepath.Clean(path), filepath.Join(directory, keyFileName)) {
+		return nil, fmt.Errorf("native credential escaped the managed ProgramData path: %s", path)
+	}
+	rootHandle, err := openNativePathWithoutReparse(
+		programData, windows.FILE_READ_ATTRIBUTES, true,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("open ProgramData without reparse traversal: %w", err)
+	}
+	defer windows.CloseHandle(rootHandle) //nolint:errcheck
+	directoryHandle, err := openNativePathWithoutReparse(
+		directory, windows.FILE_READ_ATTRIBUTES|windows.READ_CONTROL, true,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("open protected native credential directory: %w", err)
+	}
+	defer windows.CloseHandle(directoryHandle) //nolint:errcheck
+	if err := validateNativeSecurityDescriptor(
+		directoryHandle, nativeCredentialDirectorySDDL(userSID),
+	); err != nil {
+		return nil, fmt.Errorf("validate protected native credential directory: %w", err)
+	}
+	credentialHandle, err := openNativePathWithoutReparse(
+		path, windows.GENERIC_READ|windows.READ_CONTROL, false,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if err := requireSingleNativeFileLink(credentialHandle); err != nil {
+		windows.CloseHandle(credentialHandle) //nolint:errcheck
+		return nil, fmt.Errorf("reject hard-linked credential: %w", err)
+	}
+	if err := validateNativeSecurityDescriptor(
+		credentialHandle, nativeCredentialFileSDDL(userSID),
+	); err != nil {
+		windows.CloseHandle(credentialHandle) //nolint:errcheck
+		return nil, fmt.Errorf("validate protected native credential: %w", err)
+	}
+	file := os.NewFile(uintptr(credentialHandle), path)
+	if file == nil {
+		windows.CloseHandle(credentialHandle) //nolint:errcheck
+		return nil, errors.New("wrap protected native credential handle")
+	}
+	defer file.Close() //nolint:errcheck
+	contents, err := io.ReadAll(io.LimitReader(file, 64*1024+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(contents) == 0 || len(contents) > 64*1024 {
+		return nil, fmt.Errorf("native credential has invalid length %d", len(contents))
+	}
+	return contents, nil
 }
 
 func writeNativeCredentialAtomically(path string, contents []byte, userSID string) error {

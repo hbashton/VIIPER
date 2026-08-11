@@ -147,8 +147,15 @@ $installedDriverHash = (Get-FileHash -LiteralPath $installedDriver -Algorithm SH
 if ($packageDriverHash -ne $installedDriverHash) {
     throw "The installed VIIPER UDE service image does not match the verified package. Installed='$installedDriver'."
 }
+$ownedRootDevices = @(Get-CimInstance -ClassName Win32_PnPEntity | Where-Object {
+    @($_.HardwareID) -contains 'ROOT\VIIPER\UDE'
+})
+if ($ownedRootDevices.Count -ne 1) {
+    throw "Expected exactly one VIIPER UDE hardware-ID owner; found $($ownedRootDevices.Count)."
+}
+$ownedRootInstance = [string]$ownedRootDevices[0].PNPDeviceID
 $devnodes = @(Get-CimInstance -ClassName Win32_PnPSignedDriver | Where-Object {
-    [string]$_.DeviceID -like 'ROOT\VIIPER\UDE*'
+    [string]$_.DeviceID -ieq $ownedRootInstance
 })
 if ($devnodes.Count -ne 1) {
     throw "Expected exactly one VIIPER UDE root devnode; found $($devnodes.Count)."

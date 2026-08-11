@@ -5,11 +5,14 @@ package cmd
 import (
 	"bytes"
 	"context"
+	cryptorand "crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -23,6 +26,8 @@ import (
 )
 
 const nativeFileDispositionInfoClass = 4
+
+const nativePackageUninstallTombstoneAttempts = 32
 
 var setNativeFileInformationByHandle = windows.NewLazySystemDLL(
 	"kernel32.dll",
@@ -50,6 +55,13 @@ type windowsNativePackageUninstallFile struct {
 type windowsNativePackageUninstallFileIdentity struct {
 	volumeSerialNumber uint32
 	fileIndex          uint64
+}
+
+type nativePackageFileRenameInfo struct {
+	replaceIfExists uint32
+	rootDirectory   windows.Handle
+	fileNameLength  uint32
+	fileName        [1]uint16
 }
 
 type windowsNativePackageUninstallLiveLog struct {
@@ -744,7 +756,7 @@ func (t *windowsNativePackageUninstallTransaction) RemoveDriver(
 	if err := command.Start(); err != nil {
 		return nativePackageRemoveResult{serviceRestoreVerified: true}, err
 	}
-	waitErr := command.Wait()
+	waitErr := waitNativePackageHelper(command)
 	exitCode := 0
 	if waitErr != nil {
 		var exitError *exec.ExitError
@@ -810,7 +822,15 @@ func (t *windowsNativePackageUninstallTransaction) Cleanup(
 			if identityErr == nil && isCurrentExecutable &&
 				(errors.Is(err, windows.ERROR_ACCESS_DENIED) ||
 					errors.Is(err, windows.ERROR_SHARING_VIOLATION)) {
-				if scheduleErr := scheduleNativePackageUninstallFileAtReboot(file.path); scheduleErr == nil {
+				tombstone, renameErr := renameNativePackageUninstallFileToTombstone(file)
+				if renameErr != nil {
+					cleanupErrors = append(cleanupErrors,
+						fmt.Errorf("rename running exact %s %s to a protected reboot tombstone: %w",
+							file.kind, file.path, renameErr))
+					continue
+				}
+				file.path = tombstone
+				if scheduleErr := scheduleNativePackageUninstallFileAtReboot(tombstone); scheduleErr == nil {
 					cleanupRebootRequired = true
 					if closeErr := windows.CloseHandle(file.handle); closeErr != nil {
 						cleanupErrors = append(cleanupErrors,
@@ -911,6 +931,52 @@ func scheduleNativePackageUninstallFileAtReboot(path string) error {
 		pointer, nil,
 		windows.MOVEFILE_DELAY_UNTIL_REBOOT|windows.MOVEFILE_WRITE_THROUGH,
 	)
+}
+
+func renameNativePackageUninstallFileToTombstone(
+	file *windowsNativePackageUninstallFile,
+) (string, error) {
+	if file == nil || file.handle == 0 || file.path == "" {
+		return "", errors.New("native package uninstall file snapshot is unavailable")
+	}
+	parent := filepath.Dir(filepath.Clean(file.path))
+	for attempt := 0; attempt < nativePackageUninstallTombstoneAttempts; attempt++ {
+		var random [16]byte
+		if _, err := cryptorand.Read(random[:]); err != nil {
+			return "", fmt.Errorf("generate reboot tombstone identity: %w", err)
+		}
+		tombstone := filepath.Join(parent,
+			".viiper.uninstall."+hex.EncodeToString(random[:])+".delete")
+		name, err := windows.UTF16FromString(tombstone)
+		if err != nil {
+			return "", err
+		}
+		nameBytes := (len(name) - 1) * 2
+		var layout nativePackageFileRenameInfo
+		bufferSize := int(unsafe.Offsetof(layout.fileName)) + nameBytes
+		buffer := make([]byte, bufferSize)
+		info := (*nativePackageFileRenameInfo)(unsafe.Pointer(&buffer[0]))
+		info.fileNameLength = uint32(nameBytes)
+		copy((*[windows.MAX_LONG_PATH]uint16)(unsafe.Pointer(&info.fileName[0]))[:nameBytes/2:nameBytes/2],
+			name[:len(name)-1])
+		result, _, callErr := setNativeFileInformationByHandle.Call(
+			uintptr(file.handle), windows.FileRenameInfo,
+			uintptr(unsafe.Pointer(&buffer[0])), uintptr(bufferSize),
+		)
+		runtime.KeepAlive(buffer)
+		if result != 0 {
+			return tombstone, nil
+		}
+		if errors.Is(callErr, windows.ERROR_ALREADY_EXISTS) ||
+			errors.Is(callErr, windows.ERROR_FILE_EXISTS) {
+			continue
+		}
+		if callErr == nil || errors.Is(callErr, syscall.Errno(0)) {
+			callErr = windows.ERROR_GEN_FAILURE
+		}
+		return "", callErr
+	}
+	return "", errors.New("could not allocate a unique native broker reboot tombstone")
 }
 
 func (t *windowsNativePackageUninstallTransaction) RestoreService(

@@ -17,8 +17,8 @@ the broker and leaving the devnode or Driver Store package behind.
 
 The signed bootstrapper supplies all of the following as immutable build data:
 
-- the exact VIIPER broker, `ViiperUdeCtl.exe`, and reviewed production-manifest
-  SHA-256 values;
+- the exact VIIPER broker, `ViiperUdeCtl.exe`, production manifest, INF, SYS,
+  and CAT SHA-256 values;
 - the reviewed exact 40- or 64-hexadecimal source revision;
 - the runtime driver directory containing only the Microsoft-returned INF,
   SYS, and CAT, plus the source-bound HLK/WHCP manifest; and
@@ -51,49 +51,59 @@ of the source-provenance evidence without becoming a user-machine dependency.
 
 1. Acquire the administrator-only machine package mutex and validate every
    immutable input.
-2. Inspect `VIIPERNativeBroker` without changing it. A protected canonical
-   service and executable become an exact rollback source. An exact service
-   name whose executable is restricted to one of VIIPER's managed Program
-   Files layouts, but whose service/image ACL is weak or stale, is stopped and
-   deleted; its unsafe ACL is never repaired in place or restored.
-3. Create `%ProgramFiles%\VIIPER` with the canonical protected ACL, or require
-   an existing directory to already have that exact ACL. Write a random sibling
-   staging file with the exact executable ACL, flush it, verify its SHA-256 and
-   single-link identity, retain the previous broker under a random protected
-   rollback name, and publish with `MoveFileExW(..., WRITE_THROUGH)`. The outer
-   transaction also creates and holds a random one-time token with an
-   administrator/SYSTEM-only DACL and passes its installer-bound SHA-256 to the
-   helper.
-4. `ViiperUdeCtl verify` repeats source/package verification without mutation.
-   `ViiperUdeCtl install` then retains its in-memory pre-install DriverStore and
-   devnode snapshot while launching the staged broker's hidden
-   `native-package-broker-commit` command. That command reopens the immutable
-   token, requires its exact DACL/hash/path, and proves the package mutex is
-   still owned by the separate outer process before it may enter the normal
-   broker service transaction.
-5. The broker transaction creates or updates the LocalSystem service, rotates
-   its protected credential, starts it, and requires authenticated `ping`
-   identity, `Ready=true`, ABI 1.9, the exact negotiated capability mask, and
-   the source-bound build identity returned by the currently loaded kernel
-   image. A well-formed identity from a stale same-ABI driver fails readiness.
-   Only then does it disable legacy Run/task/process ownership, and it
-   authenticates again before returning success.
-6. The helper commits the driver only after that broker proof. A broker failure
-   first rolls back SCM, credential, and legacy state inside the broker, then
-   restores the prior driver packages/devnode inside the still-running helper.
-   The outer command finally restores the old broker image and prior service
-   run-state. It never removes USB/IP directly.
+2. Create and hold a random one-time token below `%ProgramFiles%\VIIPER` with
+   an administrator/SYSTEM-only DACL, and pass its installer-bound SHA-256 to
+   `ViiperUdeCtl install`. The helper independently reopens and verifies the
+   source manifest and all three runtime driver hashes, acquires its private
+   driver mutex, and snapshots the exact Driver Store/devnode topology.
+3. Classify the driver under that mutex. Exact package bytes plus an exact
+   started binding cause no SetupAPI mutation. Exact bytes with missing,
+   stopped, or stale topology select the already-published driver for the exact
+   devnode and call `DiInstallDevice`; they never replace same-version Driver
+   Store content. An absent or newer candidate uses `DiInstallDriverW` under the
+   monotonic version policy. Same-version INF/SYS/CAT conflicts and implicit
+   downgrades fail before mutation.
+4. After the exact binding is verified, the helper launches the immutable
+   package broker's hidden `native-package-broker-commit` command while still
+   holding the driver mutex and snapshot. That command reopens the token,
+   requires its exact DACL/hash/path, proves the separate outer process still
+   owns the package mutex, then acquires the broker-service mutex.
+5. The nested command first checks for a true no-op: canonical protected
+   service/image/credential state, no live legacy owner, stable service PID, and
+   authenticated `ping` with `Ready=true`, ABI 1.9, the exact capability mask,
+   package version, and loaded-kernel build identity. If any part is unhealthy,
+   it transactionally publishes the exact broker through a flushed protected
+   sibling, creates or repairs the LocalSystem service, rotates its credential,
+   and repeats authenticated health before and after removing legacy
+   Run/task/process ownership. A weak pre-existing service is deleted and
+   recreated; its unsafe ACL is never repaired in place or restored.
+6. The child emits one newline-terminated canonical result. A broker failure
+   first rolls back SCM, credential, and legacy state, then restores the prior
+   broker image and run-state inside the child. Only a pre-mutation proof or a
+   fully settled child rollback authorizes the still-running helper to restore
+   its captured driver packages/devnode. Crash, malformed/missing proof, exit 3,
+   pipe/wait ambiguity, or an over-budget child leaves driver rollback
+   unauthorized and reports external reconciliation. USB/IP itself is never
+   directly removed by this transaction.
 
 The mutating broker process is never hard-terminated. The outer absolute
 four-minute deadline is passed through the helper into the nested broker, so it
 does not receive a fresh budget after driver mutation. The broker owns a
 separately bounded rollback and unwinds cooperatively; the helper retains the
-driver snapshot and polls only through that explicit rollback ceiling. If the
-child violates both bounds, the helper reports an indeterminate rollback and
-does not race the still-owning child with a second driver rollback. The outer rollback
-uses its own non-canceled two-minute context. Synchronous SetupAPI work is
+driver snapshot through a three-minute post-deadline ceiling that covers the
+45-second inner service rollback plus the outer non-canceled two-minute image
+rollback. Even after that ceiling it retains the driver mutex until the child
+actually exits, then reports an indeterminate result rather than racing the
+child with a second driver rollback. Synchronous SetupAPI work is
 checked immediately before and after each mutating boundary; no new phase may
 start after expiry, and no process is killed mid-rollback.
+
+Before calling Go's `Cmd.Wait`, the outer transaction duplicates the exact
+helper process handle with `SYNCHRONIZE`. It independently waits for that
+process object to become signaled before releasing the package mutex or any
+immutable input handle. A non-exit `Cmd.Wait` error is therefore still
+indeterminate, but it can no longer let a live mutating helper escape the
+transaction scope.
 
 ## Exact package removal
 
@@ -118,7 +128,9 @@ the historical broker-only uninstall routine.
    one-link state, non-reparse identity, and a stable hash. Launch
    `ViiperUdeCtl remove` with the outer absolute
    deadline. The Go parent never uses a context-killed process or hard
-   termination after launch. The helper checks the cooperative deadline before
+   termination after launch, and it applies the same retained-process join as
+   install before releasing its service/package scope. The helper checks the
+   cooperative deadline before
    and after each SetupAPI boundary and owns a separate two-minute cooperative
    rollback ceiling. If the live-log identity cannot be upgraded exactly, the
    helper is not launched and the broker stays stopped rather than reopening an
@@ -134,11 +146,26 @@ the historical broker-only uninstall routine.
    Exit 3, a crash, a missing/malformed proof, or any ambiguous wait cannot prove
    a safe binding, so the broker remains stopped and the command reports that
    external reconciliation is required.
-   Before mutation, rollback copies are placed below the non-reparse Windows
-   temporary directory in a cryptographically unpredictable, protected
-   Administrators/LocalSystem-only directory. The parent and backup root remain
-   locked against rename, and the exact INF/SYS/CAT handles deny write/delete
-   sharing until rollback is no longer possible.
+   Before mutation, an exact three-file INF/SYS/CAT rollback tree is placed
+   below the non-reparse Windows temporary directory in a cryptographically
+   unpredictable location. Every directory and file is created with, and then
+   verified against, an explicit protected Administrators/LocalSystem-only ACL;
+   payload writes are write-through, explicitly flushed, signature/hash
+   revalidated, and locked against write/delete sharing. A canonical journal
+   binds every captured devnode to one package index and every package to its
+   relative backup paths and exact hashes. It is written to a private temporary
+   name, flushed, atomically published with a write-through rename, reopened,
+   ACL/byte verified, and flushed again before the first SetupAPI mutation.
+   Journal presence means manual reconciliation may be required; it never
+   authorizes automatic restoration. Preservation is armed before mutation and
+   therefore survives C++ exceptions or process failure. It is disarmed only
+   after explicit, verified deletion following either committed removal or a
+   verified rollback; cleanup failure is surfaced and retains the journal and
+   backup tree. A backup-preparation failure whose tree cannot be deleted emits
+   the retained root and planned journal path with `recoveryRecordWritten=0`.
+   The allocation-free exception outcome separately tracks whether transaction
+   mutation actually started: pre-mutation exceptions remain exit 4 with
+   `changed=0`, while post-mutation exceptions require exit 3 reconciliation.
 5. Only after exit 0 or 3010 does cleanup revalidate and delete the exact service,
    credential, broker log, and installer-owned broker images. Deletion uses the
    retained file identities rather than a second untrusted path lookup. It does
@@ -187,11 +214,14 @@ registration cleanup is treated as VIIPER ownership authority.
   lifetime rule.
 - SetupAPI rollback preserves the captured root device instance ID. Per
   [`SetupDiCreateDeviceInfoW`](https://learn.microsoft.com/windows/win32/api/setupapi/nf-setupapi-setupdicreatedeviceinfow),
-  omitting `DICD_GENERATE_ID` makes `DeviceName` the complete instance ID;
-  generated IDs are used only for a first-time forward install. Rollback
-  reconciles and verifies the captured identity, topology, and signed package
-  hash rather than deleting every matching devnode and manufacturing a
-  replacement.
+  forward creation passes the VIIPER-owned `VIIPERUDE` device name with
+  `DICD_GENERATE_ID` and verifies the returned `ROOT\VIIPERUDE\####` identity.
+  Rollback omits `DICD_GENERATE_ID`, making `DeviceName` the complete captured
+  instance ID. It accepts only that namespace or the exact legacy
+  `ROOT\USB\####` form produced when older builds incorrectly passed the USB
+  class name, after the existing service/package ownership proof. It then
+  verifies the restored identity, topology, and signed package hashes rather
+  than deleting every matching devnode and manufacturing a replacement.
 - ViGEmBus's root-enumerated bus architecture is used only as the lifecycle
   reference: the bus owns its exact child identities and separates user-mode
   submission from PnP mutation. usbip-win2 remains an untouched legacy

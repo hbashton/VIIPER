@@ -15,7 +15,8 @@ import (
 )
 
 func TestNativePackageUninstallSerializesConcurrentPackageTransactions(t *testing.T) {
-	name := `Local\VIIPER_NATIVE_UNINSTALL_TEST_` + filepath.Base(t.TempDir())
+	requireNativeMutexAdministrator(t)
+	name := `VIIPER_NATIVE_UNINSTALL_TEST_` + filepath.Base(t.TempDir())
 	releaseFirst, err := acquireNamedNativePackageMutex(name, time.Second)
 	if err != nil {
 		t.Fatalf("acquire first package owner: %v", err)
@@ -47,6 +48,47 @@ func TestNativePackageUninstallSerializesConcurrentPackageTransactions(t *testin
 		t.Fatalf("package mutex remained stranded after release: %v", err)
 	}
 	releaseAfter()
+}
+
+func TestNativePackageUninstallRenamesRunningImageToUniqueTombstone(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "viiper.exe")
+	if err := os.WriteFile(path, []byte("exact-native-broker"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	file, err := lockNativePackageUninstallFile(path, "broker", "", false)
+	if err != nil {
+		t.Fatalf("lock test broker: %v", err)
+	}
+	defer func() {
+		if file.handle != 0 {
+			windows.CloseHandle(file.handle) //nolint:errcheck
+		}
+	}()
+
+	tombstone, err := renameNativePackageUninstallFileToTombstone(file)
+	if err != nil {
+		t.Fatalf("rename exact broker to reboot tombstone: %v", err)
+	}
+	if filepath.Dir(tombstone) != root ||
+		!strings.HasPrefix(filepath.Base(tombstone), ".viiper.uninstall.") ||
+		!strings.HasSuffix(filepath.Base(tombstone), ".delete") {
+		t.Fatalf("unsafe reboot tombstone path %q", tombstone)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("canonical broker path remained after tombstone rename: %v", err)
+	}
+	if err := windows.CloseHandle(file.handle); err != nil {
+		t.Fatalf("close renamed exact broker handle: %v", err)
+	}
+	file.handle = 0
+	contents, err := os.ReadFile(tombstone)
+	if err != nil {
+		t.Fatalf("read renamed tombstone: %v", err)
+	}
+	if string(contents) != "exact-native-broker" {
+		t.Fatalf("renamed tombstone contents=%q", contents)
+	}
 }
 
 func TestNativePackageUninstallDeletesRetainedExactFileHandle(t *testing.T) {

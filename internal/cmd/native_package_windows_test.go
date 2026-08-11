@@ -73,3 +73,37 @@ func TestNativePackageRollbackReconcilesStoppedPriorService(t *testing.T) {
 		t.Fatalf("startCalls=%d state=%d events=%v", service.startCalls, service.status.State, events)
 	}
 }
+
+func TestNativePackageRollbackPreservesImagesAndStoppedServiceWhenSCMRollbackIsUnsettled(t *testing.T) {
+	t.Parallel()
+	events := []string{}
+	service := &fakeNativeService{events: &events, status: svc.Status{State: svc.Stopped}}
+	transaction := &windowsNativePackageTransaction{
+		nestedBrokerCommit:           true,
+		nestedMutationStarted:        true,
+		nestedServiceRollbackSettled: false,
+		destinationPublished:         true,
+		backupPath:                   `C:\Program Files\VIIPER\.prior.rollback.exe`,
+		stoppedTrustedService:        true,
+		serviceSnapshot:              nativePackageServiceSnapshot{wasRunning: true},
+		service:                      service,
+	}
+
+	err := transaction.Rollback(context.Background())
+	if err == nil {
+		t.Fatal("unsettled nested SCM rollback was reported as restored")
+	}
+	if service.startCalls != 0 || len(events) != 0 {
+		t.Fatalf("indeterminate service was restarted: startCalls=%d events=%v",
+			service.startCalls, events)
+	}
+	if !transaction.destinationPublished {
+		t.Fatal("staged broker image was removed after unsettled SCM rollback")
+	}
+	if transaction.backupPath == "" {
+		t.Fatal("prior broker backup was consumed after unsettled SCM rollback")
+	}
+	if transaction.nestedRollbackSucceeded {
+		t.Fatal("unsettled SCM rollback was exposed as a safe nested rollback")
+	}
+}
