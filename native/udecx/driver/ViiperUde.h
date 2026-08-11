@@ -98,11 +98,13 @@ WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(VIIPER_UDE_REQUEST_CONTEXT, ViiperGetRequestC
 
 typedef struct VIIPER_UDE_CONTROLLER_CONTEXT {
     WDFWAITLOCK OwnerLock;
-    // This lock is embedded in the controller context instead of being a WDF
-    // child object. UdeCx endpoint/device cleanup can run while the framework
-    // is deleting sibling controller children, but the parent context remains
-    // alive until every child cleanup callback has returned.
-    FAST_MUTEX DeviceLock;
+    // UdeCx endpoint/device cleanup can run while the framework is deleting
+    // sibling controller children, but the parent context remains alive until
+    // every child cleanup callback has returned. A push lock is supported by
+    // the driver's Windows 10 1809 floor and is optimized for this shared-heavy
+    // identity index. Normal shared acquisition waits behind an exclusive
+    // lifecycle writer, so continuous reports cannot starve handle revocation.
+    EX_PUSH_LOCK DeviceLock;
     WDFSPINLOCK BrokerLock;
     WDFMEMORY PendingStorage;
     VIIPER_UDE_PENDING_SLOT *PendingSlots;
@@ -154,10 +156,61 @@ typedef struct VIIPER_UDE_CONTROLLER_CONTEXT {
     volatile LONG64 IsoPackets;
     volatile LONG64 BytesToDevice;
     volatile LONG64 BytesFromDevice;
+    // Sorted by DeviceId and protected by DeviceLock. The input producer uses
+    // a shared binary lookup while lifecycle mutations retain exclusive access
+    // to the physical UDE port table below.
+    ULONG InputDeviceCount;
+    UDECXUSBDEVICE InputDevices[VIIPER_UDE_MAX_DEVICES];
     UDECXUSBDEVICE Devices[VIIPER_UDE_MAX_DEVICES];
 } VIIPER_UDE_CONTROLLER_CONTEXT;
 
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(VIIPER_UDE_CONTROLLER_CONTEXT, ViiperGetControllerContext)
+
+_IRQL_requires_max_(APC_LEVEL)
+FORCEINLINE
+VOID
+ViiperAcquireDeviceLockExclusive(
+    _Inout_ VIIPER_UDE_CONTROLLER_CONTEXT *ControllerContext
+    )
+{
+    // Push-lock callers must suppress normal kernel APC delivery from acquire
+    // through release and must run at IRQL <= APC_LEVEL.
+    KeEnterCriticalRegion();
+    ExAcquirePushLockExclusive(&ControllerContext->DeviceLock);
+}
+
+_IRQL_requires_max_(APC_LEVEL)
+FORCEINLINE
+VOID
+ViiperAcquireDeviceLockShared(
+    _Inout_ VIIPER_UDE_CONTROLLER_CONTEXT *ControllerContext
+    )
+{
+    KeEnterCriticalRegion();
+    ExAcquirePushLockShared(&ControllerContext->DeviceLock);
+}
+
+_IRQL_requires_max_(APC_LEVEL)
+FORCEINLINE
+VOID
+ViiperReleaseDeviceLockExclusive(
+    _Inout_ VIIPER_UDE_CONTROLLER_CONTEXT *ControllerContext
+    )
+{
+    ExReleasePushLockExclusive(&ControllerContext->DeviceLock);
+    KeLeaveCriticalRegion();
+}
+
+_IRQL_requires_max_(APC_LEVEL)
+FORCEINLINE
+VOID
+ViiperReleaseDeviceLockShared(
+    _Inout_ VIIPER_UDE_CONTROLLER_CONTEXT *ControllerContext
+    )
+{
+    ExReleasePushLockShared(&ControllerContext->DeviceLock);
+    KeLeaveCriticalRegion();
+}
 
 typedef struct VIIPER_UDE_FILE_CONTEXT {
     volatile LONG Negotiated;

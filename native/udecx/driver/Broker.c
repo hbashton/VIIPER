@@ -251,7 +251,7 @@ ViiperSetDeviceResettingByIdentity(
 {
     ULONG index;
 
-    ExAcquireFastMutex(&ControllerContext->DeviceLock);
+    ViiperAcquireDeviceLockExclusive(ControllerContext);
     for (index = 0; index < VIIPER_UDE_MAX_DEVICES; ++index) {
         UDECXUSBDEVICE device = ControllerContext->Devices[index];
         VIIPER_UDE_DEVICE_CONTEXT *deviceContext;
@@ -265,7 +265,7 @@ ViiperSetDeviceResettingByIdentity(
             break;
         }
     }
-    ExReleaseFastMutex(&ControllerContext->DeviceLock);
+    ViiperReleaseDeviceLockExclusive(ControllerContext);
 }
 
 static
@@ -280,7 +280,7 @@ ViiperSetEndpointResettingByIdentity(
 {
     ULONG index;
 
-    ExAcquireFastMutex(&ControllerContext->DeviceLock);
+    ViiperAcquireDeviceLockExclusive(ControllerContext);
     for (index = 0; index < VIIPER_UDE_MAX_DEVICES; ++index) {
         UDECXUSBDEVICE device = ControllerContext->Devices[index];
         VIIPER_UDE_DEVICE_CONTEXT *deviceContext;
@@ -299,7 +299,7 @@ ViiperSetEndpointResettingByIdentity(
         }
         break;
     }
-    ExReleaseFastMutex(&ControllerContext->DeviceLock);
+    ViiperReleaseDeviceLockExclusive(ControllerContext);
 }
 
 static
@@ -329,6 +329,20 @@ ViiperAdmissionCanPublishLocked(
     }
     endpointContext = ViiperGetEndpointContext(Pending->Endpoint);
     return endpointContext->AdmissionQueue.Flink == &Pending->AdmissionEntry;
+}
+
+static
+VOID
+ViiperEndpointOperationCompletedLocked(
+    _In_ UDECXUSBENDPOINT Endpoint
+    )
+{
+    VIIPER_UDE_ENDPOINT_CONTEXT *endpointContext = ViiperGetEndpointContext(Endpoint);
+    LONG remaining = InterlockedDecrement(&endpointContext->ActiveOperations);
+    NT_ASSERT(remaining >= 0);
+    if (remaining == 0) {
+        KeSetEvent(&endpointContext->OperationsDrained, IO_NO_INCREMENT, FALSE);
+    }
 }
 
 static
@@ -367,7 +381,7 @@ ViiperClearSlotLocked(
         InterlockedDecrement(&deviceContext->PendingOperations);
     }
     if (endpoint != WDF_NO_HANDLE) {
-        ViiperEndpointOperationCompleted(endpoint);
+        ViiperEndpointOperationCompletedLocked(endpoint);
     }
 }
 
@@ -378,11 +392,19 @@ ViiperEndpointOperationStarted(
     )
 {
     VIIPER_UDE_ENDPOINT_CONTEXT *endpointContext = ViiperGetEndpointContext(Endpoint);
-    // Callers serialize admission for one endpoint. Clear before publishing
-    // the increment so a concurrent purge worker can never observe the old
-    // signaled state between a 0 -> 1 transition and KeClearEvent.
-    KeClearEvent(&endpointContext->OperationsDrained);
-    (VOID)InterlockedIncrement(&endpointContext->ActiveOperations);
+    LONG active = InterlockedCompareExchange(&endpointContext->ActiveOperations, 0, 0);
+
+    // Every caller holds the controller BrokerLock. The same lock owns the
+    // final decrement below, so clearing before the 0 -> 1 increment is one
+    // linearized transaction. Without BrokerLock a concurrent 1 -> 0
+    // completion could signal between those steps; incrementing first instead
+    // would expose active == 1 while the drain event was still signaled.
+    NT_ASSERT(active >= 0);
+    if (active == 0) {
+        KeClearEvent(&endpointContext->OperationsDrained);
+    }
+    active = InterlockedIncrement(&endpointContext->ActiveOperations);
+    NT_ASSERT(active > 0);
 }
 
 _IRQL_requires_max_(DISPATCH_LEVEL)
@@ -392,11 +414,16 @@ ViiperEndpointOperationCompleted(
     )
 {
     VIIPER_UDE_ENDPOINT_CONTEXT *endpointContext = ViiperGetEndpointContext(Endpoint);
-    LONG remaining = InterlockedDecrement(&endpointContext->ActiveOperations);
-    NT_ASSERT(remaining >= 0);
-    if (remaining == 0) {
-        KeSetEvent(&endpointContext->OperationsDrained, IO_NO_INCREMENT, FALSE);
-    }
+    VIIPER_UDE_DEVICE_CONTEXT *deviceContext = ViiperGetDeviceContext(endpointContext->Device);
+    VIIPER_UDE_CONTROLLER_CONTEXT *controllerContext =
+        ViiperGetControllerContext(deviceContext->Controller);
+
+    // External callers retain an admitted endpoint operation while reaching
+    // this wrapper. Do not touch Endpoint after the locked decrement can expose
+    // zero to the purge worker and ultimately allow UdeCx cleanup to begin.
+    WdfSpinLockAcquire(controllerContext->BrokerLock);
+    ViiperEndpointOperationCompletedLocked(Endpoint);
+    WdfSpinLockRelease(controllerContext->BrokerLock);
 }
 
 static
@@ -426,14 +453,19 @@ ViiperValidateBrokerOwner(
         return STATUS_INVALID_HANDLE;
     }
     fileContext = ViiperGetFileContext(fileObject);
-    WdfWaitLockAcquire(controllerContext->OwnerLock, NULL);
+    // EvtFileCleanup can run with this request outstanding, but KMDF keeps the
+    // request-associated file object alive. BrokerOwner and Negotiated only
+    // transition to TRUE, while Closing is set through InterlockedExchange
+    // before cleanup takes OwnerLock or admits a successor. A request which
+    // wins before that permanent close boundary may finish against its exact
+    // device owner/generation; one which loses it must fail without joining
+    // unrelated input publishers at the controller-wide OwnerLock.
     if (InterlockedCompareExchange(&controllerContext->ShuttingDown, 0, 0) != 0 ||
-        controllerContext->OwnerFile != fileObject || controllerContext->CleanupInProgress ||
+        InterlockedCompareExchange(&fileContext->BrokerOwner, 0, 0) == 0 ||
         InterlockedCompareExchange(&fileContext->Negotiated, 0, 0) == 0 ||
         InterlockedCompareExchange(&fileContext->Closing, 0, 0) != 0) {
         status = STATUS_INVALID_DEVICE_STATE;
     }
-    WdfWaitLockRelease(controllerContext->OwnerLock);
     return status;
 }
 
@@ -543,7 +575,6 @@ ViiperQueueUrbCompletion(
     }
 
     WdfObjectReference(Request);
-    WdfObjectReference(Endpoint);
     requestContext->CompletionRequest = Request;
     requestContext->Controller = Controller;
     requestContext->Endpoint = Endpoint;
@@ -641,7 +672,7 @@ ViiperEvtCompletionDpc(
             ViiperClearSlotLocked(controllerContext, slot);
             ownershipReleased = TRUE;
         } else if (slot >= VIIPER_UDE_MAX_PENDING_OPERATIONS) {
-            ViiperEndpointOperationCompleted(endpoint);
+            ViiperEndpointOperationCompletedLocked(endpoint);
             ownershipReleased = TRUE;
         }
         if (!ownershipReleased) {
@@ -656,7 +687,9 @@ ViiperEvtCompletionDpc(
                 FALSE);
         }
         WdfSpinLockRelease(controllerContext->BrokerLock);
-        WdfObjectDereference(endpoint);
+        // Endpoint rundown, not a WDF reference, is the lifetime fence. UdeCx
+        // cannot pass PurgeComplete until the locked decrement above, and this
+        // DPC performs no endpoint access after that final release.
         WdfObjectDereference(request);
     }
 }

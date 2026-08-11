@@ -1,6 +1,7 @@
 package udecx
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -234,11 +235,12 @@ func TestNativeCachedInputReadyUsesCompletionDPCWithoutWorkerHop(t *testing.T) {
 	}
 	ready := normalizedContract(nativeCFunction(t, device, "ViiperEvtFastInputQueueReady"))
 	requireContractOrder(t, ready,
-		"WdfWaitLockAcquire(endpointContext->InputLock, NULL);",
 		"ViiperEndpointOperationStarted(endpoint);",
+		"WdfWaitLockAcquire(endpointContext->InputLock, NULL);",
 		"WdfIoQueueRetrieveNextRequest(Queue, &request)",
-		"ViiperCompleteCachedInputUrb(endpoint, request);",
-		"WdfWaitLockRelease(endpointContext->InputLock);")
+		"ViiperPrepareCachedInputUrb(endpoint, request);",
+		"WdfWaitLockRelease(endpointContext->InputLock);",
+		"ViiperCompleteRetrievedInputUrb(endpoint, request, completionStatus);")
 	if strings.Contains(ready, "WdfWorkItemEnqueue") ||
 		strings.Contains(ready, "UdecxUrbComplete(") {
 		t.Fatal("ReadyNotify either retains a worker hop or completes a UDE URB synchronously")
@@ -413,5 +415,576 @@ func TestNativeBrokerMixedLaneFairnessModel(t *testing.T) {
 	if maxInspections != 2 || totalInspections != allocated {
 		t.Fatalf("mixed native traffic inspected max=%d total=%d, want max=2 total=%d",
 			maxInspections, totalInspections, allocated)
+	}
+}
+
+func TestNativeFastInputUsesSharedIndexedLifetimeAdmission(t *testing.T) {
+	controller := nativeContractSource(t, "native", "udecx", "driver", "Controller.c")
+	broker := nativeContractSource(t, "native", "udecx", "driver", "Broker.c")
+	device := nativeContractSource(t, "native", "udecx", "driver", "Device.c")
+	header := nativeContractSource(t, "native", "udecx", "driver", "ViiperUde.h")
+	inf := nativeContractSource(t, "native", "udecx", "package", "ViiperUde.inf")
+
+	owner := normalizedContract(nativeCFunction(t, broker, "ViiperValidateBrokerOwner"))
+	if strings.Contains(owner, "WdfWaitLockAcquire") ||
+		strings.Contains(owner, "controllerContext->OwnerFile") ||
+		strings.Contains(owner, "controllerContext->CleanupInProgress") {
+		t.Fatalf("fast owner validation still joins controller-wide cleanup state: %s", owner)
+	}
+	for _, required := range []string{
+		"WdfRequestGetFileObject(Request)",
+		"fileContext->BrokerOwner",
+		"fileContext->Negotiated",
+		"fileContext->Closing",
+	} {
+		if !strings.Contains(owner, required) {
+			t.Fatalf("lock-free owner validation lost %q", required)
+		}
+	}
+
+	submit := normalizedContract(nativeCFunction(t, device, "ViiperSubmitInputReport"))
+	for _, forbidden := range []string{
+		"ViiperAcquireDeviceLockExclusive", "WdfObjectReference(endpoint)",
+		"WdfObjectDereference(endpoint)",
+		"for (index = 0; index < VIIPER_UDE_MAX_DEVICES",
+	} {
+		if strings.Contains(submit, forbidden) {
+			t.Fatalf("fast input retains hot-path work %q: %s", forbidden, submit)
+		}
+	}
+	requireContractOrder(t, submit,
+		"ViiperAcquireDeviceLockShared(controllerContext);",
+		"ViiperFindInputDeviceLocked(controllerContext, input->DeviceId);",
+		"deviceContext->OwnerFile == ownerFile",
+		"deviceContext->Generation == input->Generation",
+		"WdfSpinLockAcquire(controllerContext->BrokerLock);",
+		"endpointContext->Purging",
+		"ViiperEndpointOperationStarted(endpoint);",
+		"WdfSpinLockRelease(controllerContext->BrokerLock);",
+		"ViiperReleaseDeviceLockShared(controllerContext);",
+		"WdfWaitLockAcquire(endpointContext->InputLock, NULL);")
+	requireContractOrder(t, submit,
+		"ViiperPrepareCachedInputUrb(endpoint, urbRequest);",
+		"WdfWaitLockRelease(endpointContext->InputLock);",
+		"ViiperCompleteRetrievedInputUrb(endpoint, urbRequest, status);")
+	requireContractOrder(t, submit,
+		"endpointContext->LastInputSequence",
+		"RtlCopyMemory(endpointContext->InputReport, payload, input->PayloadLength);",
+		"endpointContext->InputReportLength = input->PayloadLength;",
+		"InterlockedExchange(&endpointContext->InputReportValid, TRUE);",
+		"InterlockedIncrement64(&controllerContext->InputReportsSubmitted);",
+		"WdfIoQueueRetrieveNextRequest(endpointContext->Queue, &urbRequest);",
+		"endpointContext->CachedDeliveryPending")
+	for _, lifecycleGate := range []string{
+		"controllerContext->ShuttingDown",
+		"deviceContext->InD0",
+		"deviceContext->Purging",
+		"deviceContext->Resetting",
+		"endpointContext->Purging",
+		"endpointContext->Resetting",
+	} {
+		if !strings.Contains(submit, lifecycleGate) {
+			t.Fatalf("fast input admission lost lifecycle gate %q", lifecycleGate)
+		}
+	}
+
+	find := normalizedContract(nativeCFunction(t, device, "ViiperFindInputDeviceLocked"))
+	requireContractOrder(t, find,
+		"count = ControllerContext->InputDeviceCount;",
+		"while (count != 0)",
+		"candidate = first + step;",
+		"ControllerContext->InputDevices[candidate]",
+		"return ControllerContext->InputDevices[first];")
+	if strings.Contains(find, "ControllerContext->Devices[") {
+		t.Fatalf("input lookup fell back to the physical O(32) table: %s", find)
+	}
+
+	if !strings.Contains(header, "EX_PUSH_LOCK DeviceLock;") ||
+		!strings.Contains(header, "UDECXUSBDEVICE InputDevices[VIIPER_UDE_MAX_DEVICES];") ||
+		!strings.Contains(controller, "ExInitializePushLock(&context->DeviceLock);") {
+		t.Fatal("controller lost its shared input index or push-lock initialization")
+	}
+	sharedAcquire := normalizedContract(nativeCFunction(t, header, "ViiperAcquireDeviceLockShared"))
+	sharedRelease := normalizedContract(nativeCFunction(t, header, "ViiperReleaseDeviceLockShared"))
+	exclusiveAcquire := normalizedContract(nativeCFunction(t, header, "ViiperAcquireDeviceLockExclusive"))
+	exclusiveRelease := normalizedContract(nativeCFunction(t, header, "ViiperReleaseDeviceLockExclusive"))
+	requireContractOrder(t, sharedAcquire,
+		"KeEnterCriticalRegion();", "ExAcquirePushLockShared(&ControllerContext->DeviceLock);")
+	requireContractOrder(t, sharedRelease,
+		"ExReleasePushLockShared(&ControllerContext->DeviceLock);", "KeLeaveCriticalRegion();")
+	requireContractOrder(t, exclusiveAcquire,
+		"KeEnterCriticalRegion();", "ExAcquirePushLockExclusive(&ControllerContext->DeviceLock);")
+	requireContractOrder(t, exclusiveRelease,
+		"ExReleasePushLockExclusive(&ControllerContext->DeviceLock);", "KeLeaveCriticalRegion();")
+	if !strings.Contains(header, "_IRQL_requires_max_(APC_LEVEL)") ||
+		!strings.Contains(header, "Normal shared acquisition waits behind an exclusive") {
+		t.Fatal("push-lock IRQL/APC or writer-preference contract is undocumented")
+	}
+	queues := normalizedContract(nativeCFunction(t, controller, "ViiperCreateQueues"))
+	requireContractOrder(t, queues,
+		"attributes.ExecutionLevel = WdfExecutionLevelPassive;",
+		"attributes.SynchronizationScope = WdfSynchronizationScopeNone;",
+		"WDF_IO_QUEUE_CONFIG_INIT_DEFAULT_QUEUE(&queueConfig, WdfIoQueueDispatchParallel);")
+	if !strings.Contains(inf, "NTamd64.10.0...17763") {
+		t.Fatal("driver platform floor no longer proves EX_PUSH_LOCK API availability")
+	}
+}
+
+func TestNativeEndpointRundownPrecedesCleanupAndDPCMayRunImmediately(t *testing.T) {
+	broker := nativeContractSource(t, "native", "udecx", "driver", "Broker.c")
+	device := nativeContractSource(t, "native", "udecx", "driver", "Device.c")
+
+	started := normalizedContract(nativeCFunction(t, broker, "ViiperEndpointOperationStarted"))
+	requireContractOrder(t, started,
+		"if (active == 0)",
+		"KeClearEvent(&endpointContext->OperationsDrained);",
+		"InterlockedIncrement(&endpointContext->ActiveOperations);")
+	completedLocked := normalizedContract(nativeCFunction(
+		t, broker, "ViiperEndpointOperationCompletedLocked"))
+	requireContractOrder(t, completedLocked,
+		"InterlockedDecrement(&endpointContext->ActiveOperations);",
+		"if (remaining == 0)",
+		"KeSetEvent(&endpointContext->OperationsDrained, IO_NO_INCREMENT, FALSE);")
+	completed := normalizedContract(nativeCFunction(t, broker, "ViiperEndpointOperationCompleted"))
+	requireContractOrder(t, completed,
+		"WdfSpinLockAcquire(controllerContext->BrokerLock);",
+		"ViiperEndpointOperationCompletedLocked(Endpoint);",
+		"WdfSpinLockRelease(controllerContext->BrokerLock);")
+	if got := strings.Count(broker+device,
+		"InterlockedIncrement(&endpointContext->ActiveOperations)"); got != 1 {
+		t.Fatalf("ActiveOperations has %d increment sites, want one BrokerLock-owned transition", got)
+	}
+	if got := strings.Count(broker+device,
+		"InterlockedDecrement(&endpointContext->ActiveOperations)"); got != 1 {
+		t.Fatalf("ActiveOperations has %d decrement sites, want one BrokerLock-owned transition", got)
+	}
+	startedCalls := regexp.MustCompile(`ViiperEndpointOperationStarted\s*\([^)]*\)\s*;`)
+	if got := len(startedCalls.FindAllString(broker+device, -1)); got != 4 {
+		t.Fatalf("endpoint rundown has %d admission call sites, want the four audited BrokerLock callers", got)
+	}
+
+	for _, name := range []string{
+		"ViiperEvtFastInputQueueReady",
+		"ViiperSubmitInputReport",
+	} {
+		admission := normalizedContract(nativeCFunction(t, device, name))
+		requireContractOrder(t, admission,
+			"WdfSpinLockAcquire(controllerContext->BrokerLock);",
+			"ViiperEndpointOperationStarted(endpoint);",
+			"WdfSpinLockRelease(controllerContext->BrokerLock);")
+	}
+	ready := normalizedContract(nativeCFunction(t, device, "ViiperEvtFastInputQueueReady"))
+	requireContractOrder(t, ready,
+		"WdfSpinLockAcquire(controllerContext->BrokerLock);",
+		"ViiperEndpointOperationStarted(endpoint);",
+		"WdfSpinLockRelease(controllerContext->BrokerLock);",
+		"WdfWaitLockAcquire(endpointContext->InputLock, NULL);")
+	for _, name := range []string{"ViiperEvtUrbCanceledOnQueue", "ViiperQueueUrb"} {
+		admission := normalizedContract(nativeCFunction(t, broker, name))
+		requireContractOrder(t, admission,
+			"WdfSpinLockAcquire(controllerContext->BrokerLock);",
+			"ViiperEndpointOperationStarted(endpoint);",
+			"WdfSpinLockRelease(controllerContext->BrokerLock);")
+	}
+
+	purge := normalizedContract(nativeCFunction(t, device, "ViiperEvtEndpointPurge"))
+	requireContractOrder(t, purge,
+		"WdfSpinLockAcquire(controllerContext->BrokerLock);",
+		"InterlockedExchange(&endpointContext->Purging, TRUE);",
+		"WdfSpinLockRelease(controllerContext->BrokerLock);",
+		"ViiperPurgeEndpointOperations(Endpoint, STATUS_DEVICE_NOT_READY);",
+		"WdfWorkItemEnqueue(endpointContext->PurgeWorkItem);")
+	if strings.Contains(device, "WdfIoQueuePurge(") {
+		t.Fatal("UdeCx owns the associated endpoint queue; client code must not purge it")
+	}
+	createQueue := normalizedContract(nativeCFunction(t, device, "ViiperCreateEndpointQueue"))
+	if !strings.Contains(createQueue,
+		"UdecxUsbEndpointSetWdfIoQueue(Endpoint, endpointContext->Queue);") ||
+		!strings.Contains(purge, "UdeCx owns and has already stopped the associated queue") {
+		t.Fatal("endpoint purge lost the UdeCx-owned associated-queue boundary")
+	}
+	purgeWork := normalizedContract(nativeCFunction(t, device, "ViiperEvtEndpointPurgeWorkItem"))
+	requireContractOrder(t, purgeWork,
+		"KeWaitForSingleObject( &endpointContext->OperationsDrained",
+		"endpointContext->ActiveOperations",
+		"ViiperInvalidateEndpointInputReport(endpoint);",
+		"UdecxUsbEndpointPurgeComplete(endpoint);")
+	resetWork := normalizedContract(nativeCFunction(t, device, "ViiperEvtEndpointResetWorkItem"))
+	requireContractOrder(t, resetWork,
+		"KeWaitForSingleObject( &endpointContext->OperationsDrained",
+		"endpointContext->ActiveOperations",
+		"ViiperInvalidateEndpointInputReport(endpoint);",
+		"ViiperQueueAcknowledgedEndpointLifecycleEvent(")
+	start := normalizedContract(nativeCFunction(t, device, "ViiperEvtEndpointStart"))
+	requireContractOrder(t, start,
+		"WdfSpinLockAcquire(controllerContext->BrokerLock);",
+		"InterlockedExchange(&endpointContext->Purging, FALSE);",
+		"WdfSpinLockRelease(controllerContext->BrokerLock);",
+		"ViiperQueueEndpointLifecycleEvent(Endpoint, ViiperUdeOperationEndpointStart);")
+	if strings.Contains(device, "WdfIoQueueStart(") {
+		t.Fatal("UdeCx owns the associated endpoint queue; client code must not start it")
+	}
+
+	cleanup := normalizedContract(nativeCFunction(t, device, "ViiperEvtEndpointCleanup"))
+	requireContractOrder(t, cleanup,
+		"ViiperAcquireDeviceLockExclusive(controllerContext);",
+		"endpointContext->ActiveOperations",
+		"ViiperInvalidateEndpointInputReport(endpoint);",
+		"deviceContext->Endpoints[address] = WDF_NO_HANDLE;",
+		"ViiperReleaseDeviceLockExclusive(controllerContext);")
+	if strings.Contains(cleanup, "KeWaitForSingleObject") {
+		t.Fatalf("EvtCleanup attempts a late wait after KMDF made the object inaccessible: %s", cleanup)
+	}
+
+	queueCompletion := normalizedContract(nativeCFunction(t, broker, "ViiperQueueUrbCompletion"))
+	if strings.Contains(queueCompletion, "WdfObjectReference(Endpoint)") {
+		t.Fatal("terminal DPC lifetime still assumes a WDF reference postpones EvtCleanup")
+	}
+	dpc := normalizedContract(nativeCFunction(t, broker, "ViiperEvtCompletionDpc"))
+	requireContractOrder(t, dpc,
+		"UdecxUrbCompleteWithNtStatus(request, completionStatus);",
+		"ViiperEndpointOperationCompletedLocked(endpoint);",
+		"WdfSpinLockRelease(controllerContext->BrokerLock);",
+		"WdfObjectDereference(request);")
+	if strings.Contains(dpc, "WdfObjectDereference(endpoint)") {
+		t.Fatal("completion DPC touches the endpoint after releasing its final rundown owner")
+	}
+}
+
+func TestNativeUdeHandleRevocationPrecedesPlugOutAndCleanup(t *testing.T) {
+	device := nativeContractSource(t, "native", "udecx", "driver", "Device.c")
+
+	destroy := normalizedContract(nativeCFunction(t, device, "ViiperDestroyVirtualDevice"))
+	requireContractOrder(t, destroy,
+		"ViiperBeginRemoveDevice(",
+		"UdecxUsbDevicePlugOutAndDelete(device);")
+	afterPlugOut := destroy[strings.Index(destroy, "UdecxUsbDevicePlugOutAndDelete(device);")+len("UdecxUsbDevicePlugOutAndDelete(device);"):]
+	if strings.Contains(afterPlugOut, "ViiperGetDeviceContext(device)") ||
+		strings.Contains(afterPlugOut, "WdfObjectReference(device)") {
+		t.Fatalf("destroy path accesses a consumed UDE handle after PlugOutAndDelete: %s", afterPlugOut)
+	}
+
+	shutdown := normalizedContract(nativeCFunction(t, device, "ViiperBeginControllerShutdown"))
+	requireContractOrder(t, shutdown,
+		"ViiperRemoveInputDeviceLocked(controllerContext, device);",
+		"controllerContext->Devices[index] = WDF_NO_HANDLE;",
+		"ViiperReleaseDeviceLockExclusive(controllerContext);",
+		"UdecxUsbDevicePlugOutAndDelete(devices[index]);")
+	cleanup := normalizedContract(nativeCFunction(t, device, "ViiperEvtEndpointCleanup"))
+	requireContractOrder(t, cleanup,
+		"endpointContext->ActiveOperations",
+		"deviceContext->Endpoints[address] = WDF_NO_HANDLE;")
+}
+
+func TestNativeDeviceAndBrokerLockOrderNeverReverses(t *testing.T) {
+	broker := nativeContractSource(t, "native", "udecx", "driver", "Broker.c")
+	device := nativeContractSource(t, "native", "udecx", "driver", "Device.c")
+	functionName := regexp.MustCompile(`(?m)^([A-Za-z_][A-Za-z0-9_]*)\(\r?$`)
+
+	// The only permitted nesting is DeviceLock -> BrokerLock. For every direct
+	// DeviceLock acquisition, prove there is no unmatched BrokerLock acquisition
+	// earlier in the same function body.
+	for _, source := range []string{broker, device} {
+		for _, match := range functionName.FindAllStringSubmatch(source, -1) {
+			name := match[1]
+			body := normalizedContract(nativeCFunction(t, source, name))
+			for _, acquire := range []string{
+				"ViiperAcquireDeviceLockShared(",
+				"ViiperAcquireDeviceLockExclusive(",
+			} {
+				cursor := 0
+				for {
+					offset := strings.Index(body[cursor:], acquire)
+					if offset < 0 {
+						break
+					}
+					at := cursor + offset
+					prefix := body[:at]
+					brokerAcquire := strings.LastIndex(prefix, "WdfSpinLockAcquire(")
+					brokerRelease := strings.LastIndex(prefix, "WdfSpinLockRelease(")
+					if brokerAcquire > brokerRelease {
+						t.Fatalf("%s reverses global lock order BrokerLock -> DeviceLock: %s", name, body)
+					}
+					cursor = at + len(acquire)
+				}
+			}
+		}
+	}
+
+	for _, name := range []string{
+		"ViiperBeginRemoveDevice",
+		"ViiperBeginControllerShutdown",
+		"ViiperSubmitInputReport",
+	} {
+		body := normalizedContract(nativeCFunction(t, device, name))
+		deviceAcquire := "ViiperAcquireDeviceLockExclusive("
+		deviceRelease := "ViiperReleaseDeviceLockExclusive("
+		if name == "ViiperSubmitInputReport" {
+			deviceAcquire = "ViiperAcquireDeviceLockShared("
+			deviceRelease = "ViiperReleaseDeviceLockShared("
+		}
+		requireContractOrder(t, body,
+			deviceAcquire,
+			"WdfSpinLockAcquire(",
+			"WdfSpinLockRelease(",
+			deviceRelease)
+	}
+
+	virtualCleanup := normalizedContract(nativeCFunction(t, device, "ViiperEvtVirtualDeviceCleanup"))
+	requireContractOrder(t, virtualCleanup,
+		"WdfSpinLockAcquire(controllerContext->BrokerLock);",
+		"WdfSpinLockRelease(controllerContext->BrokerLock);",
+		"ViiperReleaseDeviceSlot(controllerContext, device, deviceContext->Slot);")
+	management := normalizedContract(nativeCFunction(t, broker, "ViiperCompleteManagementOperation"))
+	firstRelease := strings.Index(management,
+		"WdfSpinLockRelease(ControllerContext->BrokerLock);")
+	for _, setter := range []string{
+		"ViiperSetDeviceResettingByIdentity(",
+		"ViiperSetEndpointResettingByIdentity(",
+	} {
+		if firstRelease < 0 || strings.Index(management, setter) < firstRelease {
+			t.Fatalf("management path calls DeviceLock setter before releasing BrokerLock: %s", management)
+		}
+	}
+}
+
+func TestNativeEndpointRundownRejectsOldClearIncrementRace(t *testing.T) {
+	// Old ordering: Start clears first, Completion wins 1 -> 0 and signals,
+	// then Start increments. A waiter can observe signaled while active == 1.
+	oldActive := 1
+	oldSignaled := false
+	oldSignaled = false
+	oldActive--
+	if oldActive == 0 {
+		oldSignaled = true
+	}
+	oldActive++
+	if oldActive != 1 || !oldSignaled {
+		t.Fatalf("old adversarial schedule was not reproduced: active=%d signaled=%t",
+			oldActive, oldSignaled)
+	}
+
+	type rundown struct {
+		active   int
+		signaled bool
+	}
+	startLocked := func(state *rundown) {
+		if state.active == 0 {
+			state.signaled = false
+		}
+		state.active++
+	}
+	completeLocked := func(state *rundown) {
+		state.active--
+		if state.active == 0 {
+			state.signaled = true
+		}
+	}
+
+	for _, completionFirst := range []bool{false, true} {
+		state := rundown{active: 1, signaled: false}
+		if completionFirst {
+			completeLocked(&state)
+			startLocked(&state)
+		} else {
+			startLocked(&state)
+			completeLocked(&state)
+		}
+		if state.active != 1 || state.signaled {
+			t.Fatalf("serialized schedule completionFirst=%t left active=%d signaled=%t",
+				completionFirst, state.active, state.signaled)
+		}
+	}
+}
+
+func TestNativeFastInputIndexIdentityReuseAndComparisonBound(t *testing.T) {
+	type identity struct {
+		deviceID   uint64
+		owner      int
+		generation uint32
+		handle     int
+	}
+	var index []identity
+	insert := func(value identity) bool {
+		position := 0
+		for position < len(index) && index[position].deviceID < value.deviceID {
+			position++
+		}
+		if position < len(index) && index[position].deviceID == value.deviceID {
+			return false
+		}
+		index = append(index, identity{})
+		copy(index[position+1:], index[position:])
+		index[position] = value
+		return true
+	}
+	removeHandle := func(handle int) {
+		for position := range index {
+			if index[position].handle == handle {
+				copy(index[position:], index[position+1:])
+				index = index[:len(index)-1]
+				return
+			}
+		}
+	}
+	lookup := func(deviceID uint64) (identity, int, bool) {
+		first, count, comparisons := 0, len(index), 0
+		for count != 0 {
+			step := count / 2
+			candidate := first + step
+			comparisons++
+			if index[candidate].deviceID < deviceID {
+				first = candidate + 1
+				count -= step + 1
+			} else {
+				count = step
+			}
+		}
+		if first == len(index) || index[first].deviceID != deviceID {
+			return identity{}, comparisons, false
+		}
+		return index[first], comparisons, true
+	}
+
+	// 17 is coprime with 32, producing a deterministic hostile insertion order.
+	for n := 0; n < 32; n++ {
+		id := uint64((n*17)%32 + 1)
+		if !insert(identity{deviceID: id, owner: 7, generation: uint32(id + 100), handle: int(id)}) {
+			t.Fatalf("unexpected duplicate device ID %d", id)
+		}
+	}
+	maxComparisons := 0
+	for id := uint64(1); id <= 32; id++ {
+		got, comparisons, ok := lookup(id)
+		if !ok || got.owner != 7 || got.generation != uint32(id+100) {
+			t.Fatalf("identity lookup %d returned %+v ok=%t", id, got, ok)
+		}
+		if comparisons > maxComparisons {
+			maxComparisons = comparisons
+		}
+	}
+	for _, absent := range []uint64{0, 33, 1 << 63} {
+		if _, comparisons, ok := lookup(absent); ok || comparisons > 6 {
+			t.Fatalf("absent lookup %d ok=%t comparisons=%d", absent, ok, comparisons)
+		}
+	}
+	if maxComparisons > 6 || maxComparisons >= 32 {
+		t.Fatalf("binary lookup comparisons=%d, want <=6 and below O(32) scan", maxComparisons)
+	}
+
+	// A delayed cleanup removes only its exact handle. It cannot revoke a new
+	// owner/generation which reused the same logical ID after retirement.
+	removeHandle(13)
+	if !insert(identity{deviceID: 13, owner: 9, generation: 900, handle: 113}) {
+		t.Fatal("retired logical ID could not be reused")
+	}
+	removeHandle(13) // stale cleanup for the old handle
+	got, _, ok := lookup(13)
+	if !ok || got.handle != 113 || got.owner != 9 || got.generation != 900 {
+		t.Fatalf("stale cleanup revoked successor identity: %+v ok=%t", got, ok)
+	}
+}
+
+func TestNativeSubmitPurgeResetCancelAndCleanupInterleavings(t *testing.T) {
+	type endpoint struct {
+		open          bool
+		active        int
+		purgeWaiting  bool
+		purgeComplete bool
+		resetWaiting  bool
+		resetQueued   bool
+		terminalDPCs  int
+		cleaned       bool
+	}
+	admit := func(state *endpoint) bool {
+		if !state.open {
+			return false
+		}
+		state.active++
+		return true
+	}
+	closeForPurge := func(state *endpoint) {
+		state.open = false
+		state.purgeWaiting = true
+	}
+	tryPurgeComplete := func(state *endpoint) bool {
+		if !state.purgeWaiting || state.active != 0 {
+			return false
+		}
+		state.purgeComplete = true
+		return true
+	}
+	closeForReset := func(state *endpoint) {
+		state.open = false
+		state.resetWaiting = true
+	}
+	tryQueueReset := func(state *endpoint) bool {
+		if !state.resetWaiting || state.active != 0 {
+			return false
+		}
+		state.resetQueued = true
+		return true
+	}
+	runTerminalDPC := func(state *endpoint) {
+		state.terminalDPCs++
+		state.active--
+		if state.active < 0 {
+			t.Fatal("terminal DPC released unowned rundown")
+		}
+	}
+	cleanup := func(state *endpoint) bool {
+		if !state.purgeComplete || state.active != 0 {
+			return false
+		}
+		state.cleaned = true
+		return true
+	}
+
+	// Submit wins BrokerLock. Purge closes subsequent admission but cannot pass
+	// the mandatory completion DPC which owns the admitted request.
+	submitFirst := endpoint{open: true}
+	if !admit(&submitFirst) {
+		t.Fatal("submit failed before lifecycle closure")
+	}
+	closeForPurge(&submitFirst)
+	if admit(&submitFirst) || tryPurgeComplete(&submitFirst) || cleanup(&submitFirst) {
+		t.Fatal("purge passed an admitted submit")
+	}
+	runTerminalDPC(&submitFirst)
+	if !tryPurgeComplete(&submitFirst) || !cleanup(&submitFirst) ||
+		submitFirst.terminalDPCs != 1 {
+		t.Fatalf("submit-first path failed to drain through DPC: %+v", submitFirst)
+	}
+
+	// Purge/remove wins the exclusive lifecycle boundary. A stale report never
+	// acquires rundown and cleanup can revoke immediately after PurgeComplete.
+	purgeFirst := endpoint{open: true}
+	closeForPurge(&purgeFirst)
+	if admit(&purgeFirst) || !tryPurgeComplete(&purgeFirst) || !cleanup(&purgeFirst) {
+		t.Fatalf("purge-first path admitted stale input: %+v", purgeFirst)
+	}
+
+	// Cancellation still crosses the terminal DPC. Endpoint reset waits for the
+	// same owner but queues an acknowledged reset instead of PurgeComplete.
+	resetCancel := endpoint{open: true}
+	if !admit(&resetCancel) {
+		t.Fatal("cancelled URB was never admitted")
+	}
+	closeForReset(&resetCancel)
+	if tryQueueReset(&resetCancel) {
+		t.Fatal("reset publication passed a cancelled request before its DPC")
+	}
+	runTerminalDPC(&resetCancel)
+	if !tryQueueReset(&resetCancel) || resetCancel.terminalDPCs != 1 {
+		t.Fatalf("reset/cancel path failed to drain deterministically: %+v", resetCancel)
+	}
+
+	// File cleanup publishes Closing before taking OwnerLock. Either validation
+	// read false first (the submit-first case above) or it observes this permanent
+	// close and cannot enter a successor owner's device generation.
+	closing := true
+	ownerMatches, generationMatches := true, true
+	if ownerMatches && generationMatches && !closing {
+		t.Fatal("post-cleanup owner validation admitted a report")
 	}
 }

@@ -165,7 +165,7 @@ ViiperEvtDeviceAdd(
 
     context = ViiperGetControllerContext(device);
     RtlZeroMemory(context, sizeof(*context));
-    ExInitializeFastMutex(&context->DeviceLock);
+    ExInitializePushLock(&context->DeviceLock);
     InitializeListHead(&context->CompletionQueue);
     KeInitializeEvent(&context->BrokerOperationsDrained, NotificationEvent, TRUE);
     KeInitializeEvent(&context->CompletionOperationsDrained, NotificationEvent, TRUE);
@@ -228,6 +228,7 @@ ViiperEvtControllerCleanup(
     NT_ASSERT(InterlockedCompareExchange(&context->ActiveFileCleanups, 0, 0) == 0);
     NT_ASSERT(InterlockedCompareExchange(&context->ActiveDevices, 0, 0) == 0);
     NT_ASSERT(InterlockedCompareExchange(&context->OwnerReferenced, 0, 0) == 0);
+    NT_ASSERT(context->InputDeviceCount == 0);
 }
 
 NTSTATUS

@@ -110,7 +110,9 @@ $allDriverCSource = (Get-ChildItem -LiteralPath $driverSourceDirectory -Filter '
     ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw }) -join "`n"
 
 foreach ($requiredHeaderContract in @(
-        'FAST_MUTEX DeviceLock;',
+        'EX_PUSH_LOCK DeviceLock;',
+        'ULONG InputDeviceCount;',
+        'UDECXUSBDEVICE InputDevices[VIIPER_UDE_MAX_DEVICES];',
         'KEVENT BrokerOperationsDrained;',
         'KEVENT CompletionOperationsDrained;',
         'KEVENT FileCleanupsDrained;',
@@ -152,6 +154,23 @@ if (($controllerSource + $deviceSource + $brokerSource) -match
         'WdfWaitLock(?:Acquire|Release)\s*\([^;\r\n]*DeviceLock') {
     throw 'DeviceLock must remain embedded; a sibling WDF lock is unsafe during UdeCx child cleanup.'
 }
+if ($allDriverCSource -match 'Ex(?:Acquire|Release)FastMutex\s*\([^;\r\n]*DeviceLock') {
+    throw 'DeviceLock must remain a shared/exclusive push lock; FAST_MUTEX serializes every input producer.'
+}
+foreach ($pushLockContract in @(
+        'KeEnterCriticalRegion();',
+        'ExAcquirePushLockShared(&ControllerContext->DeviceLock);',
+        'ExAcquirePushLockExclusive(&ControllerContext->DeviceLock);',
+        'ExReleasePushLockShared(&ControllerContext->DeviceLock);',
+        'ExReleasePushLockExclusive(&ControllerContext->DeviceLock);',
+        'KeLeaveCriticalRegion();')) {
+    if (-not $header.Contains($pushLockContract)) {
+        throw "DeviceLock lost required push-lock/APC contract: $pushLockContract"
+    }
+}
+if ([regex]::Matches($header, '_IRQL_requires_max_\(APC_LEVEL\)').Count -lt 4) {
+    throw 'Every shared/exclusive DeviceLock acquire/release helper must declare IRQL <= APC_LEVEL.'
+}
 if ($brokerSource -notmatch
         'WDF_DPC_CONFIG_INIT\s*\(\s*&dpcConfig\s*,\s*ViiperEvtCompletionDpc\s*\)[\s\S]{0,200}?dpcConfig\.AutomaticSerialization\s*=\s*WdfFalse\s*;[\s\S]{0,300}?WdfDpcCreate') {
     throw 'UdeCx completion must use one preallocated, nonserialized controller DPC.'
@@ -180,10 +199,16 @@ $completionQueueMatch = [regex]::Match(
 if (-not $completionQueueMatch.Success -or
         $completionQueueMatch.Groups['body'].Value -notmatch 'requestContext->CompletionQueued' -or
         $completionQueueMatch.Groups['body'].Value -notmatch
-            'WdfObjectReference\s*\(\s*Request\s*\)[\s\S]*WdfObjectReference\s*\(\s*Endpoint\s*\)' -or
+            'WdfObjectReference\s*\(\s*Request\s*\)' -or
+        $completionQueueMatch.Groups['body'].Value -match
+            'WdfObjectReference\s*\(\s*Endpoint\s*\)' -or
         $completionQueueMatch.Groups['body'].Value -notmatch
             'KeClearEvent\s*\(\s*&controllerContext->CompletionOperationsDrained\s*\)[\s\S]*InterlockedIncrement\s*\(\s*&controllerContext->PendingCompletions\s*\)[\s\S]*InsertTailList\s*\(\s*&controllerContext->CompletionQueue[\s\S]*WdfDpcEnqueue') {
-    throw 'Completion admission must reject duplicate ownership, reference both WDF objects, account drain, and enqueue the DPC.'
+    throw 'Completion admission must retain only the request, rely on pre-cleanup endpoint rundown, account drain, and enqueue the DPC.'
+}
+if ($completionDpcMatch.Groups['body'].Value -match
+        'WdfObjectDereference\s*\(\s*endpoint\s*\)') {
+    throw 'Completion DPC must not treat an endpoint WDF reference as permission to access an object after EvtCleanup.'
 }
 $unownedCompletionMatch = [regex]::Match(
     $brokerSource,
@@ -229,6 +254,20 @@ if ($deviceSource -notmatch
             'ViiperEndpointOperationStarted\s*\(\s*endpoint\s*\)[\s\S]*ViiperQueueUrbCompletion') {
     throw 'Every endpoint queue must override synchronous queued cancellation and transfer it through endpoint rundown to the DPC.'
 }
+$endpointOperationStartMatch = [regex]::Match(
+    $brokerSource,
+    '(?ms)^VOID\s+ViiperEndpointOperationStarted\s*\([^)]*\)\s*\{(?<body>.*?)^\}')
+$endpointOperationCompleteMatch = [regex]::Match(
+    $brokerSource,
+    '(?ms)^VOID\s+ViiperEndpointOperationCompletedLocked\s*\([^)]*\)\s*\{(?<body>.*?)^\}')
+if (-not $endpointOperationStartMatch.Success -or
+        $endpointOperationStartMatch.Groups['body'].Value -notmatch
+            'if\s*\(\s*active\s*==\s*0\s*\)[\s\S]*KeClearEvent\s*\(\s*&endpointContext->OperationsDrained\s*\)[\s\S]*InterlockedIncrement\s*\(\s*&endpointContext->ActiveOperations\s*\)' -or
+        -not $endpointOperationCompleteMatch.Success -or
+        $endpointOperationCompleteMatch.Groups['body'].Value -notmatch
+            'InterlockedDecrement\s*\(\s*&endpointContext->ActiveOperations\s*\)[\s\S]*if\s*\(\s*remaining\s*==\s*0\s*\)[\s\S]*KeSetEvent\s*\(\s*&endpointContext->OperationsDrained') {
+    throw 'Endpoint ActiveOperations count/event transitions must remain linearized through the BrokerLock-owned helpers.'
+}
 $queueUrbMatch = [regex]::Match(
     $brokerSource,
     '(?ms)^NTSTATUS\s+ViiperQueueUrb\s*\([^)]*\)\s*\{(?<body>.*?)^\}')
@@ -246,6 +285,9 @@ if (-not $purgeWorkItemMatch.Success -or
         $purgeWorkItemMatch.Groups['body'].Value -notmatch
             'KeWaitForSingleObject\s*\(\s*&endpointContext->OperationsDrained[\s\S]*UdecxUsbEndpointPurgeComplete') {
     throw 'Endpoint purge-complete must remain behind the forwarded-URB completion drain.'
+}
+if ($deviceSource -match 'WdfIoQueue(?:Purge|Start)\s*\(') {
+    throw 'UdeCx owns the associated endpoint queue state; the client must only drain its forwarded paths.'
 }
 $completionDrainMatch = [regex]::Match(
     $brokerSource,
