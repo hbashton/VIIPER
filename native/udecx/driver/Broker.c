@@ -1247,7 +1247,15 @@ ViiperIsoFrameSpan(
         span = (ULONGLONG)PacketCount * ((ULONGLONG)1 << (interval - 1));
         span = (span + 7) / 8;
     } else {
-        span = (ULONGLONG)PacketCount * interval;
+        // Windows defines each full-speed IsoPacket entry as one 1-ms frame.
+        // bInterval describes the endpoint's polling contract; it must not be
+        // multiplied into the URB packet-array span a second time.  In
+        // particular, doing so creates holes in the virtual StartFrame clock
+        // after the USB stack has already expressed the schedule as one packet
+        // entry per frame. Production DS4 audio uses bInterval=1, so this
+        // correction preserves its proven cadence while making the generic
+        // UdeCx clock obey the Windows full-speed URB contract.
+        span = PacketCount;
     }
     if (span == 0) {
         return 1;
@@ -1472,6 +1480,22 @@ ViiperSerializeOperation(
         &packetCount, &directionIn, setupPacket);
     if (!NT_SUCCESS(status)) {
         return status;
+    }
+    if (urb->UrbHeader.Function != URB_FUNCTION_CONTROL_TRANSFER &&
+        urb->UrbHeader.Function != URB_FUNCTION_CONTROL_TRANSFER_EX) {
+        // Windows can supply stale or inconsistent direction bits in
+        // TransferFlags (usbip-win2 observes this for bulk URBs). The endpoint
+        // descriptor is authoritative for every non-control pipe; only a
+        // control setup packet owns its direction. Normalize both ABI fields
+        // together so user mode never rejects or inverts an otherwise valid
+        // media/output transfer.
+        directionIn = (endpointContext->Descriptor.bEndpointAddress &
+            USB_ENDPOINT_DIRECTION_MASK) != 0;
+        if (directionIn) {
+            transferFlags |= USBD_TRANSFER_DIRECTION_IN;
+        } else {
+            transferFlags &= ~USBD_TRANSFER_DIRECTION_IN;
+        }
     }
     if (packetCount != 0) {
         startFrame = ViiperReserveIsoStartFrame(
