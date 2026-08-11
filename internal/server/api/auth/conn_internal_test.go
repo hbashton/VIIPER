@@ -177,12 +177,15 @@ func TestConnCloseJoinsLanesAndClearsRecordAndCipherState(t *testing.T) {
 		t.Fatal(err)
 	}
 	sender := senderWrapper.(*Conn)
-	payload := []byte("sensitive controller state")
-	if _, err = sender.Write(payload); err != nil {
+	largePayload := bytes.Repeat([]byte{0x5a}, 4096)
+	smallPayload := []byte("small sensitive controller state")
+	if _, err = sender.Write(largePayload); err != nil {
 		t.Fatal(err)
 	}
-	wire := append([]byte(nil), raw.Bytes()...)
-	sendBacking := sender.sendBuf
+	if _, err = sender.Write(smallPayload); err != nil {
+		t.Fatal(err)
+	}
+	sendBacking := sender.sendBuf[:cap(sender.sendBuf)]
 	if err = sender.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -199,18 +202,42 @@ func TestConnCloseJoinsLanesAndClearsRecordAndCipherState(t *testing.T) {
 	}
 
 	receiveRaw := &internalRecordConn{}
-	_, _ = receiveRaw.Buffer.Write(wire)
+	_, _ = receiveRaw.Buffer.Write(raw.Bytes())
 	receiverWrapper, err := WrapServerConn(receiveRaw, key)
 	if err != nil {
 		t.Fatal(err)
 	}
 	receiver := receiverWrapper.(*Conn)
-	if _, err = receiver.Read(make([]byte, 1)); err != nil {
+	largeDecoded := make([]byte, len(largePayload))
+	if _, err = io.ReadFull(receiver, largeDecoded); err != nil {
 		t.Fatal(err)
 	}
-	receiveBacking := receiver.recvPacket
+	if !bytes.Equal(largeDecoded, largePayload) {
+		t.Fatal("large receive record changed before close")
+	}
+	firstSmallByte := make([]byte, 1)
+	if _, err = receiver.Read(firstSmallByte); err != nil {
+		t.Fatal(err)
+	}
+	if firstSmallByte[0] != smallPayload[0] {
+		t.Fatalf("small receive prefix=%02x want=%02x", firstSmallByte[0], smallPayload[0])
+	}
 	if len(receiver.recvPlain) == 0 {
 		t.Fatal("test did not leave plaintext buffered before close")
+	}
+	if len(receiver.recvPacket) >= cap(receiver.recvPacket) {
+		t.Fatalf("test did not shrink receive slab: len=%d cap=%d", len(receiver.recvPacket), cap(receiver.recvPacket))
+	}
+	receiveBacking := receiver.recvPacket[:cap(receiver.recvPacket)]
+	tailRetainedData := false
+	for _, value := range receiveBacking[len(receiver.recvPacket):] {
+		if value != 0 {
+			tailRetainedData = true
+			break
+		}
+	}
+	if !tailRetainedData {
+		t.Fatal("test setup did not retain a large-record tail outside the shrunken receive slice")
 	}
 	if err = receiver.Close(); err != nil {
 		t.Fatal(err)

@@ -88,9 +88,9 @@ func (s *Conn) Close() error {
 	// be in use, so clear it before making subsequent calls fail closed.
 	s.sendMu.Lock()
 	s.recvMu.Lock()
-	clear(s.sendBuf)
+	clear(s.sendBuf[:cap(s.sendBuf)])
 	clear(s.recvHeader[:])
-	clear(s.recvPacket)
+	clear(s.recvPacket[:cap(s.recvPacket)])
 	s.sendBuf = nil
 	s.recvPacket = nil
 	s.recvPlain = nil
