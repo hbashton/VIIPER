@@ -163,7 +163,21 @@ func nativeContractSource(t *testing.T, name ...string) string {
 	if err != nil {
 		t.Fatalf("read native contract source: %v", err)
 	}
-	return string(raw)
+	return normalizeNativeContractSource(string(raw))
+}
+
+func normalizeNativeContractSource(source string) string {
+	return strings.ReplaceAll(source, "\r\n", "\n")
+}
+
+func TestNormalizeNativeContractSource(t *testing.T) {
+	t.Parallel()
+
+	const windowsHeader = "#define FIRST 1\r\n#define SECOND 2\r\n"
+	const normalizedHeader = "#define FIRST 1\n#define SECOND 2\n"
+	if got := normalizeNativeContractSource(windowsHeader); got != normalizedHeader {
+		t.Fatalf("normalized native source = %q, want %q", got, normalizedHeader)
+	}
 }
 
 func cDefineNumber(t *testing.T, source, name string) uint64 {
