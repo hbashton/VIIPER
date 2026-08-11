@@ -165,13 +165,17 @@ Microsoft-signed package with:
   -Iterations 10 `
   -MediaDurationSeconds 30 `
   -MediaProbePath .\native\udecx\x64\Release\ViiperUdeMediaProbe.exe `
-  -InputProbePath .\native\udecx\x64\Release\ViiperUdeInputProbe.exe
+  -InputProbePath .\native\udecx\x64\Release\ViiperUdeInputProbe.exe `
+  -ProbeManifestPath .\native\udecx\x64\Release\ViiperUdeLiveProbes.manifest.json
 ```
 
 The command refuses an unsigned package, a package/service hash mismatch, a
 non-Microsoft root devnode, a dirty driver session, or any increase in invalid
 messages, queue exhaustion, notification overflow, late completion, or cleanup
-retry counters. After validating each controller and repeated generation
+retry counters. Production mode also requires this repository to be an exact,
+clean checkout of `-ExpectedSourceRevision` and runs the Go harness with module,
+workspace, environment, and toolchain overrides disabled. After validating
+each controller and repeated generation
 rollover independently, it enumerates the complete production controller set,
 publishes input, and removes every child concurrently. A subprocess then exits
 without running cleanup; the driver must remove its child, drain pending URBs,
@@ -225,20 +229,25 @@ The Driver Verifier pass is a separate, explicit disposable-machine gate:
   -DisposableTestMachine `
   -MediaDurationSeconds 180 `
   -MediaProbePath .\native\udecx\x64\Release\ViiperUdeMediaProbe.exe `
-  -InputProbePath .\native\udecx\x64\Release\ViiperUdeInputProbe.exe
+  -InputProbePath .\native\udecx\x64\Release\ViiperUdeInputProbe.exe `
+  -ProbeManifestPath .\native\udecx\x64\Release\ViiperUdeLiveProbes.manifest.json
 ```
 
-`-ReleaseGate` is fail-closed: it requires a production Microsoft signature,
-Driver Verifier, three lifecycle generations, both independent probes, an
-active root-device restart, the disposable-machine acknowledgement, and a
-three-minute clean duplex media run for each PlayStation controller. Omitting
-any one of those inputs cannot print a production-pass result.
+`-ReleaseGate` is fail-closed: it requires a 64-bit Windows 11 client with
+Secure Boot, a production Microsoft signature, Driver Verifier `/standard`
+including KMDF verification, three lifecycle generations, both independent
+source/hash-bound probes, an active root-device restart, the disposable-machine
+acknowledgement, and a three-minute clean duplex media run for each PlayStation
+controller, including DualSense Edge. Omitting any one of those inputs cannot
+print a production-pass result.
 
 Microsoft warns that Driver Verifier can intentionally bugcheck a machine;
 this workflow is never run by ordinary CI, an installer, or DS4Windows.
 
 For evidence-based CPU and scheduler analysis, run the same signed workload
-inside WPR's bounded `GeneralProfile.Light` memory profile:
+inside WPR's bounded `GeneralProfile.Verbose` memory profile. The verbose form
+is required because the light form records scheduler events but omits the
+CSwitch, ReadyThread, and sampled-profile stacks needed to attribute latency:
 
 ```powershell
 .\native\udecx\tools\Invoke-ViiperUdePerformanceValidation.ps1 `
@@ -248,10 +257,15 @@ inside WPR's bounded `GeneralProfile.Light` memory profile:
   -SignatureValidationMode Production `
   -OutputPath C:\ViiperUde\Traces\native-ude.etl `
   -MediaProbePath .\native\udecx\x64\Release\ViiperUdeMediaProbe.exe `
-  -InputProbePath .\native\udecx\x64\Release\ViiperUdeInputProbe.exe
+  -InputProbePath .\native\udecx\x64\Release\ViiperUdeInputProbe.exe `
+  -ProbeManifestPath .\native\udecx\x64\Release\ViiperUdeLiveProbes.manifest.json
 ```
 
 Open the ETL in Windows Performance Analyzer and inspect CPU Usage (Sampled),
-CPU Usage (Precise), and DPC/ISR by module and stack. The script never uses
-WPR file mode, which Microsoft documents as unbounded, and never mutates an
-unnamed or foreign recording session.
+CPU Usage (Precise), scheduler stacks, and DPC/ISR module activity. A non-empty
+ETL is evidence capture, not a performance pass: acceptance still requires WPA
+analysis against the architecture thresholds. The adjacent `.evidence.json`
+hash-binds the ETL, signed-package manifest, exact source revision, and both
+probes. The script rejects dropped events, never uses WPR file mode (which
+Microsoft documents as unbounded), and never mutates an unnamed or foreign
+recording session.

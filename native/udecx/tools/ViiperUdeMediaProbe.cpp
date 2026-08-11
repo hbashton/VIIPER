@@ -145,6 +145,7 @@ struct RenderStats final {
 
 struct CaptureStats final {
     uint64_t frames = 0;
+    uint64_t nonSilentFrames = 0;
     uint64_t packets = 0;
     uint64_t discontinuities = 0;
     uint64_t timestampErrors = 0;
@@ -437,6 +438,15 @@ CaptureStats ExerciseCapture(const std::wstring& endpointId, std::chrono::second
             firstPacket = false;
             ++stats.packets;
             stats.frames += packetFrames;
+            if ((flags & AUDCLNT_BUFFERFLAGS_SILENT) == 0 && data != nullptr) {
+                for (UINT32 frame = 0; frame < packetFrames; ++frame) {
+                    const BYTE* sample = data + static_cast<size_t>(frame) * format->nBlockAlign;
+                    if (std::any_of(sample, sample + format->nBlockAlign,
+                            [](BYTE value) { return value != 0; })) {
+                        ++stats.nonSilentFrames;
+                    }
+                }
+            }
             CheckHRESULT("IAudioCaptureClient::ReleaseBuffer", capture->ReleaseBuffer(packetFrames));
         }
     }
@@ -517,12 +527,16 @@ int Exercise(const std::filesystem::path& snapshotPath, int seconds,
         captureStats.positionRegressions != 0 || captureStats.qpcRegressions != 0) {
         throw std::runtime_error("capture stream reported a discontinuity or non-monotonic clock");
     }
+    if (captureStats.nonSilentFrames < captureStats.frames / 2) {
+        throw std::runtime_error("capture stream did not preserve the injected non-silent microphone PCM");
+    }
     std::cout << "renderFrames=" << renderStats.frames
               << " renderEvents=" << renderStats.events
               << " renderBufferFrames=" << renderStats.bufferFrames
               << " renderUnderruns=" << renderStats.underruns
               << " renderMaxEventGapMs=" << renderStats.maximumEventGapMilliseconds
               << " captureFrames=" << captureStats.frames
+              << " captureNonSilentFrames=" << captureStats.nonSilentFrames
               << " capturePackets=" << captureStats.packets
               << " captureDiscontinuities=" << captureStats.discontinuities
               << " captureTimestampErrors=" << captureStats.timestampErrors
@@ -548,7 +562,7 @@ int wmain(int argc, wchar_t** argv) {
         }
         std::wcerr << L"Usage:\n"
                    << L"  ViiperUdeMediaProbe.exe snapshot <snapshot-path>\n"
-                   << L"  ViiperUdeMediaProbe.exe exercise <snapshot-path> <seconds> <dualsense|dualshock4>\n";
+                   << L"  ViiperUdeMediaProbe.exe exercise <snapshot-path> <seconds> <dualsense|dualsenseedge|dualshock4>\n";
         return 2;
     } catch (const std::exception& error) {
         std::cerr << "VIIPER UDE media probe failed: " << error.what() << "\n";

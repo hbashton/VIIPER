@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unsafe"
@@ -50,6 +51,180 @@ type liveNativeController struct {
 	feedbackReportLen uint64
 	armFeedbackProbe  func(usbdevice.Device) (func(context.Context) error, error)
 	new               func() (usbdevice.Device, func(uint64), func(byte), error)
+}
+
+// liveNativeMediaWitness observes the controller-engine side of the same
+// CoreAudio stream exercised by ViiperUdeMediaProbe. CoreAudio frame counts and
+// kernel byte counters alone can both advance while a broken broker returns
+// silence or drops the payload before it reaches the preserved PlayStation
+// media logic. The witness therefore proves non-silent render data arrives at
+// that existing logic and feeds deterministic non-silent microphone PCM back
+// through the virtual USB endpoint. It does not alter media construction.
+type liveNativeMediaWitness struct {
+	speakerBytes        atomic.Uint64
+	speakerNonZeroBytes atomic.Uint64
+	hapticsGenerations  atomic.Uint64
+	hapticsNonSilent    atomic.Uint64
+	queueMicrophone     func([]byte)
+	microphoneFrame     []byte
+	speakerBytesPerSec  uint64
+	requireHaptics      bool
+}
+
+func countNonZeroBytes(data []byte) uint64 {
+	var count uint64
+	for _, value := range data {
+		if value != 0 {
+			count++
+		}
+	}
+	return count
+}
+
+func nonZeroPCMFrame(size int) []byte {
+	frame := make([]byte, size)
+	for offset := 0; offset+1 < len(frame); offset += 2 {
+		frame[offset] = 0x34
+		frame[offset+1] = 0x12
+	}
+	return frame
+}
+
+func armLiveNativeMediaWitness(dev usbdevice.Device) (*liveNativeMediaWitness, error) {
+	switch controller := dev.(type) {
+	case *dualshock4.DualShock4:
+		witness := &liveNativeMediaWitness{
+			queueMicrophone: controller.QueueMicrophonePCMFrame,
+			microphoneFrame: nonZeroPCMFrame(dualshock4.USBMicrophoneClientFrameSize),
+			speakerBytesPerSec: dualshock4.USBSpeakerSampleRate *
+				dualshock4.USBSpeakerChannels * dualshock4.USBSpeakerBytesPerSample,
+		}
+		controller.SetSpeakerCallback(func(pcm []byte) {
+			witness.speakerBytes.Add(uint64(len(pcm)))
+			witness.speakerNonZeroBytes.Add(countNonZeroBytes(pcm))
+		})
+		return witness, nil
+	case *dualsense.DualSense:
+		witness := &liveNativeMediaWitness{
+			queueMicrophone: controller.QueueMicrophonePCMFrame,
+			microphoneFrame: nonZeroPCMFrame(dualsense.USBMicrophoneClientFrameSize),
+			speakerBytesPerSec: dualsense.USBHapticsAudioSampleRate * 2 *
+				dualsense.USBHapticsAudioBytesPerSample,
+			requireHaptics: true,
+		}
+		controller.SetAtomicAudioHapticsCallback(func(_ dualsense.OutputState, speaker []byte) {
+			witness.speakerBytes.Add(uint64(len(speaker)))
+			witness.speakerNonZeroBytes.Add(countNonZeroBytes(speaker))
+		})
+		controller.SetRealtimeHapticsCallback(func(feedback dualsense.OutputState) {
+			witness.hapticsGenerations.Add(1)
+			sample := feedback.BluetoothCombinedOutputReport[dualsense.BluetoothCombinedHapticsOffset:(dualsense.BluetoothCombinedHapticsOffset + dualsense.BluetoothHapticsSampleSize)]
+			if countNonZeroBytes(sample) != 0 {
+				witness.hapticsNonSilent.Add(1)
+			}
+		})
+		return witness, nil
+	default:
+		return nil, fmt.Errorf("media witness does not support %T", dev)
+	}
+}
+
+func (w *liveNativeMediaWitness) startMicrophone(ctx context.Context) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		// Queueing slightly ahead of the 10 ms client-frame cadence makes the
+		// content assertion independent of the instant CoreAudio selects alt 1;
+		// the controller's existing bounded/adaptive microphone queue remains
+		// responsible for presentation cadence.
+		ticker := time.NewTicker(8 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			w.queueMicrophone(w.microphoneFrame)
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
+	return done
+}
+
+func (w *liveNativeMediaWitness) validate(duration time.Duration) error {
+	seconds := uint64(duration / time.Second)
+	minimumSpeakerBytes := w.speakerBytesPerSec * seconds * 9 / 10
+	speakerBytes := w.speakerBytes.Load()
+	if speakerBytes < minimumSpeakerBytes {
+		return fmt.Errorf("controller engine received only %d speaker bytes; want at least %d",
+			speakerBytes, minimumSpeakerBytes)
+	}
+	if nonZero := w.speakerNonZeroBytes.Load(); nonZero < speakerBytes/4 {
+		return fmt.Errorf("controller engine speaker payload was silent or malformed: nonzero=%d total=%d",
+			nonZero, speakerBytes)
+	}
+	if w.requireHaptics {
+		minimumHaptics := seconds * 50
+		haptics := w.hapticsGenerations.Load()
+		if haptics < minimumHaptics {
+			return fmt.Errorf("controller engine received only %d realtime haptics generations; want at least %d",
+				haptics, minimumHaptics)
+		}
+		if nonSilent := w.hapticsNonSilent.Load(); nonSilent < haptics/2 {
+			return fmt.Errorf("controller engine haptics payload was silent or malformed: nonSilent=%d total=%d",
+				nonSilent, haptics)
+		}
+	}
+	return nil
+}
+
+func TestLiveNativeMediaWitnessRejectsSilentOrIncompleteContent(t *testing.T) {
+	valid := &liveNativeMediaWitness{speakerBytesPerSec: 100, requireHaptics: true}
+	valid.speakerBytes.Store(100)
+	valid.speakerNonZeroBytes.Store(30)
+	valid.hapticsGenerations.Store(50)
+	valid.hapticsNonSilent.Store(25)
+	if err := valid.validate(time.Second); err != nil {
+		t.Fatalf("complete non-silent media was rejected: %v", err)
+	}
+
+	for _, testCase := range []struct {
+		name    string
+		prepare func(*liveNativeMediaWitness)
+	}{
+		{name: "short speaker stream", prepare: func(w *liveNativeMediaWitness) {
+			w.speakerBytes.Store(89)
+			w.speakerNonZeroBytes.Store(89)
+			w.hapticsGenerations.Store(50)
+			w.hapticsNonSilent.Store(50)
+		}},
+		{name: "silent speaker stream", prepare: func(w *liveNativeMediaWitness) {
+			w.speakerBytes.Store(100)
+			w.speakerNonZeroBytes.Store(24)
+			w.hapticsGenerations.Store(50)
+			w.hapticsNonSilent.Store(50)
+		}},
+		{name: "missing realtime haptics", prepare: func(w *liveNativeMediaWitness) {
+			w.speakerBytes.Store(100)
+			w.speakerNonZeroBytes.Store(100)
+			w.hapticsGenerations.Store(49)
+			w.hapticsNonSilent.Store(49)
+		}},
+		{name: "silent realtime haptics", prepare: func(w *liveNativeMediaWitness) {
+			w.speakerBytes.Store(100)
+			w.speakerNonZeroBytes.Store(100)
+			w.hapticsGenerations.Store(50)
+			w.hapticsNonSilent.Store(24)
+		}},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			witness := &liveNativeMediaWitness{speakerBytesPerSec: 100, requireHaptics: true}
+			testCase.prepare(witness)
+			if err := witness.validate(time.Second); err == nil {
+				t.Fatal("incomplete or silent media was accepted")
+			}
+		})
+	}
 }
 
 func armDualShock4FeedbackProbe(dev usbdevice.Device) (func(context.Context) error, error) {
@@ -475,7 +650,7 @@ func TestNativeUDELiveProductionControllers(t *testing.T) {
 	iterations := liveNativeIterationCount(t)
 	mediaDuration := liveNativeMediaDuration(t)
 	testCtx, cancelTest := context.WithTimeout(context.Background(),
-		time.Duration(iterations)*5*time.Minute+2*mediaDuration+2*time.Minute)
+		time.Duration(iterations)*5*time.Minute+3*mediaDuration+2*time.Minute)
 	defer cancelTest()
 
 	client, err := udecx.Open(testCtx)
@@ -545,8 +720,14 @@ func TestNativeUDELiveProductionControllers(t *testing.T) {
 				}
 				mediaSnapshot := ""
 				mediaController := iteration == 1 && mediaProbe != "" &&
-					(controller.name == "DualShock4" || controller.name == "DualSense")
+					(controller.name == "DualShock4" || controller.name == "DualSense" ||
+						controller.name == "DualSenseEdge")
+				var mediaWitness *liveNativeMediaWitness
 				if mediaController {
+					mediaWitness, createErr = armLiveNativeMediaWitness(dev)
+					if createErr != nil {
+						t.Fatalf("arm %s media witness: %v", controller.name, createErr)
+					}
 					snapshot, snapshotErr := os.CreateTemp("", "viiper-ude-media-*.snapshot")
 					if snapshotErr != nil {
 						t.Fatalf("create media endpoint snapshot: %v", snapshotErr)
@@ -642,6 +823,7 @@ func TestNativeUDELiveProductionControllers(t *testing.T) {
 					}
 					mediaCtx, cancelMedia := context.WithCancel(testCtx)
 					defer cancelMedia()
+					microphoneDone := mediaWitness.startMicrophone(mediaCtx)
 					probeDone := startLiveProbe(
 						mediaCtx, mediaProbe, "exercise", mediaSnapshot,
 						strconv.Itoa(int(mediaDuration/time.Second)),
@@ -666,11 +848,16 @@ func TestNativeUDELiveProductionControllers(t *testing.T) {
 					}
 					probeResult := <-probeDone
 					cancelMedia()
+					<-microphoneDone
 					cancelStress()
 					<-stressDone
 					if probeResult.err != nil {
 						t.Fatalf("run native CoreAudio probe: %v\n%s",
 							probeResult.err, probeResult.output)
+					}
+					if witnessErr := mediaWitness.validate(mediaDuration); witnessErr != nil {
+						t.Fatalf("%s media content did not survive the native bus: %v; probe=%s",
+							controller.name, witnessErr, probeResult.output)
 					}
 					mediaAfter, mediaErr := client.QueryStats(testCtx)
 					if mediaErr != nil {

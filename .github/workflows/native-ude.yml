@@ -236,6 +236,28 @@ jobs:
           & $inputOutput snapshot $inputSnapshot
           if ($LASTEXITCODE -ne 0 -or -not (Test-Path $inputSnapshot)) { throw "ViiperUdeInputProbe HID snapshot smoke test failed" }
           Remove-Item -LiteralPath $inputSnapshot -Force
+          $probeManifest = [ordered]@{
+            schemaVersion = 1
+            sourceRevision = $env:GITHUB_SHA.ToLowerInvariant()
+            probes = [ordered]@{
+              'ViiperUdeMediaProbe.exe' = (Get-FileHash -LiteralPath $mediaOutput -Algorithm SHA256).Hash.ToLowerInvariant()
+              'ViiperUdeInputProbe.exe' = (Get-FileHash -LiteralPath $inputOutput -Algorithm SHA256).Hash.ToLowerInvariant()
+            }
+          }
+          $probeManifestPath = Join-Path $outputDir 'ViiperUdeLiveProbes.manifest.json'
+          $probeManifest | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $probeManifestPath -Encoding utf8NoBOM
+          if (-not (Test-Path -LiteralPath $probeManifestPath -PathType Leaf)) { throw "Live-probe manifest was not created" }
+      - name: Upload source-bound native live probes
+        if: ${{ inputs.upload_release_helper == true }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ViiperUdeLiveProbes-windows-amd64-${{ github.sha }}
+          path: |
+            native/udecx/x64/Release/ViiperUdeMediaProbe.exe
+            native/udecx/x64/Release/ViiperUdeInputProbe.exe
+            native/udecx/x64/Release/ViiperUdeLiveProbes.manifest.json
+          if-no-files-found: error
+          retention-days: 30
       - name: Upload source-bound native runtime helper
         if: ${{ inputs.upload_release_helper == true }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
