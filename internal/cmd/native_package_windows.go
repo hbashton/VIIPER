@@ -892,7 +892,7 @@ func acquireNamedNativePackageMutex(name string, timeout time.Duration) (func(),
 	attributes := windows.SecurityAttributes{
 		Length: uint32(unsafe.Sizeof(windows.SecurityAttributes{})), SecurityDescriptor: descriptor,
 	}
-	handle, err := windows.CreateMutex(&attributes, false, pointer)
+	handle, err := createNamedNativeMutex(&attributes, pointer)
 	if err != nil {
 		runtime.UnlockOSThread()
 		return nil, err

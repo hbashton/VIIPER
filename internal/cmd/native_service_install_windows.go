@@ -1283,7 +1283,7 @@ func acquireNativeInstallMutex(timeout time.Duration) (func(), error) {
 		Length:             uint32(unsafe.Sizeof(windows.SecurityAttributes{})),
 		SecurityDescriptor: descriptor,
 	}
-	handle, err := windows.CreateMutex(&attributes, false, name)
+	handle, err := createNamedNativeMutex(&attributes, name)
 	if err != nil {
 		runtime.UnlockOSThread()
 		return nil, fmt.Errorf("create native install mutex: %w", err)

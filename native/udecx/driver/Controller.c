@@ -513,5 +513,6 @@ ViiperEvtDequeueCanceledOnQueue(
     LONG remaining = InterlockedDecrement(&context->WaitingDequeueCount);
 
     NT_ASSERT(remaining >= 0);
+    UNREFERENCED_PARAMETER(remaining);
     WdfRequestComplete(Request, STATUS_CANCELLED);
 }

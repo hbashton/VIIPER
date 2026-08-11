@@ -13,8 +13,8 @@
     <ProjectName>ViiperUde</ProjectName>
     <MinimumVisualStudioVersion>17.0</MinimumVisualStudioVersion>
     <Platform Condition="'$(Platform)' == ''">x64</Platform>
-    <ViiperUdeDriverDate>08/10/2026</ViiperUdeDriverDate>
-    <ViiperUdeDriverVersion>0.1.0.1</ViiperUdeDriverVersion>
+    <ViiperUdeDriverDate>08/11/2026</ViiperUdeDriverDate>
+    <ViiperUdeDriverVersion>0.1.0.2</ViiperUdeDriverVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
