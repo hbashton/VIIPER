@@ -342,7 +342,8 @@ func TestNativePackageRequestFailsClosed(t *testing.T) {
 		expectedHelperSHA256: strings.Repeat("c", 64), targetUserSID: "S-1-5-21-1-2-3-1001",
 		expectedManifestSHA256: strings.Repeat("d", 64),
 		expectedInfSHA256:      strings.Repeat("e", 64), expectedSysSHA256: strings.Repeat("f", 64),
-		expectedCatSHA256: strings.Repeat("0", 64),
+		expectedCatSHA256:    strings.Repeat("0", 64),
+		driverValidationMode: "production",
 	}
 	if err := base.validate(); err != nil {
 		t.Fatalf("valid request: %v", err)
@@ -355,6 +356,9 @@ func TestNativePackageRequestFailsClosed(t *testing.T) {
 		"bad SYS hash":     func(r *nativePackageRequest) { r.expectedSysSHA256 = strings.Repeat("z", 64) },
 		"bad CAT hash":     func(r *nativePackageRequest) { r.expectedCatSHA256 = strings.Repeat("z", 64) },
 		"embedded NUL":     func(r *nativePackageRequest) { r.submissionManifest += "\x00evil" },
+		"bad validation mode": func(r *nativePackageRequest) {
+			r.driverValidationMode = "controlled-test"
+		},
 	}
 	for name, mutate := range cases {
 		name, mutate := name, mutate

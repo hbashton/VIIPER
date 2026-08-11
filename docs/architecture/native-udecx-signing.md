@@ -6,6 +6,27 @@ package must be signed by Microsoft through Hardware Dev Center.
 
 ## Supported release paths
 
+### Local development: WDK test signing
+
+The manually dispatched native workflow can publish one compact,
+seven-day-retention `LocalTest` artifact for the exact source SHA. It contains
+the WDK test-signed INF/SYS/PDB/CAT evidence, an exact three-file runtime driver
+directory, the source-bound broker/helper and live probes, the exported test
+certificate, and a closed SHA-256 lock. Installation requires explicit
+disposable-machine acknowledgement, elevation, the exact source revision and
+interactive-user SID, and a current boot entry reporting `TESTSIGNING Yes`.
+It imports only the artifact-bound certificate and then executes the normal
+package-to-service transaction through `viiper.exe native-package-install`;
+the helper is never invoked as a standalone mutation. Authenticated ABI 1.9,
+capability, package-version, and loaded-kernel identity health must succeed
+before the transaction commits.
+
+This route is deliberately non-release (`releaseEligible=false`,
+`signingRoute=LocalTest`). It cannot satisfy controlled-attestation or
+production validation, is never consumed by release composition, and does not
+change the requirement that even test-mode 64-bit drivers carry a valid test
+signature.
+
 ### Controlled testing: attestation signing
 
 Microsoft now documents attestation signing as **testing-only**. An
@@ -69,12 +90,13 @@ mode. That mode rejects the attestation EKU and requires a release-eligible
   archive contains exactly the release `viiper.exe` broker,
   `ViiperUdeCtl.exe`, INF, SYS, CAT, and the validated submission manifest.
   Release composition rejects every missing or additional file.
-- Controlled-test and production signatures are separate validation modes;
-  an attestation EKU can never satisfy the production release gate.
+- Local-test, controlled-test, and production signatures are separate
+  validation modes; neither a local certificate nor an attestation EKU can
+  satisfy the production release gate.
 - Test certificates, test-signing state, or disabled Secure Boot are never a
   release prerequisite.
-- The installer refuses an unsigned, test-signed, mismatched, downgraded, or
-  non-Microsoft driver package before any driver-store mutation.
+- The production installer refuses an unsigned, test-signed, mismatched,
+  downgraded, or non-Microsoft driver package before any driver-store mutation.
 - Updating a live kernel package remains a reboot-safe transaction; it is not
   overwritten in place.
 
@@ -157,6 +179,9 @@ the HLK/DevFund matrix.
 ## Primary Microsoft references
 
 - [Driver code-signing requirements](https://learn.microsoft.com/windows-hardware/drivers/dashboard/code-signing-reqs)
+- [TESTSIGNING boot configuration](https://learn.microsoft.com/windows-hardware/drivers/install/the-testsigning-boot-configuration-option)
+- [Install a test-signed driver package](https://learn.microsoft.com/windows-hardware/drivers/install/how-to-install-test-signed-driver-for-setup-and-boot)
+- [Verify a test-signed catalog](https://learn.microsoft.com/windows-hardware/drivers/install/verifying-the-signature-of-a-test-signed-catalog-file)
 - [Attestation-sign Windows drivers](https://learn.microsoft.com/windows-hardware/drivers/dashboard/code-signing-attestation)
 - [Driver-signing options and best practices](https://learn.microsoft.com/windows-hardware/drivers/dashboard/driver-signing-offerings)
 - [Components of a driver package](https://learn.microsoft.com/windows-hardware/drivers/install/components-of-a-driver-package)

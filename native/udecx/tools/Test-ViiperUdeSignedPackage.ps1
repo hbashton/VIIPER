@@ -10,8 +10,12 @@ param(
     [ValidatePattern('^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$')]
     [string]$ExpectedSourceRevision,
 
-    [ValidateSet('ControlledTest', 'Production')]
-    [string]$ValidationMode = 'Production'
+    [ValidateSet('LocalTest', 'ControlledTest', 'Production')]
+    [string]$ValidationMode = 'Production',
+
+    [string]$LocalTestCertificatePath,
+
+    [switch]$RequireLocalTestToolchainValidation
 )
 
 Set-StrictMode -Version Latest
@@ -41,21 +45,50 @@ function Get-CertificateEkuOids {
     return ,$oids
 }
 
-function Assert-MicrosoftHardwareSignature {
+function Get-CertificateSha256 {
+    param(
+        [Parameter(Mandatory = $true)]
+        [Security.Cryptography.X509Certificates.X509Certificate2]$Certificate
+    )
+
+    $algorithm = [Security.Cryptography.SHA256]::Create()
+    try {
+        return ([BitConverter]::ToString(
+            $algorithm.ComputeHash($Certificate.RawData))).Replace('-', '').ToLowerInvariant()
+    }
+    finally {
+        $algorithm.Dispose()
+    }
+}
+
+function Assert-DriverSignature {
     param(
         [Parameter(Mandatory = $true)]
         [string]$Path,
 
         [Parameter(Mandatory = $true)]
-        [ValidateSet('ControlledTest', 'Production')]
-        [string]$Mode
+        [ValidateSet('LocalTest', 'ControlledTest', 'Production')]
+        [string]$Mode,
+
+        [string]$ExpectedLocalTestCertificateSha256
     )
 
     $signature = Get-AuthenticodeSignature -LiteralPath $Path
     if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
         throw "'$Path' does not have a valid Authenticode signature (status '$($signature.Status)')."
     }
-    if ($null -eq $signature.SignerCertificate -or
+    if ($null -eq $signature.SignerCertificate) {
+        throw "'$Path' did not expose its signing certificate."
+    }
+    if ($Mode -eq 'LocalTest') {
+        $actual = Get-CertificateSha256 -Certificate $signature.SignerCertificate
+        if ($ExpectedLocalTestCertificateSha256 -notmatch '^[0-9a-f]{64}$' -or
+            $actual -cne $ExpectedLocalTestCertificateSha256) {
+            throw "'$Path' is not signed by the exact source-bound local test certificate."
+        }
+        return
+    }
+    if (
         $signature.SignerCertificate.Subject -notmatch '(?i)(^|,\s*)O=Microsoft Corporation(,|$)') {
         throw "'$Path' is not signed by Microsoft Corporation."
     }
@@ -79,6 +112,29 @@ function Assert-MicrosoftHardwareSignature {
 $root = Resolve-Path -LiteralPath $PackageDirectory -ErrorAction Stop
 if (-not (Get-Item -LiteralPath $root.Path).PSIsContainer) {
     throw 'The signed package path must be a directory.'
+}
+
+$localTestCertificate = $null
+$localTestCertificateSha256 = $null
+if ($ValidationMode -eq 'LocalTest') {
+    if ([string]::IsNullOrWhiteSpace($LocalTestCertificatePath)) {
+        throw '-LocalTestCertificatePath is required for LocalTest validation.'
+    }
+    $resolvedCertificate = (Resolve-Path -LiteralPath $LocalTestCertificatePath -ErrorAction Stop).Path
+    $certificateItem = Get-Item -LiteralPath $resolvedCertificate -Force
+    if ($certificateItem.PSIsContainer -or $certificateItem.Length -le 0 -or
+        $certificateItem.Name -cne 'ViiperUdeTest.cer' -or
+        ($certificateItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw 'The local test certificate must be a nonempty, case-exact, non-reparse ViiperUdeTest.cer file.'
+    }
+    $localTestCertificate = [Security.Cryptography.X509Certificates.X509Certificate2]::new($resolvedCertificate)
+    $localTestCertificateSha256 = Get-CertificateSha256 -Certificate $localTestCertificate
+}
+elseif (-not [string]::IsNullOrWhiteSpace($LocalTestCertificatePath)) {
+    throw '-LocalTestCertificatePath is valid only with -ValidationMode LocalTest.'
+}
+if ($RequireLocalTestToolchainValidation -and $ValidationMode -ne 'LocalTest') {
+    throw '-RequireLocalTestToolchainValidation is valid only with -ValidationMode LocalTest.'
 }
 
 $expectedNames = @('ViiperUde.inf', 'ViiperUde.sys', 'ViiperUde.pdb', 'ViiperUde.cat')
@@ -128,7 +184,13 @@ if ($manifest.schema -ne 2 -or
     [string]$manifest.driverBuildIdentity -cne $expectedBuildIdentity) {
     throw 'The submission manifest schema, source revision, or native loaded-build identity does not match the reviewed source.'
 }
-if ($ValidationMode -eq 'ControlledTest') {
+if ($ValidationMode -eq 'LocalTest') {
+    if ([bool]$manifest.releaseEligible -or [string]$manifest.signingRoute -cne 'LocalTest' -or
+        [string]$manifest.testSignerCertificateSha256 -cne $localTestCertificateSha256) {
+        throw 'LocalTest validation requires a non-release manifest bound to the exact local test certificate.'
+    }
+}
+elseif ($ValidationMode -eq 'ControlledTest') {
     if ([bool]$manifest.releaseEligible -or [string]$manifest.signingRoute -cne 'ControlledTestAttestation') {
         throw 'Controlled-test validation requires a testing-only attestation submission manifest.'
     }
@@ -164,27 +226,36 @@ foreach ($name in @('ViiperUde.inf', 'ViiperUde.pdb')) {
     }
 }
 
-$signTool = Get-Command signtool.exe -ErrorAction Stop
 foreach ($name in @('ViiperUde.cat', 'ViiperUde.sys')) {
-    & $signTool.Source verify /kp /v $files[$name]
-    if ($LASTEXITCODE -ne 0) {
-        throw "Kernel-policy signature validation failed for '$name' with exit code $LASTEXITCODE."
-    }
-    Assert-MicrosoftHardwareSignature -Path $files[$name] -Mode $ValidationMode
+    Assert-DriverSignature -Path $files[$name] -Mode $ValidationMode `
+        -ExpectedLocalTestCertificateSha256 $localTestCertificateSha256
 }
-foreach ($name in @('ViiperUde.inf', 'ViiperUde.sys')) {
-    & $signTool.Source verify /kp /v /c $files['ViiperUde.cat'] $files[$name]
-    if ($LASTEXITCODE -ne 0) {
-        throw "'$name' is not a verified member of the Microsoft-signed catalog (exit code $LASTEXITCODE)."
+$requireExternalTools = $ValidationMode -ne 'LocalTest' -or $RequireLocalTestToolchainValidation
+if ($requireExternalTools) {
+    $signTool = Get-Command signtool.exe -ErrorAction Stop
+    foreach ($name in @('ViiperUde.cat', 'ViiperUde.sys')) {
+        $policy = if ($ValidationMode -eq 'LocalTest') { '/pa' } else { '/kp' }
+        & $signTool.Source verify $policy /v $files[$name]
+        if ($LASTEXITCODE -ne 0) {
+            throw "Signature policy validation failed for '$name' with exit code $LASTEXITCODE."
+        }
+    }
+    foreach ($name in @('ViiperUde.inf', 'ViiperUde.sys')) {
+        $policy = if ($ValidationMode -eq 'LocalTest') { '/pa' } else { '/kp' }
+        & $signTool.Source verify $policy /v /c $files['ViiperUde.cat'] $files[$name]
+        if ($LASTEXITCODE -ne 0) {
+            throw "'$name' is not a verified member of the exact catalog (exit code $LASTEXITCODE)."
+        }
+    }
+
+    $infVerif = Get-Command infverif.exe -ErrorAction Stop
+    foreach ($mode in @('/h', '/u')) {
+        & $infVerif.Source $mode $files['ViiperUde.inf']
+        if ($LASTEXITCODE -ne 0) {
+            throw "InfVerif $mode rejected the signed package with exit code $LASTEXITCODE."
+        }
     }
 }
 
-$infVerif = Get-Command infverif.exe -ErrorAction Stop
-foreach ($mode in @('/h', '/u')) {
-    & $infVerif.Source $mode $files['ViiperUde.inf']
-    if ($LASTEXITCODE -ne 0) {
-        throw "InfVerif $mode rejected the Microsoft-signed package with exit code $LASTEXITCODE."
-    }
-}
-
-Write-Host "Validated source-bound Microsoft-signed VIIPER native UDE package in $ValidationMode mode at '$($root.Path)'."
+$signatureKind = if ($ValidationMode -eq 'LocalTest') { 'local test-signed' } else { 'Microsoft-signed' }
+Write-Host "Validated source-bound $signatureKind VIIPER native UDE package in $ValidationMode mode at '$($root.Path)'."

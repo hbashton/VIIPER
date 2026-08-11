@@ -41,9 +41,11 @@ func (e *nativePackageRebootRequiredError) ExitCode() int {
 	return nativePackageRebootRequiredCode
 }
 
-// NativePackageInstall is the narrow bootstrapper boundary for the production
-// native UDE package. It is hidden because normal users enter through the
-// signed DS4Windows installer, which embeds the reviewed hashes passed here.
+// NativePackageInstall is the narrow bootstrapper boundary for the native UDE
+// package. Production is the default and normal users enter through the signed
+// DS4Windows installer. The explicit local-test route retains the same hashes,
+// rollback, service, and authenticated health transaction for disposable
+// TESTSIGNING machines without relaxing the production route.
 type NativePackageInstall struct {
 	PackageDirectory       string `help:"Directory containing the exact Microsoft-returned INF, SYS, and CAT runtime files." required:""`
 	SubmissionManifest     string `help:"Source-bound HLK/WHCP submission manifest." required:""`
@@ -56,6 +58,7 @@ type NativePackageInstall struct {
 	ExpectedSysSHA256      string `help:"Installer-embedded SHA-256 of the Microsoft-returned ViiperUde.sys." required:""`
 	ExpectedCatSHA256      string `help:"Installer-embedded SHA-256 of the Microsoft-returned ViiperUde.cat." required:""`
 	TargetUserSID          string `help:"Interactive Windows user SID that owns legacy startup state." required:""`
+	DriverValidationMode   string `help:"Driver signature route: production or local-test." default:"production" enum:"production,local-test" hidden:""`
 }
 
 // NativePackageBrokerCommit is invoked only by ViiperUdeCtl while the signed
@@ -206,6 +209,7 @@ func (c *NativePackageInstall) Run(logger *slog.Logger) error {
 		expectedSysSHA256:      strings.ToLower(strings.TrimSpace(c.ExpectedSysSHA256)),
 		expectedCatSHA256:      strings.ToLower(strings.TrimSpace(c.ExpectedCatSHA256)),
 		targetUserSID:          strings.TrimSpace(c.TargetUserSID),
+		driverValidationMode:   strings.ToLower(strings.TrimSpace(c.DriverValidationMode)),
 	}
 	if err := request.validate(); err != nil {
 		return err
@@ -228,6 +232,7 @@ type nativePackageRequest struct {
 	expectedSysSHA256      string
 	expectedCatSHA256      string
 	targetUserSID          string
+	driverValidationMode   string
 }
 
 func (r nativePackageRequest) validate() error {
@@ -245,6 +250,9 @@ func (r nativePackageRequest) validate() error {
 	}
 	if !nativePackageHexRevision.MatchString(r.sourceRevision) {
 		return errors.New("native package source revision must contain exactly 40 or 64 hexadecimal characters")
+	}
+	if r.driverValidationMode != "production" && r.driverValidationMode != "local-test" {
+		return errors.New("native package driver validation mode must be production or local-test")
 	}
 	if !nativePackageSHA256.MatchString(r.expectedBrokerSHA256) ||
 		!nativePackageSHA256.MatchString(r.expectedHelperSHA256) ||

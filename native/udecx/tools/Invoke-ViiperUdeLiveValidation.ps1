@@ -10,8 +10,10 @@ param(
     [ValidatePattern('^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$')]
     [string]$ExpectedSourceRevision,
 
-    [ValidateSet('ControlledTest', 'Production')]
+    [ValidateSet('LocalTest', 'ControlledTest', 'Production')]
     [string]$SignatureValidationMode = 'Production',
+
+    [string]$LocalTestCertificatePath,
 
     [ValidateRange(1, 100)]
     [int]$Iterations = 1,
@@ -154,34 +156,35 @@ if ($ReleaseGate) {
 
 $hasMediaProbe = -not [string]::IsNullOrWhiteSpace($MediaProbePath)
 $hasInputProbe = -not [string]::IsNullOrWhiteSpace($InputProbePath)
-if ($SignatureValidationMode -eq 'Production' -and ($hasMediaProbe -or $hasInputProbe) -and
+if ($SignatureValidationMode -in @('Production', 'LocalTest') -and
+    ($hasMediaProbe -or $hasInputProbe) -and
     [string]::IsNullOrWhiteSpace($ProbeManifestPath)) {
-    throw '-ProbeManifestPath is required whenever a production live probe is used.'
+    throw '-ProbeManifestPath is required whenever a source-bound live probe is used.'
 }
 
 $repository = (Resolve-Path -LiteralPath $RepositoryRoot -ErrorAction Stop).Path
-if ($SignatureValidationMode -eq 'Production') {
+if ($SignatureValidationMode -in @('Production', 'LocalTest')) {
     $git = Get-Command git.exe -ErrorAction Stop
     $headOutput = & $git.Source -C $repository rev-parse --verify HEAD 2>&1
     if ($LASTEXITCODE -ne 0) {
-        throw "The production live-test harness is not an exact Git checkout.`n$($headOutput -join [Environment]::NewLine)"
+        throw "The source-bound live-test harness is not an exact Git checkout.`n$($headOutput -join [Environment]::NewLine)"
     }
     $headRevision = ($headOutput | Select-Object -First 1).Trim()
     if (-not [string]::Equals($headRevision, $ExpectedSourceRevision,
             [StringComparison]::OrdinalIgnoreCase)) {
-        throw "The production live-test harness is source '$headRevision', not '$ExpectedSourceRevision'."
+        throw "The source-bound live-test harness is source '$headRevision', not '$ExpectedSourceRevision'."
     }
     $treeStatus = @(& $git.Source -C $repository status --porcelain=v1 --untracked-files=all 2>&1)
     if ($LASTEXITCODE -ne 0) {
-        throw "Could not verify the production live-test source tree.`n$($treeStatus -join [Environment]::NewLine)"
+        throw "Could not verify the source-bound live-test source tree.`n$($treeStatus -join [Environment]::NewLine)"
     }
     if ($treeStatus.Count -ne 0) {
-        throw ("The production live-test source tree is not clean; refusing unreviewed test code or data:`n" +
+        throw ("The source-bound live-test source tree is not clean; refusing unreviewed test code or data:`n" +
             ($treeStatus -join [Environment]::NewLine))
     }
     $submoduleStatus = @(& $git.Source -C $repository submodule status --recursive 2>&1)
     if ($LASTEXITCODE -ne 0 -or @($submoduleStatus | Where-Object { $_ -match '^[\-+U]' }).Count -ne 0) {
-        throw "The production live-test source tree has an unbound submodule state.`n$($submoduleStatus -join [Environment]::NewLine)"
+        throw "The source-bound live-test source tree has an unbound submodule state.`n$($submoduleStatus -join [Environment]::NewLine)"
     }
 }
 $signatureGate = Join-Path $PSScriptRoot 'Test-ViiperUdeSignedPackage.ps1'
@@ -189,7 +192,8 @@ $signatureGate = Join-Path $PSScriptRoot 'Test-ViiperUdeSignedPackage.ps1'
     -PackageDirectory $SignedPackageDirectory `
     -SubmissionManifestPath $SubmissionManifestPath `
     -ExpectedSourceRevision $ExpectedSourceRevision `
-    -ValidationMode $SignatureValidationMode
+    -ValidationMode $SignatureValidationMode `
+    -LocalTestCertificatePath $LocalTestCertificatePath
 
 $packageRoot = (Resolve-Path -LiteralPath $SignedPackageDirectory -ErrorAction Stop).Path
 $packageDrivers = @(Get-ChildItem -LiteralPath $packageRoot -Recurse -File -Filter 'ViiperUde.sys')
@@ -221,7 +225,11 @@ $devnodes = @(Get-CimInstance -ClassName Win32_PnPSignedDriver | Where-Object {
 if ($devnodes.Count -ne 1) {
     throw "Expected exactly one VIIPER UDE root devnode; found $($devnodes.Count)."
 }
-if (-not [bool]$devnodes[0].IsSigned -or [string]$devnodes[0].Signer -notmatch '(?i)Microsoft') {
+if (-not [bool]$devnodes[0].IsSigned -or [string]::IsNullOrWhiteSpace([string]$devnodes[0].Signer)) {
+    throw "The installed VIIPER UDE devnode is not backed by a signed driver (Signer='$($devnodes[0].Signer)')."
+}
+if ($SignatureValidationMode -ne 'LocalTest' -and
+    [string]$devnodes[0].Signer -notmatch '(?i)Microsoft') {
     throw "The installed VIIPER UDE devnode is not backed by a Microsoft-signed driver (Signer='$($devnodes[0].Signer)')."
 }
 
@@ -229,6 +237,13 @@ $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = [Security.Principal.WindowsPrincipal]::new($identity)
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     throw 'Live VIIPER UDE validation must run from an elevated PowerShell session.'
+}
+
+if ($SignatureValidationMode -eq 'LocalTest') {
+    $bcdOutput = (& bcdedit.exe /enum '{current}' 2>&1 | Out-String)
+    if ($LASTEXITCODE -ne 0 -or $bcdOutput -notmatch '(?im)^\s*testsigning\s+Yes\s*$') {
+        throw "LocalTest requires the current boot entry to report 'testsigning Yes'. Enable TESTSIGNING and reboot before retrying.`n$bcdOutput"
+    }
 }
 
 if ($ReleaseGate) {

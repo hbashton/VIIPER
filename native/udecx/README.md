@@ -37,6 +37,13 @@ never accepted by a Release recipe or production workflow.
   source revision, DriverVer, ABI, exact capability mask, and loaded-image
   build identity. Microsoft currently restricts
   attestation to testing scenarios; production release requires HLK/WHCP.
+- `tools/New-ViiperUdeLocalTestPackage.ps1` composes the exact WDK test-signed
+  driver, source-bound broker/helper, and live probes into a compact
+  short-retention artifact. `tools/Install-ViiperUdeLocalTest.ps1` accepts it
+  only on an elevated disposable machine whose current boot entry has
+  `TESTSIGNING` enabled, imports its exact hash-bound test certificate, and
+  runs the same driver-plus-broker transaction and authenticated health proof
+  used by production. This route is never release-eligible.
 - `tools/Test-ViiperUdeSignedPackage.ps1` validates the Microsoft-returned
   driver and catalog against kernel signing policy, proves that INF and SYS are
   members of that exact catalog, distinguishes testing-only attestation from
@@ -132,6 +139,39 @@ transaction's recovery operation. Exit `0` means verified success, `3010`
 means verified installation/removal requires a restart, `4` is a preflight
 rejection, and `3` means rollback itself failed. Every command emits one final
 key/value result line including `rebootRequired` and rollback status.
+
+For an exact branch build on a disposable local-test machine, download the
+`ViiperUde-x64-local-test-<source SHA>` artifact from a manually dispatched
+native workflow, then run from the matching clean checkout:
+
+```powershell
+.\native\udecx\tools\Install-ViiperUdeLocalTest.ps1 `
+  -PackageRoot C:\ViiperUdeLocalTest `
+  -ExpectedSourceRevision 0123456789abcdef0123456789abcdef01234567 `
+  -TargetUserSID S-1-5-21-111111111-222222222-333333333-1001 `
+  -AcknowledgeDisposableTestMachine
+```
+
+The local route does not bypass driver signing: the SYS and catalog must carry
+the exact WDK test signature sealed into the artifact lock, and Windows must
+trust that certificate while `TESTSIGNING` is active. It does not change the
+production Microsoft HLK/WHCP gate.
+
+After installation (and any requested restart), the same artifact supplies the
+source-bound evidence and probes for the real UdeCx test:
+
+```powershell
+.\native\udecx\tools\Invoke-ViiperUdeLiveValidation.ps1 `
+  -SignedPackageDirectory C:\ViiperUdeLocalTest\signed-package `
+  -SubmissionManifestPath C:\ViiperUdeLocalTest\submission-manifest.json `
+  -ExpectedSourceRevision 0123456789abcdef0123456789abcdef01234567 `
+  -SignatureValidationMode LocalTest `
+  -LocalTestCertificatePath C:\ViiperUdeLocalTest\ViiperUdeTest.cer `
+  -MediaProbePath C:\ViiperUdeLocalTest\ViiperUdeMediaProbe.exe `
+  -InputProbePath C:\ViiperUdeLocalTest\ViiperUdeInputProbe.exe `
+  -ProbeManifestPath C:\ViiperUdeLocalTest\ViiperUdeLiveProbes.manifest.json `
+  -Iterations 10 -MediaDurationSeconds 30 -DisposableTestMachine
+```
 
 Production uninstall is similarly owned by the signed installer. It calls
 `viiper uninstall` with the packaged `ViiperUdeCtl.exe`, the installer-bound

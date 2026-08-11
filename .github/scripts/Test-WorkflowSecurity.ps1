@@ -147,13 +147,23 @@ foreach ($requiredNativeGate in @(
         'tags: ["v*.*.*"]',
         'VIIPER_NATIVE_SOURCE_REVISION: ${{ github.sha }}',
         'Get-ViiperUdeBuildIdentity.ps1',
-        '5a303ea9407bac958ab81eef7023cd108adbed1a478b88a863ea440cd097f1fe',
+        'ef471e2e53b7c110cbadd3c15d17b10d26ce4cefe2bef7a11e72c2aca657cc68',
         'Test-ViiperUdeVersionMonotonicity.ps1',
         'x64/Release/ViiperUde/ViiperUde.inf',
-        'inputs.upload_release_helper == true')) {
+        'inputs.upload_release_helper == true',
+        'New-ViiperUdeLocalTestPackage.ps1',
+        'ViiperUde-x64-local-test-${{ github.sha }}',
+        'native/udecx/x64/Release/ViiperUdeLocalTest/**',
+        'retention-days: 7',
+        'internal/transport/udecx.nativeSourceRevision=$env:GITHUB_SHA')) {
     if (-not $nativeWorkflow.Contains($requiredNativeGate)) {
         throw "The native build workflow is missing gate '$requiredNativeGate'."
     }
+}
+if ($nativeWorkflow.Contains('native/udecx/x64/Release/**') -or
+        $nativeWorkflow.Contains('native/udecx/driver/x64/Release/**') -or
+        $nativeWorkflow.Contains('native/udecx/package/x64/Release/**')) {
+    throw 'The local-test artifact must not upload broad compiler output trees.'
 }
 
 $baseBuildWorkflow = Get-Content -LiteralPath (Join-Path $workflowDirectory 'build_base.yml') -Raw

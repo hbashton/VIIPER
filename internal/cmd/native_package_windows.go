@@ -842,7 +842,7 @@ func (t *windowsNativePackageTransaction) executeDriverHelper(ctx context.Contex
 		"--manifest", t.request.submissionManifest,
 		"--manifest-sha256", t.request.expectedManifestSHA256,
 		"--source-revision", t.request.sourceRevision,
-		"--validation-mode", "production",
+		"--validation-mode", t.request.driverValidationMode,
 		"--expected-inf-sha256", t.request.expectedInfSHA256,
 		"--expected-sys-sha256", t.request.expectedSysSHA256,
 		"--expected-cat-sha256", t.request.expectedCatSHA256,

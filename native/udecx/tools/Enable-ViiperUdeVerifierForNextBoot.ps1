@@ -10,8 +10,10 @@ param(
     [ValidatePattern('^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$')]
     [string]$ExpectedSourceRevision,
 
-    [ValidateSet('ControlledTest', 'Production')]
+    [ValidateSet('LocalTest', 'ControlledTest', 'Production')]
     [string]$SignatureValidationMode = 'Production',
+
+    [string]$LocalTestCertificatePath,
 
     [switch]$DisposableTestMachine
 )
@@ -53,7 +55,8 @@ $signatureGate = Join-Path $PSScriptRoot 'Test-ViiperUdeSignedPackage.ps1'
     -PackageDirectory $SignedPackageDirectory `
     -SubmissionManifestPath $SubmissionManifestPath `
     -ExpectedSourceRevision $ExpectedSourceRevision `
-    -ValidationMode $SignatureValidationMode
+    -ValidationMode $SignatureValidationMode `
+    -LocalTestCertificatePath $LocalTestCertificatePath
 
 $packageRoot = (Resolve-Path -LiteralPath $SignedPackageDirectory -ErrorAction Stop).Path
 $packageDrivers = @(Get-ChildItem -LiteralPath $packageRoot -Recurse -File -Filter 'ViiperUde.sys')
@@ -69,7 +72,7 @@ $installedDriver = Resolve-DriverImagePath -ImagePath ([string]$service.ImagePat
 $packageHash = (Get-FileHash -LiteralPath $packageDrivers[0].FullName -Algorithm SHA256).Hash
 $installedHash = (Get-FileHash -LiteralPath $installedDriver -Algorithm SHA256).Hash
 if ($packageHash -ne $installedHash) {
-    throw "The installed VIIPER UDE driver does not match the verified Microsoft-signed package. Installed='$installedDriver'."
+    throw "The installed VIIPER UDE driver does not match the verified source-bound package. Installed='$installedDriver'."
 }
 
 $existingOutput = (& verifier.exe /querysettings 2>&1 | Out-String)

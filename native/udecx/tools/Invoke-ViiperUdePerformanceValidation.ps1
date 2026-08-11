@@ -10,8 +10,10 @@ param(
     [ValidatePattern('^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$')]
     [string]$ExpectedSourceRevision,
 
-    [ValidateSet('ControlledTest', 'Production')]
+    [ValidateSet('LocalTest', 'ControlledTest', 'Production')]
     [string]$SignatureValidationMode = 'Production',
+
+    [string]$LocalTestCertificatePath,
 
     [Parameter(Mandatory = $true)]
     [string]$OutputPath,
@@ -111,6 +113,7 @@ $validationArguments = @{
     SubmissionManifestPath = $SubmissionManifestPath
     ExpectedSourceRevision = $ExpectedSourceRevision
     SignatureValidationMode = $SignatureValidationMode
+    LocalTestCertificatePath = $LocalTestCertificatePath
     Iterations             = $Iterations
     MediaProbePath         = $MediaProbePath
     InputProbePath         = $InputProbePath

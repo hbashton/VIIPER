@@ -62,6 +62,17 @@ on:
         type: boolean
         default: false
   workflow_dispatch:
+    inputs:
+      upload_artifacts:
+        description: Upload the compact source-bound local test package.
+        required: false
+        type: boolean
+        default: true
+      upload_release_helper:
+        description: Upload source-bound helpers and live probes separately.
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   actions: read
@@ -97,8 +108,8 @@ jobs:
           ./.github/scripts/Test-WorkflowSecurity.ps1
           $identity = ./native/udecx/tools/Get-ViiperUdeBuildIdentity.ps1 `
             -SourceRevision 0123456789abcdef0123456789abcdef01234567 `
-            -DriverPackageVersion 0.1.0.6 -ABIMajor 1 -ABIMinor 9 -Capabilities 13
-          if ($identity -cne '5a303ea9407bac958ab81eef7023cd108adbed1a478b88a863ea440cd097f1fe') {
+            -DriverPackageVersion 0.1.0.7 -ABIMajor 1 -ABIMinor 9 -Capabilities 13
+          if ($identity -cne 'ef471e2e53b7c110cbadd3c15d17b10d26ce4cefe2bef7a11e72c2aca657cc68') {
             throw "Native build-identity generator drifted: $identity"
           }
           $expected = ((Get-Content go.mod | Where-Object { $_ -match '^go\s+' } | Select-Object -First 1) -split '\s+')[1]
@@ -153,6 +164,10 @@ jobs:
     runs-on: windows-2025-vs2026
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: true
       - uses: github/codeql-action/init@5595ccaf912efad79be6eef63a5619ff05969be3 # v4
         with:
           languages: c-cpp
@@ -254,6 +269,18 @@ jobs:
           $probeManifestPath = Join-Path $outputDir 'ViiperUdeLiveProbes.manifest.json'
           $probeManifest | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $probeManifestPath -Encoding utf8NoBOM
           if (-not (Test-Path -LiteralPath $probeManifestPath -PathType Leaf)) { throw "Live-probe manifest was not created" }
+      - name: Build source-bound native broker
+        shell: pwsh
+        run: |
+          $output = 'native/udecx/x64/Release/viiper.exe'
+          $env:CGO_ENABLED = '0'
+          $buildDate = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
+          go build -tags release -trimpath `
+            -ldflags "-s -w -X main.Version=0.1.0-local-test -X main.Commit=$env:GITHUB_SHA -X main.Date=$buildDate -X github.com/Alia5/VIIPER/internal/codegen/common.Version=0.1.0-local-test -X github.com/Alia5/VIIPER/internal/transport/udecx.nativeSourceRevision=$env:GITHUB_SHA" `
+            -o $output ./cmd/viiper
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $output -PathType Leaf)) {
+            throw 'Source-bound native broker build failed.'
+          }
       - name: Upload source-bound native live probes
         if: ${{ inputs.upload_release_helper == true }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -284,6 +311,22 @@ jobs:
             -OutputPath native/udecx/x64/Release/ViiperUdeAttestationStructure.cab `
             -SourceRevision $env:GITHUB_SHA `
             -AcknowledgeTestingOnly
+      - name: Compose compact source-bound local test package
+        if: ${{ inputs.upload_artifacts == true }}
+        shell: pwsh
+        run: |
+          ./native/udecx/tools/New-ViiperUdeLocalTestPackage.ps1 `
+            -InfPath native/udecx/x64/Release/ViiperUde/ViiperUde.inf `
+            -SysPath native/udecx/x64/Release/ViiperUde/ViiperUde.sys `
+            -PdbPath native/udecx/x64/Release/ViiperUde.pdb `
+            -CatalogPath native/udecx/x64/Release/ViiperUde/ViiperUde.cat `
+            -BrokerPath native/udecx/x64/Release/viiper.exe `
+            -HelperPath native/udecx/x64/Release/ViiperUdeCtl.exe `
+            -MediaProbePath native/udecx/x64/Release/ViiperUdeMediaProbe.exe `
+            -InputProbePath native/udecx/x64/Release/ViiperUdeInputProbe.exe `
+            -ProbeManifestPath native/udecx/x64/Release/ViiperUdeLiveProbes.manifest.json `
+            -OutputDirectory native/udecx/x64/Release/ViiperUdeLocalTest `
+            -SourceRevision $env:GITHUB_SHA
       - name: Analyze native driver and setup helper
         uses: github/codeql-action/analyze@5595ccaf912efad79be6eef63a5619ff05969be3 # v4
         with:
@@ -291,9 +334,7 @@ jobs:
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: ${{ inputs.upload_artifacts == true }}
         with:
-          name: ViiperUde-x64-test-signed
-          path: |
-            native/udecx/x64/Release/**
-            native/udecx/driver/x64/Release/**
-            native/udecx/package/x64/Release/**
+          name: ViiperUde-x64-local-test-${{ github.sha }}
+          path: native/udecx/x64/Release/ViiperUdeLocalTest/**
           if-no-files-found: error
+          retention-days: 7

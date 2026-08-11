@@ -962,6 +962,7 @@ bool ValidateManifest(
     const std::string& rawManifest,
     const std::string& expectedRevision,
     bool production,
+    bool localTest,
     const std::filesystem::path& packageDirectory,
     Error* error) {
     std::string raw = rawManifest;
@@ -984,6 +985,8 @@ bool ValidateManifest(
     const JsonValue* revision = ObjectField(*object, "sourceRevision");
     const JsonValue* releaseEligible = ObjectField(*object, "releaseEligible");
     const JsonValue* signingRoute = ObjectField(*object, "signingRoute");
+    const JsonValue* testSignerCertificateSha256 =
+        ObjectField(*object, "testSignerCertificateSha256");
     const JsonValue* driverVersion = ObjectField(*object, "driverPackageVersion");
     const JsonValue* driverMajor = ObjectField(*object, "driverABIMajor");
     const JsonValue* driverMinor = ObjectField(*object, "driverABIMinor");
@@ -994,6 +997,8 @@ bool ValidateManifest(
     const auto* revisionValue = revision == nullptr ? nullptr : std::get_if<std::string>(&revision->value);
     const auto* releaseValue = releaseEligible == nullptr ? nullptr : std::get_if<bool>(&releaseEligible->value);
     const auto* routeValue = signingRoute == nullptr ? nullptr : std::get_if<std::string>(&signingRoute->value);
+    const auto* testSignerCertificateSha256Value = testSignerCertificateSha256 == nullptr ?
+        nullptr : std::get_if<std::string>(&testSignerCertificateSha256->value);
     const auto* driverVersionValue = driverVersion == nullptr ? nullptr : std::get_if<std::string>(&driverVersion->value);
     const auto* driverMajorValue = driverMajor == nullptr ? nullptr : std::get_if<int64_t>(&driverMajor->value);
     const auto* driverMinorValue = driverMinor == nullptr ? nullptr : std::get_if<int64_t>(&driverMinor->value);
@@ -1022,6 +1027,18 @@ bool ValidateManifest(
         if (!*releaseValue || *routeValue != "HLK/WHCP") {
             return SetError(error, L"manifest-release-route", ERROR_INVALID_DATA,
                 L"production installation requires a release-eligible HLK/WHCP manifest");
+        }
+    } else if (localTest) {
+        const bool signerDigestValid = testSignerCertificateSha256Value != nullptr &&
+            testSignerCertificateSha256Value->size() == 64 &&
+            std::all_of(testSignerCertificateSha256Value->begin(),
+                testSignerCertificateSha256Value->end(), [](char value) {
+                    return (value >= '0' && value <= '9') ||
+                        (value >= 'a' && value <= 'f');
+                });
+        if (*releaseValue || *routeValue != "LocalTest" || !signerDigestValid) {
+            return SetError(error, L"manifest-release-route", ERROR_INVALID_DATA,
+                L"local test installation requires its explicit non-release LocalTest manifest and signer digest");
         }
     } else if (*releaseValue || *routeValue != "ControlledTestAttestation") {
         return SetError(error, L"manifest-release-route", ERROR_INVALID_DATA,
@@ -2690,6 +2707,7 @@ struct InstallOptions {
     std::string expectedSysSha256;
     std::string expectedCatSha256;
     bool production = true;
+    bool localTest = false;
     std::optional<Version> expectedDowngradeFrom;
     std::filesystem::path brokerExecutable;
     std::string brokerSha256;
@@ -2805,6 +2823,7 @@ bool ValidateCandidateInputs(
         return false;
     }
     return ValidateManifest(manifestContents, options.sourceRevision, options.production,
+        options.localTest,
         *packageDirectory, error) &&
         CheckTransactionDeadline(options, L"transaction-deadline-preflight", error);
 }
@@ -4778,7 +4797,7 @@ Outcome SelfTest() {
             "0123456789abcdef0123456789abcdef01234567",
             &buildIdentity, &outcome.error) ||
         buildIdentity !=
-            "5a303ea9407bac958ab81eef7023cd108adbed1a478b88a863ea440cd097f1fe") {
+            "ef471e2e53b7c110cbadd3c15d17b10d26ce4cefe2bef7a11e72c2aca657cc68") {
         if (outcome.error.code == ERROR_SUCCESS) {
             SetError(&outcome.error, L"self-test-build-identity", ERROR_INVALID_DATA);
         }
@@ -5049,11 +5068,16 @@ bool ParseInstallOptions(int argc, wchar_t** argv, InstallOptions* options, Erro
             const std::wstring mode = argv[++index];
             if (_wcsicmp(mode.c_str(), L"production") == 0) {
                 options->production = true;
+                options->localTest = false;
             } else if (_wcsicmp(mode.c_str(), L"controlled-test") == 0) {
                 options->production = false;
+                options->localTest = false;
+            } else if (_wcsicmp(mode.c_str(), L"local-test") == 0) {
+                options->production = false;
+                options->localTest = true;
             } else {
                 return SetError(error, L"arguments", ERROR_INVALID_PARAMETER,
-                    L"validation mode must be production or controlled-test");
+                    L"validation mode must be production, controlled-test, or local-test");
             }
             modeSeen = true;
         } else if (_wcsicmp(argument.c_str(), L"--expected-inf-sha256") == 0 &&
@@ -5206,7 +5230,7 @@ void Usage() {
     std::wcerr
         << L"usage:\n"
         << L"  ViiperUdeCtl.exe install <ViiperUde.inf> --manifest <submission.json> --manifest-sha256 <64 hex> "
-           L"--source-revision <40-or-64 hex> --validation-mode <production|controlled-test> "
+           L"--source-revision <40-or-64 hex> --validation-mode <production|controlled-test|local-test> "
            L"--expected-inf-sha256 <64 hex> --expected-sys-sha256 <64 hex> "
            L"--expected-cat-sha256 <64 hex> "
            L"--transaction-deadline-unix-ms <positive integer> "
@@ -5215,7 +5239,7 @@ void Usage() {
            L"--broker-token <protected-token> --broker-token-sha256 <64 hex> "
            L"--target-user-sid <SID>\n"
         << L"  ViiperUdeCtl.exe verify <ViiperUde.inf> --manifest <submission.json> --manifest-sha256 <64 hex> "
-           L"--source-revision <40-or-64 hex> --validation-mode <production|controlled-test> "
+           L"--source-revision <40-or-64 hex> --validation-mode <production|controlled-test|local-test> "
            L"--expected-inf-sha256 <64 hex> --expected-sys-sha256 <64 hex> "
            L"--expected-cat-sha256 <64 hex> "
            L"--transaction-deadline-unix-ms <positive integer>\n"
@@ -5241,11 +5265,12 @@ int RunViiperUdeCtl(int argc, wchar_t** argv) {
             EmitOutcome(argv[1], outcome);
             return static_cast<int>(outcome.exitCode);
         }
-        if (_wcsicmp(argv[1], L"install") == 0 && options.production &&
+        if (_wcsicmp(argv[1], L"install") == 0 &&
+            (options.production || options.localTest) &&
             options.brokerExecutable.empty()) {
             Outcome outcome;
             SetError(&outcome.error, L"broker-required", ERROR_INVALID_PARAMETER,
-                L"production driver installation requires the authenticated broker transaction");
+                L"production and local-test driver installation require the authenticated broker transaction");
             outcome.exitCode = ExitCode::PreflightRejected;
             EmitOutcome(argv[1], outcome);
             return static_cast<int>(outcome.exitCode);
