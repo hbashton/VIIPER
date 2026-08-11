@@ -415,7 +415,7 @@ func validReport(t *testing.T) *Report {
 		} else {
 			run.Server.NativeUDE = &NativeServerProof{
 				ABIMajor: 1, ABIMinor: 0, Capabilities: 1,
-				ExpectedDriverPackageVersion: "0.1.0.2",
+				ExpectedDriverPackageVersion: "0.1.0.3",
 			}
 		}
 		transportOffset := 0
