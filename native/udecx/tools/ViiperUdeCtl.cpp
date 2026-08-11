@@ -4947,8 +4947,8 @@ Outcome SelfTest() {
         return outcome;
     }
     PackageInfo recoveryPackage;
-    recoveryPackage.infPath = LR"(C:\Windows\INF\oem7.inf)";
-    recoveryPackage.publishedName = L"oem7.inf";
+    recoveryPackage.infPath = LR"(C:\Windows\INF\oem42.inf)";
+    recoveryPackage.publishedName = L"oem42.inf";
     recoveryPackage.version.parts = {0, 1, 0, 6};
     recoveryPackage.infSha256 = std::string(64, 'A');
     recoveryPackage.sysSha256 = std::string(64, 'B');
