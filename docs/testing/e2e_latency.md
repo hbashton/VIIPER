@@ -1,95 +1,243 @@
-# E2E Latency Benchmarks
+# Controller-to-game latency
 
-The script `viiper/_testing/e2e/scripts/lat_bench.go` runs (or parses) end‑to‑end input latency benchmarks and produces enriched output (table, markdown, or JSON).
+VIIPER has two different latency tools. They answer different questions and
+must not be presented as interchangeable evidence.
 
-The benchmark defaults to the supported USB/IP transport. On a disposable
-Windows test system with the exact Microsoft-signed native UDE package already
-installed, set `VIIPER_E2E_TRANSPORT=native-ude` to run the identical API,
-controller, SDL, press, and release workload through the native bus. The
-benchmark never installs or trusts a driver. Invalid transport names, a server
-that exits during startup, input timeouts, and stream failures fail the run;
-they are not reported as latency samples. The harness writes and uses one
-private, known benchmark credential rather than accidentally reading a stale
-user credential. Plain and encrypted USB/IP cases open their own matching API
-stream. Native UDE runs only the authenticated cases because production native
-brokers deliberately reject unauthenticated localhost topology and streams.
+- `_testing/e2e/scripts/lat_bench.go` formats Go benchmark averages. It is a
+  useful developer diagnostic, but `ns/op` does not preserve individual tail
+  samples, transition loss, or duplication. It is not the native release gate.
+- `_testing/e2e/scripts/Invoke-ViiperE2ELatencyGate.ps1` is the opt-in Windows
+  production gate. It records every press and release observed through SDL,
+  compares authenticated USB/IP and native UDE runs, and emits a strict JSON
+  evidence artifact plus a bounded-memory WPR trace.
 
-It groups repeated cycles when `-count > 1` and uses the single press E2E measurement (`E2E-InputDelay`) as the 100% baseline.
+No live latency result is checked into this document. A passing result exists
+only when the production command below succeeds on the stated machine and its
+source-bound artifacts are retained.
 
-## Output
+### Evidence boundary
 
-| Column          | Meaning                                                                                   |
-| --------------- | ----------------------------------------------------------------------------------------- |
-| Benchmark       | Name of the sub benchmark                                                                 |
-| Count           | Iterations performed (from Go bench output; affected by `-benchtime`)                     |
-| ns/op           | Nanoseconds per operation (direct Go benchmark figure)                                    |
-| % of Full       | Relative to `E2E-InputDelay` (single press baseline)                                      |
-| Client Share %  | Portion attributed to the (go) client write phase (for E2E rows)                          |
-| Latency Share % | Remainder attributed to transport + virtual device/host stack + tight device polling loop |
+This is an exact-source, production-authentic API-to-consumer path gate. The Go
+test starts `cmd.Server` in process at the clean `HEAD` under test and uses the
+repository's Go client over real localhost TCP. Beyond that process boundary it
+uses the installed USB/IP or native UDE transport, the actual Windows controller
+stack, and the source-bound SDL DLL. Authentication, API framing, controller
+serialization, transport delivery, HID consumption, SDL event delivery, and
+consumer wake-up are therefore live rather than mocked.
 
-`E2E-PressAndRelease` includes both press and release cycles, so it is expected to be ~2× the single press and thus can exceed 100% in `% of Full`.
+It is not a packaged-executable, service/task-hosted broker, DS4Windows, physical
+controller, display, or game-engine-frame test. The signed-package/broker live
+gates and any DS4Windows or physical-input qualification remain separate
+evidence. A pass here must not be relabeled as a pass for those boundaries.
 
-## Scope / Methodology
+## What the production gate measures
 
-- All benchmarks included here are executed against a VIIPER server on the same host (localhost).
-  They therefore measure in-process client emission plus the selected local
-  transport and emulated-device processing. Remote/network USB/IP attachment
-  adds network RTT and jitter and is intentionally excluded from these
-  baseline figures.
-- The Windows observer waits on SDL gamepad transition events. It does not
-  busy-poll controller state, so the harness does not consume a synthetic CPU
-  core or add that contention to transport tail latency.
-- Benchmarks use a single emulated Xbox360 controller device.  
-  Other devices might produce slightly different results depending on USB report size and VIIPER-InputState size.
-- Benchmarks use a single button press, which is enough as clients/VIIPER always produce a full report of the devices state.  
+For each controller below, the gate creates the device through the authenticated
+VIIPER API, opens an authenticated controller stream, writes alternating south
+button states, and waits for the corresponding game-facing SDL transition:
 
-## Benchtime Mode
+| API controller | Expected SDL type | VID:PID | South button |
+| --- | --- | --- | --- |
+| `xbox360` | Xbox 360 | `045e:028e` | A |
+| `dualshock4` | PS4 | `054c:09cc` | Cross |
+| `dualsensegamepadv5` | PS5 | `054c:0ce6` | Cross |
 
-Runs use a fixed-iteration benchtime (e.g. `-benchtime=1000x`, `-benchtime=10000x`) rather than time-based (e.g. `2s`).  
+Each controller uses a fresh server, bus, device, stream, and exact SDL binding
+for four counterbalanced blocks: USB/IP, native UDE, native UDE, USB/IP (ABBA).
+Sixteen unrecorded press/release pairs warm the complete path at the start of
+every block. The declared sample count is then split as evenly as possible
+between the two blocks for each transport; `-Samples 256` therefore records 128
+pairs in each block and aggregates 256 press plus 256 release samples per
+transport. ABBA makes both the first/last positions USB/IP and both middle
+positions native, reducing one-way warm-up and monotonic-drift bias without
+discarding per-block source identity.
 
-## Running
+All four blocks use the same API address, credential, bus/device position,
+input sequence, warm-up count, one-second event timeout, and deterministic
+unmeasured dwell schedule. Xbox success cannot certify either PlayStation path.
+Missing, ambiguous, or misidentified DualShock 4 or DualSense enumeration—or a
+failure in any ABBA block—fails the whole suite.
 
-From repository root:
+A fixed 2 ms dwell could repeatedly land writes at the same phase of a 1 ms HID
+service interval. The gate instead retains a 2 ms minimum state dwell and adds
+the source-bound offsets `0, 125000, 250000, 375000, 500000, 625000, 750000,
+875000` ns. Press and release edges index that vector deterministically by
+sequence number, and block 2 resumes the same per-transport sequence. The
+cumulative offsets visit all eight 125 us phases of one millisecond; all
+controllers and transports receive the identical pattern. Sleeps occur before
+the measured `WriteBinary` interval, never inside it, and do not busy-wait.
 
-```bash
-# Single run, 1000 fixed iterations per sub benchmark
-go run ./_testing/e2e/scripts/lat_bench.go -pkg ./_testing/e2e -benchtime=1000x -count=1 -format markdown
-```
+The artifact records the vector and SHA-256
+`21eee9ea71984343ebd21221df8272553d6ab369a5740a1c796380cd468abcd9` of its
+comma-separated base-10 nanosecond representation. The parser recomputes that
+hash and rejects a changed vector or scheduling workload. This is a reproducible
+phase-control policy, not a claim that Windows wakes at each requested
+nanosecond; WPR retains the scheduler evidence for investigating overshoot.
 
-For the production native path, use the same workload and select the encrypted
-results:
+The interval starts immediately before `DeviceStream.WriteBinary` and ends when
+the exact SDL gamepad/button event returns to the waiting consumer. It therefore
+includes authenticated client framing, localhost TCP delivery, VIIPER device
+processing, the selected virtual USB transport, Windows controller input, SDL's
+event path, and consumer wake-up. It does not claim display, engine-frame, or
+network latency.
+
+Go's `time.Now`/`time.Since` monotonic readings are used for interval
+subtraction. On Windows, the Go runtime sources that clock from QPC; Microsoft
+recommends QPC for sub-microsecond interval and latency measurement. SDL's event
+timestamp is retained independently to reject absent, stale, or regressing
+events. The harness never subtracts the SDL clock from the Go clock.
+
+The observer uses `SDL_WaitEventTimeout`, not a tight state loop. Unexpected
+same-state edges from the exact device are counted as duplicates while the wait
+continues. A missing expected edge increments the appropriate miss counter and
+terminates that transport/controller run. The final quiet window is also an SDL
+event wait, so late release duplicates are not hidden and no measurement-side
+busy poll consumes a CPU core.
+
+## Source and device binding
+
+The PowerShell entry point fails closed before measurement unless all of the
+following are true:
+
+- `HEAD` equals the caller-supplied 40-64 digit source revision;
+- the tracked and untracked source tree is clean and every submodule is at its
+  recorded revision;
+- the native package passes the existing production Microsoft-signature and
+  submission-manifest gate;
+- the installed `ViiperUde.sys` hash matches that verified package and the one
+  VIIPER root devnode reports a Microsoft signer;
+- the SDL DLL hash matches the caller-supplied source-build hash;
+- the DLL actually loaded by the Go test is that exact absolute SDL path and
+  hash;
+- the USB/IP prerequisite check accepts the repository's supported runtime;
+- both servers reject an unauthenticated ping, while the authenticated ping
+  reports the requested live transport and a ready backend;
+- `DeviceAdd` returns the expected controller type, VID, PID, bus, device ID,
+  and (for USB/IP) exact auto-attached import port;
+- all baseline SDL gamepads remain present and exactly one stable new SDL ID is
+  created; its path, GUID, real type, VID, and PID must match the API device.
+
+The gate does not install, update, stop, replace, or remove a driver or service.
+Run it on a disposable test machine with the verified production package and
+supported USB/IP runtime already installed. No VIIPER process or service may
+already own the API ports or native broker handle.
+
+## Statistics and pass policy
+
+The artifact retains every sample as
+`{sequence, transition, latency_ns, sdl_event_timestamp_ns}`. It reports press,
+release, and combined distributions for each controller/transport:
+
+- p50, p95, and p99 use the nearest-rank definition (`ceil(p * N)`, one based);
+- max is the largest individual interval;
+- jitter is the population standard deviation of the individual intervals;
+- misses and duplicates are separate press/release counters.
+
+At least 256 complete press samples and 256 complete release samples, aggregated
+from both counterbalanced blocks, are required for every controller and
+transport. A timeout, write/event error,
+insufficient count, non-monotonic SDL event clock, any miss, or any duplicate
+fails the artifact. Native press, release, and combined distributions must each
+remain at or below the reviewed native limits: 4 ms p95, 8 ms p99, and 20 ms
+maximum.
+
+The JSON also reports native-minus-USB/IP deltas and native/USB-IP ratios for
+p50, p95, p99, max, and jitter. A same-machine non-regression policy additionally
+requires native p95, p99, and maximum to be no more than 1 ms, 2 ms, and 5 ms
+above the corresponding USB/IP values for press, release, and combined samples.
+Those absolute deltas are engineering acceptance limits set at one quarter of
+the corresponding 4/8/20 ms native ceilings. They avoid unstable ratios when a
+USB/IP baseline is very small; they are policy, not a claim about observed
+transport performance. The gate does not say native is lower latency unless the
+retained live artifact actually shows negative native-minus-USB/IP deltas.
+
+The parser rejects unknown fields, trailing JSON, weakened absolute or
+same-machine limits, a non-ABBA schedule, mixed transport proof, workload drift
+between controllers, reordered or missing press/release samples, and block,
+aggregate, comparison, or verdict fields that do not exactly recompute from the
+individual records.
+
+## Running the production gate
+
+Prerequisites are an elevated Windows PowerShell session, an exact clean
+checkout, Go 1.26 or newer, CGO with a working C toolchain, CMake, the
+source-built SDL submodule, WPR, USB/IP win2
+0.9.7.7, and an already installed Microsoft-signed VIIPER UDE package matching
+its submission manifest.
+
+The SDL wrapper currently links the multi-configuration Debug output. Build and
+record that exact binary before running the gate:
 
 ```powershell
-$env:VIIPER_E2E_TRANSPORT = 'native-ude'
-go run ./_testing/e2e/scripts/lat_bench.go -pkg ./_testing/e2e -encryption encrypted -benchtime 1000x -count 5 -format markdown
+cmake -S .\_testing\e2e\deps\SDL -B .\_testing\e2e\deps\SDL\build -A x64
+cmake --build .\_testing\e2e\deps\SDL\build --config Debug
+$sdlHash = (Get-FileHash .\_testing\e2e\deps\SDL\build\Debug\SDL3.dll -Algorithm SHA256).Hash
 ```
 
-Results (Arch Linux / SteamDeck Kernel / Steam Deck LCD / Go 1.25+, 10k iterations):
+Choose new evidence paths outside the checkout. Existing files are never
+overwritten. `-Samples` is the total pair count per controller/transport and is
+bounded to 256–10,000 so the complete three-controller ABBA suite remains
+inside its 18-minute fail-closed deadline.
 
-| Benchmark                   | Count | ns/op  | % of Full | Client Share % | Latency Share % |
-| --------------------------- | ----- | ------ | --------- | -------------- | --------------- |
-| 1_Go-Client-Write           | 10000 | 10668  | 11.98     | 100.00         | 0.00            |
-| 2_InputDelay-Without-Client | 10000 | 74154  | 83.25     | 0.00           | 100.00          |
-| 3_E2E-InputDelay            | 10000 | 89078  | 100.00    | 11.98          | 88.02           |
-| 4_E2E-PressAndRelease       | 10000 | 184870 | 207.54    | 11.54          | 88.46           |
+```powershell
+$revision = (git rev-parse HEAD).Trim()
 
-Example output (Windows / AMD Ryzen 9 3900X / Go 1.25+, 10k iterations):
+.\_testing\e2e\scripts\Invoke-ViiperE2ELatencyGate.ps1 `
+  -SignedPackageDirectory C:\ViiperUde\MicrosoftSigned `
+  -SubmissionManifestPath C:\ViiperUde\ViiperUde.cab.sha256.json `
+  -ExpectedSourceRevision $revision `
+  -SDLBinarySHA256 $sdlHash `
+  -OutputPath C:\ViiperEvidence\controller-latency.json `
+  -WprTracePath C:\ViiperEvidence\controller-latency.etl `
+  -Samples 256
+```
 
-| Benchmark                   | Count | ns/op  | % of Full | Client Share % | Latency Share % |
-| --------------------------- | ----- | ------ | --------- | -------------- | --------------- |
-| 1_Go-Client-Write           | 10000 | 27933  | 16.60     | 100.00         | 0.00            |
-| 2_InputDelay-Without-Client | 10000 | 133724 | 79.45     | 0.00           | 100.00          |
-| 3_E2E-InputDelay            | 10000 | 168307 | 100.00    | 16.60          | 83.40           |
-| 4_E2E-PressAndRelease       | 10000 | 331439 | 196.93    | 16.86          | 83.14           |
+The wrapper verifies and uses `GeneralProfile.Verbose.Memory`, names the
+recording instance, rejects dropped events, and saves the trace on both pass and
+test failure. The profile includes context-switch, ready-thread, sampled-profile,
+DPC, interrupt, and WDF evidence needed to investigate a tail. The ETL is not
+parsed into latency samples and is not a substitute for the SDL consumer
+timestamps.
 
-Variability across repeated measurement runs has been negligible.  
-Use a larger `-count` if you want to increase the number of runs.
+Directly setting the live-test environment variable is intentionally
+insufficient. The Go test also requires the preflight marker, expected source
+and SDL revisions, loaded SDL path/hash, verified package-manifest hash,
+installed-driver hash, sample count, and a new absolute output path.
 
-## Notes
+## Aggregate developer diagnostic
 
-- Memory statistics from Go benchmarks are intentionally omitted.
-- `% of Full` falls back to the largest ns/op if the baseline row is missing.
-- All benchmarking must run with parallelism 1 in underlying benches.
-- Benchmarks use SDL3 gamepad transition events to detect input changes on the
-  emulated device without a measurement-side polling loop.
-- Benchmarks must be run without an already running VIIPER server instance.
+For a non-gating average-only diagnostic, run from the repository root. Use the
+encrypted rows when comparing transports so the API/controller stream mode is
+the same:
+
+```powershell
+$env:VIIPER_E2E_TRANSPORT = 'usbip'
+go run .\_testing\e2e\scripts\lat_bench.go `
+  -pkg .\_testing\e2e -encryption encrypted -benchtime 1000x -count 5 -format markdown
+
+$env:VIIPER_E2E_TRANSPORT = 'native-ude'
+go run .\_testing\e2e\scripts\lat_bench.go `
+  -pkg .\_testing\e2e -encryption encrypted -benchtime 1000x -count 5 -format markdown
+```
+
+Go benchmark `ns/op` is an aggregate timing result. Do not infer p95/p99,
+misses, duplicates, or a live release pass from it.
+
+## Method references
+
+- [Go `testing` benchmarks](https://pkg.go.dev/testing) document `B.Loop`, the
+  benchmark timer, and aggregate metric semantics.
+- [Go monotonic time](https://pkg.go.dev/time#hdr-Monotonic_Clocks) documents why
+  `time.Since(start)` is robust against wall-clock adjustment.
+- [SDL gamepad button events](https://wiki.libsdl.org/SDL3/SDL_GamepadButtonEvent)
+  define the nanosecond event timestamp, device ID, button, and edge.
+- [`SDL_WaitEventTimeout`](https://wiki.libsdl.org/SDL3/SDL_WaitEventTimeout) is
+  the blocking event-consumer primitive used by the observer.
+- [Microsoft high-resolution timestamp guidance](https://learn.microsoft.com/en-us/windows/win32/sysinfo/acquiring-high-resolution-time-stamps)
+  recommends QPC for interval and latency measurements.
+- [Microsoft WPR command-line guidance](https://learn.microsoft.com/en-us/windows-hardware/test/wpt/wpr-command-line-options)
+  documents named instances, memory/file modes, profiles, start, and stop.
+- [ViGEmBus](https://github.com/nefarius/ViGEmBus/tree/d986e1d93708ec9b11049542fa6027272cce716c)
+  is the virtual-controller lifecycle and replay-method reference. Its design
+  motivates testing through an unmodified game-consumer API; no ViGEm latency
+  number is copied or claimed here.
