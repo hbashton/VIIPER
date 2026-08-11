@@ -240,7 +240,9 @@ func TestKernelNeverUsesConsumedUDEDeviceHandle(t *testing.T) {
 	destroyOwned := normalizedContract(nativeCFunction(t, device, "ViiperDestroyOwnedDevices"))
 	requireContractOrder(t, destroyOwned,
 		"deviceContext = ViiperGetDeviceContext(device);",
-		"if (deviceContext->Plugged)",
+		"plugged = deviceContext->Plugged;",
+		"ViiperAbortDeviceManagementOperations(Controller, device, STATUS_FILE_CLOSED);",
+		"if (plugged)",
 		"UdecxUsbDevicePlugOutAndDelete(device)",
 		"return FALSE;")
 	assertNoConsumedHandleUse(t, destroyOwned, "UdecxUsbDevicePlugOutAndDelete(device)", "} else {")
