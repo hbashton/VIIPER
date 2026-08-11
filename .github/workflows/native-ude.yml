@@ -138,7 +138,7 @@ jobs:
           CGO_ENABLED: "0"
         run: go test -run=^$ ./_testing/e2e
       - name: Fuzz native protocol decoders
-        run: go test -run=^$ -fuzz=FuzzProtocolDecoders -fuzztime=20s ./internal/transport/udecx
+        run: go test -run=^$ -fuzz=FuzzProtocolDecoders -fuzztime=1000000x ./internal/transport/udecx
 
   race:
     runs-on: ubuntu-24.04

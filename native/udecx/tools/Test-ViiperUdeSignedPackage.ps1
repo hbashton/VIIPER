@@ -55,7 +55,8 @@ function Invoke-BoundedValidationTool {
         [Parameter(Mandatory = $true)][string]$FilePath,
         [Parameter(Mandatory = $true)][string[]]$Arguments,
         [Parameter(Mandatory = $true)][string]$Operation,
-        [int]$TimeoutMilliseconds = 120000
+        [int]$TimeoutMilliseconds = 120000,
+        [switch]$SuppressOutput
     )
 
     $startInfo = [Diagnostics.ProcessStartInfo]::new()
@@ -88,9 +89,13 @@ function Invoke-BoundedValidationTool {
         }
         $stdout = $stdoutTask.GetAwaiter().GetResult()
         $stderr = $stderrTask.GetAwaiter().GetResult()
-        if ($stdout) { Write-Host $stdout.TrimEnd() }
-        if ($stderr) { Write-Host $stderr.TrimEnd() }
-        return $process.ExitCode
+        if (-not $SuppressOutput -and $stdout) { Write-Host $stdout.TrimEnd() }
+        if (-not $SuppressOutput -and $stderr) { Write-Host $stderr.TrimEnd() }
+        return [pscustomobject]@{
+            ExitCode = $process.ExitCode
+            StandardOutput = $stdout
+            StandardError = $stderr
+        }
     }
     finally {
         $process.Dispose()
@@ -137,6 +142,48 @@ function Get-CertificateSha256 {
     }
 }
 
+function Get-BoundedAuthenticodeSignature {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $encodedPath = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($Path))
+    $command = @"
+`$ErrorActionPreference = 'Stop'
+`$ProgressPreference = 'SilentlyContinue'
+`$path = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('$encodedPath'))
+`$signature = Get-AuthenticodeSignature -LiteralPath `$path
+`$certificate = if (`$null -eq `$signature.SignerCertificate) { '' } else {
+    [Convert]::ToBase64String(`$signature.SignerCertificate.RawData)
+}
+[ordered]@{ status = `$signature.Status.ToString(); certificate = `$certificate } |
+    ConvertTo-Json -Compress
+"@
+    $encodedCommand = [Convert]::ToBase64String(
+        [Text.Encoding]::Unicode.GetBytes($command))
+    $hostPath = (Get-Process -Id $PID).Path
+    $result = Invoke-BoundedValidationTool -FilePath $hostPath `
+        -Arguments @('-NoProfile', '-NonInteractive', '-EncodedCommand', $encodedCommand) `
+        -Operation "Authenticode validation for '$Path'" -SuppressOutput
+    if ($result.ExitCode -ne 0) {
+        throw "Authenticode validation failed for '$Path' with exit code $($result.ExitCode)."
+    }
+    try {
+        $value = $result.StandardOutput.Trim() | ConvertFrom-Json -ErrorAction Stop
+        if ([string]$value.status -notmatch '^[A-Za-z]+$' -or
+            [string]::IsNullOrEmpty([string]$value.certificate)) {
+            throw 'missing status or signer certificate'
+        }
+        $certificateBytes = [Convert]::FromBase64String([string]$value.certificate)
+        return [pscustomobject]@{
+            Status = [string]$value.status
+            SignerCertificate = [Security.Cryptography.X509Certificates.X509Certificate2]::new(
+                $certificateBytes)
+        }
+    }
+    catch {
+        throw "Authenticode validation returned malformed evidence for '$Path': $($_.Exception.Message)"
+    }
+}
+
 function Assert-DriverSignature {
     param(
         [Parameter(Mandatory = $true)]
@@ -149,39 +196,44 @@ function Assert-DriverSignature {
         [string]$ExpectedLocalTestCertificateSha256
     )
 
-    $signature = Get-AuthenticodeSignature -LiteralPath $Path
-    if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
-        throw "'$Path' does not have a valid Authenticode signature (status '$($signature.Status)')."
-    }
-    if ($null -eq $signature.SignerCertificate) {
-        throw "'$Path' did not expose its signing certificate."
-    }
-    if ($Mode -eq 'LocalTest') {
-        $actual = Get-CertificateSha256 -Certificate $signature.SignerCertificate
-        if ($ExpectedLocalTestCertificateSha256 -notmatch '^[0-9a-f]{64}$' -or
-            $actual -cne $ExpectedLocalTestCertificateSha256) {
-            throw "'$Path' is not signed by the exact source-bound local test certificate."
+    $signature = Get-BoundedAuthenticodeSignature -Path $Path
+    try {
+        if ($signature.Status -cne 'Valid') {
+            throw "'$Path' does not have a valid Authenticode signature (status '$($signature.Status)')."
         }
-        return
-    }
-    if (
-        $signature.SignerCertificate.Subject -notmatch '(?i)(^|,\s*)O=Microsoft Corporation(,|$)') {
-        throw "'$Path' is not signed by Microsoft Corporation."
-    }
+        if ($null -eq $signature.SignerCertificate) {
+            throw "'$Path' did not expose its signing certificate."
+        }
+        if ($Mode -eq 'LocalTest') {
+            $actual = Get-CertificateSha256 -Certificate $signature.SignerCertificate
+            if ($ExpectedLocalTestCertificateSha256 -notmatch '^[0-9a-f]{64}$' -or
+                $actual -cne $ExpectedLocalTestCertificateSha256) {
+                throw "'$Path' is not signed by the exact source-bound local test certificate."
+            }
+            return
+        }
+        if (
+            $signature.SignerCertificate.Subject -notmatch '(?i)(^|,\s*)O=Microsoft Corporation(,|$)') {
+            throw "'$Path' is not signed by Microsoft Corporation."
+        }
 
-    $ekuOids = Get-CertificateEkuOids -Certificate $signature.SignerCertificate
-    $hardwareVerificationOid = '1.3.6.1.4.1.311.10.3.5'
-    $attestedVerificationOid = '1.3.6.1.4.1.311.10.3.5.1'
-    if (-not $ekuOids.Contains($hardwareVerificationOid)) {
-        throw "'$Path' lacks the Windows Hardware Driver Verification EKU."
-    }
-    if ($Mode -eq 'ControlledTest') {
-        if (-not $ekuOids.Contains($attestedVerificationOid)) {
-            throw "'$Path' is not a Microsoft attestation-signed controlled-test artifact."
+        $ekuOids = Get-CertificateEkuOids -Certificate $signature.SignerCertificate
+        $hardwareVerificationOid = '1.3.6.1.4.1.311.10.3.5'
+        $attestedVerificationOid = '1.3.6.1.4.1.311.10.3.5.1'
+        if (-not $ekuOids.Contains($hardwareVerificationOid)) {
+            throw "'$Path' lacks the Windows Hardware Driver Verification EKU."
+        }
+        if ($Mode -eq 'ControlledTest') {
+            if (-not $ekuOids.Contains($attestedVerificationOid)) {
+                throw "'$Path' is not a Microsoft attestation-signed controlled-test artifact."
+            }
+        }
+        elseif ($ekuOids.Contains($attestedVerificationOid)) {
+            throw "'$Path' is attestation signed and cannot pass the production HLK/WHCP release gate."
         }
     }
-    elseif ($ekuOids.Contains($attestedVerificationOid)) {
-        throw "'$Path' is attestation signed and cannot pass the production HLK/WHCP release gate."
+    finally {
+        $signature.SignerCertificate.Dispose()
     }
 }
 
@@ -314,8 +366,8 @@ if ($requireExternalTools) {
         $exitCode = Invoke-BoundedValidationTool -FilePath $signTool.Source `
             -Arguments @('verify', $policy, '/v', $files[$name]) `
             -Operation "SignTool signature validation for '$name'"
-        if ($exitCode -ne 0) {
-            throw "Signature policy validation failed for '$name' with exit code $exitCode."
+        if ($exitCode.ExitCode -ne 0) {
+            throw "Signature policy validation failed for '$name' with exit code $($exitCode.ExitCode)."
         }
     }
     foreach ($name in @('ViiperUde.inf', 'ViiperUde.sys')) {
@@ -323,8 +375,8 @@ if ($requireExternalTools) {
         $exitCode = Invoke-BoundedValidationTool -FilePath $signTool.Source `
             -Arguments @('verify', $policy, '/v', '/c', $files['ViiperUde.cat'], $files[$name]) `
             -Operation "SignTool catalog membership validation for '$name'"
-        if ($exitCode -ne 0) {
-            throw "'$name' is not a verified member of the exact catalog (exit code $exitCode)."
+        if ($exitCode.ExitCode -ne 0) {
+            throw "'$name' is not a verified member of the exact catalog (exit code $($exitCode.ExitCode))."
         }
     }
 
@@ -333,8 +385,8 @@ if ($requireExternalTools) {
         $exitCode = Invoke-BoundedValidationTool -FilePath $infVerif.Source `
             -Arguments @($mode, $files['ViiperUde.inf']) `
             -Operation "InfVerif $mode validation"
-        if ($exitCode -ne 0) {
-            throw "InfVerif $mode rejected the signed package with exit code $exitCode."
+        if ($exitCode.ExitCode -ne 0) {
+            throw "InfVerif $mode rejected the signed package with exit code $($exitCode.ExitCode)."
         }
     }
 }

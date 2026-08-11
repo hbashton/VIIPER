@@ -48,7 +48,7 @@ func TestLocalTestPackageUsesFullTransactionalNativeBackend(t *testing.T) {
 	for _, required := range []string{
 		"[string]$BrokerPath",
 		"[string]$TestCertificatePath",
-		"The local catalog and driver do not match the exact WDK-exported test certificate.",
+		"$certificateSha256 = Get-CertificateSha256 $expectedCertificate",
 		"Resolve-ExactInput $BrokerPath 'viiper.exe'",
 		"signingRoute = 'LocalTest'",
 		"releaseEligible = $false",
@@ -133,6 +133,8 @@ func TestLocalTestValidationCannotWeakenProduction(t *testing.T) {
 	for _, required := range []string{
 		"[ValidateSet('LocalTest', 'ControlledTest', 'Production')]",
 		"Invoke-BoundedValidationTool",
+		"Get-BoundedAuthenticodeSignature",
+		"'-NoProfile', '-NonInteractive', '-EncodedCommand'",
 		"$process.WaitForExit($TimeoutMilliseconds)",
 		"$process.StandardOutput.ReadToEndAsync()",
 		"$process.StandardError.ReadToEndAsync()",
