@@ -16,12 +16,37 @@ type internalRecordConn struct {
 	bytes.Buffer
 }
 
+type loopingInternalConn struct {
+	record []byte
+	offset int
+}
+
 func (*internalRecordConn) Close() error                     { return nil }
 func (*internalRecordConn) LocalAddr() net.Addr              { return internalTestAddr("local") }
 func (*internalRecordConn) RemoteAddr() net.Addr             { return internalTestAddr("remote") }
 func (*internalRecordConn) SetDeadline(time.Time) error      { return nil }
 func (*internalRecordConn) SetReadDeadline(time.Time) error  { return nil }
 func (*internalRecordConn) SetWriteDeadline(time.Time) error { return nil }
+
+func (c *loopingInternalConn) Read(p []byte) (int, error) {
+	if c.offset == len(c.record) {
+		c.offset = 0
+	}
+	n := copy(p, c.record[c.offset:])
+	c.offset += n
+	return n, nil
+}
+func (*loopingInternalConn) Write(p []byte) (int, error) { return len(p), nil }
+func (*loopingInternalConn) Close() error                { return nil }
+func (*loopingInternalConn) LocalAddr() net.Addr         { return internalTestAddr("local") }
+func (*loopingInternalConn) RemoteAddr() net.Addr        { return internalTestAddr("remote") }
+func (*loopingInternalConn) SetDeadline(time.Time) error { return nil }
+func (*loopingInternalConn) SetReadDeadline(time.Time) error {
+	return nil
+}
+func (*loopingInternalConn) SetWriteDeadline(time.Time) error {
+	return nil
+}
 
 type internalTestAddr string
 
@@ -65,7 +90,7 @@ func TestConnUsesFinalCounterNonceExactlyOnceBeforeExhaustion(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw := &internalRecordConn{}
-	wrapper, err := WrapConn(raw, key)
+	wrapper, err := WrapClientConn(raw, key)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,16 +111,58 @@ func TestConnUsesFinalCounterNonceExactlyOnceBeforeExhaustion(t *testing.T) {
 		t.Fatal("nonce-exhausted write emitted wire data")
 	}
 
-	receiverWrapper, err := WrapConn(raw, key)
+	receiverWrapper, err := WrapServerConn(raw, key)
 	if err != nil {
 		t.Fatal(err)
 	}
+	receiver := receiverWrapper.(*Conn)
+	receiver.recvCtr = math.MaxUint64
 	decoded := make([]byte, len(payload))
 	if _, err = io.ReadFull(receiverWrapper, decoded); err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(decoded, payload) {
 		t.Fatalf("final nonce plaintext=%q want=%q", decoded, payload)
+	}
+	_, _ = raw.Buffer.Write(wire)
+	if n, readErr := receiver.Read(decoded[:1]); n != 0 || !errors.Is(readErr, errRecvExhausted) {
+		t.Fatalf("receive after final nonce=(%d, %v), want (0, %v)", n, readErr, errRecvExhausted)
+	}
+}
+
+func BenchmarkConnReadAuthenticatedRecord(b *testing.B) {
+	key, err := DeriveKey("authenticated-read-benchmark")
+	if err != nil {
+		b.Fatal(err)
+	}
+	payload := make([]byte, 512)
+	wire := &internalRecordConn{}
+	sender, err := WrapClientConn(wire, key)
+	if err != nil {
+		b.Fatal(err)
+	}
+	if _, err = sender.Write(payload); err != nil {
+		b.Fatal(err)
+	}
+	raw := &loopingInternalConn{record: append([]byte(nil), wire.Bytes()...)}
+	wrapper, err := WrapServerConn(raw, key)
+	if err != nil {
+		b.Fatal(err)
+	}
+	receiver := wrapper.(*Conn)
+	dst := make([]byte, len(payload))
+	b.SetBytes(int64(len(payload)))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		// The transport loops one authenticated counter-zero fixture to isolate
+		// decrypt/copy cost. Reset only the expected test counter; production
+		// streams reject this replay.
+		receiver.recvCtr = 0
+		receiver.recvExhausted = false
+		if _, err = io.ReadFull(receiver, dst); err != nil {
+			b.Fatal(err)
+		}
 	}
 }
 
@@ -105,7 +172,7 @@ func TestConnCloseJoinsLanesAndClearsRecordAndCipherState(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw := &internalRecordConn{}
-	senderWrapper, err := WrapConn(raw, key)
+	senderWrapper, err := WrapClientConn(raw, key)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +186,7 @@ func TestConnCloseJoinsLanesAndClearsRecordAndCipherState(t *testing.T) {
 	if err = sender.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if sender.aead != nil || sender.sendBuf != nil {
+	if sender.aead != nil || sender.sendBuf != nil || sender.sendNoncePrefix != 0 || sender.sendCtr != 0 {
 		t.Fatal("close retained send cipher or record state")
 	}
 	for i, value := range sendBacking {
@@ -133,7 +200,7 @@ func TestConnCloseJoinsLanesAndClearsRecordAndCipherState(t *testing.T) {
 
 	receiveRaw := &internalRecordConn{}
 	_, _ = receiveRaw.Buffer.Write(wire)
-	receiverWrapper, err := WrapConn(receiveRaw, key)
+	receiverWrapper, err := WrapServerConn(receiveRaw, key)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +215,8 @@ func TestConnCloseJoinsLanesAndClearsRecordAndCipherState(t *testing.T) {
 	if err = receiver.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if receiver.aead != nil || receiver.recvPacket != nil || receiver.recvPlain != nil {
+	if receiver.aead != nil || receiver.recvPacket != nil || receiver.recvPlain != nil ||
+		receiver.recvNoncePrefix != 0 || receiver.recvCtr != 0 || receiver.recvExhausted {
 		t.Fatal("close retained receive cipher or record state")
 	}
 	for i, value := range receiveBacking {
@@ -169,7 +237,7 @@ func TestConnCloseUnblocksAndJoinsConcurrentReadAndWrite(t *testing.T) {
 	raw := &blockingInternalConn{
 		readStarted: make(chan struct{}), writeStarted: make(chan struct{}), closed: make(chan struct{}),
 	}
-	wrapper, err := WrapConn(raw, key)
+	wrapper, err := WrapClientConn(raw, key)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -193,8 +193,10 @@ The authenticated DS4Windows-to-service API which feeds that lane keeps its
 wire format but reuses one bounded receive slab per connection and decrypts
 records in place before copying into the caller's buffer. Full-duplex access
 uses independent read/write locks; concurrent writers are serialized into
-whole records with monotonic nonces, and a partially emitted record closes the
-now-unrecoverable stream instead of permitting a corrupt retry.
+whole records. Client and server records use separate 32-bit nonce domains and
+monotonic 64-bit counters; receivers enforce both the direction and exact next
+counter. A partially emitted record closes the now-unrecoverable stream instead
+of permitting a corrupt retry.
 Once correctness gates pass, high-rate media payloads may move to a
 preallocated ring while keeping the same token/generation lifecycle. Control
 and lifecycle operations remain IOCTL based.

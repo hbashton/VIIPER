@@ -197,16 +197,16 @@ func TestEncryptedTransport(t *testing.T) {
 		}
 
 		sessionKey := auth.DeriveSessionKey(key, serverNonce, clientNonce)
-		secureConn, err := auth.WrapConn(conn, sessionKey)
+		conn, err = auth.WrapServerConn(conn, sessionKey)
 		assert.NoError(t, err)
 
-		rr := bufio.NewReader(secureConn)
+		rr := bufio.NewReader(conn)
 		line, err := rr.ReadString('\x00')
 		if err != nil {
 			return
 		}
 
-		_, err = secureConn.Write([]byte(line))
+		_, err = conn.Write([]byte(line))
 		assert.NoError(t, err)
 	}
 

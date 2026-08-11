@@ -4,6 +4,7 @@ import (
 	"crypto/cipher"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"net"
@@ -15,7 +16,10 @@ import (
 type Conn struct {
 	net.Conn
 	aead             cipher.AEAD
+	sendNoncePrefix  uint32
 	sendCtr          uint64
+	recvNoncePrefix  uint32
+	recvCtr          uint64
 	sendBuf          []byte
 	recvHeader       [4]byte
 	recvHeaderRead   int
@@ -28,23 +32,53 @@ type Conn struct {
 	sendErr          error
 	recvErr          error
 	sendExhausted    bool
+	recvExhausted    bool
 }
 
-const maxPacketSize = 2 * 1024 * 1024 // 2 MB
+const (
+	maxPacketSize = 2 * 1024 * 1024 // 2 MB
+
+	// ChaCha20-Poly1305 uses a 96-bit nonce. Split it into a fixed
+	// direction domain and a monotonically increasing record counter so the
+	// client and server never use the same nonce with their shared session
+	// key. cipher.AEAD requires every nonce to be unique for a given key.
+	clientNoncePrefix uint32 = 0
+	serverNoncePrefix uint32 = 1
+)
 
 var (
 	errPacketTooLarge = errors.New("authenticated stream packet is too large")
 	errPacketTooShort = errors.New("authenticated stream packet is too short")
 	errNonceExhausted = errors.New("authenticated stream nonce space is exhausted")
+	errRecvExhausted  = errors.New("authenticated stream receive nonce space is exhausted")
 	errInvalidWrite   = errors.New("authenticated stream transport returned an invalid write count")
 )
 
-func WrapConn(conn net.Conn, sessionKey []byte) (net.Conn, error) {
+// WrapClientConn authenticates conn as the client half of a VIIPER stream.
+// A client wrapper must only be paired with a server wrapper using the same
+// session key; the roles assign disjoint send-nonce domains.
+func WrapClientConn(conn net.Conn, sessionKey []byte) (net.Conn, error) {
+	return wrapConn(conn, sessionKey, clientNoncePrefix, serverNoncePrefix)
+}
+
+// WrapServerConn authenticates conn as the server half of a VIIPER stream.
+// A server wrapper must only be paired with a client wrapper using the same
+// session key; the roles assign disjoint send-nonce domains.
+func WrapServerConn(conn net.Conn, sessionKey []byte) (net.Conn, error) {
+	return wrapConn(conn, sessionKey, serverNoncePrefix, clientNoncePrefix)
+}
+
+func wrapConn(conn net.Conn, sessionKey []byte, sendNoncePrefix, recvNoncePrefix uint32) (net.Conn, error) {
 	aead, err := chacha20poly1305.New(sessionKey)
 	if err != nil {
 		return nil, err
 	}
-	return &Conn{Conn: conn, aead: aead}, nil
+	return &Conn{
+		Conn:            conn,
+		aead:            aead,
+		sendNoncePrefix: sendNoncePrefix,
+		recvNoncePrefix: recvNoncePrefix,
+	}, nil
 }
 
 func (s *Conn) Close() error {
@@ -63,8 +97,12 @@ func (s *Conn) Close() error {
 	s.recvHeaderRead = 0
 	s.recvPacketRead = 0
 	s.recvRecordLength = 0
+	s.sendNoncePrefix = 0
 	s.sendCtr = 0
+	s.recvNoncePrefix = 0
+	s.recvCtr = 0
 	s.sendExhausted = false
+	s.recvExhausted = false
 	s.aead = nil
 	if s.sendErr == nil {
 		s.sendErr = net.ErrClosed
@@ -99,8 +137,8 @@ func (s *Conn) Write(p []byte) (int, error) {
 	}
 	record := s.sendBuf[:4+nonceSize]
 	nonce := record[4:]
-	clear(nonce)
-	binary.BigEndian.PutUint64(nonce[nonceSize-8:], s.sendCtr)
+	binary.BigEndian.PutUint32(nonce[:4], s.sendNoncePrefix)
+	binary.BigEndian.PutUint64(nonce[4:], s.sendCtr)
 	record = s.aead.Seal(record, nonce, p, nil)
 	binary.BigEndian.PutUint32(record[:4], uint32(len(record)-4))
 
@@ -206,6 +244,8 @@ func (s *Conn) readRecord() error {
 	nonceSize := s.aead.NonceSize()
 	nonce := s.recvPacket[:nonceSize]
 	ct := s.recvPacket[nonceSize:]
+	noncePrefix := binary.BigEndian.Uint32(nonce[:4])
+	nonceCounter := binary.BigEndian.Uint64(nonce[4:])
 
 	// AEAD permits dst and ciphertext to overlap exactly. Decrypting in place
 	// keeps one reusable record slab per authenticated stream instead of
@@ -216,9 +256,32 @@ func (s *Conn) readRecord() error {
 		s.recvErr = err
 		return err
 	}
+	if err = s.validateReceiveNonce(noncePrefix, nonceCounter); err != nil {
+		clear(pt)
+		s.recvErr = err
+		return err
+	}
 	s.recvPlain = pt
 	s.recvHeaderRead = 0
 	s.recvPacketRead = 0
 	s.recvRecordLength = 0
+	return nil
+}
+
+func (s *Conn) validateReceiveNonce(prefix uint32, counter uint64) error {
+	if prefix != s.recvNoncePrefix {
+		return fmt.Errorf("authenticated stream nonce direction=%d, want %d", prefix, s.recvNoncePrefix)
+	}
+	if s.recvExhausted {
+		return errRecvExhausted
+	}
+	if counter != s.recvCtr {
+		return fmt.Errorf("authenticated stream nonce counter=%d, want %d", counter, s.recvCtr)
+	}
+	if s.recvCtr == math.MaxUint64 {
+		s.recvExhausted = true
+	} else {
+		s.recvCtr++
+	}
 	return nil
 }

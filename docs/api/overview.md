@@ -88,6 +88,21 @@ The exception to this are the device-control and feedback streams, which are raw
 - **Success response**: a single line containing a JSON payload (or an empty line for commands that have no payload), terminated by connection close
 - **Error response**: a single line JSON object following RFC 7807 Problem Details format with a `status` field (HTTP-style status code) and other error details, terminated by connection close
 
+Authenticated records use a 96-bit nonce split into a fixed 32-bit direction
+domain (`0` for client-to-server and `1` for server-to-client) and a 64-bit
+monotonic record counter. The Go server and Go client receivers require the
+expected direction and exact next counter, rejecting role inversion, replay,
+and reordering. This satisfies the [Go `cipher.AEAD` requirement that a nonce
+be unique for a given key](https://pkg.go.dev/crypto/cipher#AEAD). The nonce
+remains part of every wire record: existing generated clients continue to send
+the client domain and decrypt the server domain directly from the record.
+
+Upgrade authenticated deployments server-first. Existing clients accept the
+new server domain because each record carries its nonce, while the new Go
+client intentionally rejects records from an older roleless server that still
+sends domain `0`. Packaged service and Go client versions should otherwise be
+kept matched.
+
 !!! tip "Testing the API"
     For quick testing, you can use tools like `netcat` (Linux/macOS) or PowerShell scripts (Windows) to send requests and read responses.
 

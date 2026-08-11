@@ -200,7 +200,7 @@ func (s *Server) writeOK(w io.Writer, rest string) {
 }
 
 func (s *Server) handleConn(conn net.Conn) {
-	defer conn.Close() //nolint:errcheck
+	defer func() { _ = conn.Close() }()
 
 	connCtx, connCancel := context.WithCancel(context.Background())
 	defer connCancel()
@@ -241,7 +241,7 @@ func (s *Server) handleConn(conn net.Conn) {
 		}
 
 		sessionKey := auth.DeriveSessionKey(key, serverNonce, clientNonce)
-		secConn, err := auth.WrapConn(conn, sessionKey)
+		secConn, err := auth.WrapServerConn(conn, sessionKey)
 		if err != nil {
 			connLogger.Error("wrap secure conn failed", "error", err)
 			return

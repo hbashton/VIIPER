@@ -6,12 +6,14 @@ import (
 	"errors"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/Alia5/VIIPER/internal/server/api/auth"
 	"github.com/stretchr/testify/assert"
+	"golang.org/x/crypto/chacha20poly1305"
 )
 
 type recordConn struct {
@@ -124,11 +126,6 @@ func (discardConn) SetDeadline(time.Time) error      { return nil }
 func (discardConn) SetReadDeadline(time.Time) error  { return nil }
 func (discardConn) SetWriteDeadline(time.Time) error { return nil }
 
-type loopingReadConn struct {
-	record []byte
-	offset int
-}
-
 type segmentedReadConn struct {
 	recordConn
 	segments [][]byte
@@ -148,26 +145,6 @@ func (c *segmentedReadConn) Read(p []byte) (int, error) {
 		c.offset = 0
 	}
 	return n, nil
-}
-
-func (c *loopingReadConn) Read(p []byte) (int, error) {
-	if c.offset == len(c.record) {
-		c.offset = 0
-	}
-	n := copy(p, c.record[c.offset:])
-	c.offset += n
-	return n, nil
-}
-func (*loopingReadConn) Write(p []byte) (int, error) { return len(p), nil }
-func (*loopingReadConn) Close() error                { return nil }
-func (*loopingReadConn) LocalAddr() net.Addr         { return testAddr("local") }
-func (*loopingReadConn) RemoteAddr() net.Addr        { return testAddr("remote") }
-func (*loopingReadConn) SetDeadline(time.Time) error { return nil }
-func (*loopingReadConn) SetReadDeadline(time.Time) error {
-	return nil
-}
-func (*loopingReadConn) SetWriteDeadline(time.Time) error {
-	return nil
 }
 
 func (c *recordConn) Write(p []byte) (int, error) {
@@ -190,17 +167,270 @@ type testAddr string
 func (a testAddr) Network() string { return string(a) }
 func (a testAddr) String() string  { return string(a) }
 
+func legacyRolelessRecord(t *testing.T, key, payload []byte, counter uint64) []byte {
+	t.Helper()
+	aead, err := chacha20poly1305.New(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nonce := make([]byte, aead.NonceSize())
+	binary.BigEndian.PutUint64(nonce[4:], counter)
+	record := make([]byte, 4, 4+len(nonce)+len(payload)+aead.Overhead())
+	record = append(record, nonce...)
+	record = aead.Seal(record, nonce, payload, nil)
+	binary.BigEndian.PutUint32(record[:4], uint32(len(record)-4))
+	return record
+}
+
+func TestConnNewServerAcceptsLegacyClientWireDomain(t *testing.T) {
+	key, err := auth.DeriveKey("legacy-client-new-server")
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := []byte("legacy client request")
+	raw := &recordConn{}
+	_, _ = raw.Buffer.Write(legacyRolelessRecord(t, key, payload, 0))
+	server, err := auth.WrapServerConn(raw, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded := make([]byte, len(payload))
+	if _, err = io.ReadFull(server, decoded); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(decoded, payload) {
+		t.Fatalf("legacy client plaintext=%q want=%q", decoded, payload)
+	}
+}
+
+func TestConnNewClientRejectsLegacyRolelessServerDomain(t *testing.T) {
+	key, err := auth.DeriveKey("new-client-legacy-server")
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := []byte("legacy server response")
+	raw := &recordConn{}
+	_, _ = raw.Buffer.Write(legacyRolelessRecord(t, key, payload, 0))
+	client, err := auth.WrapClientConn(raw, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dst := bytes.Repeat([]byte{0xa5}, len(payload))
+	if n, readErr := client.Read(dst); n != 0 || readErr == nil || !strings.Contains(readErr.Error(), "nonce direction=0, want 1") {
+		t.Fatalf("legacy-server read=(%d, %v), want fail-closed direction error", n, readErr)
+	}
+	if !bytes.Equal(dst, bytes.Repeat([]byte{0xa5}, len(payload))) {
+		t.Fatal("rejected legacy-server record changed the caller plaintext buffer")
+	}
+}
+
+func TestConnUsesDisjointDirectionalNonceDomains(t *testing.T) {
+	key, err := auth.DeriveKey("directional-nonce-domains")
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientWire := &recordConn{}
+	serverWire := &recordConn{}
+	client, err := auth.WrapClientConn(clientWire, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := auth.WrapServerConn(serverWire, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := []byte("same-session duplex record")
+	if _, err = client.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = server.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+
+	clientNonce := clientWire.Bytes()[4:16]
+	serverNonce := serverWire.Bytes()[4:16]
+	if bytes.Equal(clientNonce, serverNonce) {
+		t.Fatalf("client and server reused nonce %x with one session key", clientNonce)
+	}
+	if prefix := binary.BigEndian.Uint32(clientNonce[:4]); prefix != 0 {
+		t.Fatalf("client nonce prefix=%d want=0", prefix)
+	}
+	if prefix := binary.BigEndian.Uint32(serverNonce[:4]); prefix != 1 {
+		t.Fatalf("server nonce prefix=%d want=1", prefix)
+	}
+	if counter := binary.BigEndian.Uint64(clientNonce[4:]); counter != 0 {
+		t.Fatalf("first client nonce counter=%d want=0", counter)
+	}
+	if counter := binary.BigEndian.Uint64(serverNonce[4:]); counter != 0 {
+		t.Fatalf("first server nonce counter=%d want=0", counter)
+	}
+}
+
+func TestConnSupportsConcurrentFullDuplexDirectionalTraffic(t *testing.T) {
+	key, err := auth.DeriveKey("full-duplex-directions")
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientTransport, serverTransport := net.Pipe()
+	deadline := time.Now().Add(2 * time.Second)
+	if err = clientTransport.SetDeadline(deadline); err != nil {
+		t.Fatal(err)
+	}
+	if err = serverTransport.SetDeadline(deadline); err != nil {
+		t.Fatal(err)
+	}
+	client, err := auth.WrapClientConn(clientTransport, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := auth.WrapServerConn(serverTransport, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = client.Close()
+		_ = server.Close()
+	})
+
+	clientPayload := []byte("client controller state")
+	serverPayload := []byte("server output media")
+	type writeResult struct {
+		name string
+		n    int
+		err  error
+	}
+	writes := make(chan writeResult, 2)
+	go func() {
+		n, writeErr := client.Write(clientPayload)
+		writes <- writeResult{name: "client", n: n, err: writeErr}
+	}()
+	go func() {
+		n, writeErr := server.Write(serverPayload)
+		writes <- writeResult{name: "server", n: n, err: writeErr}
+	}()
+
+	gotClientPayload := make([]byte, len(clientPayload))
+	if _, err = io.ReadFull(server, gotClientPayload); err != nil {
+		t.Fatal(err)
+	}
+	gotServerPayload := make([]byte, len(serverPayload))
+	if _, err = io.ReadFull(client, gotServerPayload); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(gotClientPayload, clientPayload) || !bytes.Equal(gotServerPayload, serverPayload) {
+		t.Fatalf("duplex plaintext=%q/%q want=%q/%q", gotClientPayload, gotServerPayload, clientPayload, serverPayload)
+	}
+	for range 2 {
+		result := <-writes
+		want := len(clientPayload)
+		if result.name == "server" {
+			want = len(serverPayload)
+		}
+		if result.n != want || result.err != nil {
+			t.Fatalf("%s write=(%d, %v), want (%d, nil)", result.name, result.n, result.err, want)
+		}
+	}
+}
+
+func TestConnRejectsWrongDirectionalRole(t *testing.T) {
+	key, err := auth.DeriveKey("wrong-directional-role")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name    string
+		wrapOut func(net.Conn, []byte) (net.Conn, error)
+		wrapIn  func(net.Conn, []byte) (net.Conn, error)
+	}{
+		{name: "server_wrapper_on_client", wrapOut: auth.WrapServerConn, wrapIn: auth.WrapServerConn},
+		{name: "client_wrapper_on_server", wrapOut: auth.WrapClientConn, wrapIn: auth.WrapClientConn},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := &recordConn{}
+			sender, wrapErr := tc.wrapOut(raw, key)
+			if wrapErr != nil {
+				t.Fatal(wrapErr)
+			}
+			receiver, wrapErr := tc.wrapIn(raw, key)
+			if wrapErr != nil {
+				t.Fatal(wrapErr)
+			}
+			if _, writeErr := sender.Write([]byte("valid but wrong-direction record")); writeErr != nil {
+				t.Fatal(writeErr)
+			}
+			if n, readErr := receiver.Read(make([]byte, 1)); n != 0 || readErr == nil || !strings.Contains(readErr.Error(), "nonce direction") {
+				t.Fatalf("wrong-role read=(%d, %v), want (0, nonce direction error)", n, readErr)
+			}
+		})
+	}
+}
+
+func TestConnRejectsAuthenticatedReplayAndOutOfOrderRecords(t *testing.T) {
+	key, err := auth.DeriveKey("record-order")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wireBuffer := &recordConn{}
+	sender, err := auth.WrapClientConn(wireBuffer, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstPayload := []byte("first")
+	secondPayload := []byte("second")
+	if _, err = sender.Write(firstPayload); err != nil {
+		t.Fatal(err)
+	}
+	firstLength := 4 + int(binary.BigEndian.Uint32(wireBuffer.Bytes()[:4]))
+	if _, err = sender.Write(secondPayload); err != nil {
+		t.Fatal(err)
+	}
+	wire := append([]byte(nil), wireBuffer.Bytes()...)
+	firstRecord := wire[:firstLength]
+	secondRecord := wire[firstLength:]
+
+	t.Run("replay", func(t *testing.T) {
+		raw := &recordConn{}
+		_, _ = raw.Buffer.Write(firstRecord)
+		_, _ = raw.Buffer.Write(firstRecord)
+		receiver, wrapErr := auth.WrapServerConn(raw, key)
+		if wrapErr != nil {
+			t.Fatal(wrapErr)
+		}
+		decoded := make([]byte, len(firstPayload))
+		if _, readErr := io.ReadFull(receiver, decoded); readErr != nil {
+			t.Fatal(readErr)
+		}
+		if n, readErr := receiver.Read(decoded[:1]); n != 0 || readErr == nil || !strings.Contains(readErr.Error(), "nonce counter=0, want 1") {
+			t.Fatalf("replayed read=(%d, %v), want counter rejection", n, readErr)
+		}
+	})
+
+	t.Run("out_of_order", func(t *testing.T) {
+		raw := &recordConn{}
+		_, _ = raw.Buffer.Write(secondRecord)
+		_, _ = raw.Buffer.Write(firstRecord)
+		receiver, wrapErr := auth.WrapServerConn(raw, key)
+		if wrapErr != nil {
+			t.Fatal(wrapErr)
+		}
+		if n, readErr := receiver.Read(make([]byte, 1)); n != 0 || readErr == nil || !strings.Contains(readErr.Error(), "nonce counter=1, want 0") {
+			t.Fatalf("out-of-order read=(%d, %v), want counter rejection", n, readErr)
+		}
+	})
+}
+
 func TestConnCoalescesOneAuthenticatedRecordIntoOneWrite(t *testing.T) {
 	key, err := auth.DeriveKey("coalesced-record")
 	if err != nil {
 		t.Fatal(err)
 	}
 	raw := &recordConn{}
-	sender, err := auth.WrapConn(raw, key)
+	sender, err := auth.WrapClientConn(raw, key)
 	if err != nil {
 		t.Fatal(err)
 	}
-	receiver, err := auth.WrapConn(raw, key)
+	receiver, err := auth.WrapServerConn(raw, key)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,8 +456,8 @@ func TestConnFinishesPartialUnderlyingWritesWithoutSplittingARecord(t *testing.T
 		t.Fatal(err)
 	}
 	raw := &recordConn{maxWrite: 3}
-	sender, _ := auth.WrapConn(raw, key)
-	receiver, _ := auth.WrapConn(raw, key)
+	sender, _ := auth.WrapClientConn(raw, key)
+	receiver, _ := auth.WrapServerConn(raw, key)
 	payload := []byte("partial writes are completed")
 	if _, err = sender.Write(payload); err != nil {
 		t.Fatal(err)
@@ -254,7 +484,7 @@ func TestConnRejectsTruncatedAuthenticatedRecordWithoutPanicking(t *testing.T) {
 	binary.BigEndian.PutUint32(header[:], 1)
 	_, _ = raw.Buffer.Write(header[:])
 	_ = raw.Buffer.WriteByte(0)
-	receiver, _ := auth.WrapConn(raw, key)
+	receiver, _ := auth.WrapServerConn(raw, key)
 	if _, err = receiver.Read(make([]byte, 1)); err == nil {
 		t.Fatal("truncated authenticated record was accepted")
 	}
@@ -278,7 +508,7 @@ func TestConnRejectsInvalidRecordLengthTerminallyBeforeAllocation(t *testing.T) 
 			var header [4]byte
 			binary.BigEndian.PutUint32(header[:], tc.length)
 			_, _ = raw.Buffer.Write(header[:])
-			receiver, wrapErr := auth.WrapConn(raw, key)
+			receiver, wrapErr := auth.WrapServerConn(raw, key)
 			if wrapErr != nil {
 				t.Fatal(wrapErr)
 			}
@@ -302,7 +532,7 @@ func TestConnSerializesConcurrentRecordsWithMonotonicNonces(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw := &recordConn{}
-	sender, err := auth.WrapConn(raw, key)
+	sender, err := auth.WrapClientConn(raw, key)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -349,7 +579,7 @@ func TestConnSerializesConcurrentRecordsWithMonotonicNonces(t *testing.T) {
 		t.Fatalf("%d trailing authenticated bytes", len(wire))
 	}
 
-	receiver, err := auth.WrapConn(raw, key)
+	receiver, err := auth.WrapServerConn(raw, key)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -373,7 +603,7 @@ func TestConnClosesAfterPartialRecordFailure(t *testing.T) {
 	}
 	wantErr := errors.New("injected transport failure")
 	raw := &partialFailureConn{remaining: 7, err: wantErr}
-	sender, err := auth.WrapConn(raw, key)
+	sender, err := auth.WrapClientConn(raw, key)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -399,7 +629,7 @@ func TestConnReturnsCompletePlaintextCountWhenTransportReportsFullWriteAndError(
 	}
 	wantErr := errors.New("transport failed after accepting the record")
 	raw := &fullWriteErrorConn{err: wantErr}
-	sender, err := auth.WrapConn(raw, key)
+	sender, err := auth.WrapClientConn(raw, key)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -418,7 +648,7 @@ func TestConnReturnsCompletePlaintextCountWhenTransportReportsFullWriteAndError(
 		t.Fatal("terminal stream emitted bytes after a full-record transport error")
 	}
 
-	receiver, err := auth.WrapConn(raw, key)
+	receiver, err := auth.WrapServerConn(raw, key)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -438,7 +668,7 @@ func TestConnRetriesRecordAfterZeroByteTransportErrorWithoutNonceReuseOnWire(t *
 	}
 	wantErr := errors.New("temporary transport error")
 	raw := &firstWriteErrorConn{err: wantErr, first: true}
-	sender, err := auth.WrapConn(raw, key)
+	sender, err := auth.WrapClientConn(raw, key)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -463,7 +693,7 @@ func TestConnClosesAfterZeroProgressWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw := &zeroProgressConn{}
-	sender, err := auth.WrapConn(raw, key)
+	sender, err := auth.WrapClientConn(raw, key)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -484,7 +714,7 @@ func TestConnRejectsOversizedRecordBeforeTransportWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw := &recordConn{}
-	sender, err := auth.WrapConn(raw, key)
+	sender, err := auth.WrapClientConn(raw, key)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -502,7 +732,7 @@ func TestConnAcceptsExactMaximumRecordBound(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw := &recordConn{}
-	sender, err := auth.WrapConn(raw, key)
+	sender, err := auth.WrapClientConn(raw, key)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -516,7 +746,7 @@ func TestConnAcceptsExactMaximumRecordBound(t *testing.T) {
 		t.Fatalf("maximum wire record length=%d", got)
 	}
 
-	receiver, err := auth.WrapConn(raw, key)
+	receiver, err := auth.WrapServerConn(raw, key)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -535,7 +765,7 @@ func TestConnResumesInterruptedAuthenticatedFramingWithoutExposingWireBytes(t *t
 		t.Fatal(err)
 	}
 	wireBuffer := &recordConn{}
-	sender, err := auth.WrapConn(wireBuffer, key)
+	sender, err := auth.WrapClientConn(wireBuffer, key)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -556,7 +786,7 @@ func TestConnResumesInterruptedAuthenticatedFramingWithoutExposingWireBytes(t *t
 		t.Run(tc.name, func(t *testing.T) {
 			raw := &interruptedReadConn{beforeError: tc.beforeError, err: wantErr}
 			_, _ = raw.Buffer.Write(wire)
-			receiver, wrapErr := auth.WrapConn(raw, key)
+			receiver, wrapErr := auth.WrapServerConn(raw, key)
 			if wrapErr != nil {
 				t.Fatal(wrapErr)
 			}
@@ -583,7 +813,7 @@ func TestConnSkipsAuthenticatedEmptyRecordAndZeroLengthReadDoesNotConsumeWire(t 
 		t.Fatal(err)
 	}
 	raw := &recordConn{}
-	sender, err := auth.WrapConn(raw, key)
+	sender, err := auth.WrapClientConn(raw, key)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -595,7 +825,7 @@ func TestConnSkipsAuthenticatedEmptyRecordAndZeroLengthReadDoesNotConsumeWire(t 
 		t.Fatal(err)
 	}
 	wireLength := raw.Len()
-	receiver, err := auth.WrapConn(raw, key)
+	receiver, err := auth.WrapServerConn(raw, key)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -620,8 +850,8 @@ func TestConnReadCopiesPlaintextOutOfReusableRecordSlab(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw := &recordConn{}
-	sender, _ := auth.WrapConn(raw, key)
-	receiver, _ := auth.WrapConn(raw, key)
+	sender, _ := auth.WrapClientConn(raw, key)
+	receiver, _ := auth.WrapServerConn(raw, key)
 	firstWant := []byte("first-frame")
 	secondWant := []byte("second-frame")
 	_, _ = sender.Write(firstWant)
@@ -645,7 +875,7 @@ func TestConnReadPreservesFourSegmentClientWireCompatibility(t *testing.T) {
 		t.Fatal(err)
 	}
 	wireBuffer := &recordConn{}
-	sender, _ := auth.WrapConn(wireBuffer, key)
+	sender, _ := auth.WrapClientConn(wireBuffer, key)
 	payload := []byte("header nonce ciphertext tag remain one protocol record")
 	if _, err = sender.Write(payload); err != nil {
 		t.Fatal(err)
@@ -655,7 +885,7 @@ func TestConnReadPreservesFourSegmentClientWireCompatibility(t *testing.T) {
 	raw := &segmentedReadConn{segments: [][]byte{
 		wire[:4], wire[4:16], wire[16:tagStart], wire[tagStart:],
 	}}
-	receiver, _ := auth.WrapConn(raw, key)
+	receiver, _ := auth.WrapServerConn(raw, key)
 	decoded := make([]byte, len(payload))
 	if _, err = io.ReadFull(receiver, decoded); err != nil {
 		t.Fatal(err)
@@ -670,7 +900,7 @@ func BenchmarkConnWriteAuthenticatedRecord(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	wrapped, err := auth.WrapConn(discardConn{}, key)
+	wrapped, err := auth.WrapClientConn(discardConn{}, key)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -688,41 +918,10 @@ func BenchmarkConnWriteAuthenticatedRecord(b *testing.B) {
 	}
 }
 
-func BenchmarkConnReadAuthenticatedRecord(b *testing.B) {
-	key, err := auth.DeriveKey("authenticated-read-benchmark")
-	if err != nil {
-		b.Fatal(err)
-	}
-	payload := make([]byte, 512)
-	wire := &recordConn{}
-	sender, _ := auth.WrapConn(wire, key)
-	if _, err = sender.Write(payload); err != nil {
-		b.Fatal(err)
-	}
-	raw := &loopingReadConn{record: append([]byte(nil), wire.Bytes()...)}
-	wrapped, err := auth.WrapConn(raw, key)
-	if err != nil {
-		b.Fatal(err)
-	}
-	dst := make([]byte, len(payload))
-	if _, err = io.ReadFull(wrapped, dst); err != nil {
-		b.Fatal(err)
-	}
-	b.SetBytes(int64(len(payload)))
-	b.ReportAllocs()
-	b.ResetTimer()
-	for b.Loop() {
-		if _, err = io.ReadFull(wrapped, dst); err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
 func TestConn(t *testing.T) {
 
 	type testCase struct {
 		name        string
-		wrapConn    func(net.Conn, []byte) (net.Conn, error)
 		setupFn     func(clientConn net.Conn, serverConn net.Conn) (clientKey []byte, serverKey []byte)
 		input       []byte
 		expected    []byte
@@ -731,8 +930,7 @@ func TestConn(t *testing.T) {
 
 	testCases := []testCase{
 		{
-			name:     "valid read",
-			wrapConn: auth.WrapConn,
+			name: "valid read",
 			setupFn: func(clientConn, serverConn net.Conn) (clientKey []byte, serverKey []byte) {
 				password := "test123"
 				key, err := auth.DeriveKey(password)
@@ -745,8 +943,7 @@ func TestConn(t *testing.T) {
 			expected: []byte("Hello, World!"),
 		},
 		{
-			name:     "Differing Keys",
-			wrapConn: auth.WrapConn,
+			name: "Differing Keys",
 			setupFn: func(clientConn, serverConn net.Conn) (clientKey []byte, serverKey []byte) {
 				key, err := auth.DeriveKey("test123")
 				if err != nil {
@@ -763,8 +960,7 @@ func TestConn(t *testing.T) {
 			expectedErr: errors.New("chacha20poly1305: message authentication failed"),
 		},
 		{
-			name:     "bad key length (client)",
-			wrapConn: auth.WrapConn,
+			name: "bad key length (client)",
 			setupFn: func(clientConn, serverConn net.Conn) (clientKey []byte, serverKey []byte) {
 				key, err := auth.DeriveKey("test123")
 				if err != nil {
@@ -777,8 +973,7 @@ func TestConn(t *testing.T) {
 			expectedErr: errors.New("chacha20poly1305: bad key length"),
 		},
 		{
-			name:     "bad key length (server)",
-			wrapConn: auth.WrapConn,
+			name: "bad key length (server)",
 			setupFn: func(clientConn, serverConn net.Conn) (clientKey []byte, serverKey []byte) {
 				key, err := auth.DeriveKey("test123")
 				if err != nil {
@@ -791,8 +986,7 @@ func TestConn(t *testing.T) {
 			expectedErr: errors.New("chacha20poly1305: bad key length"),
 		},
 		{
-			name:     "client closed before write",
-			wrapConn: auth.WrapConn,
+			name: "client closed before write",
 			setupFn: func(clientConn, serverConn net.Conn) (clientKey []byte, serverKey []byte) {
 				key, err := auth.DeriveKey("test123")
 				if err != nil {
@@ -806,8 +1000,7 @@ func TestConn(t *testing.T) {
 			expectedErr: errors.New("use of closed network connection"),
 		},
 		{
-			name:     "server closed before read",
-			wrapConn: auth.WrapConn,
+			name: "server closed before read",
 			setupFn: func(clientConn, serverConn net.Conn) (clientKey []byte, serverKey []byte) {
 				key, err := auth.DeriveKey("test123")
 				if err != nil {
@@ -847,27 +1040,23 @@ func TestConn(t *testing.T) {
 				clientKey, serverKey = tc.setupFn(clientConn, serverConn)
 			}
 
-			var wrappedServerConn net.Conn
-			var wrappedClientConn net.Conn
-			if tc.wrapConn != nil {
-				wrappedServerConn, err = tc.wrapConn(serverConn, serverKey)
-				if err != nil {
-					if tc.expectedErr != nil {
-						assert.ErrorContains(t, err, tc.expectedErr.Error())
-					} else {
-						t.Fatalf("failed to wrap server conn: %v", err)
-					}
-					return
+			wrappedServerConn, err := auth.WrapServerConn(serverConn, serverKey)
+			if err != nil {
+				if tc.expectedErr != nil {
+					assert.ErrorContains(t, err, tc.expectedErr.Error())
+				} else {
+					t.Fatalf("failed to wrap server conn: %v", err)
 				}
-				wrappedClientConn, err = tc.wrapConn(clientConn, clientKey)
-				if err != nil {
-					if tc.expectedErr != nil {
-						assert.ErrorContains(t, err, tc.expectedErr.Error())
-					} else {
-						t.Fatalf("failed to wrap client conn: %v", err)
-					}
-					return
+				return
+			}
+			wrappedClientConn, err := auth.WrapClientConn(clientConn, clientKey)
+			if err != nil {
+				if tc.expectedErr != nil {
+					assert.ErrorContains(t, err, tc.expectedErr.Error())
+				} else {
+					t.Fatalf("failed to wrap client conn: %v", err)
 				}
+				return
 			}
 
 			_, err = wrappedClientConn.Write(tc.input)
