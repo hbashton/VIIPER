@@ -869,7 +869,12 @@ bool ValidateManifest(
             return SetError(error, L"manifest-files", ERROR_INVALID_DATA,
                 L"manifest has an unexpected, duplicate, or malformed file entry");
         }
-        if (*name == "ViiperUde.inf" || *name == "ViiperUde.pdb") {
+        // Production intake binds both INF and PDB to this manifest. The
+        // installer pins that validated manifest hash, but the public runtime
+        // package deliberately omits the PDB because Windows needs only
+        // INF/SYS/CAT. Recheck the unchanged INF here; retaining the PDB entry
+        // proves this is the exact intake manifest, not a weaker replacement.
+        if (*name == "ViiperUde.inf") {
             const std::filesystem::path filePath = packageDirectory / std::wstring(name->begin(), name->end());
             uint64_t actualLength = 0;
             std::string actualHash;
@@ -879,7 +884,7 @@ bool ValidateManifest(
             if (actualLength != static_cast<uint64_t>(*length) ||
                 LowerAscii(actualHash) != LowerAscii(*hash)) {
                 return SetError(error, L"manifest-hash", ERROR_CRC,
-                    L"INF or PDB does not match the source-bound submission manifest");
+                    L"INF does not match the source-bound submission manifest");
             }
         }
     }
@@ -2098,12 +2103,12 @@ bool LockPackageFiles(
     std::vector<WinHandle>* locks,
     Error* error) {
     locks->clear();
-    for (const wchar_t* name : {L"ViiperUde.inf", L"ViiperUde.sys", L"ViiperUde.pdb", L"ViiperUde.cat"}) {
+    for (const wchar_t* name : {L"ViiperUde.inf", L"ViiperUde.sys", L"ViiperUde.cat"}) {
         WinHandle file(CreateFileW((directory / name).c_str(), GENERIC_READ, FILE_SHARE_READ,
             nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
         if (!file) {
             return SetLastErrorDetail(error, L"package-lock",
-                L"all four package files must exist and remain immutable during installation");
+                L"INF, SYS, and CAT must exist and remain immutable during installation");
         }
         FILE_ATTRIBUTE_TAG_INFO attributes{};
         if (!GetFileInformationByHandleEx(file.get(), FileAttributeTagInfo,
@@ -2120,7 +2125,7 @@ bool LockPackageFiles(
 
 bool ValidateExactPackageDirectory(const std::filesystem::path& directory, Error* error) {
     static const std::set<std::wstring> expected = {
-        L"ViiperUde.inf", L"ViiperUde.sys", L"ViiperUde.pdb", L"ViiperUde.cat"};
+        L"ViiperUde.inf", L"ViiperUde.sys", L"ViiperUde.cat"};
     const DWORD attributes = GetFileAttributesW(directory.c_str());
     if (attributes == INVALID_FILE_ATTRIBUTES ||
         (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0 ||
@@ -2137,7 +2142,7 @@ bool ValidateExactPackageDirectory(const std::filesystem::path& directory, Error
             !expected.contains(iterator->path().filename().wstring()) ||
             !seen.insert(iterator->path().filename().wstring()).second) {
             return SetError(error, L"package-directory", ERROR_INVALID_DATA,
-                L"signed package directory must contain only the four exact regular VIIPER files");
+                L"signed runtime package directory must contain only INF, SYS, and CAT");
         }
     }
     if (enumerationError || seen != expected) {

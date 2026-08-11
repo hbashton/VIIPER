@@ -29,7 +29,9 @@ Directory contract:
   driver and catalog against kernel signing policy, proves that INF and SYS are
   members of that exact catalog, distinguishes testing-only attestation from
   production HLK/WHCP signatures, and binds the returned INF/PDB to the
-  reviewed source-revision manifest.
+  reviewed source-revision manifest. The PDB stays in that certification
+  evidence artifact; the installable runtime bundle contains only the
+  validated INF/SYS/CAT plus the pinned manifest.
 - `tools/Invoke-ViiperUdeLiveValidation.ps1` hash-binds that verified package
   to the installed service image and root devnode, then exercises every
   production controller through the real UdeCx host, direct interrupt-input

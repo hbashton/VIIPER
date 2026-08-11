@@ -4,12 +4,23 @@ package cmd
 
 import (
 	"context"
+	"slices"
 	"testing"
 	"time"
 
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/mgr"
 )
+
+func TestNativePackageRuntimePayloadExcludesCertificationPDB(t *testing.T) {
+	want := []string{"ViiperUde.inf", "ViiperUde.sys", "ViiperUde.cat"}
+	if !slices.Equal(nativePackageDriverFiles, want) {
+		t.Fatalf("runtime driver payload = %v, want %v", nativePackageDriverFiles, want)
+	}
+	if slices.Contains(nativePackageDriverFiles, "ViiperUde.pdb") {
+		t.Fatal("certification PDB became a runtime installation dependency")
+	}
+}
 
 func TestNativePackageServiceTrustRequiresExactOwnedState(t *testing.T) {
 	t.Parallel()

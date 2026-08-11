@@ -104,6 +104,22 @@ func TestNativePackageProductionSourceContract(t *testing.T) {
 	if strings.Contains(helperSource, "WaitForSingleObject(processHandle.get(), INFINITE)") {
 		t.Error("driver helper retained an unbounded nested broker wait")
 	}
+	runtimeStart := strings.Index(helperSource, "bool LockPackageFiles(")
+	runtimeEnd := strings.Index(helperSource, "struct InstallOptions")
+	if runtimeStart < 0 || runtimeEnd <= runtimeStart {
+		t.Fatal("could not isolate the helper runtime-package contract")
+	}
+	runtimeContract := helperSource[runtimeStart:runtimeEnd]
+	if strings.Contains(runtimeContract, "ViiperUde.pdb") {
+		t.Error("driver helper retained a certification-PDB runtime dependency")
+	}
+	if !strings.Contains(runtimeContract,
+		`L"ViiperUde.inf", L"ViiperUde.sys", L"ViiperUde.cat"`) {
+		t.Error("driver helper lost the exact INF/SYS/CAT runtime package contract")
+	}
+	if !strings.Contains(helperSource[:runtimeStart], `"ViiperUde.pdb"`) {
+		t.Error("driver helper stopped binding the certification PDB in the source manifest")
+	}
 	for _, forbidden := range []string{"removeLegacy", "usbip"} {
 		if strings.Contains(windowsSource, forbidden) {
 			t.Errorf("outer package transaction must leave legacy ownership to the authenticated broker commit; found %q", forbidden)

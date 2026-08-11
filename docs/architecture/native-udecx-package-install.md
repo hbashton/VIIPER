@@ -14,14 +14,14 @@ The signed bootstrapper supplies all of the following as immutable build data:
 - the exact VIIPER broker, `ViiperUdeCtl.exe`, and reviewed production-manifest
   SHA-256 values;
 - the reviewed 40-64 hexadecimal source revision;
-- the four-file Microsoft-returned driver directory and source-bound HLK/WHCP
-  manifest; and
+- the runtime driver directory containing only the Microsoft-returned INF,
+  SYS, and CAT, plus the source-bound HLK/WHCP manifest; and
 - the target interactive-user SID whose legacy startup ownership may be
   migrated.
 
 Before its first mutation, the command holds non-write-shared and
-non-delete-shared handles to the broker, helper, manifest, INF, SYS, PDB, and
-CAT, plus every local directory ancestor used to reopen those paths. It rejects
+non-delete-shared handles to the broker, helper, manifest, INF, SYS, and CAT,
+plus every local directory ancestor used to reopen those paths. It rejects
 reparse points, hard links, ancestor replacement, extra package files, hash changes,
 noncanonical INF contracts, non-production manifests, and packages that do not
 pass the helper's read-only signature/catalog verification. The helper proves
@@ -34,6 +34,12 @@ EKU and explicitly rejects the attestation EKU; the publisher display name is
 not sufficient. The helper repeats
 the installer-embedded manifest SHA-256 check before both verification and
 installation. Paths are passed as arguments, never through a command shell.
+
+The certification/intake artifact still contains the PDB, and the intake gate
+binds that PDB to the same manifest. The public runtime bundle omits it: the
+installer pins the validated manifest hash and rechecks the unchanged INF,
+while Windows consumes only INF/SYS/CAT. Debug symbols therefore remain part
+of the source-provenance evidence without becoming a user-machine dependency.
 
 ## Commit order
 

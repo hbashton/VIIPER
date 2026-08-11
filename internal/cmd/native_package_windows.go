@@ -31,7 +31,7 @@ const nativePackageMutexName = `Global\VIIPER.NativePackage.Install.v1`
 const nativePackageTokenSDDL = "O:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)"
 
 var nativePackageDriverFiles = []string{
-	"ViiperUde.inf", "ViiperUde.sys", "ViiperUde.pdb", "ViiperUde.cat",
+	"ViiperUde.inf", "ViiperUde.sys", "ViiperUde.cat",
 }
 
 type windowsNativePackageTransaction struct {
@@ -199,7 +199,7 @@ func (t *windowsNativePackageTransaction) Preflight(ctx context.Context) error {
 		return fmt.Errorf("enumerate signed driver package: %w", err)
 	}
 	if len(entries) != len(nativePackageDriverFiles) {
-		return fmt.Errorf("signed driver package must contain exactly four files, found %d", len(entries))
+		return fmt.Errorf("signed runtime driver package must contain exactly INF, SYS, and CAT, found %d files", len(entries))
 	}
 	for _, expected := range nativePackageDriverFiles {
 		matches := 0
