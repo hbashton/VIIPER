@@ -315,18 +315,39 @@ jobs:
         if: ${{ inputs.upload_artifacts == true }}
         shell: pwsh
         run: |
-          ./native/udecx/tools/New-ViiperUdeLocalTestPackage.ps1 `
-            -InfPath native/udecx/x64/Release/ViiperUde/ViiperUde.inf `
-            -SysPath native/udecx/x64/Release/ViiperUde/ViiperUde.sys `
-            -PdbPath native/udecx/x64/Release/ViiperUde.pdb `
-            -CatalogPath native/udecx/x64/Release/ViiperUde/ViiperUde.cat `
-            -BrokerPath native/udecx/x64/Release/viiper.exe `
-            -HelperPath native/udecx/x64/Release/ViiperUdeCtl.exe `
-            -MediaProbePath native/udecx/x64/Release/ViiperUdeMediaProbe.exe `
-            -InputProbePath native/udecx/x64/Release/ViiperUdeInputProbe.exe `
-            -ProbeManifestPath native/udecx/x64/Release/ViiperUdeLiveProbes.manifest.json `
-            -OutputDirectory native/udecx/x64/Release/ViiperUdeLocalTest `
-            -SourceRevision $env:GITHUB_SHA
+          $certificatePath = (Resolve-Path 'native/udecx/x64/Release/ViiperUde.cer').Path
+          $certificate = [Security.Cryptography.X509Certificates.X509Certificate2]::new(
+            $certificatePath)
+          $addedTrust = [Collections.Generic.List[string]]::new()
+          try {
+            foreach ($storeName in @('Root', 'TrustedPublisher')) {
+              $storePath = "Cert:\CurrentUser\$storeName\$($certificate.Thumbprint)"
+              if (-not (Test-Path -LiteralPath $storePath)) {
+                Import-Certificate -FilePath $certificatePath `
+                  -CertStoreLocation "Cert:\CurrentUser\$storeName" | Out-Null
+                $addedTrust.Add($storePath)
+              }
+            }
+            ./native/udecx/tools/New-ViiperUdeLocalTestPackage.ps1 `
+              -InfPath native/udecx/x64/Release/ViiperUde/ViiperUde.inf `
+              -SysPath native/udecx/x64/Release/ViiperUde/ViiperUde.sys `
+              -PdbPath native/udecx/x64/Release/ViiperUde.pdb `
+              -CatalogPath native/udecx/x64/Release/ViiperUde/ViiperUde.cat `
+              -TestCertificatePath $certificatePath `
+              -BrokerPath native/udecx/x64/Release/viiper.exe `
+              -HelperPath native/udecx/x64/Release/ViiperUdeCtl.exe `
+              -MediaProbePath native/udecx/x64/Release/ViiperUdeMediaProbe.exe `
+              -InputProbePath native/udecx/x64/Release/ViiperUdeInputProbe.exe `
+              -ProbeManifestPath native/udecx/x64/Release/ViiperUdeLiveProbes.manifest.json `
+              -OutputDirectory native/udecx/x64/Release/ViiperUdeLocalTest `
+              -SourceRevision $env:GITHUB_SHA
+          }
+          finally {
+            foreach ($storePath in $addedTrust) {
+              Remove-Item -LiteralPath $storePath -Force
+            }
+            $certificate.Dispose()
+          }
       - name: Analyze native driver and setup helper
         uses: github/codeql-action/analyze@5595ccaf912efad79be6eef63a5619ff05969be3 # v4
         with:

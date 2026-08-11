@@ -4,6 +4,7 @@ param(
     [Parameter(Mandatory = $true)][string]$SysPath,
     [Parameter(Mandatory = $true)][string]$PdbPath,
     [Parameter(Mandatory = $true)][string]$CatalogPath,
+    [Parameter(Mandatory = $true)][string]$TestCertificatePath,
     [Parameter(Mandatory = $true)][string]$BrokerPath,
     [Parameter(Mandatory = $true)][string]$HelperPath,
     [Parameter(Mandatory = $true)][string]$MediaProbePath,
@@ -58,6 +59,7 @@ $broker = Resolve-ExactInput $BrokerPath 'viiper.exe'
 $mediaProbe = Resolve-ExactInput $MediaProbePath 'ViiperUdeMediaProbe.exe'
 $inputProbe = Resolve-ExactInput $InputProbePath 'ViiperUdeInputProbe.exe'
 $probeManifest = Resolve-ExactInput $ProbeManifestPath 'ViiperUdeLiveProbes.manifest.json'
+$testCertificate = Resolve-ExactInput $TestCertificatePath 'ViiperUde.cer'
 
 $output = [IO.Path]::GetFullPath($OutputDirectory)
 if (Test-Path -LiteralPath $output) {
@@ -75,6 +77,16 @@ if ($catalogSignature.Status -ne [Management.Automation.SignatureStatus]::Valid 
 $certificateSha256 = Get-CertificateSha256 $catalogSignature.SignerCertificate
 if ((Get-CertificateSha256 $driverSignature.SignerCertificate) -cne $certificateSha256) {
     throw 'The local catalog and driver were signed by different test certificates.'
+}
+$expectedCertificate = [Security.Cryptography.X509Certificates.X509Certificate2]::new(
+    $testCertificate)
+try {
+    if ((Get-CertificateSha256 $expectedCertificate) -cne $certificateSha256) {
+        throw 'The local catalog and driver do not match the exact WDK-exported test certificate.'
+    }
+}
+finally {
+    $expectedCertificate.Dispose()
 }
 
 [void][IO.Directory]::CreateDirectory($output)
@@ -95,8 +107,7 @@ foreach ($entry in $inputs.GetEnumerator()) {
 [IO.File]::Copy($inputProbe, (Join-Path $output 'ViiperUdeInputProbe.exe'), $false)
 [IO.File]::Copy($probeManifest, (Join-Path $output 'ViiperUdeLiveProbes.manifest.json'), $false)
 $certificatePath = Join-Path $output 'ViiperUdeTest.cer'
-[IO.File]::WriteAllBytes($certificatePath, $catalogSignature.SignerCertificate.Export(
-        [Security.Cryptography.X509Certificates.X509ContentType]::Cert))
+[IO.File]::Copy($testCertificate, $certificatePath, $false)
 
 [xml]$project = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\driver\ViiperUde.vcxproj') -Raw
 $namespace = [Xml.XmlNamespaceManager]::new($project.NameTable)

@@ -22,6 +22,8 @@ func TestLocalTestPackageUsesFullTransactionalNativeBackend(t *testing.T) {
 	for _, required := range []string{
 		"workflow_dispatch:",
 		"New-ViiperUdeLocalTestPackage.ps1",
+		"Import-Certificate -FilePath $certificatePath",
+		"Remove-Item -LiteralPath $storePath -Force",
 		"-BrokerPath native/udecx/x64/Release/viiper.exe",
 		"ViiperUde-x64-local-test-${{ github.sha }}",
 		"path: native/udecx/x64/Release/ViiperUdeLocalTest/**",
@@ -44,6 +46,8 @@ func TestLocalTestPackageUsesFullTransactionalNativeBackend(t *testing.T) {
 	composer := read("native", "udecx", "tools", "New-ViiperUdeLocalTestPackage.ps1")
 	for _, required := range []string{
 		"[string]$BrokerPath",
+		"[string]$TestCertificatePath",
+		"The local catalog and driver do not match the exact WDK-exported test certificate.",
 		"Resolve-ExactInput $BrokerPath 'viiper.exe'",
 		"signingRoute = 'LocalTest'",
 		"releaseEligible = $false",
