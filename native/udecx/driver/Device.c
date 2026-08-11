@@ -1092,6 +1092,7 @@ ViiperEvtEndpointAdd(
     RtlZeroMemory(endpointContext, sizeof(*endpointContext));
     endpointContext->Device = Device;
     endpointContext->Descriptor = descriptor;
+    InitializeListHead(&endpointContext->AdmissionQueue);
     KeInitializeEvent(&endpointContext->OperationsDrained, NotificationEvent, TRUE);
     WDF_WORKITEM_CONFIG_INIT(&workItemConfig, ViiperEvtEndpointPurgeWorkItem);
     WDF_OBJECT_ATTRIBUTES_INIT(&attributes);

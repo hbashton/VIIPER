@@ -30,6 +30,7 @@ typedef enum VIIPER_UDE_PENDING_STATE {
 } VIIPER_UDE_PENDING_STATE;
 
 typedef struct VIIPER_UDE_PENDING_SLOT {
+    LIST_ENTRY AdmissionEntry;
     WDFREQUEST Request;
     UDECXUSBENDPOINT Endpoint;
     ULONGLONG Token;
@@ -40,6 +41,7 @@ typedef struct VIIPER_UDE_PENDING_SLOT {
     VIIPER_UDE_PENDING_STATE State;
     BOOLEAN AbortPending;
     BOOLEAN PublishedToOwner;
+    BOOLEAN AdmissionLinked;
     UCHAR EndpointAddress;
     NTSTATUS AbortStatus;
     NTSTATUS CompletionStatus;
@@ -105,6 +107,7 @@ typedef struct VIIPER_UDE_CONTROLLER_CONTEXT {
     WDFMEMORY PendingStorage;
     VIIPER_UDE_PENDING_SLOT *PendingSlots;
     ULONG NextPendingSlot;
+    ULONG NextDispatchSlot;
     ULONG NextManagementSlot;
     WDFMEMORY NotificationStorage;
     VIIPER_UDE_NOTIFICATION *Notifications;
@@ -210,6 +213,10 @@ typedef struct VIIPER_UDE_ENDPOINT_CONTEXT {
     volatile LONG CachedDeliveryPending;
     ULONG InputReportLength;
     UCHAR InputReport[VIIPER_UDE_MAX_INPUT_REPORT_BYTES];
+    // BrokerLock protects this FIFO and every slot AdmissionEntry.  It keeps
+    // same-endpoint publication ordered without scanning the controller-wide
+    // 4096-slot table on every USB transfer.
+    LIST_ENTRY AdmissionQueue;
     ULONGLONG NextAdmissionSequence;
     BOOLEAN FastInput;
 } VIIPER_UDE_ENDPOINT_CONTEXT;

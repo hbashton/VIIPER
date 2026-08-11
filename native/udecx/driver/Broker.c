@@ -296,6 +296,35 @@ ViiperSetEndpointResettingByIdentity(
 
 static
 VOID
+ViiperUnlinkAdmissionLocked(
+    _In_ VIIPER_UDE_PENDING_SLOT *Pending
+    )
+{
+    if (!Pending->AdmissionLinked) {
+        return;
+    }
+    RemoveEntryList(&Pending->AdmissionEntry);
+    InitializeListHead(&Pending->AdmissionEntry);
+    Pending->AdmissionLinked = FALSE;
+}
+
+static
+BOOLEAN
+ViiperAdmissionCanPublishLocked(
+    _In_ const VIIPER_UDE_PENDING_SLOT *Pending
+    )
+{
+    VIIPER_UDE_ENDPOINT_CONTEXT *endpointContext;
+
+    if (!Pending->AdmissionLinked || Pending->Endpoint == WDF_NO_HANDLE) {
+        return FALSE;
+    }
+    endpointContext = ViiperGetEndpointContext(Pending->Endpoint);
+    return endpointContext->AdmissionQueue.Flink == &Pending->AdmissionEntry;
+}
+
+static
+VOID
 ViiperClearSlotLocked(
     _In_ VIIPER_UDE_CONTROLLER_CONTEXT *ControllerContext,
     _In_ ULONG Slot
@@ -309,6 +338,7 @@ ViiperClearSlotLocked(
         deviceContext = ViiperGetDeviceContext(ViiperGetEndpointContext(endpoint)->Device);
     }
 
+    ViiperUnlinkAdmissionLocked(pending);
     pending->Request = WDF_NO_HANDLE;
     pending->Endpoint = WDF_NO_HANDLE;
     pending->Token = 0;
@@ -318,6 +348,7 @@ ViiperClearSlotLocked(
     pending->State = ViiperUdePendingEmpty;
     pending->AbortPending = FALSE;
     pending->PublishedToOwner = FALSE;
+    pending->AdmissionLinked = FALSE;
     pending->EndpointAddress = 0;
     pending->AbortStatus = STATUS_SUCCESS;
     pending->CompletionStatus = STATUS_SUCCESS;
@@ -1011,6 +1042,7 @@ ViiperAllocatePendingSlot(
         if (pending->State != ViiperUdePendingEmpty) {
             continue;
         }
+        NT_ASSERT(!pending->AdmissionLinked);
         ++pending->Generation;
         if (pending->Generation == 0) {
             ++pending->Generation;
@@ -1028,8 +1060,10 @@ ViiperAllocatePendingSlot(
         pending->State = ViiperUdePendingPreparing;
         pending->AbortPending = FALSE;
         pending->PublishedToOwner = FALSE;
+        pending->AdmissionLinked = TRUE;
         pending->EndpointAddress = endpointContext->Descriptor.bEndpointAddress;
         pending->AbortStatus = STATUS_SUCCESS;
+        InsertTailList(&endpointContext->AdmissionQueue, &pending->AdmissionEntry);
         ControllerContext->NextPendingSlot = (index + 1) % VIIPER_UDE_MAX_PENDING_OPERATIONS;
         ViiperPendingOperationStartedLocked(ControllerContext);
         InterlockedIncrement(&deviceContext->PendingOperations);
@@ -1044,39 +1078,6 @@ ViiperAllocatePendingSlot(
         InterlockedIncrement64(&ControllerContext->QueueExhaustions);
     }
     return status;
-}
-
-static
-BOOLEAN
-ViiperHasEarlierUnpublishedAdmissionLocked(
-    _In_ VIIPER_UDE_CONTROLLER_CONTEXT *ControllerContext,
-    _In_ ULONG CandidateSlot
-    )
-{
-    const VIIPER_UDE_PENDING_SLOT *candidate =
-        &ControllerContext->PendingSlots[CandidateSlot];
-    ULONG index;
-
-    for (index = 0; index < VIIPER_UDE_MAX_PENDING_OPERATIONS; ++index) {
-        const VIIPER_UDE_PENDING_SLOT *other;
-        if (index == CandidateSlot) {
-            continue;
-        }
-        other = &ControllerContext->PendingSlots[index];
-        if (other->State == ViiperUdePendingEmpty || other->PublishedToOwner ||
-            other->AbortPending ||
-            other->State == ViiperUdePendingCompleting ||
-            other->State == ViiperUdePendingDpcCompletion ||
-            other->DeviceId != candidate->DeviceId ||
-            other->DeviceGeneration != candidate->DeviceGeneration ||
-            other->EndpointAddress != candidate->EndpointAddress ||
-            other->AdmissionSequence == 0 ||
-            other->AdmissionSequence >= candidate->AdmissionSequence) {
-            continue;
-        }
-        return TRUE;
-    }
-    return FALSE;
 }
 
 VOID
@@ -1132,17 +1133,22 @@ ViiperEvtUrbCancel(
         ViiperGetControllerContext(controller);
     BOOLEAN ownsRequest = FALSE;
     BOOLEAN notifyOwner = FALSE;
+    BOOLEAN dispatchSuccessor = FALSE;
 
     WdfSpinLockAcquire(controllerContext->BrokerLock);
     if (slot < VIIPER_UDE_MAX_PENDING_OPERATIONS) {
         VIIPER_UDE_PENDING_SLOT *pending =
             &controllerContext->PendingSlots[slot];
         if (ViiperSlotMatches(pending, Request, token)) {
+            dispatchSuccessor = pending->AdmissionLinked &&
+                (pending->State == ViiperUdePendingPreparing ||
+                    pending->State == ViiperUdePendingQueued);
             notifyOwner = ViiperQueueCancelEventLocked(controllerContext, pending);
             pending->CompletionStatus = STATUS_CANCELLED;
             pending->CompletionUsbdStatus = USBD_STATUS_CANCELED;
             pending->CompleteWithNtStatus = TRUE;
             pending->State = ViiperUdePendingDpcCompletion;
+            ViiperUnlinkAdmissionLocked(pending);
             ownsRequest = TRUE;
         }
     }
@@ -1161,6 +1167,14 @@ ViiperEvtUrbCancel(
             TRUE);
         if (notifyOwner) {
             ViiperDispatchNotificationEvents(controller);
+        }
+        if (dispatchSuccessor) {
+            // A queued endpoint head can be canceled without another broker
+            // IOCTL arriving to restart publication.  Wake the dispatcher
+            // after retiring that head so an already-waiting dequeue cannot
+            // strand its successor.  Publishing cancellations are excluded:
+            // their active dispatch loop performs this continuation itself.
+            ViiperDispatchAvailable(controller);
         }
     }
 }
@@ -1684,6 +1698,7 @@ ViiperRemovePublishingRequest(
         ControllerContext->PendingSlots[Slot].CompletionUsbdStatus = USBD_STATUS_CANCELED;
         ControllerContext->PendingSlots[Slot].CompleteWithNtStatus = TRUE;
         ControllerContext->PendingSlots[Slot].State = ViiperUdePendingDpcCompletion;
+        ViiperUnlinkAdmissionLocked(&ControllerContext->PendingSlots[Slot]);
         ownsRequest = TRUE;
     }
     WdfSpinLockRelease(ControllerContext->BrokerLock);
@@ -1734,11 +1749,11 @@ ViiperDispatchAvailable(
             break;
         }
         for (index = 0; index < VIIPER_UDE_MAX_PENDING_OPERATIONS; ++index) {
-            ULONG candidate = (controllerContext->NextPendingSlot + index) %
+            ULONG candidate = (controllerContext->NextDispatchSlot + index) %
                 VIIPER_UDE_MAX_PENDING_OPERATIONS;
             VIIPER_UDE_PENDING_SLOT *pending = &controllerContext->PendingSlots[candidate];
             if (pending->State == ViiperUdePendingQueued &&
-                !ViiperHasEarlierUnpublishedAdmissionLocked(controllerContext, candidate)) {
+                ViiperAdmissionCanPublishLocked(pending)) {
                 status = WdfIoQueueRetrieveNextRequest(
                     controllerContext->WaitingDequeues, &dequeueRequest);
                 if (!NT_SUCCESS(status)) {
@@ -1750,6 +1765,8 @@ ViiperDispatchAvailable(
                 endpoint = pending->Endpoint;
                 token = pending->Token;
                 slot = candidate;
+                controllerContext->NextDispatchSlot = (candidate + 1) %
+                    VIIPER_UDE_MAX_PENDING_OPERATIONS;
                 WdfObjectReference(urbRequest);
                 InterlockedDecrement(&controllerContext->WaitingDequeueCount);
                 break;
@@ -1824,6 +1841,10 @@ ViiperDispatchAvailable(
                 pending->State = abortPending
                     ? ViiperUdePendingCompleting
                     : ViiperUdePendingInFlight;
+                // Publication or terminal abort retires the FIFO head. The
+                // next same-endpoint admission may now be selected without a
+                // controller-wide slot scan.
+                ViiperUnlinkAdmissionLocked(pending);
                 if (!abortPending) {
                     serializedOperation->EndpointSequence =
                         (ULONGLONG)InterlockedIncrement64(
@@ -1971,6 +1992,9 @@ ViiperQueueUrb(
                 pending->State = abortPending
                     ? ViiperUdePendingCompleting
                     : ViiperUdePendingQueued;
+                if (abortPending) {
+                    ViiperUnlinkAdmissionLocked(pending);
+                }
             }
         } else {
             VIIPER_UDE_PENDING_SLOT *pending = &controllerContext->PendingSlots[slot];
@@ -1978,6 +2002,7 @@ ViiperQueueUrb(
             pending->CompletionUsbdStatus = USBD_STATUS_CANCELED;
             pending->CompleteWithNtStatus = TRUE;
             pending->State = ViiperUdePendingDpcCompletion;
+            ViiperUnlinkAdmissionLocked(pending);
             queueCancelledCompletion = TRUE;
         }
     } else {
@@ -1998,6 +2023,10 @@ ViiperQueueUrb(
                 USBD_STATUS_CANCELED,
                 TRUE);
             InterlockedIncrement64(&controllerContext->OperationsCancelled);
+            // MarkCancelableEx can reject a request before it ever reaches
+            // dispatch.  Retiring that admission exposes the next endpoint
+            // head, so consume any dequeue that was already waiting.
+            ViiperDispatchAvailable(deviceContext->Controller);
         } else if (!cancelClaimed) {
             NT_ASSERT(FALSE);
         }
@@ -2391,6 +2420,12 @@ ViiperAbortMatchingOperations(
             } else {
                 pending->AbortPending = TRUE;
                 pending->AbortStatus = Status;
+            }
+            // AbortPending admissions were deliberately ignored by the old
+            // full-table ordering scan. Retire the equivalent FIFO node now;
+            // request/DPC ownership remains unchanged until terminal clear.
+            if (pending->AbortPending) {
+                ViiperUnlinkAdmissionLocked(pending);
             }
         }
         WdfSpinLockRelease(controllerContext->BrokerLock);
