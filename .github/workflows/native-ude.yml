@@ -318,14 +318,36 @@ jobs:
           $certificatePath = (Resolve-Path 'native/udecx/x64/Release/ViiperUde.cer').Path
           $certificate = [Security.Cryptography.X509Certificates.X509Certificate2]::new(
             $certificatePath)
-          $addedTrust = [Collections.Generic.List[string]]::new()
+          $certificateSha256 = $certificate.GetCertHashString(
+            [Security.Cryptography.HashAlgorithmName]::SHA256)
+          $addedTrust = @()
           try {
-            foreach ($storeName in @('Root', 'TrustedPublisher')) {
-              $storePath = "Cert:\CurrentUser\$storeName\$($certificate.Thumbprint)"
-              if (-not (Test-Path -LiteralPath $storePath)) {
-                Import-Certificate -FilePath $certificatePath `
-                  -CertStoreLocation "Cert:\CurrentUser\$storeName" | Out-Null
-                $addedTrust.Add($storePath)
+            foreach ($storeName in @(
+                [Security.Cryptography.X509Certificates.StoreName]::Root,
+                [Security.Cryptography.X509Certificates.StoreName]::TrustedPublisher)) {
+              $store = [Security.Cryptography.X509Certificates.X509Store]::new(
+                $storeName,
+                [Security.Cryptography.X509Certificates.StoreLocation]::CurrentUser)
+              try {
+                $store.Open([Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
+                $matches = $store.Certificates.Find(
+                  [Security.Cryptography.X509Certificates.X509FindType]::FindByThumbprint,
+                  $certificate.Thumbprint, $false)
+                $exactMatch = @($matches | Where-Object {
+                    $_.GetCertHashString(
+                      [Security.Cryptography.HashAlgorithmName]::SHA256) -ceq
+                        $certificateSha256
+                  })
+                if ($matches.Count -ne $exactMatch.Count) {
+                  throw "Certificate thumbprint collision in CurrentUser\\$storeName."
+                }
+                if ($exactMatch.Count -eq 0) {
+                  $store.Add($certificate)
+                  $addedTrust += $storeName
+                }
+              }
+              finally {
+                $store.Close()
               }
             }
             ./native/udecx/tools/New-ViiperUdeLocalTestPackage.ps1 `
@@ -343,8 +365,28 @@ jobs:
               -SourceRevision $env:GITHUB_SHA
           }
           finally {
-            foreach ($storePath in $addedTrust) {
-              Remove-Item -LiteralPath $storePath -Force
+            foreach ($storeName in $addedTrust) {
+              $store = [Security.Cryptography.X509Certificates.X509Store]::new(
+                $storeName,
+                [Security.Cryptography.X509Certificates.StoreLocation]::CurrentUser)
+              try {
+                $store.Open([Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
+                $matches = $store.Certificates.Find(
+                  [Security.Cryptography.X509Certificates.X509FindType]::FindByThumbprint,
+                  $certificate.Thumbprint, $false)
+                $exactMatch = @($matches | Where-Object {
+                    $_.GetCertHashString(
+                      [Security.Cryptography.HashAlgorithmName]::SHA256) -ceq
+                        $certificateSha256
+                  })
+                if ($exactMatch.Count -ne 1) {
+                  throw "Exact temporary certificate missing from CurrentUser\\$storeName."
+                }
+                $store.Remove($exactMatch[0])
+              }
+              finally {
+                $store.Close()
+              }
             }
             $certificate.Dispose()
           }

@@ -22,8 +22,9 @@ func TestLocalTestPackageUsesFullTransactionalNativeBackend(t *testing.T) {
 	for _, required := range []string{
 		"workflow_dispatch:",
 		"New-ViiperUdeLocalTestPackage.ps1",
-		"Import-Certificate -FilePath $certificatePath",
-		"Remove-Item -LiteralPath $storePath -Force",
+		"[Security.Cryptography.X509Certificates.X509Store]::new(",
+		"$store.Add($certificate)",
+		"$store.Remove($exactMatch[0])",
 		"-BrokerPath native/udecx/x64/Release/viiper.exe",
 		"ViiperUde-x64-local-test-${{ github.sha }}",
 		"path: native/udecx/x64/Release/ViiperUdeLocalTest/**",
