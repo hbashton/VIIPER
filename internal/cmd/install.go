@@ -18,10 +18,13 @@ type Install struct {
 	TargetUserSID string `help:"Interactive Windows user SID that owns DS4Windows startup state." hidden:""`
 }
 
-// Uninstall removes VIIPER startup configuration.
+// Uninstall removes VIIPER's platform-owned service/startup state. Production
+// Windows packages also remove their exact native devnode and Driver Store package.
 type Uninstall struct {
-	Yes           bool   `help:"Confirm removal without prompting." short:"y"`
-	TargetUserSID string `help:"Interactive Windows user SID that owns VIIPER startup state." hidden:""`
+	Yes                  bool   `help:"Confirm removal without prompting." short:"y"`
+	TargetUserSID        string `help:"Interactive Windows user SID that owns VIIPER startup state." hidden:""`
+	DriverHelper         string `help:"Path to the packaged ViiperUdeCtl.exe used for exact native package removal." hidden:""`
+	ExpectedHelperSHA256 string `help:"Installer-embedded SHA-256 of ViiperUdeCtl.exe used for exact native package removal." hidden:""`
 }
 
 func (c *Install) Run(logger *slog.Logger) error {
@@ -53,7 +56,7 @@ func (c *Uninstall) Run(logger *slog.Logger) error {
 	}
 
 	if !c.Yes {
-		fmt.Print("Remove VIIPER startup registration and stop its server? [y/N]: ")
+		fmt.Print("Remove VIIPER's installed service/startup ownership and any exact native device/driver package managed by this installation? [y/N]: ")
 		answer, readErr := bufio.NewReader(os.Stdin).ReadString('\n')
 		if readErr != nil && len(answer) == 0 {
 			return fmt.Errorf("could not read uninstall confirmation: %w", readErr)
@@ -65,7 +68,12 @@ func (c *Uninstall) Run(logger *slog.Logger) error {
 		}
 	}
 
-	return uninstall(logger, strings.TrimSpace(c.TargetUserSID))
+	return uninstall(
+		logger,
+		strings.TrimSpace(c.TargetUserSID),
+		strings.TrimSpace(c.DriverHelper),
+		strings.ToLower(strings.TrimSpace(c.ExpectedHelperSHA256)),
+	)
 }
 
 func currentExecutable() (string, error) {

@@ -121,6 +121,25 @@ means verified installation/removal requires a restart, `4` is a preflight
 rejection, and `3` means rollback itself failed. Every command emits one final
 key/value result line including `rebootRequired` and rollback status.
 
+Production uninstall is similarly owned by the signed installer. It calls
+`viiper uninstall` with the packaged `ViiperUdeCtl.exe`, the installer-bound
+helper SHA-256, and the target-user SID. The broker is only stopped while the
+helper transaction runs; its SCM registration, credential, and managed files
+remain available for exact restart unless removal succeeds. For a direct
+operator inspection of the helper boundary, use a cooperative deadline:
+
+```powershell
+$deadline = [DateTimeOffset]::UtcNow.AddMinutes(4).ToUnixTimeMilliseconds()
+.\ViiperUdeCtl.exe remove --transaction-deadline-unix-ms $deadline
+```
+
+Only exit `0` or `3010` authorizes exact broker/credential/file cleanup. A
+preflight rejection or verified no-reboot `rollback=succeeded` preserves the
+prior broker run-state; a reboot-pending or unverified rollback leaves it
+stopped for explicit reconciliation.
+The production outer command never removes legacy tasks, Run registrations, or
+USB/IP state.
+
 After a Microsoft-signed native driver package has been installed and verified,
 the developer-only standalone registration can persist the preview transport:
 

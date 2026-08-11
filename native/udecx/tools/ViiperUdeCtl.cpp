@@ -87,7 +87,10 @@ constexpr wchar_t kTransactionObjectSecurity[] =
 constexpr size_t kMaximumManifestBytes = 1024U * 1024U;
 constexpr uint64_t kMaximumTransactionDurationMs = 4ULL * 60ULL * 1000ULL;
 constexpr uint64_t kBrokerRollbackCeilingMs = 60ULL * 1000ULL;
+constexpr uint64_t kDriverRollbackCeilingMs = 2ULL * 60ULL * 1000ULL;
 constexpr DWORD kCancelledIoDrainMs = 5000;
+constexpr wchar_t kRollbackDirectorySecurity[] =
+    L"O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)";
 constexpr std::string_view kHardwareVerificationOid = "1.3.6.1.4.1.311.10.3.5";
 constexpr std::string_view kAttestationVerificationOid = "1.3.6.1.4.1.311.10.3.5.1";
 
@@ -2187,10 +2190,27 @@ bool CheckTransactionDeadline(const InstallOptions& options, const wchar_t* phas
     return true;
 }
 
+bool CheckTransactionDeadline(uint64_t deadlineUnixMs, const wchar_t* phase, Error* error) {
+    if (deadlineUnixMs == 0 || CurrentUnixMilliseconds() >= deadlineUnixMs) {
+        return SetError(error, phase, ERROR_TIMEOUT,
+            L"native package transaction deadline expired before the next mutation");
+    }
+    return true;
+}
+
 bool ValidateTransactionDeadlineBudget(const InstallOptions& options, Error* error) {
     const uint64_t now = CurrentUnixMilliseconds();
     if (options.transactionDeadlineUnixMs <= now ||
         options.transactionDeadlineUnixMs - now > kMaximumTransactionDurationMs) {
+        return SetError(error, L"transaction-deadline", ERROR_INVALID_PARAMETER,
+            L"transaction deadline is expired or exceeds the four-minute package budget");
+    }
+    return true;
+}
+
+bool ValidateTransactionDeadlineBudget(uint64_t deadlineUnixMs, Error* error) {
+    const uint64_t now = CurrentUnixMilliseconds();
+    if (deadlineUnixMs <= now || deadlineUnixMs - now > kMaximumTransactionDurationMs) {
         return SetError(error, L"transaction-deadline", ERROR_INVALID_PARAMETER,
             L"transaction deadline is expired or exceeds the four-minute package budget");
     }
@@ -2631,39 +2651,135 @@ struct PackageBackup {
     PackageInfo original;
     std::filesystem::path directory;
     std::filesystem::path infPath;
+    std::vector<WinHandle> locks;
 };
 
 class BackupDirectory final {
 public:
     ~BackupDirectory() {
         if (!path_.empty()) {
+            root_.reset();
             std::error_code ignored;
             std::filesystem::remove_all(path_, ignored);
         }
     }
 
     bool Create(Error* error) {
-        std::vector<wchar_t> temp(MAX_PATH);
-        const DWORD length = GetTempPathW(static_cast<DWORD>(temp.size()), temp.data());
-        if (length == 0 || static_cast<size_t>(length) >= temp.size()) {
+        std::vector<wchar_t> windowsDirectory(MAX_PATH);
+        const UINT length = GetWindowsDirectoryW(
+            windowsDirectory.data(), static_cast<UINT>(windowsDirectory.size()));
+        if (length == 0 || static_cast<size_t>(length) >= windowsDirectory.size()) {
             return SetLastErrorDetail(error, L"rollback-backup-root");
         }
-        wchar_t candidate[MAX_PATH]{};
-        if (!GetTempFileNameW(temp.data(), L"VUC", 0, candidate)) {
-            return SetLastErrorDetail(error, L"rollback-backup-root");
+        const std::filesystem::path parent =
+            std::filesystem::path(windowsDirectory.data()) / L"Temp";
+        parent_.reset(CreateFileW(
+            parent.c_str(), FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT |
+                FILE_FLAG_BACKUP_SEMANTICS,
+            nullptr));
+        if (!parent_) {
+            return SetLastErrorDetail(error, L"rollback-backup-parent");
         }
-        DeleteFileW(candidate);
-        if (!CreateDirectoryW(candidate, nullptr)) {
-            return SetLastErrorDetail(error, L"rollback-backup-root");
+        FILE_ATTRIBUTE_TAG_INFO parentAttributes{};
+        if (!GetFileInformationByHandleEx(
+                parent_.get(), FileAttributeTagInfo, &parentAttributes,
+                sizeof(parentAttributes)) ||
+            (parentAttributes.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0 ||
+            (parentAttributes.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+            return SetError(error, L"rollback-backup-parent",
+                ERROR_REPARSE_TAG_MISMATCH,
+                L"Windows temporary directory must be a regular non-reparse directory");
         }
-        path_ = candidate;
-        return true;
+
+        PSECURITY_DESCRIPTOR descriptor = nullptr;
+        if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                kRollbackDirectorySecurity, SDDL_REVISION_1, &descriptor, nullptr)) {
+            return SetLastErrorDetail(error, L"rollback-backup-security");
+        }
+        SECURITY_ATTRIBUTES security{};
+        security.nLength = sizeof(security);
+        security.lpSecurityDescriptor = descriptor;
+        security.bInheritHandle = FALSE;
+
+        HCRYPTPROV provider = 0;
+        if (!CryptAcquireContextW(
+                &provider, nullptr, nullptr, PROV_RSA_AES,
+                CRYPT_VERIFYCONTEXT | CRYPT_SILENT)) {
+            const DWORD code = GetLastError();
+            LocalFree(descriptor);
+            return SetError(error, L"rollback-backup-random", code);
+        }
+        static constexpr wchar_t digits[] = L"0123456789abcdef";
+        for (size_t attempt = 0; attempt < 32; ++attempt) {
+            std::array<BYTE, 16> random{};
+            if (!CryptGenRandom(provider, static_cast<DWORD>(random.size()), random.data())) {
+                const DWORD code = GetLastError();
+                CryptReleaseContext(provider, 0);
+                LocalFree(descriptor);
+                return SetError(error, L"rollback-backup-random", code);
+            }
+            std::wstring suffix;
+            suffix.reserve(random.size() * 2);
+            for (BYTE value : random) {
+                suffix.push_back(digits[value >> 4U]);
+                suffix.push_back(digits[value & 0x0fU]);
+            }
+            const std::filesystem::path candidate =
+                parent / (L"VIIPER-UDE-rollback-" + suffix);
+            if (!CreateDirectoryW(candidate.c_str(), &security)) {
+                if (GetLastError() == ERROR_ALREADY_EXISTS) {
+                    continue;
+                }
+                const DWORD code = GetLastError();
+                CryptReleaseContext(provider, 0);
+                LocalFree(descriptor);
+                return SetError(error, L"rollback-backup-root", code);
+            }
+            root_.reset(CreateFileW(
+                candidate.c_str(), FILE_READ_ATTRIBUTES | READ_CONTROL,
+                FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+                FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT |
+                    FILE_FLAG_BACKUP_SEMANTICS,
+                nullptr));
+            if (!root_) {
+                const DWORD code = GetLastError();
+                RemoveDirectoryW(candidate.c_str());
+                CryptReleaseContext(provider, 0);
+                LocalFree(descriptor);
+                return SetError(error, L"rollback-backup-root-lock", code);
+            }
+            FILE_ATTRIBUTE_TAG_INFO rootAttributes{};
+            if (!GetFileInformationByHandleEx(
+                    root_.get(), FileAttributeTagInfo, &rootAttributes,
+                    sizeof(rootAttributes)) ||
+                (rootAttributes.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0 ||
+                (rootAttributes.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+                root_.reset();
+                RemoveDirectoryW(candidate.c_str());
+                CryptReleaseContext(provider, 0);
+                LocalFree(descriptor);
+                return SetError(error, L"rollback-backup-root-lock",
+                    ERROR_REPARSE_TAG_MISMATCH);
+            }
+            path_ = candidate;
+            CryptReleaseContext(provider, 0);
+            LocalFree(descriptor);
+            return true;
+        }
+        CryptReleaseContext(provider, 0);
+        LocalFree(descriptor);
+        return SetError(error, L"rollback-backup-root", ERROR_ALREADY_EXISTS,
+            L"could not allocate a unique protected rollback directory");
     }
 
     const std::filesystem::path& path() const noexcept { return path_; }
 
 private:
     std::filesystem::path path_;
+    WinHandle parent_;
+    WinHandle root_;
 };
 
 bool BackupPackages(
@@ -2739,7 +2855,13 @@ bool BackupPackages(
         if (!LoadOwnedPackage(backupInf, true, &verified, &owned, error) || !owned) {
             return false;
         }
-        backups->push_back(PackageBackup{packages[index], destination, backupInf});
+        std::vector<WinHandle> locks;
+        if (!LockPackageFiles(destination, &locks, error)) {
+            error->phase = L"rollback-backup-lock";
+            return false;
+        }
+        backups->push_back(PackageBackup{
+            packages[index], destination, backupInf, std::move(locks)});
     }
     return true;
 }
@@ -2747,14 +2869,23 @@ bool BackupPackages(
 bool RollbackRemove(
     const Snapshot& prior,
     const std::vector<PackageBackup>& backups,
+    uint64_t rollbackDeadlineUnixMs,
     bool* rebootRequired,
     Error* error) {
     for (const PackageBackup& backup : backups) {
+        if (!CheckTransactionDeadline(
+                rollbackDeadlineUnixMs, L"remove-rollback-deadline-package", error)) {
+            return false;
+        }
         BOOL reboot = FALSE;
         if (!DiInstallDriverW(nullptr, backup.infPath.c_str(), 0, &reboot)) {
             return SetLastErrorDetail(error, L"remove-rollback-package");
         }
         *rebootRequired = *rebootRequired || reboot != FALSE;
+    }
+    if (!CheckTransactionDeadline(
+            rollbackDeadlineUnixMs, L"remove-rollback-deadline-binding", error)) {
+        return false;
     }
     Snapshot restorablePrior = prior;
     std::vector<PackageInfo> reinstalledPackages;
@@ -2778,6 +2909,10 @@ bool RollbackRemove(
         return false;
     }
 
+    if (!CheckTransactionDeadline(
+            rollbackDeadlineUnixMs, L"remove-rollback-deadline-verify", error)) {
+        return false;
+    }
     Snapshot restored;
     if (!CaptureSnapshot(&restored, error)) {
         return false;
@@ -2800,16 +2935,31 @@ bool RollbackRemove(
             return SetError(error, L"remove-rollback-verification", ERROR_REVISION_MISMATCH,
                 L"rollback restored a different devnode identity or active package");
         }
-        if (!*rebootRequired && prior.devices[0].started &&
-            !VerifyAbiHealth(CurrentUnixMilliseconds() + 15000, error)) {
-            return false;
+        if (!*rebootRequired && prior.devices[0].started) {
+            if (!CheckTransactionDeadline(
+                    rollbackDeadlineUnixMs, L"remove-rollback-deadline-health", error)) {
+                return false;
+            }
+            const uint64_t healthDeadline = std::min(
+                rollbackDeadlineUnixMs, CurrentUnixMilliseconds() + 15000);
+            if (!VerifyAbiHealth(healthDeadline, error)) {
+                return false;
+            }
         }
     }
     return true;
 }
 
-Outcome Remove() {
+struct RemoveOptions {
+    uint64_t transactionDeadlineUnixMs = 0;
+};
+
+Outcome Remove(const RemoveOptions& options) {
     Outcome outcome;
+    if (!ValidateTransactionDeadlineBudget(options.transactionDeadlineUnixMs, &outcome.error)) {
+        outcome.exitCode = ExitCode::PreflightRejected;
+        return outcome;
+    }
     if (!IsElevated()) {
         SetError(&outcome.error, L"elevation", ERROR_ELEVATION_REQUIRED);
         outcome.exitCode = ExitCode::PreflightRejected;
@@ -2817,6 +2967,11 @@ Outcome Remove() {
     }
     TransactionMutex mutex;
     if (!mutex.Acquire(&outcome.error)) {
+        outcome.exitCode = ExitCode::PreflightRejected;
+        return outcome;
+    }
+    if (!CheckTransactionDeadline(
+            options.transactionDeadlineUnixMs, L"remove-deadline-before-snapshot", &outcome.error)) {
         outcome.exitCode = ExitCode::PreflightRejected;
         return outcome;
     }
@@ -2843,16 +2998,41 @@ Outcome Remove() {
         outcome.exitCode = ExitCode::PreflightRejected;
         return outcome;
     }
+    if (!CheckTransactionDeadline(
+            options.transactionDeadlineUnixMs, L"remove-deadline-before-device", &outcome.error)) {
+        outcome.exitCode = ExitCode::PreflightRejected;
+        return outcome;
+    }
     outcome.changed = true;
     bool reboot = false;
     Error mutationError;
     bool mutationSucceeded = RemoveAllExactDevices(&reboot, &mutationError);
+    if (mutationSucceeded && !CheckTransactionDeadline(
+            options.transactionDeadlineUnixMs, L"remove-deadline-after-device", &mutationError)) {
+        mutationSucceeded = false;
+    }
     if (mutationSucceeded) {
         for (const PackageInfo& package : prior.packages) {
+            if (!CheckTransactionDeadline(
+                    options.transactionDeadlineUnixMs, L"remove-deadline-before-package", &mutationError)) {
+                mutationSucceeded = false;
+                break;
+            }
             if (!UninstallPackage(package, &reboot, &mutationError)) {
                 mutationSucceeded = false;
                 break;
             }
+            if (!CheckTransactionDeadline(
+                    options.transactionDeadlineUnixMs, L"remove-deadline-after-package", &mutationError)) {
+                mutationSucceeded = false;
+                break;
+            }
+        }
+    }
+    if (mutationSucceeded && !reboot) {
+        if (!CheckTransactionDeadline(
+                options.transactionDeadlineUnixMs, L"remove-deadline-before-verify", &mutationError)) {
+            mutationSucceeded = false;
         }
     }
     if (mutationSucceeded && !reboot) {
@@ -2868,7 +3048,14 @@ Outcome Remove() {
     if (!mutationSucceeded) {
         Error rollbackError;
         bool rollbackReboot = reboot;
-        if (RollbackRemove(prior, backups, &rollbackReboot, &rollbackError)) {
+        // Forward work owns the caller's absolute deadline. Rollback receives
+        // one fresh, bounded ceiling from the instant failure is observed; it
+        // must not inherit the unused portion of a long forward deadline and
+        // silently expand into a six-minute transaction.
+        const uint64_t rollbackDeadline =
+            CurrentUnixMilliseconds() + kDriverRollbackCeilingMs;
+        if (RollbackRemove(
+                prior, backups, rollbackDeadline, &rollbackReboot, &rollbackError)) {
             outcome.rollback = L"succeeded";
             outcome.rebootRequired = rollbackReboot;
             outcome.error = mutationError;
@@ -3130,6 +3317,37 @@ bool ParseInstallOptions(int argc, wchar_t** argv, InstallOptions* options, Erro
     return true;
 }
 
+bool ParseRemoveOptions(int argc, wchar_t** argv, RemoveOptions* options, Error* error) {
+    if (argc == 2) {
+        options->transactionDeadlineUnixMs =
+            CurrentUnixMilliseconds() + kMaximumTransactionDurationMs;
+        return true;
+    }
+    if (argc != 4 ||
+        _wcsicmp(argv[2], L"--transaction-deadline-unix-ms") != 0) {
+        return SetError(error, L"arguments", ERROR_INVALID_PARAMETER,
+            L"remove accepts only an optional absolute transaction deadline");
+    }
+    const std::wstring value = argv[3];
+    if (value.empty() || value.size() > 20 ||
+        !std::all_of(value.begin(), value.end(), [](wchar_t character) {
+            return character >= L'0' && character <= L'9';
+        })) {
+        return SetError(error, L"arguments", ERROR_INVALID_PARAMETER,
+            L"transaction deadline must contain only Unix-millisecond digits");
+    }
+    const wchar_t* begin = value.data();
+    wchar_t* end = nullptr;
+    errno = 0;
+    const unsigned long long parsed = std::wcstoull(begin, &end, 10);
+    if (errno == ERANGE || end == begin || end != begin + value.size() || parsed == 0) {
+        return SetError(error, L"arguments", ERROR_INVALID_PARAMETER,
+            L"transaction deadline must be positive Unix milliseconds");
+    }
+    options->transactionDeadlineUnixMs = static_cast<uint64_t>(parsed);
+    return true;
+}
+
 void Usage() {
     std::wcerr
         << L"usage:\n"
@@ -3143,7 +3361,7 @@ void Usage() {
         << L"  ViiperUdeCtl.exe verify <ViiperUde.inf> --manifest <submission.json> --manifest-sha256 <64 hex> "
            L"--source-revision <40-64 hex> --validation-mode <production|controlled-test> "
            L"--transaction-deadline-unix-ms <positive integer>\n"
-        << L"  ViiperUdeCtl.exe remove\n"
+        << L"  ViiperUdeCtl.exe remove [--transaction-deadline-unix-ms <positive integer>]\n"
         << L"  ViiperUdeCtl.exe status\n"
         << L"  ViiperUdeCtl.exe self-test\n";
 }
@@ -3176,8 +3394,18 @@ int wmain(int argc, wchar_t** argv) {
         EmitOutcome(argv[1], outcome);
         return static_cast<int>(outcome.exitCode);
     }
-    if (argc == 2 && _wcsicmp(argv[1], L"remove") == 0) {
-        Outcome outcome = Remove();
+    if (argc >= 2 && _wcsicmp(argv[1], L"remove") == 0) {
+        RemoveOptions options;
+        Error argumentError;
+        if (!ParseRemoveOptions(argc, argv, &options, &argumentError)) {
+            Usage();
+            Outcome outcome;
+            outcome.error = std::move(argumentError);
+            outcome.exitCode = ExitCode::Usage;
+            EmitOutcome(L"remove", outcome);
+            return static_cast<int>(outcome.exitCode);
+        }
+        Outcome outcome = Remove(options);
         EmitOutcome(L"remove", outcome);
         return static_cast<int>(outcome.exitCode);
     }

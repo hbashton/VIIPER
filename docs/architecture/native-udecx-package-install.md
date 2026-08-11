@@ -1,4 +1,4 @@
-# Native UDE package installation transaction
+# Native UDE package installation and removal transactions
 
 The native UDE release is installed through one fail-closed composition
 transaction. `viiper native-package-install` is a hidden bootstrapper boundary;
@@ -6,6 +6,12 @@ users enter it only through a signed DS4Windows/VIIPER installer that embeds the
 reviewed SHA-256 values. It cannot turn a CI test-signed package into production
 media. The driver must first satisfy the production HLK/WHCP contract in
 [`native-udecx-signing.md`](native-udecx-signing.md).
+
+Production removal enters through `viiper uninstall`. The signed installer must
+pass the packaged `ViiperUdeCtl.exe` path, its installer-bound SHA-256, and the
+interactive-user SID. A direct Windows uninstall without those immutable helper
+inputs fails before mutation; the command does not fall back to deleting only
+the broker and leaving the devnode or Driver Store package behind.
 
 ## Trust inputs
 
@@ -87,6 +93,80 @@ uses its own non-canceled two-minute context. Synchronous SetupAPI work is
 checked immediately before and after each mutating boundary; no new phase may
 start after expiry, and no process is killed mid-rollback.
 
+## Exact package removal
+
+Removal is a separate fail-closed composition transaction; it does not reuse
+the historical broker-only uninstall routine.
+
+1. Acquire the package mutex and then the broker-service mutex. Lock every local
+   ancestor of the packaged helper, hold its leaf handle without write/delete
+   sharing, and require the installer-bound SHA-256, one-link identity,
+   non-reparse identity, and PE header.
+2. Inventory only the exact `VIIPERNativeBroker` name. A service is eligible to
+   stop only when its LocalSystem configuration, arguments, service DACL,
+   recovery policy, credential path, and managed Program Files executable are
+   canonical. The executable, credential, and protected directory chains remain
+   locked and hash-snapshotted. A running broker's optional log is first held by
+   file identity with sharing compatible with its trusted writer. A same-named
+   weak, non-LocalSystem, or non-managed service fails preflight and is never
+   adopted or deleted.
+3. Stop the exact trusted service but keep its SCM registration, credential, and
+   managed files intact. Before launching the helper, upgrade any live-log probe
+   to a non-write-shared delete handle and require the same volume/file identity,
+   one-link state, non-reparse identity, and a stable hash. Launch
+   `ViiperUdeCtl remove` with the outer absolute
+   deadline. The Go parent never uses a context-killed process or hard
+   termination after launch. The helper checks the cooperative deadline before
+   and after each SetupAPI boundary and owns a separate two-minute cooperative
+   rollback ceiling. If the live-log identity cannot be upgraded exactly, the
+   helper is not launched and the broker stays stopped rather than reopening an
+   ambiguous LocalSystem-managed path.
+4. Accept only one structured helper outcome whose process and reported exit
+   codes agree. Exit 0 is verified final success. Exit 3010 is verified Windows
+   reboot-success. A preflight rejection proves no driver mutation; exit 1 with
+   `rollback=succeeded` proves that the exact captured package/devnode topology
+   was restored. A no-reboot result in those two failure classes permits the
+   exact prior broker run-state to be restored after its locked service/files
+   are revalidated. Rollback that still requires a reboot preserves the files
+   but leaves the service stopped until Windows can settle the binding.
+   Exit 3, a crash, a missing/malformed proof, or any ambiguous wait cannot prove
+   a safe binding, so the broker remains stopped and the command reports that
+   external reconciliation is required.
+   Before mutation, rollback copies are placed below the non-reparse Windows
+   temporary directory in a cryptographically unpredictable, protected
+   Administrators/LocalSystem-only directory. The parent and backup root remain
+   locked against rename, and the exact INF/SYS/CAT handles deny write/delete
+   sharing until rollback is no longer possible.
+5. Only after exit 0 or 3010 does cleanup revalidate and delete the exact service,
+   credential, broker log, and installer-owned broker images. Deletion uses the
+   retained file identities rather than a second untrusted path lookup. It does
+   not recursively delete either managed directory, and it never enumerates or
+   changes unrelated devnodes, Driver Store packages, files, scheduled tasks,
+   Run registrations, processes, or USB/IP state. A repeat after partial cleanup
+   safely reconciles exact protected leftovers; complete service/driver absence
+   is idempotent. If the uninstalling process is itself the exact locked broker
+   image and Windows will not mark the mapped image for immediate deletion, the
+   transaction proves that identity by volume/file ID, schedules only that
+   protected path with `MoveFileEx(..., MOVEFILE_DELAY_UNTIL_REBOOT)`, and folds
+   the result into exit 3010.
+   A retry that finds the exact service already marked for deletion waits under
+   the same transaction deadline, then continues from the proven-absent service
+   state and reconciles only retained exact files.
+
+This ordering follows Microsoft's separation between
+[`DiUninstallDevice`](https://learn.microsoft.com/windows/win32/api/newdev/nf-newdev-diuninstalldevice),
+which removes a selected devnode and its child topology, and
+[`DiUninstallDriverW`](https://learn.microsoft.com/windows/win32/api/newdev/nf-newdev-diuninstalldriverw),
+which removes a specified package from devices and then the Driver Store. Both
+APIs return a `NeedReboot` result; the caller must aggregate that result while it
+finishes its other required uninstall operations. VIIPER therefore preserves
+3010 only after exact owned cleanup has reconciled. The
+[usbip-win2 uninstall sequence](https://github.com/vadimgrn/usbip-win2#uninstallation-of-usbip)
+is used only as the devnode-before-package lifecycle reference, while
+[ViGEmBus releases](https://github.com/ViGEm/ViGEmBus/releases) are used only as
+the root-bus installer lifecycle reference. Neither product's broad package or
+registration cleanup is treated as VIIPER ownership authority.
+
 ## Reference-backed Windows invariants
 
 - The machine transaction lock uses a private namespace bounded to the local
@@ -135,6 +215,14 @@ bootstrapper for the signed installer. After restart, the installer
 retries the complete preflight and transaction from the beginning. No
 cross-reboot journal is trusted as executable authority.
 
+For removal, 3010 means the helper accepted the exact devnode/package removal
+but Windows needs a restart to finish it. The service and exact managed
+ownership are cleaned first, then 3010 is returned. A retry before or after the
+restart performs a fresh exact inventory and is idempotent; no pending-removal
+journal is trusted as authority. If owned cleanup itself fails, the command
+reports failure (including that Windows still requires restart) rather than
+misrepresenting a partial uninstall as 3010 success.
+
 ## Deterministic gates
 
 The normal Go suite runs a failpoint matrix for every transaction phase,
@@ -146,3 +234,10 @@ driver/broker rollback, protected nested-commit token, global lock ordering,
 and authenticated proof. It also rejects hard process
 termination, context-killed helper processes, recursive deletion, or direct
 legacy/USB-IP removal in the outer layer.
+
+The removal matrix independently covers both mutex acquisitions, immutable
+preflight, service inventory, partial stop, helper launch/outcome, exact cleanup,
+restore failure, close failure, 3010, structured preflight, verified rollback,
+unverified rollback, malformed proof, idempotent absence, and exact ownership.
+The targeted matrix is also run repeatedly to catch state leakage and ordering
+regressions.

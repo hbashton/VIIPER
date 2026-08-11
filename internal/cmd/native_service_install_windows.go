@@ -441,27 +441,6 @@ func installNativeBrokerUntil(
 	return installNativeBrokerTransaction(ctx, logger, executable, productionNativeInstallDependencies(userSID))
 }
 
-func uninstallNativeBroker(logger *slog.Logger, explicitUserSID string) error {
-	release, err := acquireNativeInstallMutex(nativeServiceInstallTimeout)
-	if err != nil {
-		return err
-	}
-	defer release()
-	userSID, err := resolveNativeInstallingUserSID(explicitUserSID)
-	if err != nil {
-		return err
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), nativeServiceInstallTimeout)
-	defer cancel()
-	dependencies := productionNativeInstallDependencies(userSID)
-	manager, err := dependencies.connectSCM()
-	if err != nil {
-		return fmt.Errorf("connect to Windows Service Control Manager: %w", err)
-	}
-	defer manager.Close() //nolint:errcheck
-	return uninstallNativeBrokerTransaction(ctx, logger, manager, dependencies)
-}
-
 func uninstallNativeBrokerTransaction(
 	ctx context.Context,
 	logger *slog.Logger,

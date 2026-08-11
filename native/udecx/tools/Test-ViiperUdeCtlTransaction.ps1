@@ -44,6 +44,14 @@ $requiredContracts = [ordered]@{
     'final exact package enumeration' = 'ValidateExactPackageDirectory\('
     'reboot boundary rollback' = 'broker-reboot-boundary'
     'remove rollback backup' = 'BackupPackages\('
+    'protected rollback directory' = 'kRollbackDirectorySecurity'
+    'inherited rollback protection' = 'O:BAD:P\(A;OICI;FA;;;SY\)\(A;OICI;FA;;;BA\)'
+    'unpredictable rollback directory' = 'CryptGenRandom\('
+    'immutable rollback package files' = 'LockPackageFiles\(destination, &locks'
+    'remove deadline parser' = 'ParseRemoveOptions\('
+    'remove mutation deadline' = 'remove-deadline-before-device'
+    'finite remove rollback ceiling' = 'kDriverRollbackCeilingMs'
+    'remove rollback deadline' = 'remove-rollback-deadline-package'
     'transaction mutex' = 'VIIPER_UDE_DRIVER_TRANSACTION_V1'
     'protected private transaction namespace' = 'CreatePrivateNamespaceW\('
     'protected transaction object DACL' = 'D:P\(A;;GA;;;SY\)\(A;;GA;;;BA\)'
@@ -86,6 +94,10 @@ foreach ($runtimeExport in @(
 
 if ($source -match 'WaitForSingleObject\(processHandle\.get\(\),\s*INFINITE\)') {
     throw 'The nested broker wait must use the cooperative package deadline contract.'
+}
+
+if ($source -match 'std::max\(CurrentUnixMilliseconds\(\),\s*options\.transactionDeadlineUnixMs\)\s*\+\s*kDriverRollbackCeilingMs') {
+    throw 'Remove rollback must receive a fresh finite ceiling, not the unused forward deadline plus a rollback budget.'
 }
 
 if ([regex]::Matches($source, ',\s*DICD_GENERATE_ID\s*,').Count -ne 1) {

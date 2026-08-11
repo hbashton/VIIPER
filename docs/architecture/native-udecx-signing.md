@@ -82,10 +82,12 @@ the native compile, static-analysis, ABI/lifecycle, fuzz, race, stamped-INF,
 package-transaction, helper rollback/update/removal, and deterministic package
 checks. Driver package source changes must strictly increase the four-part
 `DriverVer` without regressing its date; a release also compares against the
-previous SemVer tag. The `viiper uninstall` command does not yet invoke the
-helper's exact root-devnode/Driver Store removal transaction, so the live
-uninstall release criterion remains open even though that helper primitive is
-source-checked and self-tested.
+previous SemVer tag. The `viiper uninstall` command now hash-locks and invokes
+the helper's exact root-devnode/Driver Store removal transaction under the
+package-then-service lock order, and its deterministic gates cover structured
+success, reboot-success, preflight, verified rollback, indeterminate rollback,
+and exact owned cleanup. Live uninstall on the Microsoft-signed package remains
+part of the external acceptance matrix below rather than an implementation gap.
 
 Production driver acceptance is separate and manual because Microsoft signing
 is external. The intake workflow must run from the exact current `main` commit,

@@ -134,15 +134,20 @@ func requireNativeUDEBroker() error {
 	return nil
 }
 
-func uninstall(logger *slog.Logger, targetUserSID string) error {
-	release, err := acquireNamedNativePackageMutex(
-		nativePackageMutexName, nativePackageTransactionTimeout,
-	)
-	if err != nil {
+func uninstall(
+	logger *slog.Logger,
+	targetUserSID, driverHelper, expectedHelperSHA256 string,
+) error {
+	request := nativePackageUninstallRequest{
+		driverHelper: driverHelper, expectedHelperSHA256: expectedHelperSHA256,
+		targetUserSID: targetUserSID,
+	}
+	if err := request.validate(); err != nil {
 		return err
 	}
-	defer release()
-	return uninstallNativeBroker(logger, targetUserSID)
+	ctx, cancel := context.WithTimeout(context.Background(), nativePackageTransactionTimeout)
+	defer cancel()
+	return uninstallNativePackage(ctx, logger, request)
 }
 
 func currentScheduledTaskExe() (string, error) {
