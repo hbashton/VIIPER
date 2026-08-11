@@ -404,7 +404,7 @@ std::string LowerAscii(std::string value) {
 }
 
 bool IsHexRevision(const std::string& value) {
-    if (value.size() < 40 || value.size() > 64) {
+    if (value.size() != 40 && value.size() != 64) {
         return false;
     }
     return std::all_of(value.begin(), value.end(), [](unsigned char character) {
@@ -792,6 +792,69 @@ bool Sha256File(const std::filesystem::path& path, std::string* digest, Error* e
     return Sha256Handle(file.get(), digest, error);
 }
 
+bool Sha256Data(std::string_view data, std::string* digest, Error* error) {
+    HCRYPTPROV provider = 0;
+    HCRYPTHASH hash = 0;
+    if (!CryptAcquireContextW(&provider, nullptr, nullptr, PROV_RSA_AES, CRYPT_VERIFYCONTEXT)) {
+        return SetLastErrorDetail(error, L"sha256-data-provider");
+    }
+    const auto releaseProvider = [&]() { CryptReleaseContext(provider, 0); };
+    if (!CryptCreateHash(provider, CALG_SHA_256, 0, 0, &hash)) {
+        const DWORD code = GetLastError();
+        releaseProvider();
+        return SetError(error, L"sha256-data-create", code);
+    }
+    const bool updated = data.size() <= MAXDWORD && CryptHashData(hash,
+        reinterpret_cast<const BYTE*>(data.data()), static_cast<DWORD>(data.size()), 0) != FALSE;
+    if (!updated) {
+        const DWORD code = data.size() > MAXDWORD ? ERROR_FILE_TOO_LARGE : GetLastError();
+        CryptDestroyHash(hash);
+        releaseProvider();
+        return SetError(error, L"sha256-data-update", code);
+    }
+    std::array<BYTE, VIIPER_UDE_BUILD_IDENTITY_BYTES> bytes{};
+    DWORD length = static_cast<DWORD>(bytes.size());
+    if (!CryptGetHashParam(hash, HP_HASHVAL, bytes.data(), &length, 0)) {
+        const DWORD code = GetLastError();
+        CryptDestroyHash(hash);
+        releaseProvider();
+        return SetError(error, L"sha256-data-finish", code);
+    }
+    if (length != bytes.size()) {
+        CryptDestroyHash(hash);
+        releaseProvider();
+        return SetError(error, L"sha256-data-finish", ERROR_INVALID_DATA);
+    }
+    CryptDestroyHash(hash);
+    releaseProvider();
+    static constexpr char digits[] = "0123456789abcdef";
+    digest->clear();
+    digest->reserve(bytes.size() * 2);
+    for (BYTE byte : bytes) {
+        digest->push_back(digits[byte >> 4U]);
+        digest->push_back(digits[byte & 0x0fU]);
+    }
+    return true;
+}
+
+bool DeriveDriverBuildIdentity(
+    const std::string& sourceRevision,
+    std::string* digest,
+    Error* error) {
+    if (!IsHexRevision(sourceRevision)) {
+        return SetError(error, L"build-identity-source", ERROR_INVALID_DATA,
+            L"driver build identity requires an exact 40- or 64-digit source revision");
+    }
+    std::ostringstream preimage;
+    preimage << "VIIPER-UDE-BUILD-IDENTITY/v1\n"
+        << "sourceRevision=" << LowerAscii(sourceRevision) << "\n"
+        << "driverPackageVersion=" << VIIPER_UDE_DRIVER_PACKAGE_VERSION << "\n"
+        << "abi=" << VIIPER_UDE_ABI_MAJOR << "." << VIIPER_UDE_ABI_MINOR << "\n"
+        << "capabilities=0x" << std::hex << std::nouppercase << std::setw(8)
+        << std::setfill('0') << VIIPER_UDE_ADVERTISED_CAPABILITIES << "\n";
+    return Sha256Data(preimage.str(), digest, error);
+}
+
 bool FileLength(const std::filesystem::path& path, uint64_t* length, Error* error) {
     std::error_code fileError;
     const uintmax_t size = std::filesystem::file_size(path, fileError);
@@ -828,17 +891,39 @@ bool ValidateManifest(
     const JsonValue* revision = ObjectField(*object, "sourceRevision");
     const JsonValue* releaseEligible = ObjectField(*object, "releaseEligible");
     const JsonValue* signingRoute = ObjectField(*object, "signingRoute");
+    const JsonValue* driverVersion = ObjectField(*object, "driverPackageVersion");
+    const JsonValue* driverMajor = ObjectField(*object, "driverABIMajor");
+    const JsonValue* driverMinor = ObjectField(*object, "driverABIMinor");
+    const JsonValue* driverCapabilities = ObjectField(*object, "driverCapabilities");
+    const JsonValue* driverBuildIdentity = ObjectField(*object, "driverBuildIdentity");
     const JsonValue* files = ObjectField(*object, "files");
     const auto* schemaValue = schema == nullptr ? nullptr : std::get_if<int64_t>(&schema->value);
     const auto* revisionValue = revision == nullptr ? nullptr : std::get_if<std::string>(&revision->value);
     const auto* releaseValue = releaseEligible == nullptr ? nullptr : std::get_if<bool>(&releaseEligible->value);
     const auto* routeValue = signingRoute == nullptr ? nullptr : std::get_if<std::string>(&signingRoute->value);
+    const auto* driverVersionValue = driverVersion == nullptr ? nullptr : std::get_if<std::string>(&driverVersion->value);
+    const auto* driverMajorValue = driverMajor == nullptr ? nullptr : std::get_if<int64_t>(&driverMajor->value);
+    const auto* driverMinorValue = driverMinor == nullptr ? nullptr : std::get_if<int64_t>(&driverMinor->value);
+    const auto* driverCapabilitiesValue = driverCapabilities == nullptr ? nullptr : std::get_if<std::string>(&driverCapabilities->value);
+    const auto* driverBuildIdentityValue = driverBuildIdentity == nullptr ? nullptr : std::get_if<std::string>(&driverBuildIdentity->value);
     const auto* fileArray = files == nullptr ? nullptr : std::get_if<JsonValue::Array>(&files->value);
-    if (schemaValue == nullptr || *schemaValue != 1 || revisionValue == nullptr ||
+    std::string expectedBuildIdentity;
+    if (!DeriveDriverBuildIdentity(expectedRevision, &expectedBuildIdentity, error)) {
+        return false;
+    }
+    std::ostringstream expectedCapabilities;
+    expectedCapabilities << "0x" << std::hex << std::nouppercase << std::setw(8)
+        << std::setfill('0') << VIIPER_UDE_ADVERTISED_CAPABILITIES;
+    if (schemaValue == nullptr || *schemaValue != 2 || revisionValue == nullptr ||
         LowerAscii(*revisionValue) != LowerAscii(expectedRevision) || releaseValue == nullptr ||
-        routeValue == nullptr || fileArray == nullptr) {
+        routeValue == nullptr || fileArray == nullptr || driverVersionValue == nullptr ||
+        *driverVersionValue != VIIPER_UDE_DRIVER_PACKAGE_VERSION || driverMajorValue == nullptr ||
+        *driverMajorValue != VIIPER_UDE_ABI_MAJOR || driverMinorValue == nullptr ||
+        *driverMinorValue != VIIPER_UDE_ABI_MINOR || driverCapabilitiesValue == nullptr ||
+        *driverCapabilitiesValue != expectedCapabilities.str() || driverBuildIdentityValue == nullptr ||
+        *driverBuildIdentityValue != expectedBuildIdentity) {
         return SetError(error, L"manifest-contract", ERROR_INVALID_DATA,
-            L"manifest schema, source revision, release route, or file list is invalid");
+            L"manifest schema, source revision, loaded-driver identity, release route, or file list is invalid");
     }
     if (production) {
         if (!*releaseValue || *routeValue != "HLK/WHCP") {
@@ -1777,7 +1862,10 @@ bool RegisterRootDeviceExact(
     return true;
 }
 
-bool VerifyAbiHealth(uint64_t deadlineUnixMs, Error* error) {
+bool VerifyAbiHealth(
+    uint64_t deadlineUnixMs,
+    const std::string* expectedBuildIdentity,
+    Error* error) {
     DeviceInfoSet set(SetupDiGetClassDevsW(
         &kViiperInterfaceGuid, nullptr, nullptr, DIGCF_PRESENT | DIGCF_DEVICEINTERFACE));
     if (!set) {
@@ -1841,9 +1929,7 @@ bool VerifyAbiHealth(uint64_t deadlineUnixMs, Error* error) {
     request.Header.Size = sizeof(request);
     request.ClientNonce = static_cast<VIIPER_UDE_UINT64>(counter.QuadPart) ^ GetTickCount64();
     if (request.ClientNonce == 0) request.ClientNonce = 1;
-    request.RequestedCapabilities = VIIPER_UDE_CAP_ISOCHRONOUS |
-        VIIPER_UDE_CAP_STREAMS | VIIPER_UDE_CAP_DEVICE_LIFECYCLE |
-        VIIPER_UDE_CAP_INPUT_REPORTS;
+    request.RequestedCapabilities = VIIPER_UDE_ADVERTISED_CAPABILITIES;
     VIIPER_UDE_NEGOTIATE_RESPONSE response{};
     DWORD returned = 0;
     WinHandle event(CreateEventW(nullptr, TRUE, FALSE, nullptr));
@@ -1912,21 +1998,28 @@ bool VerifyAbiHealth(uint64_t deadlineUnixMs, Error* error) {
             return SetLastErrorDetail(error, L"abi-negotiate-result");
         }
     }
-    const VIIPER_UDE_UINT32 requiredCapabilities = VIIPER_UDE_CAP_ISOCHRONOUS |
-        VIIPER_UDE_CAP_DEVICE_LIFECYCLE | VIIPER_UDE_CAP_INPUT_REPORTS;
+    std::string loadedBuildIdentity;
+    loadedBuildIdentity.reserve(VIIPER_UDE_BUILD_IDENTITY_BYTES * 2);
+    static constexpr char digits[] = "0123456789abcdef";
+    for (VIIPER_UDE_UINT8 byte : response.BuildIdentity) {
+        loadedBuildIdentity.push_back(digits[byte >> 4U]);
+        loadedBuildIdentity.push_back(digits[byte & 0x0fU]);
+    }
     if (returned != sizeof(response) || response.Header.Magic != VIIPER_UDE_MAGIC ||
         response.Header.Major != VIIPER_UDE_ABI_MAJOR ||
         response.Header.Minor != VIIPER_UDE_ABI_MINOR ||
         response.Header.Size != sizeof(response) || response.Header.Flags != 0 ||
         response.ClientNonce != request.ClientNonce || response.DriverNonce == 0 ||
-        (response.Capabilities & requiredCapabilities) != requiredCapabilities ||
+        response.Capabilities != VIIPER_UDE_ADVERTISED_CAPABILITIES ||
         response.MaxDevices != VIIPER_UDE_MAX_DEVICES ||
         response.MaxDescriptorBytes != VIIPER_UDE_MAX_DESCRIPTOR_BYTES ||
         response.MaxTransferBytes != VIIPER_UDE_MAX_TRANSFER_BYTES ||
         response.MaxIsoPackets != VIIPER_UDE_MAX_ISO_PACKETS ||
-        response.MaxPendingOperations != VIIPER_UDE_MAX_PENDING_OPERATIONS) {
+        response.MaxPendingOperations != VIIPER_UDE_MAX_PENDING_OPERATIONS ||
+        (expectedBuildIdentity != nullptr &&
+            loadedBuildIdentity != *expectedBuildIdentity)) {
         return SetError(error, L"abi-negotiate", ERROR_REVISION_MISMATCH,
-            L"driver health response does not match the compiled broker ABI");
+            L"loaded driver health response does not match the source-bound package identity");
     }
     return true;
 }
@@ -1936,6 +2029,7 @@ bool VerifyInstalled(
     const std::wstring& publishedName,
     bool allowStopped,
     uint64_t healthDeadlineUnixMs,
+    const std::string* expectedBuildIdentity,
     Error* error) {
     Snapshot snapshot;
     if (!CaptureSnapshot(&snapshot, error)) {
@@ -1952,7 +2046,8 @@ bool VerifyInstalled(
         return SetError(error, L"install-start", ERROR_DEVICE_NOT_AVAILABLE,
             L"installed driver did not start; problem=" + std::to_wstring(snapshot.devices[0].problem));
     }
-    return allowStopped || VerifyAbiHealth(healthDeadlineUnixMs, error);
+    return allowStopped || VerifyAbiHealth(
+        healthDeadlineUnixMs, expectedBuildIdentity, error);
 }
 
 bool UninstallPackage(const PackageInfo& package, bool* rebootRequired, Error* error) {
@@ -2096,7 +2191,7 @@ bool RollbackInstall(const Snapshot& prior, bool* rebootRequired, Error* error) 
     if (!prior.devices.empty() && !*rebootRequired) {
         return VerifyInstalled(
             prior.devices[0].package, prior.devices[0].publishedInf, false,
-            CurrentUnixMilliseconds() + 15000, error);
+            CurrentUnixMilliseconds() + 15000, nullptr, error);
     }
     return true;
 }
@@ -2443,6 +2538,12 @@ Outcome Install(const InstallOptions& options) {
         outcome.exitCode = ExitCode::PreflightRejected;
         return outcome;
     }
+    std::string expectedBuildIdentity;
+    if (!DeriveDriverBuildIdentity(
+            options.sourceRevision, &expectedBuildIdentity, &outcome.error)) {
+        outcome.exitCode = ExitCode::PreflightRejected;
+        return outcome;
+    }
     if (!ValidateExactPackageDirectory(packageDirectory, &outcome.error) ||
         !CheckTransactionDeadline(options, L"transaction-deadline-before-driver", &outcome.error)) {
         outcome.exitCode = ExitCode::PreflightRejected;
@@ -2563,7 +2664,7 @@ Outcome Install(const InstallOptions& options) {
     }
     if (outcome.error.code == ERROR_SUCCESS &&
         !VerifyInstalled(candidate, publishedCandidate.publishedName, outcome.rebootRequired,
-            options.transactionDeadlineUnixMs, &outcome.error)) {
+            options.transactionDeadlineUnixMs, &expectedBuildIdentity, &outcome.error)) {
         // Verification recorded the exact failure.
     }
     if (outcome.error.code != ERROR_SUCCESS) {
@@ -2942,7 +3043,7 @@ bool RollbackRemove(
             }
             const uint64_t healthDeadline = std::min(
                 rollbackDeadlineUnixMs, CurrentUnixMilliseconds() + 15000);
-            if (!VerifyAbiHealth(healthDeadline, error)) {
+            if (!VerifyAbiHealth(healthDeadline, nullptr, error)) {
                 return false;
             }
         }
@@ -3114,6 +3215,17 @@ Outcome SelfTest() {
         SetError(&outcome.error, L"self-test-version", ERROR_INVALID_DATA);
         return outcome;
     }
+    std::string buildIdentity;
+    if (!DeriveDriverBuildIdentity(
+            "0123456789abcdef0123456789abcdef01234567",
+            &buildIdentity, &outcome.error) ||
+        buildIdentity !=
+            "efb6c64ffa47eb72492406dcc8add19451c24f203fdc8706082a2c6bb91e9eb7") {
+        if (outcome.error.code == ERROR_SUCCESS) {
+            SetError(&outcome.error, L"self-test-build-identity", ERROR_INVALID_DATA);
+        }
+        return outcome;
+    }
     JsonValue value;
     std::string message;
     if (!JsonParser(R"({"schema":1,"files":[]})").Parse(&value, &message) ||
@@ -3209,7 +3321,7 @@ bool ParseInstallOptions(int argc, wchar_t** argv, InstallOptions* options, Erro
             }
             if (!IsHexRevision(options->sourceRevision)) {
                 return SetError(error, L"arguments", ERROR_INVALID_PARAMETER,
-                    L"source revision must contain 40 to 64 hexadecimal characters");
+                    L"source revision must contain exactly 40 or 64 hexadecimal characters");
             }
             revisionSeen = true;
         } else if (_wcsicmp(argument.c_str(), L"--validation-mode") == 0 &&
@@ -3352,14 +3464,14 @@ void Usage() {
     std::wcerr
         << L"usage:\n"
         << L"  ViiperUdeCtl.exe install <ViiperUde.inf> --manifest <submission.json> --manifest-sha256 <64 hex> "
-           L"--source-revision <40-64 hex> --validation-mode <production|controlled-test> "
+           L"--source-revision <40-or-64 hex> --validation-mode <production|controlled-test> "
            L"--transaction-deadline-unix-ms <positive integer> "
            L"[--allow-controlled-downgrade <exact-installed-version>] "
            L"--broker-executable <managed-viiper.exe> --broker-sha256 <64 hex> "
            L"--broker-token <protected-token> --broker-token-sha256 <64 hex> "
            L"--target-user-sid <SID>\n"
         << L"  ViiperUdeCtl.exe verify <ViiperUde.inf> --manifest <submission.json> --manifest-sha256 <64 hex> "
-           L"--source-revision <40-64 hex> --validation-mode <production|controlled-test> "
+           L"--source-revision <40-or-64 hex> --validation-mode <production|controlled-test> "
            L"--transaction-deadline-unix-ms <positive integer>\n"
         << L"  ViiperUdeCtl.exe remove [--transaction-deadline-unix-ms <positive integer>]\n"
         << L"  ViiperUdeCtl.exe status\n"

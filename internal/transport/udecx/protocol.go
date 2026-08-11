@@ -4,25 +4,29 @@
 package udecx
 
 import (
+	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 )
 
 const (
 	Magic    uint32 = 0x45445556
 	ABIMajor uint16 = 1
-	ABIMinor uint16 = 8
+	ABIMinor uint16 = 9
 	// DriverPackageVersion is the native driver package version built and
-	// shipped with this service. Runtime negotiation proves the installed
-	// driver speaks the exact ABI below; package installation additionally
-	// verifies this release version and its signed catalog.
-	DriverPackageVersion = "0.1.0.3"
+	// shipped with this service. Runtime negotiation proves the loaded driver
+	// carries this version in its source-bound build identity; package
+	// installation additionally verifies DriverVer and the signed catalog.
+	DriverPackageVersion = "0.1.0.4"
+	BuildIdentitySize    = sha256.Size
 
 	HeaderSize            = 16
 	NegotiateRequestSize  = 32
-	NegotiateResponseSize = 56
+	NegotiateResponseSize = 88
 	DescriptorRecordSize  = 16
 	CreateDeviceSize      = 56
 	DeviceIdentitySize    = 32
@@ -62,6 +66,7 @@ var (
 	ErrInvalidSize       = errors.New("native UDE message size is invalid")
 	ErrInvalidRange      = errors.New("native UDE message contains an invalid range")
 	ErrLimitExceeded     = errors.New("native UDE message exceeds a negotiated limit")
+	ErrBuildIdentity     = errors.New("native UDE build identity is unavailable or invalid")
 )
 
 type Capabilities uint32
@@ -72,6 +77,67 @@ const (
 	CapabilityDeviceLifecycle
 	CapabilityInputReports
 )
+
+const AdvertisedCapabilities = CapabilityIsochronous | CapabilityDeviceLifecycle | CapabilityInputReports
+
+// nativeSourceRevision must be injected by the production build. Native
+// transport startup deliberately has no VCS/on-disk fallback: the broker and
+// loaded kernel image must derive their identities from the same explicit
+// source-bound build input.
+var nativeSourceRevision string
+
+// DeriveBuildIdentity returns the source/package/ABI/capability identity that
+// is embedded in the native driver and compared during negotiation. The exact
+// UTF-8 preimage is also implemented by Get-ViiperUdeBuildIdentity.ps1 and the
+// package helper; changing it requires another ABI revision.
+func DeriveBuildIdentity(sourceRevision, driverPackageVersion string, abiMajor, abiMinor uint16, capabilities Capabilities) ([BuildIdentitySize]byte, error) {
+	var zero [BuildIdentitySize]byte
+	if sourceRevision != strings.TrimSpace(sourceRevision) {
+		return zero, fmt.Errorf("%w: source revision must not contain surrounding whitespace", ErrBuildIdentity)
+	}
+	revision := strings.ToLower(sourceRevision)
+	if len(revision) != 40 && len(revision) != 64 {
+		return zero, fmt.Errorf("%w: source revision must be exactly 40 or 64 hexadecimal digits", ErrBuildIdentity)
+	}
+	if _, err := hex.DecodeString(revision); err != nil {
+		return zero, fmt.Errorf("%w: source revision: %v", ErrBuildIdentity, err)
+	}
+	versionParts := strings.Split(driverPackageVersion, ".")
+	if len(versionParts) != 4 {
+		return zero, fmt.Errorf("%w: driver package version must contain four numeric parts", ErrBuildIdentity)
+	}
+	for _, part := range versionParts {
+		if part == "" {
+			return zero, fmt.Errorf("%w: driver package version contains an empty part", ErrBuildIdentity)
+		}
+		for _, character := range part {
+			if character < '0' || character > '9' {
+				return zero, fmt.Errorf("%w: driver package version is not numeric", ErrBuildIdentity)
+			}
+		}
+	}
+	if abiMajor == 0 || capabilities == 0 {
+		return zero, fmt.Errorf("%w: ABI major and capabilities must be nonzero", ErrBuildIdentity)
+	}
+	preimage := fmt.Sprintf(
+		"VIIPER-UDE-BUILD-IDENTITY/v1\nsourceRevision=%s\ndriverPackageVersion=%s\nabi=%d.%d\ncapabilities=0x%08x\n",
+		revision, driverPackageVersion, abiMajor, abiMinor, uint32(capabilities),
+	)
+	return sha256.Sum256([]byte(preimage)), nil
+}
+
+func ExpectedBuildIdentity() ([BuildIdentitySize]byte, error) {
+	if strings.TrimSpace(nativeSourceRevision) == "" {
+		return [BuildIdentitySize]byte{}, fmt.Errorf(
+			"%w: production build did not inject VIIPER native source revision", ErrBuildIdentity)
+	}
+	return DeriveBuildIdentity(nativeSourceRevision, DriverPackageVersion,
+		ABIMajor, ABIMinor, AdvertisedCapabilities)
+}
+
+func BuildIdentityHex(identity [BuildIdentitySize]byte) string {
+	return hex.EncodeToString(identity[:])
+}
 
 type Header struct {
 	Magic uint32
@@ -151,6 +217,7 @@ type NegotiateResponse struct {
 	MaxTransferBytes     uint32
 	MaxIsoPackets        uint32
 	MaxPendingOperations uint32
+	BuildIdentity        [BuildIdentitySize]byte
 }
 
 func ParseNegotiateResponse(src []byte) (NegotiateResponse, error) {
@@ -161,7 +228,7 @@ func ParseNegotiateResponse(src []byte) (NegotiateResponse, error) {
 	if h.Size != NegotiateResponseSize {
 		return NegotiateResponse{}, ErrInvalidSize
 	}
-	return NegotiateResponse{
+	response := NegotiateResponse{
 		ClientNonce:          binary.LittleEndian.Uint64(src[16:24]),
 		DriverNonce:          binary.LittleEndian.Uint64(src[24:32]),
 		Capabilities:         Capabilities(binary.LittleEndian.Uint32(src[32:36])),
@@ -170,7 +237,9 @@ func ParseNegotiateResponse(src []byte) (NegotiateResponse, error) {
 		MaxTransferBytes:     binary.LittleEndian.Uint32(src[44:48]),
 		MaxIsoPackets:        binary.LittleEndian.Uint32(src[48:52]),
 		MaxPendingOperations: binary.LittleEndian.Uint32(src[52:56]),
-	}, nil
+	}
+	copy(response.BuildIdentity[:], src[56:88])
+	return response, nil
 }
 
 type DescriptorKind uint16

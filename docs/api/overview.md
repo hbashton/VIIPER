@@ -178,8 +178,9 @@ kept matched.
 
     The packaged server also reports its active transport and readiness. Native
     UDE mode includes the exact negotiated ABI, capability mask, package
-    version expected by the service, and negotiated limits. Clients opting in
-    to the native backend should fail closed unless these fields match their
+    version expected by the service, the source-bound identity returned by the
+    currently loaded kernel image, and negotiated limits. Clients opting in to
+    the native backend should fail closed unless these fields match their
     required contract:
 
     ```json
@@ -190,9 +191,10 @@ kept matched.
       "ready": true,
       "nativeUde": {
         "abiMajor": 1,
-        "abiMinor": 8,
+        "abiMinor": 9,
         "capabilities": 13,
-        "expectedDriverPackageVersion": "0.1.0.0",
+        "expectedDriverPackageVersion": "0.1.0.4",
+        "loadedDriverBuildIdentity": "<64 lowercase hexadecimal characters returned by the loaded kernel>",
         "maxDevices": 32,
         "maxDescriptorBytes": 262144,
         "maxTransferBytes": 1048576,

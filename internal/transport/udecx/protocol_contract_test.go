@@ -44,6 +44,7 @@ type contractNegotiateResponse struct {
 	MaxTransferBytes     uint32
 	MaxIsoPackets        uint32
 	MaxPendingOperations uint32
+	BuildIdentity        [BuildIdentitySize]uint8
 }
 
 type contractDescriptorRecord struct {
@@ -202,6 +203,7 @@ func TestNativeProtocolHeaderMatchesGoContract(t *testing.T) {
 		"VIIPER_UDE_MAGIC":                       uint64(Magic),
 		"VIIPER_UDE_ABI_MAJOR":                   uint64(ABIMajor),
 		"VIIPER_UDE_ABI_MINOR":                   uint64(ABIMinor),
+		"VIIPER_UDE_BUILD_IDENTITY_BYTES":        BuildIdentitySize,
 		"VIIPER_UDE_MAX_DEVICES":                 MaxDevices,
 		"VIIPER_UDE_MAX_DESCRIPTOR_BYTES":        MaxDescriptorBytes,
 		"VIIPER_UDE_MAX_TRANSFER_BYTES":          MaxTransferBytes,
@@ -316,6 +318,13 @@ func TestNativeProtocolHeaderMatchesGoContract(t *testing.T) {
 	}
 
 	verifyGUIDAndIOCTLContract(t, header)
+	if !strings.Contains(header, `#define VIIPER_UDE_DRIVER_PACKAGE_VERSION "`+DriverPackageVersion+`"`) {
+		t.Fatalf("C driver package version does not match Go %q", DriverPackageVersion)
+	}
+	advertised := regexp.MustCompile(`(?s)#define\s+VIIPER_UDE_ADVERTISED_CAPABILITIES\s+\\\s*\(VIIPER_UDE_CAP_ISOCHRONOUS\s*\|\s*VIIPER_UDE_CAP_DEVICE_LIFECYCLE\s*\|\s*\\?\s*VIIPER_UDE_CAP_INPUT_REPORTS\)`).MatchString(header)
+	if !advertised {
+		t.Fatal("C advertised capability identity tuple does not match Go")
+	}
 }
 
 func TestKernelMicrosoftOS10StringExceptionMatchesGoContract(t *testing.T) {

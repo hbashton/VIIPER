@@ -5,6 +5,7 @@ package udecx
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -23,7 +24,7 @@ func TestNegotiationABIMismatchExplainsPackageRepair(t *testing.T) {
 		if !errors.Is(err, ErrIncompatibleABI) {
 			t.Errorf("negotiation error for %v = %v, want ErrIncompatibleABI", transportErr, err)
 		}
-		for _, phrase := range []string{"ABI 1.8", "exact native UDE driver", "VIIPER build"} {
+		for _, phrase := range []string{fmt.Sprintf("ABI %d.%d", ABIMajor, ABIMinor), "exact native UDE driver", "VIIPER build"} {
 			if !strings.Contains(err.Error(), phrase) {
 				t.Errorf("negotiation error %q does not contain %q", err, phrase)
 			}
@@ -54,6 +55,11 @@ func TestCompletionAfterCancelPreservesKernelOutcome(t *testing.T) {
 }
 
 func validTestNegotiation() NegotiateResponse {
+	identity, err := DeriveBuildIdentity(strings.Repeat("a", 40), DriverPackageVersion,
+		ABIMajor, ABIMinor, AdvertisedCapabilities)
+	if err != nil {
+		panic(err)
+	}
 	return NegotiateResponse{
 		ClientNonce:          7,
 		DriverNonce:          8,
@@ -63,25 +69,48 @@ func validTestNegotiation() NegotiateResponse {
 		MaxTransferBytes:     MaxTransferBytes,
 		MaxIsoPackets:        MaxIsoPackets,
 		MaxPendingOperations: MaxPendingOperations,
+		BuildIdentity:        identity,
 	}
 }
 
 func TestNegotiationRejectsMissingCapabilitiesAndImpossibleLimits(t *testing.T) {
 	valid := validTestNegotiation()
-	if err := validateNegotiation(valid, valid.ClientNonce); err != nil {
+	if err := validateNegotiation(valid, valid.ClientNonce, valid.BuildIdentity); err != nil {
 		t.Fatal(err)
 	}
 
 	missingCapability := valid
 	missingCapability.Capabilities &^= CapabilityIsochronous
-	if err := validateNegotiation(missingCapability, valid.ClientNonce); err == nil {
+	if err := validateNegotiation(missingCapability, valid.ClientNonce, valid.BuildIdentity); err == nil {
 		t.Fatal("negotiation accepted a driver without isochronous support")
+	}
+
+	extraCapability := valid
+	extraCapability.Capabilities |= CapabilityStreams
+	if err := validateNegotiation(extraCapability, valid.ClientNonce, valid.BuildIdentity); err == nil {
+		t.Fatal("negotiation accepted capabilities outside the identity-bound exact mask")
 	}
 
 	oversized := valid
 	oversized.MaxTransferBytes++
-	if err := validateNegotiation(oversized, valid.ClientNonce); err == nil {
+	if err := validateNegotiation(oversized, valid.ClientNonce, valid.BuildIdentity); err == nil {
 		t.Fatal("negotiation accepted a driver limit outside the client ABI")
+	}
+}
+
+func TestNegotiationRejectsStaleLoadedKernelDespiteMatchingOnDiskPackageContract(t *testing.T) {
+	// acceptedPackageIdentity represents the exact source-bound identity from
+	// the already validated signed on-disk package and protected manifest. The
+	// negotiate response is deliberately from an older image still loaded by
+	// Windows, while ABI, capabilities, nonce, and limits all remain identical.
+	response := validTestNegotiation()
+	acceptedPackageIdentity := response.BuildIdentity
+	response.BuildIdentity[0] ^= 0xff
+
+	if err := validateNegotiation(
+		response, response.ClientNonce, acceptedPackageIdentity,
+	); !errors.Is(err, ErrIncompatibleABI) {
+		t.Fatalf("same-ABI/capability stale loaded kernel error=%v want ErrIncompatibleABI", err)
 	}
 }
 

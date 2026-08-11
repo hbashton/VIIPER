@@ -1139,22 +1139,42 @@ func TestNativeUninstallRejectsPausedServiceBeforeMutation(t *testing.T) {
 }
 
 func TestValidateNativeBrokerPingRequiresExactContract(t *testing.T) {
+	expected, err := udecx.DeriveBuildIdentity(
+		strings.Repeat("a", 40), udecx.DriverPackageVersion,
+		udecx.ABIMajor, udecx.ABIMinor, udecx.AdvertisedCapabilities,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
 	ready := true
 	valid := &viipertypes.PingResponse{
 		Server: "VIIPER", Transport: "native-ude", Ready: &ready,
 		NativeUDE: &viipertypes.NativeUDEInfo{
 			ABIMajor: udecx.ABIMajor, ABIMinor: udecx.ABIMinor,
-			Capabilities:                 uint32(udecx.CapabilityIsochronous | udecx.CapabilityDeviceLifecycle | udecx.CapabilityInputReports),
+			Capabilities:                 uint32(udecx.AdvertisedCapabilities),
 			ExpectedDriverPackageVersion: udecx.DriverPackageVersion,
+			LoadedDriverBuildIdentity:    udecx.BuildIdentityHex(expected),
 		},
 	}
-	if err := validateNativeBrokerPing(valid); err != nil {
+	if err := validateNativeBrokerPingAgainstIdentity(valid, expected); err != nil {
 		t.Fatal(err)
 	}
 	cases := map[string]func(*viipertypes.PingResponse){
 		"not ready":  func(p *viipertypes.PingResponse) { value := false; p.Ready = &value },
 		"wrong ABI":  func(p *viipertypes.PingResponse) { p.NativeUDE.ABIMinor++ },
 		"extra caps": func(p *viipertypes.PingResponse) { p.NativeUDE.Capabilities |= uint32(udecx.CapabilityStreams) },
+		"wrong package version": func(p *viipertypes.PingResponse) {
+			p.NativeUDE.ExpectedDriverPackageVersion = "0.1.0.3"
+		},
+		"missing loaded identity": func(p *viipertypes.PingResponse) {
+			p.NativeUDE.LoadedDriverBuildIdentity = ""
+		},
+		"malformed loaded identity": func(p *viipertypes.PingResponse) {
+			p.NativeUDE.LoadedDriverBuildIdentity = strings.Repeat("z", 64)
+		},
+		"stale loaded identity with matching ABI and caps": func(p *viipertypes.PingResponse) {
+			p.NativeUDE.LoadedDriverBuildIdentity = strings.Repeat("0", 64)
+		},
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -1162,10 +1182,43 @@ func TestValidateNativeBrokerPingRequiresExactContract(t *testing.T) {
 			copyNative := *valid.NativeUDE
 			copyResponse.NativeUDE = &copyNative
 			mutate(&copyResponse)
-			if err := validateNativeBrokerPing(&copyResponse); err == nil {
+			if err := validateNativeBrokerPingAgainstIdentity(&copyResponse, expected); err == nil {
 				t.Fatal("expected exact-contract rejection")
 			}
 		})
+	}
+}
+
+func TestValidateNativeBrokerPingFailsClosedWithoutBuildInjection(t *testing.T) {
+	if _, err := udecx.ExpectedBuildIdentity(); err == nil {
+		t.Skip("test binary has an explicitly injected native source revision")
+	}
+	if err := validateNativeBrokerPing(nil); !errors.Is(err, udecx.ErrBuildIdentity) {
+		t.Fatalf("error=%v want ErrBuildIdentity", err)
+	}
+}
+
+func TestValidateNativeBrokerPingUsesInjectedBuildIdentity(t *testing.T) {
+	expected, err := udecx.ExpectedBuildIdentity()
+	if err != nil {
+		t.Skip("test binary has no injected native source revision")
+	}
+	ready := true
+	response := &viipertypes.PingResponse{
+		Server: "VIIPER", Transport: "native-ude", Ready: &ready,
+		NativeUDE: &viipertypes.NativeUDEInfo{
+			ABIMajor: udecx.ABIMajor, ABIMinor: udecx.ABIMinor,
+			Capabilities:                 uint32(udecx.AdvertisedCapabilities),
+			ExpectedDriverPackageVersion: udecx.DriverPackageVersion,
+			LoadedDriverBuildIdentity:    udecx.BuildIdentityHex(expected),
+		},
+	}
+	if err := validateNativeBrokerPing(response); err != nil {
+		t.Fatal(err)
+	}
+	response.NativeUDE.LoadedDriverBuildIdentity = strings.Repeat("0", 64)
+	if err := validateNativeBrokerPing(response); err == nil {
+		t.Fatal("authenticated readiness accepted a stale same-ABI/capability loaded kernel")
 	}
 }
 

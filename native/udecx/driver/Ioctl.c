@@ -1,4 +1,5 @@
 #include "ViiperUde.h"
+#include "ViiperUdeBuildIdentity.g.h"
 
 static
 BOOLEAN
@@ -96,14 +97,14 @@ ViiperHandleNegotiate(
     output->Header.Size = sizeof(*output);
     output->ClientNonce = fileContext->ClientNonce;
     output->DriverNonce = fileContext->DriverNonce;
-    output->Capabilities = VIIPER_UDE_CAP_ISOCHRONOUS |
-        VIIPER_UDE_CAP_DEVICE_LIFECYCLE |
-        VIIPER_UDE_CAP_INPUT_REPORTS;
+    output->Capabilities = VIIPER_UDE_ADVERTISED_CAPABILITIES;
     output->MaxDevices = VIIPER_UDE_MAX_DEVICES;
     output->MaxDescriptorBytes = VIIPER_UDE_MAX_DESCRIPTOR_BYTES;
     output->MaxTransferBytes = VIIPER_UDE_MAX_TRANSFER_BYTES;
     output->MaxIsoPackets = VIIPER_UDE_MAX_ISO_PACKETS;
     output->MaxPendingOperations = VIIPER_UDE_MAX_PENDING_OPERATIONS;
+    RtlCopyMemory(output->BuildIdentity, ViiperUdeBuildIdentity,
+        sizeof(output->BuildIdentity));
     WdfRequestSetInformation(Request, sizeof(*output));
     return STATUS_SUCCESS;
 }

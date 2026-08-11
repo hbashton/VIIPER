@@ -639,11 +639,13 @@ func runLiveInputLatencyProbe(
 // TestNativeUDELiveProductionControllers is deliberately inert in normal CI.
 // It opens an already-installed native controller and never installs, updates,
 // enables, or removes a kernel driver. Release validation must first verify the
-// package's Microsoft kernel-policy signature, then opt in on a disposable test
-// machine with VIIPER_UDE_LIVE=1.
+// package's Microsoft kernel-policy signature, then invoke the signed-package
+// PowerShell gate on a disposable test machine. That gate sets
+// VIIPER_UDE_LIVE=1 and links this test binary to the exact reviewed source
+// identity; setting the environment variable alone is intentionally insufficient.
 func TestNativeUDELiveProductionControllers(t *testing.T) {
 	if os.Getenv(liveNativeTestEnvironment) != "1" {
-		t.Skipf("set %s=1 after installing a verified Microsoft-signed native UDE package",
+		t.Skipf("invoke the signed-package validation gate (which sets %s=1 and injects its source identity)",
 			liveNativeTestEnvironment)
 	}
 
@@ -1059,7 +1061,7 @@ func TestNativeUDELiveProductionControllers(t *testing.T) {
 // after the driver has removed its children and drained forwarded URBs.
 func TestNativeUDELiveOwnerCrashRecovery(t *testing.T) {
 	if os.Getenv(liveNativeTestEnvironment) != "1" {
-		t.Skipf("set %s=1 after installing a verified Microsoft-signed native UDE package",
+		t.Skipf("invoke the signed-package validation gate (which sets %s=1 and injects its source identity)",
 			liveNativeTestEnvironment)
 	}
 	if os.Getenv(liveNativeCrashChild) == "1" {
@@ -1194,7 +1196,7 @@ func TestNativeUDELiveOwnerCrashRecovery(t *testing.T) {
 // session to enumerate and service input without stale kernel state.
 func TestNativeUDELiveRootRestartRecovery(t *testing.T) {
 	if os.Getenv(liveNativeTestEnvironment) != "1" {
-		t.Skipf("set %s=1 after installing a verified Microsoft-signed native UDE package",
+		t.Skipf("invoke the signed-package validation gate (which sets %s=1 and injects its source identity)",
 			liveNativeTestEnvironment)
 	}
 	instanceID := os.Getenv(liveNativeRestartInstance)

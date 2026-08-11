@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-var nativePackageHexRevision = regexp.MustCompile(`^[0-9a-fA-F]{40,64}$`)
+var nativePackageHexRevision = regexp.MustCompile(`^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$`)
 var nativePackageSHA256 = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
 
 const (
@@ -42,7 +42,7 @@ func (e *nativePackageRebootRequiredError) ExitCode() int {
 type NativePackageInstall struct {
 	PackageDirectory       string `help:"Directory containing the four Microsoft-returned VIIPER UDE files." required:""`
 	SubmissionManifest     string `help:"Source-bound HLK/WHCP submission manifest." required:""`
-	SourceRevision         string `help:"Reviewed 40-64 character source revision." required:""`
+	SourceRevision         string `help:"Reviewed 40- or 64-character source revision." required:""`
 	DriverHelper           string `help:"Path to the packaged ViiperUdeCtl.exe." required:""`
 	ExpectedBrokerSHA256   string `help:"Installer-embedded SHA-256 of this VIIPER executable." required:""`
 	ExpectedHelperSHA256   string `help:"Installer-embedded SHA-256 of ViiperUdeCtl.exe." required:""`
@@ -121,7 +121,7 @@ func (r nativePackageRequest) validate() error {
 		}
 	}
 	if !nativePackageHexRevision.MatchString(r.sourceRevision) {
-		return errors.New("native package source revision must contain 40-64 hexadecimal characters")
+		return errors.New("native package source revision must contain exactly 40 or 64 hexadecimal characters")
 	}
 	if !nativePackageSHA256.MatchString(r.expectedBrokerSHA256) ||
 		!nativePackageSHA256.MatchString(r.expectedHelperSHA256) ||

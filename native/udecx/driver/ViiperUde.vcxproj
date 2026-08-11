@@ -14,7 +14,8 @@
     <MinimumVisualStudioVersion>17.0</MinimumVisualStudioVersion>
     <Platform Condition="'$(Platform)' == ''">x64</Platform>
     <ViiperUdeDriverDate>08/11/2026</ViiperUdeDriverDate>
-    <ViiperUdeDriverVersion>0.1.0.3</ViiperUdeDriverVersion>
+    <ViiperUdeDriverVersion>0.1.0.4</ViiperUdeDriverVersion>
+    <ViiperUdeSourceRevision Condition="'$(ViiperUdeSourceRevision)' == ''">$(VIIPER_NATIVE_SOURCE_REVISION)</ViiperUdeSourceRevision>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
@@ -55,7 +56,7 @@
       <WarningLevel>Level4</WarningLevel>
       <TreatWarningAsError>true</TreatWarningAsError>
       <LanguageStandard_C>stdc17</LanguageStandard_C>
-      <AdditionalIncludeDirectories>..\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(IntDir);..\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>POOL_ZERO_DOWN_LEVEL_SUPPORT;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <SDLCheck>true</SDLCheck>
     </ClCompile>
@@ -100,5 +101,9 @@
     <Error Condition="!Exists('..\packages\Microsoft.Windows.WDK.x64.10.0.28000.1839\build\native\Microsoft.Windows.WDK.x64.props')" Text="Restore native/udecx/packages.config before building." />
     <Error Condition="!Exists('..\packages\Microsoft.Windows.SDK.CPP.x64.10.0.28000.1839\build\native\Microsoft.Windows.SDK.cpp.x64.props')" Text="Restore native/udecx/packages.config before building." />
     <Error Condition="!Exists('..\packages\Microsoft.Windows.SDK.CPP.10.0.28000.1839\build\native\Microsoft.Windows.SDK.cpp.targets')" Text="Restore native/udecx/packages.config before building." />
+  </Target>
+  <Target Name="GenerateViiperUdeBuildIdentity" BeforeTargets="ClCompile">
+    <Error Condition="'$(ViiperUdeSourceRevision)' == ''" Text="VIIPER_NATIVE_SOURCE_REVISION (or ViiperUdeSourceRevision) is required; native driver identity generation fails closed without an explicit source revision." />
+    <Exec Command="powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\..\tools\Get-ViiperUdeBuildIdentity.ps1&quot; -SourceRevision &quot;$(ViiperUdeSourceRevision)&quot; -DriverPackageVersion &quot;$(ViiperUdeDriverVersion)&quot; -ABIMajor 1 -ABIMinor 9 -Capabilities 13 -OutputHeaderPath &quot;$(IntDir)ViiperUdeBuildIdentity.g.h&quot;" />
   </Target>
 </Project>

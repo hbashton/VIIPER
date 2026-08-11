@@ -7,7 +7,7 @@ param(
     [string]$SubmissionManifestPath,
 
     [Parameter(Mandatory = $true)]
-    [ValidatePattern('^[0-9a-fA-F]{40,64}$')]
+    [ValidatePattern('^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$')]
     [string]$ExpectedSourceRevision,
 
     [ValidateSet('ControlledTest', 'Production')]
@@ -107,9 +107,26 @@ if (@($allFiles | Where-Object { $_.DirectoryName -cne $root.Path }).Count -ne 0
 
 $manifestFile = Resolve-Path -LiteralPath $SubmissionManifestPath -ErrorAction Stop
 $manifest = Get-Content -LiteralPath $manifestFile.Path -Raw | ConvertFrom-Json
-if ($manifest.schema -ne 1 -or
-    [string]$manifest.sourceRevision -cne $ExpectedSourceRevision.ToLowerInvariant()) {
-    throw 'The submission manifest schema or source revision does not match the reviewed source.'
+$projectPath = Join-Path $PSScriptRoot '..\driver\ViiperUde.vcxproj'
+[xml]$driverProject = Get-Content -LiteralPath $projectPath -Raw
+$projectNamespace = [Xml.XmlNamespaceManager]::new($driverProject.NameTable)
+$projectNamespace.AddNamespace('msb', 'http://schemas.microsoft.com/developer/msbuild/2003')
+$versionNodes = @($driverProject.SelectNodes('//msb:ViiperUdeDriverVersion', $projectNamespace))
+if ($versionNodes.Count -ne 1) {
+    throw 'The driver project must declare one deterministic ViiperUdeDriverVersion.'
+}
+$driverPackageVersion = $versionNodes[0].InnerText.Trim()
+$expectedBuildIdentity = & (Join-Path $PSScriptRoot 'Get-ViiperUdeBuildIdentity.ps1') `
+    -SourceRevision $ExpectedSourceRevision `
+    -DriverPackageVersion $driverPackageVersion `
+    -ABIMajor 1 -ABIMinor 9 -Capabilities 13
+if ($manifest.schema -ne 2 -or
+    [string]$manifest.sourceRevision -cne $ExpectedSourceRevision.ToLowerInvariant() -or
+    [string]$manifest.driverPackageVersion -cne $driverPackageVersion -or
+    [int]$manifest.driverABIMajor -ne 1 -or [int]$manifest.driverABIMinor -ne 9 -or
+    [string]$manifest.driverCapabilities -cne '0x0000000d' -or
+    [string]$manifest.driverBuildIdentity -cne $expectedBuildIdentity) {
+    throw 'The submission manifest schema, source revision, or native loaded-build identity does not match the reviewed source.'
 }
 if ($ValidationMode -eq 'ControlledTest') {
     if ([bool]$manifest.releaseEligible -or [string]$manifest.signingRoute -cne 'ControlledTestAttestation') {

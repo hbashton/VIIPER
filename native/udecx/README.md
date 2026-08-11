@@ -9,12 +9,22 @@ Directory contract:
 - `include/` is the stable C ABI shared by the driver and Go broker.
 - `driver/` is the KMDF/UdeCx controller driver.
 - `package/` contains INF and installation metadata.
+
+Release builds must receive `VIIPER_NATIVE_SOURCE_REVISION` from the protected
+build job; both driver and broker fail closed when it is absent. `just build
+Debug` is the only convenience path that may bind the current checkout HEAD
+into a local debug broker when that variable is omitted. Direct driver builds
+always require the explicit property/environment input. The debug fallback is
+never accepted by a Release recipe or production workflow.
+
 - `tools/ViiperUdeCtl.cpp` installs, verifies, or removes the exact root
   controller as a driver-store transaction. Installation requires the
   source-revision submission manifest, verifies the catalog signature and
   four-part `DriverVer`, rejects same-version replacement and implicit
-  downgrade, records the prior published INF, negotiates the broker ABI after
-  start, and restores the prior binding on failure. Removal backs up every
+  downgrade, records the prior published INF, and negotiates the ABI plus the
+  source-bound identity embedded in the currently loaded kernel image after
+  start. A stale same-ABI driver cannot satisfy health. The helper restores the
+  prior binding on failure. Removal backs up every
   exact signed VIIPER package before deleting only exact owned devnodes and
   packages; unrelated driver-store entries are never force-deleted.
 - `tools/Test-ViiperUdeCtlTransaction.ps1` deterministically guards the
@@ -23,7 +33,9 @@ Directory contract:
   parser/version self-test without changing driver state.
 - `tools/New-ViiperUdeAttestationPackage.ps1` creates and hash-verifies the
   exact controlled-test Hardware Dev Center CAB structure and requires an
-  explicit testing-only acknowledgement. Microsoft currently restricts
+  explicit testing-only acknowledgement. Its schema-2 manifest binds the
+  source revision, DriverVer, ABI, exact capability mask, and loaded-image
+  build identity. Microsoft currently restricts
   attestation to testing scenarios; production release requires HLK/WHCP.
 - `tools/Test-ViiperUdeSignedPackage.ps1` validates the Microsoft-returned
   driver and catalog against kernel signing policy, proves that INF and SYS are

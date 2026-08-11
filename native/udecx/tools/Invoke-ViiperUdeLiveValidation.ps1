@@ -7,7 +7,7 @@ param(
     [string]$SubmissionManifestPath,
 
     [Parameter(Mandatory = $true)]
-    [ValidatePattern('^[0-9a-fA-F]{40,64}$')]
+    [ValidatePattern('^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$')]
     [string]$ExpectedSourceRevision,
 
     [ValidateSet('ControlledTest', 'Production')]
@@ -375,7 +375,10 @@ try {
                 [StringComparison]::OrdinalIgnoreCase)) {
             throw "The live test selected an unexpected Go module '$modulePath'."
         }
+        $nativeIdentityLdflags = '-X github.com/Alia5/VIIPER/internal/transport/udecx.nativeSourceRevision=' +
+            $ExpectedSourceRevision.ToLowerInvariant()
         $goTestOutput = @(& $go.Source test -v -count=1 -timeout "${timeoutMinutes}m" `
+            -ldflags $nativeIdentityLdflags `
             -run '^TestNativeUDELive(ProductionControllers|OwnerCrashRecovery|RootRestartRecovery)$' ./internal/server/usb
         )
         $goTestExitCode = $LASTEXITCODE

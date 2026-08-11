@@ -4,7 +4,7 @@ param(
     [string]$BundleDirectory,
 
     [Parameter(Mandatory = $true)]
-    [ValidatePattern('^[0-9a-f]{40}$')]
+    [ValidatePattern('^(?:[0-9a-f]{40}|[0-9a-f]{64})$')]
     [string]$ExpectedSourceRevision,
 
     [string]$ProjectPath,
@@ -115,12 +115,6 @@ if ($RequireAuthenticode) {
 
 $manifest = Get-Content -LiteralPath $files['submission-manifest.json'].FullName -Raw |
     ConvertFrom-Json
-if ($manifest.schema -ne 1 -or
-        [string]$manifest.sourceRevision -cne $ExpectedSourceRevision -or
-        -not [bool]$manifest.releaseEligible -or
-        [string]$manifest.signingRoute -cne 'HLK/WHCP') {
-    throw 'The runtime bundle requires the exact release-eligible HLK/WHCP source manifest.'
-}
 
 $submissionNames = @('ViiperUde.inf', 'ViiperUde.sys', 'ViiperUde.pdb', 'ViiperUde.cat')
 $manifestEntries = @($manifest.files)
@@ -159,6 +153,20 @@ if ($dateNodes.Count -ne 1 -or $versionNodes.Count -ne 1) {
 }
 $driverDate = $dateNodes[0].InnerText.Trim()
 $driverVersion = $versionNodes[0].InnerText.Trim()
+$expectedBuildIdentity = & (Join-Path $PSScriptRoot 'Get-ViiperUdeBuildIdentity.ps1') `
+    -SourceRevision $ExpectedSourceRevision `
+    -DriverPackageVersion $driverVersion `
+    -ABIMajor 1 -ABIMinor 9 -Capabilities 13
+if ($manifest.schema -ne 2 -or
+        [string]$manifest.sourceRevision -cne $ExpectedSourceRevision -or
+        [string]$manifest.driverPackageVersion -cne $driverVersion -or
+        [int]$manifest.driverABIMajor -ne 1 -or [int]$manifest.driverABIMinor -ne 9 -or
+        [string]$manifest.driverCapabilities -cne '0x0000000d' -or
+        [string]$manifest.driverBuildIdentity -cne $expectedBuildIdentity -or
+        -not [bool]$manifest.releaseEligible -or
+        [string]$manifest.signingRoute -cne 'HLK/WHCP') {
+    throw 'The runtime bundle requires the exact release-eligible HLK/WHCP loaded-driver build identity manifest.'
+}
 $infContents = Get-Content -LiteralPath $runtimeInf.FullName -Raw
 $driverVerPattern = '(?mi)^DriverVer\s*=\s*' +
     [regex]::Escape($driverDate) + '\s*,\s*' +

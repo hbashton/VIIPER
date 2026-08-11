@@ -45,6 +45,9 @@ func TestNativeLiveReleaseGateRequiresCompleteEvidence(t *testing.T) {
 		"$env:GOARCH = 'amd64'",
 		"$env:CGO_ENABLED = '0'",
 		"$go.Source env GOMOD",
+		"$nativeIdentityLdflags",
+		"internal/transport/udecx.nativeSourceRevision=",
+		"$ExpectedSourceRevision.ToLowerInvariant()",
 		"Go reported success without executing required live test",
 	} {
 		if !strings.Contains(contract, required) {

@@ -19,7 +19,7 @@ The signed bootstrapper supplies all of the following as immutable build data:
 
 - the exact VIIPER broker, `ViiperUdeCtl.exe`, and reviewed production-manifest
   SHA-256 values;
-- the reviewed 40-64 hexadecimal source revision;
+- the reviewed exact 40- or 64-hexadecimal source revision;
 - the runtime driver directory containing only the Microsoft-returned INF,
   SYS, and CAT, plus the source-bound HLK/WHCP manifest; and
 - the target interactive-user SID whose legacy startup ownership may be
@@ -73,7 +73,9 @@ of the source-provenance evidence without becoming a user-machine dependency.
    broker service transaction.
 5. The broker transaction creates or updates the LocalSystem service, rotates
    its protected credential, starts it, and requires authenticated `ping`
-   identity, `Ready=true`, ABI 1.8, and the exact negotiated capability mask.
+   identity, `Ready=true`, ABI 1.9, the exact negotiated capability mask, and
+   the source-bound build identity returned by the currently loaded kernel
+   image. A well-formed identity from a stale same-ABI driver fails readiness.
    Only then does it disable legacy Run/task/process ownership, and it
    authenticates again before returning success.
 6. The helper commits the driver only after that broker proof. A broker failure

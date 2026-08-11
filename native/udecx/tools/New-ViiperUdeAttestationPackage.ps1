@@ -16,7 +16,7 @@ param(
     [string]$OutputPath,
 
     [Parameter(Mandatory = $true)]
-    [ValidatePattern('^[0-9a-fA-F]{40,64}$')]
+    [ValidatePattern('^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$')]
     [string]$SourceRevision,
 
     [switch]$AcknowledgeTestingOnly,
@@ -71,6 +71,24 @@ $sys = Resolve-RequiredFile -Path $SysPath -ExpectedExtension '.sys'
 $pdb = Resolve-RequiredFile -Path $PdbPath -ExpectedExtension '.pdb'
 $cat = Resolve-RequiredFile -Path $CatalogPath -ExpectedExtension '.cat'
 Assert-InfContract -Path $inf.FullName
+
+[xml]$driverProject = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\driver\ViiperUde.vcxproj') -Raw
+$projectNamespace = [Xml.XmlNamespaceManager]::new($driverProject.NameTable)
+$projectNamespace.AddNamespace('msb', 'http://schemas.microsoft.com/developer/msbuild/2003')
+$versionNodes = @($driverProject.SelectNodes('//msb:ViiperUdeDriverVersion', $projectNamespace))
+if ($versionNodes.Count -ne 1) {
+    throw 'The driver project must declare one deterministic ViiperUdeDriverVersion.'
+}
+$driverPackageVersion = $versionNodes[0].InnerText.Trim()
+$driverABIMajor = 1
+$driverABIMinor = 9
+$driverCapabilities = [uint32]13
+$driverBuildIdentity = & (Join-Path $PSScriptRoot 'Get-ViiperUdeBuildIdentity.ps1') `
+    -SourceRevision $SourceRevision `
+    -DriverPackageVersion $driverPackageVersion `
+    -ABIMajor $driverABIMajor `
+    -ABIMinor $driverABIMinor `
+    -Capabilities $driverCapabilities
 
 $makeCab = Get-Command makecab.exe -ErrorAction Stop
 $expand = Get-Command expand.exe -ErrorAction Stop
@@ -165,12 +183,17 @@ try {
     }
 
     $manifest = [ordered]@{
-        schema = 1
+        schema = 2
         purpose = 'Microsoft Hardware Dev Center controlled-test attestation submission; not a retail release package'
         releaseEligible = $false
         signingRoute = 'ControlledTestAttestation'
         requiredProductionRoute = 'HLK/WHCP dashboard signing'
         sourceRevision = $SourceRevision.ToLowerInvariant()
+        driverPackageVersion = $driverPackageVersion
+        driverABIMajor = $driverABIMajor
+        driverABIMinor = $driverABIMinor
+        driverCapabilities = ('0x{0:x8}' -f $driverCapabilities)
+        driverBuildIdentity = $driverBuildIdentity
         cabinet = [System.IO.Path]::GetFileName($outputFullPath)
         cabinetSha256 = (Get-FileHash -LiteralPath $outputFullPath -Algorithm SHA256).Hash
         packageFolder = $packageFolder

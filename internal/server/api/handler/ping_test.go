@@ -2,6 +2,7 @@ package handler_test
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -36,8 +37,9 @@ func TestPing(t *testing.T) {
 
 func TestPingReportsNegotiatedNativeBackend(t *testing.T) {
 	want := &viipertypes.NativeUDEInfo{
-		ABIMajor: 1, ABIMinor: 8, Capabilities: 0x0d,
-		ExpectedDriverPackageVersion: "0.1.0.0",
+		ABIMajor: 1, ABIMinor: 9, Capabilities: 0x0d,
+		ExpectedDriverPackageVersion: "0.1.0.4",
+		LoadedDriverBuildIdentity:    strings.Repeat("a", 64),
 		MaxDevices:                   32, MaxDescriptorBytes: 262144,
 		MaxTransferBytes: 1048576, MaxIsoPackets: 1024,
 		MaxPendingOperations: 4096,

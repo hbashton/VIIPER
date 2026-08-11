@@ -17,6 +17,7 @@ on:
 env:
     GOFLAGS: -mod=readonly
     GOTOOLCHAIN: local
+    VIIPER_NATIVE_SOURCE_REVISION: ${{ github.sha }}
 
 jobs:
     test:

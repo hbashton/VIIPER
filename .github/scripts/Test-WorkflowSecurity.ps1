@@ -145,11 +145,27 @@ if ($nativeWorkflow -notmatch '(?m)^\s*if:\s*\$\{\{\s*inputs\.upload_artifacts\s
 foreach ($requiredNativeGate in @(
         'branches: [main, "feature/**"]',
         'tags: ["v*.*.*"]',
+        'VIIPER_NATIVE_SOURCE_REVISION: ${{ github.sha }}',
+        'Get-ViiperUdeBuildIdentity.ps1',
+        'efb6c64ffa47eb72492406dcc8add19451c24f203fdc8706082a2c6bb91e9eb7',
         'Test-ViiperUdeVersionMonotonicity.ps1',
         'x64/Release/ViiperUde/ViiperUde.inf',
         'inputs.upload_release_helper == true')) {
     if (-not $nativeWorkflow.Contains($requiredNativeGate)) {
         throw "The native build workflow is missing gate '$requiredNativeGate'."
+    }
+}
+
+$baseBuildWorkflow = Get-Content -LiteralPath (Join-Path $workflowDirectory 'build_base.yml') -Raw
+if (-not $baseBuildWorkflow.Contains('VIIPER_NATIVE_SOURCE_REVISION: ${{ github.sha }}')) {
+    throw 'Production broker builds must inject the exact workflow source SHA.'
+}
+$justfile = Get-Content -LiteralPath (Join-Path $repositoryRoot 'justfile') -Raw
+foreach ($requiredBuildIdentityGate in @(
+        'Release builds require explicit VIIPER_NATIVE_SOURCE_REVISION.',
+        'internal/transport/udecx.nativeSourceRevision=')) {
+    if (-not $justfile.Contains($requiredBuildIdentityGate)) {
+        throw "The release broker build is missing identity gate '$requiredBuildIdentityGate'."
     }
 }
 

@@ -37,6 +37,7 @@ func startNativeUDETransport(ctx context.Context, server *serverusb.Server) (nat
 			ABIMajor: udecx.ABIMajor, ABIMinor: udecx.ABIMinor,
 			Capabilities:                 uint32(client.Capabilities()),
 			ExpectedDriverPackageVersion: udecx.DriverPackageVersion,
+			LoadedDriverBuildIdentity:    udecx.BuildIdentityHex(client.BuildIdentity()),
 			MaxDevices:                   limits.MaxDevices, MaxDescriptorBytes: limits.MaxDescriptorBytes,
 			MaxTransferBytes: limits.MaxTransferBytes, MaxIsoPackets: limits.MaxIsoPackets,
 			MaxPendingOperations: limits.MaxPendingOperations,

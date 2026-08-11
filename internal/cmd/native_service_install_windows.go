@@ -4,7 +4,9 @@ package cmd
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/xml"
 	"errors"
@@ -1221,6 +1223,17 @@ func verifyNativeBroker(ctx context.Context, password string) error {
 }
 
 func validateNativeBrokerPing(response *viipertypes.PingResponse) error {
+	expected, err := udecx.ExpectedBuildIdentity()
+	if err != nil {
+		return fmt.Errorf("derive expected native loaded-driver identity: %w", err)
+	}
+	return validateNativeBrokerPingAgainstIdentity(response, expected)
+}
+
+func validateNativeBrokerPingAgainstIdentity(
+	response *viipertypes.PingResponse,
+	expected [udecx.BuildIdentitySize]byte,
+) error {
 	if response == nil {
 		return errors.New("empty ping response")
 	}
@@ -1234,11 +1247,7 @@ func validateNativeBrokerPing(response *viipertypes.PingResponse) error {
 		return errors.New("native broker omitted its negotiated driver contract")
 	}
 	native := response.NativeUDE
-	requiredCapabilities := uint32(
-		udecx.CapabilityIsochronous |
-			udecx.CapabilityDeviceLifecycle |
-			udecx.CapabilityInputReports,
-	)
+	requiredCapabilities := uint32(udecx.AdvertisedCapabilities)
 	if native.ABIMajor != udecx.ABIMajor || native.ABIMinor != udecx.ABIMinor {
 		return fmt.Errorf("native broker ABI=%d.%d expected=%d.%d",
 			native.ABIMajor, native.ABIMinor, udecx.ABIMajor, udecx.ABIMinor)
@@ -1246,10 +1255,24 @@ func validateNativeBrokerPing(response *viipertypes.PingResponse) error {
 	if native.Capabilities != requiredCapabilities {
 		return fmt.Errorf("native broker capabilities=%#x expected exact=%#x", native.Capabilities, requiredCapabilities)
 	}
-	// ExpectedDriverPackageVersion is currently broker compile-time metadata,
-	// not an attestation read from the installed driver. ABI and negotiated
-	// capabilities are authoritative here; do not misrepresent that echoed
-	// constant as installed-package verification.
+	if native.ExpectedDriverPackageVersion != udecx.DriverPackageVersion {
+		return fmt.Errorf("native broker package version=%q expected=%q",
+			native.ExpectedDriverPackageVersion, udecx.DriverPackageVersion)
+	}
+	if len(native.LoadedDriverBuildIdentity) != 64 {
+		return errors.New("native broker omitted the negotiated loaded-driver build identity")
+	}
+	loaded, err := hex.DecodeString(native.LoadedDriverBuildIdentity)
+	if err != nil ||
+		native.LoadedDriverBuildIdentity != strings.ToLower(native.LoadedDriverBuildIdentity) {
+		return errors.New("native broker returned a malformed loaded-driver build identity")
+	}
+	if subtle.ConstantTimeCompare(loaded, expected[:]) != 1 {
+		return fmt.Errorf(
+			"native broker loaded-driver build identity=%s expected=%s",
+			native.LoadedDriverBuildIdentity, udecx.BuildIdentityHex(expected),
+		)
+	}
 	return nil
 }
 

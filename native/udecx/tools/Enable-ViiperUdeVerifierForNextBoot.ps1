@@ -7,7 +7,7 @@ param(
     [string]$SubmissionManifestPath,
 
     [Parameter(Mandatory = $true)]
-    [ValidatePattern('^[0-9a-fA-F]{40,64}$')]
+    [ValidatePattern('^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$')]
     [string]$ExpectedSourceRevision,
 
     [ValidateSet('ControlledTest', 'Production')]

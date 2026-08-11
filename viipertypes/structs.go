@@ -49,11 +49,15 @@ type NativeUDEInfo struct {
 	ABIMinor                     uint16 `json:"abiMinor"`
 	Capabilities                 uint32 `json:"capabilities"`
 	ExpectedDriverPackageVersion string `json:"expectedDriverPackageVersion"`
-	MaxDevices                   uint32 `json:"maxDevices"`
-	MaxDescriptorBytes           uint32 `json:"maxDescriptorBytes"`
-	MaxTransferBytes             uint32 `json:"maxTransferBytes"`
-	MaxIsoPackets                uint32 `json:"maxIsoPackets"`
-	MaxPendingOperations         uint32 `json:"maxPendingOperations"`
+	// LoadedDriverBuildIdentity is the lowercase SHA-256 identity returned by
+	// the currently loaded kernel image during ABI negotiation. It is not an
+	// on-disk hash or a broker-computed status echo.
+	LoadedDriverBuildIdentity string `json:"loadedDriverBuildIdentity"`
+	MaxDevices                uint32 `json:"maxDevices"`
+	MaxDescriptorBytes        uint32 `json:"maxDescriptorBytes"`
+	MaxTransferBytes          uint32 `json:"maxTransferBytes"`
+	MaxIsoPackets             uint32 `json:"maxIsoPackets"`
+	MaxPendingOperations      uint32 `json:"maxPendingOperations"`
 }
 
 type BusListResponse struct {

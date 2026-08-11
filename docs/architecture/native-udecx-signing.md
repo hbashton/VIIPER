@@ -58,7 +58,10 @@ mode. That mode rejects the attestation EKU and requires a release-eligible
   `ViiperUde.pdb`, and `ViiperUde.cat` selected by explicit path.
 - The INF targets only `ROOT\VIIPER\UDE`, copies only `ViiperUde.sys`, and
   names only `ViiperUde.cat`.
-- The build and submission hash manifests identify the exact reviewed bits.
+- The schema-2 submission manifest identifies the exact reviewed bits and the
+  SHA-256 build identity derived from source revision, four-part DriverVer,
+  ABI 1.9, and the exact capability mask. That same identity is compiled into
+  the SYS that the signed catalog seals and is returned by the loaded kernel.
 - Returned packages contain only the canonical INF, SYS, PDB, and CAT in one
   directory. The unchanged INF/PDB must match the submission manifest, and
   SignTool must prove INF/SYS membership in the returned Microsoft catalog.
@@ -157,6 +160,9 @@ the HLK/DevFund matrix.
 - [Attestation-sign Windows drivers](https://learn.microsoft.com/windows-hardware/drivers/dashboard/code-signing-attestation)
 - [Driver-signing options and best practices](https://learn.microsoft.com/windows-hardware/drivers/dashboard/driver-signing-offerings)
 - [Components of a driver package](https://learn.microsoft.com/windows-hardware/drivers/install/components-of-a-driver-package)
+- [Catalog files](https://learn.microsoft.com/windows-hardware/drivers/install/catalog-files)
+- [Release-signing a driver package catalog](https://learn.microsoft.com/windows-hardware/drivers/install/release-signing-a-driver-package-s-catalog-file)
+- [INF Version section](https://learn.microsoft.com/windows-hardware/drivers/install/inf-version-section)
 - [SignTool command-line reference](https://learn.microsoft.com/windows-hardware/drivers/devtest/signtool)
 - [Windows Hardware Lab Kit](https://learn.microsoft.com/windows-hardware/test/hlk/)
 - [Add driver and supplemental content to an HLK package](https://learn.microsoft.com/windows-hardware/test/hlk/user/add-driver-and-supplemental-content-to-your-package)

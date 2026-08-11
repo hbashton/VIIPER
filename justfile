@@ -13,6 +13,10 @@ rm_f := if os_family() == "windows" { "Remove-Item -Force -ErrorAction 0" } else
 
 version := env_var_or_default("VERSION", `git describe --tags --match "v[0-9]*.[0-9]*.[0-9]*" --always`)
 commit := `git rev-parse --short HEAD`
+native_source_revision_explicit := env_var_or_default("VIIPER_NATIVE_SOURCE_REVISION", "")
+# Debug/developer builds may bind the current checkout explicitly. Release
+# recipes reject the absence of VIIPER_NATIVE_SOURCE_REVISION before compiling.
+native_source_revision := if native_source_revision_explicit != "" { native_source_revision_explicit } else { `git rev-parse HEAD` }
 build_time := if os_family() == "windows" {
     `Get-Date -Format 'yyyy-MM-ddTHH:mm:ssZ'`
 } else {
@@ -29,7 +33,7 @@ licenses_dir := join(dist_dir, "libVIIPER")
 licenses_out := join(dist_dir, "licenses.txt")
 lib_licenses_out := join(licenses_dir, "licenses.txt")
 
-ldflags_common := "-X main.Version=" + version + " -X main.Commit=" + commit + " -X main.Date=" + build_time + " -X github.com/Alia5/VIIPER/internal/codegen/common.Version=" + version
+ldflags_common := "-X main.Version=" + version + " -X main.Commit=" + commit + " -X main.Date=" + build_time + " -X github.com/Alia5/VIIPER/internal/codegen/common.Version=" + version + " -X github.com/Alia5/VIIPER/internal/transport/udecx.nativeSourceRevision=" + native_source_revision
 ldflags_release := "-s -w " + ldflags_common
 
 default:
@@ -74,6 +78,7 @@ clean-versioninfo:
 [arg("type", pattern="Debug|Release")]
 [windows]
 build type=build_type: generate-versioninfo
+	if ("{{ type }}" -eq "Release" -and [string]::IsNullOrWhiteSpace($env:VIIPER_NATIVE_SOURCE_REVISION)) { throw "Release builds require explicit VIIPER_NATIVE_SOURCE_REVISION." }
 	{{ mkdir_p }} {{ dist_dir }}
 	$env:CGO_ENABLED='0'; go build {{ if type == "Release" { "-tags release" } else { "" } }} -trimpath -ldflags "{{ if type == "Release" { ldflags_release } else { ldflags_common } }}" -o {{ build_path }} {{ main_pkg }}
 	just licenses
@@ -81,6 +86,7 @@ build type=build_type: generate-versioninfo
 [arg("type", pattern="Debug|Release")]
 [unix]
 build type=build_type:
+	if [ "{{ type }}" = "Release" ] && [ -z "${VIIPER_NATIVE_SOURCE_REVISION:-}" ]; then echo "Release builds require explicit VIIPER_NATIVE_SOURCE_REVISION." >&2; exit 1; fi
 	{{ mkdir_p }} {{ dist_dir }}
 	CGO_ENABLED=0 go build {{ if type == "Release" { "-tags release" } else { "" } }} -trimpath -ldflags "{{ if type == "Release" { ldflags_release } else { ldflags_common } }}" -o {{ build_path }} {{ main_pkg }}
 	just licenses

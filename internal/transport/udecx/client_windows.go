@@ -5,6 +5,7 @@ package udecx
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -39,7 +40,7 @@ const (
 	ioctlSubmitInputReport                  = (fileDeviceUnknown << 16) | ((fileReadData | fileWriteData) << 14) | ((ioctlBase + 6) << 2) | methodInDirect
 	completionPortCloseKey          uintptr = ^uintptr(0)
 	fileSkipCompletionPortOnSuccess byte    = 0x1
-	requiredCapabilities                    = CapabilityIsochronous | CapabilityDeviceLifecycle | CapabilityInputReports
+	requiredCapabilities                    = AdvertisedCapabilities
 	// The kernel rechecks asynchronous UdeCx owner cleanup every 100 ms. Match
 	// that cadence for at most 1.9 seconds, rediscovering the interface before
 	// every exclusive CreateFile rather than spinning on a stale symbolic link.
@@ -134,6 +135,7 @@ type Client struct {
 	// cancellation or lifecycle I/O.
 	skipCompletionPortOnSuccess bool
 	driverNonce                 uint64
+	buildIdentity               [BuildIdentitySize]byte
 	capabilities                Capabilities
 	limits                      NegotiateResponse
 	// pendingObserver is a package-private synchronization seam for the
@@ -507,9 +509,22 @@ func (c *Client) Limits() NegotiateResponse {
 	return c.limits
 }
 
+// BuildIdentity is the identity returned by the currently loaded kernel
+// image and accepted during this client's negotiation. It is not inferred
+// from an on-disk driver path or copied from broker build metadata.
+func (c *Client) BuildIdentity() [BuildIdentitySize]byte {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.buildIdentity
+}
+
 func (c *Client) negotiate(ctx context.Context) error {
+	expectedBuildIdentity, err := ExpectedBuildIdentity()
+	if err != nil {
+		return fmt.Errorf("prepare native UDE negotiation: %w", err)
+	}
 	var nonceBytes [8]byte
-	if _, err := rand.Read(nonceBytes[:]); err != nil {
+	if _, err = rand.Read(nonceBytes[:]); err != nil {
 		return fmt.Errorf("create native UDE session nonce: %w", err)
 	}
 	nonce := binary.LittleEndian.Uint64(nonceBytes[:])
@@ -535,17 +550,18 @@ func (c *Client) negotiate(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("validate native UDE negotiation: %w", err)
 	}
-	if err := validateNegotiation(negotiated, nonce); err != nil {
+	if err := validateNegotiation(negotiated, nonce, expectedBuildIdentity); err != nil {
 		return err
 	}
 	c.driverNonce = negotiated.DriverNonce
 	c.capabilities = negotiated.Capabilities
+	c.buildIdentity = negotiated.BuildIdentity
 	c.limits = negotiated
 	return nil
 }
 
 func normalizeNegotiationError(err error) error {
-	// ABI 1.8 is the first driver that reports ERROR_REVISION_MISMATCH. Older
+	// ABI 1.8 was the first driver that reported ERROR_REVISION_MISMATCH. Older
 	// native previews reject this service's otherwise internally generated,
 	// fixed negotiation request as ERROR_INVALID_PARAMETER. A future fixed
 	// request-size change can surface as either length error before the driver
@@ -563,13 +579,19 @@ func normalizeNegotiationError(err error) error {
 	return fmt.Errorf("negotiate native UDE ABI: %w", err)
 }
 
-func validateNegotiation(negotiated NegotiateResponse, nonce uint64) error {
+func validateNegotiation(negotiated NegotiateResponse, nonce uint64, expectedBuildIdentity [BuildIdentitySize]byte) error {
 	if negotiated.ClientNonce != nonce || negotiated.DriverNonce == 0 {
 		return errors.New("validate native UDE negotiation: session nonce mismatch")
 	}
-	if negotiated.Capabilities&requiredCapabilities != requiredCapabilities {
-		return fmt.Errorf("validate native UDE negotiation: required capabilities %#x, driver returned %#x",
+	if negotiated.Capabilities != requiredCapabilities {
+		return fmt.Errorf("validate native UDE negotiation: exact capabilities %#x required, driver returned %#x",
 			requiredCapabilities, negotiated.Capabilities)
+	}
+	if subtle.ConstantTimeCompare(negotiated.BuildIdentity[:], expectedBuildIdentity[:]) != 1 {
+		return fmt.Errorf(
+			"%w: loaded kernel build identity=%s expected=%s; restart or repair the exact signed native package",
+			ErrIncompatibleABI, BuildIdentityHex(negotiated.BuildIdentity), BuildIdentityHex(expectedBuildIdentity),
+		)
 	}
 	if negotiated.MaxDevices == 0 || negotiated.MaxDescriptorBytes == 0 ||
 		negotiated.MaxTransferBytes == 0 || negotiated.MaxIsoPackets == 0 ||

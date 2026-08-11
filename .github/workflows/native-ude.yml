@@ -71,6 +71,7 @@ permissions:
 env:
   GOFLAGS: -mod=readonly
   GOTOOLCHAIN: local
+  VIIPER_NATIVE_SOURCE_REVISION: ${{ github.sha }}
 
 # A driver artifact is meaningful only for the exact current branch head.
 # Cancel superseded WDK/CodeQL work instead of letting several incompatible
@@ -94,6 +95,12 @@ jobs:
         shell: pwsh
         run: |
           ./.github/scripts/Test-WorkflowSecurity.ps1
+          $identity = ./native/udecx/tools/Get-ViiperUdeBuildIdentity.ps1 `
+            -SourceRevision 0123456789abcdef0123456789abcdef01234567 `
+            -DriverPackageVersion 0.1.0.4 -ABIMajor 1 -ABIMinor 9 -Capabilities 13
+          if ($identity -cne 'efb6c64ffa47eb72492406dcc8add19451c24f203fdc8706082a2c6bb91e9eb7') {
+            throw "Native build-identity generator drifted: $identity"
+          }
           $expected = ((Get-Content go.mod | Where-Object { $_ -match '^go\s+' } | Select-Object -First 1) -split '\s+')[1]
           $actual = (go env GOVERSION).TrimStart('g', 'o')
           if ($actual -cne $expected) { throw "Expected Go $expected; runner selected $actual." }

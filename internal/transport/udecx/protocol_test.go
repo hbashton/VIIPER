@@ -1,10 +1,84 @@
 package udecx
 
 import (
+	"bytes"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
+	"strings"
 	"testing"
 )
+
+func TestBuildIdentityCanonicalVectorAndValidation(t *testing.T) {
+	t.Parallel()
+
+	const revision = "0123456789abcdef0123456789abcdef01234567"
+	const wantHex = "efb6c64ffa47eb72492406dcc8add19451c24f203fdc8706082a2c6bb91e9eb7"
+	identity, err := DeriveBuildIdentity(revision, DriverPackageVersion,
+		ABIMajor, ABIMinor, AdvertisedCapabilities)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := BuildIdentityHex(identity); got != wantHex {
+		t.Fatalf("build identity=%s want canonical PowerShell/C++ vector %s", got, wantHex)
+	}
+	want, _ := hex.DecodeString(wantHex)
+	if !bytes.Equal(identity[:], want) {
+		t.Fatal("build identity bytes do not match their canonical hex encoding")
+	}
+	upper, err := DeriveBuildIdentity(strings.ToUpper(revision), DriverPackageVersion,
+		ABIMajor, ABIMinor, AdvertisedCapabilities)
+	if err != nil || upper != identity {
+		t.Fatalf("uppercase source revision did not normalize canonically: identity=%x error=%v", upper, err)
+	}
+
+	for name, revision := range map[string]string{
+		"missing": "",
+		"short":   strings.Repeat("a", 39),
+		"odd":     strings.Repeat("a", 41),
+		"not hex": strings.Repeat("z", 40),
+		"spaced":  " " + strings.Repeat("a", 40),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := DeriveBuildIdentity(revision, DriverPackageVersion,
+				ABIMajor, ABIMinor, AdvertisedCapabilities); !errors.Is(err, ErrBuildIdentity) {
+				t.Fatalf("error=%v want ErrBuildIdentity", err)
+			}
+		})
+	}
+}
+
+func TestExpectedBuildIdentityFailsClosedWithoutBuildInjection(t *testing.T) {
+	previous := nativeSourceRevision
+	nativeSourceRevision = ""
+	t.Cleanup(func() { nativeSourceRevision = previous })
+
+	if _, err := ExpectedBuildIdentity(); !errors.Is(err, ErrBuildIdentity) {
+		t.Fatalf("error=%v want ErrBuildIdentity", err)
+	}
+}
+
+func TestParseNegotiationReturnsLoadedKernelBuildIdentity(t *testing.T) {
+	raw := make([]byte, NegotiateResponseSize)
+	header, err := NewHeader(NegotiateResponseSize)
+	if err != nil {
+		t.Fatal(err)
+	}
+	putHeader(raw, header)
+	for index := 0; index < BuildIdentitySize; index++ {
+		raw[56+index] = byte(index)
+	}
+
+	response, err := ParseNegotiateResponse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index, got := range response.BuildIdentity {
+		if got != byte(index) {
+			t.Fatalf("build identity byte %d=%#x want %#x", index, got, byte(index))
+		}
+	}
+}
 
 func TestABISizes(t *testing.T) {
 	for name, got := range map[string]int{
