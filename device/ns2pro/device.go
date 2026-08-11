@@ -166,17 +166,47 @@ func (d *NS2Pro) HandleTransfer(ctx context.Context, ep uint32, dir uint32, out 
 // ReadInterruptInput implements usb.InterruptInputDevice for the HID input
 // endpoint. The bulk response endpoint remains on the ordered transfer broker.
 func (d *NS2Pro) ReadInterruptInput(ctx context.Context, ep uint32, dst []byte) (int, error) {
+	return d.readInterruptInput(ctx, nil, ep, dst)
+}
+
+func (d *NS2Pro) ReadScheduledInterruptInput(
+	ctx context.Context, deadline <-chan time.Time, ep uint32, dst []byte,
+) (int, error) {
+	return d.readInterruptInput(ctx, deadline, ep, dst)
+}
+
+func (d *NS2Pro) readInterruptInput(
+	ctx context.Context, deadline <-chan time.Time, ep uint32, dst []byte,
+) (int, error) {
 	if ep != EndpointHIDIn&0x0f {
 		return 0, fmt.Errorf("Switch 2 Pro interrupt-IN endpoint %d is unsupported", ep)
+	}
+	if deadline != nil && ctx.Err() != nil {
+		return 0, ctx.Err()
 	}
 	for {
 		select {
 		case <-ctx.Done():
-			if errors.Is(ctx.Err(), context.DeadlineExceeded) && d.reportsEnabled() {
+			if deadline == nil && errors.Is(ctx.Err(), context.DeadlineExceeded) && d.reportsEnabled() {
 				return d.nextInputReportInto(dst)
 			}
 			return 0, ctx.Err()
+		case <-deadline:
+			if ctx.Err() != nil {
+				return 0, ctx.Err()
+			}
+			if d.reportsEnabled() {
+				return d.nextInputReportInto(dst)
+			}
+			return 0, context.DeadlineExceeded
 		case <-d.inputCh:
+			if deadline != nil && ctx.Err() != nil {
+				select {
+				case d.inputCh <- struct{}{}:
+				default:
+				}
+				return 0, ctx.Err()
+			}
 			if d.reportsEnabled() {
 				return d.nextInputReportInto(dst)
 			}

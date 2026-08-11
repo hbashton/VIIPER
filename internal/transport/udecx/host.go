@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -24,6 +25,8 @@ const (
 	statusUnsuccessful     = int32(-1073741823) // STATUS_UNSUCCESSFUL
 )
 
+var errInputSequenceExhausted = errors.New("native UDE input report sequence is exhausted")
+
 // Driver is the narrow host-side contract implemented by the overlapped
 // Windows UdeCx client. Keeping it as an interface makes ordering, teardown,
 // and stale-generation behavior testable without loading a kernel driver.
@@ -43,6 +46,9 @@ type Driver interface {
 // for interrupt-IN reports. Keeping it separate preserves the ordered broker
 // contract for control, output, feedback, audio, and lifecycle traffic.
 type InputReportDriver interface {
+	// SubmitInputReport must honor ctx. Endpoint lifecycle cancellation stops
+	// sampling but deliberately lets an already encoded report commit; ctx is
+	// cancelled when the owning Host session stops or fails.
 	SubmitInputReport(context.Context, InputReport) error
 }
 
@@ -78,6 +84,7 @@ type inputPublisher struct {
 	reportSize int
 	interval   time.Duration
 	sequence   *atomic.Uint64
+	submitCtx  context.Context
 	cancel     context.CancelFunc
 	done       chan struct{}
 }
@@ -434,7 +441,8 @@ func (h *Host) startInputPublisher(entry *registeredDevice, endpoint uint8) {
 	publisher := &inputPublisher{
 		endpoint: endpoint, reportSize: endpointContract.reportSize,
 		interval: endpointContract.interval, sequence: sequence,
-		cancel: cancel, done: make(chan struct{}),
+		submitCtx: h.runCtx,
+		cancel:    cancel, done: make(chan struct{}),
 	}
 	entry.publishers[endpoint] = publisher
 	h.mu.Unlock()
@@ -491,24 +499,68 @@ func (h *Host) withInputAttemptDeadline(
 	return context.WithTimeout(ctx, interval)
 }
 
+func stopInputDeadlineTimer(timer *time.Timer) {
+	if timer.Stop() {
+		return
+	}
+	// Go 1.23+ synchronous timer channels guarantee that Stop prevents a stale
+	// receive. The nonblocking drain also preserves that invariant if a process
+	// explicitly restores the legacy buffered timer implementation through
+	// GODEBUG=asynctimerchan=1.
+	select {
+	case <-timer.C:
+	default:
+	}
+}
+
+func nextInputReportSequence(previous uint64) (uint64, error) {
+	// InputReport's wire contract is signed-positive so the kernel can validate
+	// it with MAXLONGLONG. Never wrap to one: reusing an accepted sequence would
+	// violate the monotonic endpoint contract.
+	if previous >= math.MaxInt64 {
+		return 0, errInputSequenceExhausted
+	}
+	return previous + 1, nil
+}
+
 func (h *Host) runInputPublisher(ctx context.Context, entry *registeredDevice, publisher *inputPublisher) {
 	defer close(publisher.done)
 	reader, direct := entry.device.(usb.InterruptInputDevice)
+	scheduledReader, scheduled := entry.device.(usb.ScheduledInterruptInputDevice)
 	var reportBuffer []byte
+	var deadlineTimer *time.Timer
 	if direct {
 		reportBuffer = make([]byte, publisher.reportSize)
+		if scheduled && publisher.interval > 0 {
+			// One endpoint owns one timer for its complete lifetime. Resetting it
+			// after each submitted sample preserves the established relative
+			// service-deadline contract while removing a timer/context allocation
+			// from every idle 1 ms controller report.
+			deadlineTimer = time.NewTimer(time.Hour)
+			stopInputDeadlineTimer(deadlineTimer)
+			defer stopInputDeadlineTimer(deadlineTimer)
+		}
 	}
 	for {
 		var payload []byte
 		if direct {
-			attemptCtx := ctx
-			attemptCancel := context.CancelFunc(func() {})
-			if publisher.interval > 0 {
-				attemptCtx, attemptCancel = h.withInputAttemptDeadline(ctx, publisher.interval)
+			var written int
+			var err error
+			if deadlineTimer != nil {
+				deadlineTimer.Reset(publisher.interval)
+				written, err = scheduledReader.ReadScheduledInterruptInput(
+					ctx, deadlineTimer.C, uint32(publisher.endpoint&0x0f), reportBuffer)
+				stopInputDeadlineTimer(deadlineTimer)
+			} else {
+				attemptCtx := ctx
+				attemptCancel := context.CancelFunc(func() {})
+				if publisher.interval > 0 {
+					attemptCtx, attemptCancel = h.withInputAttemptDeadline(ctx, publisher.interval)
+				}
+				written, err = reader.ReadInterruptInput(
+					attemptCtx, uint32(publisher.endpoint&0x0f), reportBuffer)
+				attemptCancel()
 			}
-			written, err := reader.ReadInterruptInput(
-				attemptCtx, uint32(publisher.endpoint&0x0f), reportBuffer)
-			attemptCancel()
 			if err != nil {
 				if ctx.Err() != nil {
 					return
@@ -535,35 +587,54 @@ func (h *Host) runInputPublisher(ctx context.Context, entry *registeredDevice, p
 			payload = entry.device.HandleTransfer(
 				ctx, uint32(publisher.endpoint&0x0f), usb.DirectionIn, nil)
 		}
-		if ctx.Err() != nil {
-			return
-		}
 		if len(payload) == 0 {
+			// The legacy HandleTransfer contract signals a cancelled wait with
+			// an empty slice. No report was encoded, so there is nothing to commit.
+			if ctx.Err() != nil || publisher.submitCtx.Err() != nil {
+				return
+			}
 			h.reportFatal(fmt.Errorf(
 				"device %d returned an empty interrupt-IN report for endpoint 0x%02x",
 				entry.identity.DeviceID, publisher.endpoint))
 			return
 		}
-		// The sequence is owned by this endpoint generation and survives only a
-		// purge/start publisher replacement. Keeping it in an atomic endpoint
-		// counter removes the controller-wide host mutex from the 1 kHz input
-		// path, so unrelated lifecycle/media work and other pads cannot add input
-		// tail latency. There is at most one publisher per endpoint, but atomic
-		// ownership also makes that invariant safe under restart transitions.
-		sequence := publisher.sequence.Add(1)
-		if sequence == 0 {
-			sequence = publisher.sequence.Add(1)
+		// Once the controller encoder has returned a report, commit that exact
+		// state before an endpoint lifecycle boundary joins this publisher.
+		// Only owner-session shutdown may abort the commit.
+		if publisher.submitCtx.Err() != nil {
+			return
 		}
-		if err := h.input.SubmitInputReport(ctx, InputReport{
+		// The sequence is owned by this endpoint generation and survives a
+		// purge/start or reset publisher replacement. There is exactly one live
+		// publisher per endpoint and stopInputPublisher joins it before a
+		// replacement starts, so reserve the next value without committing it.
+		// Owner-session cancellation can land between this point and driver
+		// acceptance; committing the counter only after a successful submit keeps
+		// accepted reports contiguous without rolling back device encoder state.
+		previousSequence := publisher.sequence.Load()
+		sequence, err := nextInputReportSequence(previousSequence)
+		if err != nil {
+			h.reportFatal(fmt.Errorf(
+				"reserve native UDE input sequence for device %d endpoint 0x%02x: %w",
+				entry.identity.DeviceID, publisher.endpoint, err))
+			return
+		}
+		if err := h.input.SubmitInputReport(publisher.submitCtx, InputReport{
 			DeviceID: entry.identity.DeviceID, Generation: entry.identity.Generation,
 			EndpointAddress: publisher.endpoint, Sequence: sequence, Payload: payload,
 		}); err != nil {
-			if ctx.Err() != nil {
+			if publisher.submitCtx.Err() != nil {
 				return
 			}
 			h.reportFatal(fmt.Errorf(
 				"submit native UDE input report for device %d endpoint 0x%02x: %w",
 				entry.identity.DeviceID, publisher.endpoint, err))
+			return
+		}
+		if !publisher.sequence.CompareAndSwap(previousSequence, sequence) {
+			h.reportFatal(fmt.Errorf(
+				"commit native UDE input sequence for device %d endpoint 0x%02x: concurrent publisher changed %d",
+				entry.identity.DeviceID, publisher.endpoint, previousSequence))
 			return
 		}
 	}

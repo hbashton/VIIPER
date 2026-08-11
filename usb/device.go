@@ -1,6 +1,9 @@
 package usb
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // Transfer directions belong to the USB device contract, not to any concrete
 // transport. Keep these values aligned with the USB host convention used by
@@ -38,6 +41,24 @@ type Device interface {
 // which do not implement this interface.
 type InterruptInputDevice interface {
 	ReadInterruptInput(ctx context.Context, ep uint32, dst []byte) (int, error)
+}
+
+// ScheduledInterruptInputDevice is the allocation-free deadline extension of
+// InterruptInputDevice. Native transports keep one reusable timer per active
+// endpoint and pass its channel here instead of creating a new timer-backed
+// context for every USB service interval. Implementations must preserve the
+// same behavior as ReadInterruptInput: ctx closes for lifecycle cancellation,
+// while deadline firing represents context.DeadlineExceeded for this one read.
+// Stateful devices may encode their current cached state at that boundary;
+// event-only devices return context.DeadlineExceeded.
+//
+// The implementation must consume at most one value from deadline and must not
+// retain either deadline or dst after returning.
+type ScheduledInterruptInputDevice interface {
+	InterruptInputDevice
+	ReadScheduledInterruptInput(
+		ctx context.Context, deadline <-chan time.Time, ep uint32, dst []byte,
+	) (int, error)
 }
 
 // IsochronousInputDevice is the corresponding optional caller-buffer contract

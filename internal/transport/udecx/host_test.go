@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -27,6 +29,16 @@ type fastInputDriver struct {
 	*fakeHostDriver
 	reports   chan InputReport
 	submitErr error
+}
+
+type inputSubmitGate struct {
+	started chan InputReport
+	release chan struct{}
+}
+
+type gatedFastInputDriver struct {
+	*fastInputDriver
+	gates chan *inputSubmitGate
 }
 
 type independentlyBlockingCreateDriver struct {
@@ -60,6 +72,41 @@ func (d *fastInputDriver) SubmitInputReport(ctx context.Context, report InputRep
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
+	}
+}
+
+func (d *gatedFastInputDriver) SubmitInputReport(ctx context.Context, report InputReport) error {
+	select {
+	case gate := <-d.gates:
+		report.Payload = append([]byte(nil), report.Payload...)
+		select {
+		case gate.started <- report:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		select {
+		case <-gate.release:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	default:
+	}
+	return d.fastInputDriver.SubmitInputReport(ctx, report)
+}
+
+func newInputSubmitGate() *inputSubmitGate {
+	return &inputSubmitGate{started: make(chan InputReport, 1), release: make(chan struct{})}
+}
+
+func TestNextInputReportSequenceFailsClosedAtABICeiling(t *testing.T) {
+	last, err := nextInputReportSequence(math.MaxInt64 - 1)
+	if err != nil || last != math.MaxInt64 {
+		t.Fatalf("last valid sequence=(%d, %v), want (%d, nil)", last, err, uint64(math.MaxInt64))
+	}
+	for _, previous := range []uint64{math.MaxInt64, math.MaxUint64} {
+		if next, nextErr := nextInputReportSequence(previous); next != 0 || !errors.Is(nextErr, errInputSequenceExhausted) {
+			t.Fatalf("sequence after %d=(%d, %v), want (0, %v)", previous, next, nextErr, errInputSequenceExhausted)
+		}
 	}
 }
 
@@ -683,6 +730,19 @@ type cachedDeadlineInputPublisherTestDevice struct {
 	cached []byte
 }
 
+type scheduledInputPublisherTestDevice struct {
+	*inputPublisherTestDevice
+	deadlines    chan (<-chan time.Time)
+	fallbackRead atomic.Int32
+}
+
+type staleDeadlineInputPublisherTestDevice struct {
+	*inputPublisherTestDevice
+	firstStarted  chan struct{}
+	secondElapsed chan time.Duration
+	calls         atomic.Int32
+}
+
 type controlledInputAttempt struct {
 	context.Context
 	deadline   time.Time
@@ -743,6 +803,26 @@ func newCachedDeadlineInputPublisherTestDevice(report []byte) *cachedDeadlineInp
 	}
 }
 
+func newScheduledInputPublisherTestDevice() *scheduledInputPublisherTestDevice {
+	return &scheduledInputPublisherTestDevice{
+		inputPublisherTestDevice: newInputPublisherTestDevice(),
+		deadlines:                make(chan (<-chan time.Time), 32),
+	}
+}
+
+func newStaleDeadlineInputPublisherTestDevice() *staleDeadlineInputPublisherTestDevice {
+	device := &staleDeadlineInputPublisherTestDevice{
+		inputPublisherTestDevice: newInputPublisherTestDevice(),
+		firstStarted:             make(chan struct{}),
+		secondElapsed:            make(chan time.Duration, 1),
+	}
+	// A high-speed bInterval of 8 is a 16 ms service period. The longer
+	// interval gives this deterministic stale-tick test enough scheduling
+	// margin even on a busy Windows runner.
+	device.descriptor.Interfaces[0].Endpoints[0].BInterval = 8
+	return device
+}
+
 func (d *directInputPublisherTestDevice) ReadInterruptInput(
 	ctx context.Context, _ uint32, dst []byte,
 ) (int, error) {
@@ -774,6 +854,68 @@ func (d *cachedDeadlineInputPublisherTestDevice) ReadInterruptInput(
 	}
 	copy(dst, d.cached)
 	return len(d.cached), nil
+}
+
+func (d *scheduledInputPublisherTestDevice) ReadInterruptInput(
+	context.Context, uint32, []byte,
+) (int, error) {
+	d.fallbackRead.Add(1)
+	return 0, errors.New("scheduled input used the timer-context fallback")
+}
+
+func (d *scheduledInputPublisherTestDevice) ReadScheduledInterruptInput(
+	ctx context.Context, deadline <-chan time.Time, _ uint32, dst []byte,
+) (int, error) {
+	select {
+	case d.deadlines <- deadline:
+	default:
+	}
+	select {
+	case report := <-d.reports:
+		if len(report) > len(dst) {
+			return 0, errors.New("native input buffer is too short")
+		}
+		copy(dst, report)
+		return len(report), nil
+	case <-deadline:
+		return 0, context.DeadlineExceeded
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	}
+}
+
+func (d *staleDeadlineInputPublisherTestDevice) ReadInterruptInput(
+	context.Context, uint32, []byte,
+) (int, error) {
+	return 0, errors.New("stale-deadline test used the timer-context fallback")
+}
+
+func (d *staleDeadlineInputPublisherTestDevice) ReadScheduledInterruptInput(
+	ctx context.Context, deadline <-chan time.Time, _ uint32, dst []byte,
+) (int, error) {
+	if d.calls.Add(1) == 1 {
+		close(d.firstStarted)
+		// Deliberately leave the first deadline unread. This models the hardest
+		// event/deadline race: a controller event wins after the timer's nominal
+		// expiry and the host must stop/reset without leaking that old tick into
+		// the next USB service interval.
+		select {
+		case report := <-d.reports:
+			copy(dst, report)
+			return len(report), nil
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		}
+	}
+	started := time.Now()
+	select {
+	case <-deadline:
+		d.secondElapsed <- time.Since(started)
+		dst[0] = 0x7e
+		return 1, nil
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	}
 }
 
 func (d *inputPublisherTestDevice) HandleTransfer(
@@ -907,6 +1049,182 @@ func TestHostReusesOneDescriptorSizedDirectInputBuffer(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("host did not stop")
+	}
+}
+
+func TestHostReusesOneDeadlineTimerForScheduledInterruptInput(t *testing.T) {
+	driver := &fastInputDriver{fakeHostDriver: newFakeHostDriver(), reports: make(chan InputReport, 4)}
+	processor := &recordingProcessor{
+		processed: make(chan uint64, 1), lifecycle: make(chan uint64, 2),
+		resets: make(chan DeviceIdentity, 1),
+	}
+	host, err := NewHost(driver, processor, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	device := newScheduledInputPublisherTestDevice()
+	identity, err := host.Register(context.Background(), 451, device)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- host.Serve(ctx) }()
+	driver.operations <- Operation{
+		DeviceID: identity.DeviceID, Generation: identity.Generation,
+		EndpointAddress: 0x81, EndpointSequence: 1, DeviceSequence: 1,
+		Kind: OperationEndpointStart,
+	}
+	select {
+	case <-processor.lifecycle:
+	case <-time.After(time.Second):
+		t.Fatal("endpoint start was not processed")
+	}
+
+	device.reports <- []byte{1, 2, 3}
+	select {
+	case <-driver.reports:
+	case <-time.After(time.Second):
+		t.Fatal("first scheduled input report was not submitted")
+	}
+	device.reports <- []byte{4, 5, 6}
+	select {
+	case <-driver.reports:
+	case <-time.After(time.Second):
+		t.Fatal("second scheduled input report was not submitted")
+	}
+
+	var first, second <-chan time.Time
+	select {
+	case first = <-device.deadlines:
+	case <-time.After(time.Second):
+		t.Fatal("scheduled input did not receive a deadline")
+	}
+	select {
+	case second = <-device.deadlines:
+	case <-time.After(time.Second):
+		t.Fatal("scheduled input did not receive a second deadline")
+	}
+	if first != second {
+		t.Fatal("scheduled input allocated a replacement endpoint timer")
+	}
+	if calls := device.fallbackRead.Load(); calls != 0 {
+		t.Fatalf("scheduled input used fallback ReadInterruptInput %d time(s)", calls)
+	}
+
+	// Endpoint reset must synchronously cancel the blocked scheduled read,
+	// dispose its timer, and start a fresh publisher only after lifecycle ACK.
+	driver.operations <- Operation{
+		DeviceID: identity.DeviceID, Generation: identity.Generation,
+		EndpointAddress: 0x81, EndpointSequence: 2, DeviceSequence: 2,
+		Kind: OperationEndpointReset,
+	}
+	select {
+	case <-processor.lifecycle:
+	case <-time.After(time.Second):
+		t.Fatal("endpoint reset did not join the scheduled input publisher")
+	}
+	device.reports <- []byte{7, 8, 9}
+	select {
+	case <-driver.reports:
+	case <-time.After(time.Second):
+		t.Fatal("scheduled input did not resume after endpoint reset")
+	}
+	resetDeadline := time.After(time.Second)
+	for {
+		select {
+		case afterReset := <-device.deadlines:
+			if afterReset != first {
+				goto resetTimerObserved
+			}
+		case <-resetDeadline:
+			t.Fatal("endpoint reset retained the old publisher timer")
+		}
+	}
+
+resetTimerObserved:
+
+	cancel()
+	select {
+	case err = <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("host did not stop")
+	}
+}
+
+func TestHostTimerResetCannotReplayExpiredDeadlineIntoNextInput(t *testing.T) {
+	driver := &fastInputDriver{fakeHostDriver: newFakeHostDriver(), reports: make(chan InputReport, 4)}
+	processor := &recordingProcessor{
+		processed: make(chan uint64, 1), lifecycle: make(chan uint64, 2),
+		resets: make(chan DeviceIdentity, 1),
+	}
+	host, err := NewHost(driver, processor, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	device := newStaleDeadlineInputPublisherTestDevice()
+	identity, err := host.Register(context.Background(), 452, device)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- host.Serve(ctx) }()
+	driver.operations <- Operation{
+		DeviceID: identity.DeviceID, Generation: identity.Generation,
+		EndpointAddress: 0x81, EndpointSequence: 1, DeviceSequence: 1,
+		Kind: OperationEndpointStart,
+	}
+	select {
+	case <-processor.lifecycle:
+	case <-time.After(time.Second):
+		t.Fatal("endpoint start was not processed")
+	}
+	select {
+	case <-device.firstStarted:
+	case <-time.After(time.Second):
+		t.Fatal("first scheduled read did not start")
+	}
+
+	// Let the first 16 ms timer expire without receiving its tick, then make
+	// the controller event win. Go 1.23+ Timer.Stop/Reset guarantees that the
+	// expired value cannot satisfy the next receive. The host also drains a
+	// buffered tick when the legacy timer implementation is forced by GODEBUG.
+	time.Sleep(25 * time.Millisecond)
+	device.reports <- []byte{0x11}
+	select {
+	case <-driver.reports:
+	case <-time.After(time.Second):
+		t.Fatal("controller event was not submitted")
+	}
+	select {
+	case elapsed := <-device.secondElapsed:
+		if elapsed < 12*time.Millisecond {
+			t.Fatalf("expired deadline leaked into next 16 ms interval after %v", elapsed)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("next service deadline did not fire")
+	}
+	select {
+	case report := <-driver.reports:
+		if string(report.Payload) != string([]byte{0x7e}) {
+			t.Fatalf("deadline report=%x want=7e", report.Payload)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("deadline report was not submitted")
+	}
+
+	cancel()
+	select {
+	case err = <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("host did not stop after scheduled deadline race")
 	}
 }
 
@@ -1055,7 +1373,7 @@ func TestHostRestartsInputPublisherAcrossD0WithoutResettingSequence(t *testing.T
 		resets: make(chan DeviceIdentity, 1),
 	}
 	host, _ := NewHost(driver, processor, 2)
-	device := newInputPublisherTestDevice()
+	device := newScheduledInputPublisherTestDevice()
 	identity, err := host.Register(context.Background(), 46, device)
 	if err != nil {
 		t.Fatal(err)
@@ -1460,7 +1778,7 @@ func TestHostRestartsInputPublisherAfterEndpointPurgeWithoutResettingSequence(t 
 		resets: make(chan DeviceIdentity, 1),
 	}
 	host, _ := NewHost(driver, processor, 2)
-	device := newInputPublisherTestDevice()
+	device := newScheduledInputPublisherTestDevice()
 	identity, err := host.Register(context.Background(), 47, device)
 	if err != nil {
 		t.Fatal(err)
@@ -1526,6 +1844,228 @@ func TestHostRestartsInputPublisherAfterEndpointPurgeWithoutResettingSequence(t 
 		}
 	case <-time.After(time.Second):
 		t.Fatal("host did not stop")
+	}
+}
+
+func TestHostCommitsEncodedInputBeforePurgeAndResetLifecycleBoundaries(t *testing.T) {
+	baseDriver := &fastInputDriver{
+		fakeHostDriver: newFakeHostDriver(), reports: make(chan InputReport, 8),
+	}
+	driver := &gatedFastInputDriver{
+		fastInputDriver: baseDriver, gates: make(chan *inputSubmitGate, 2),
+	}
+	processor := &recordingProcessor{
+		processed: make(chan uint64, 1), lifecycle: make(chan uint64, 8),
+		resets: make(chan DeviceIdentity, 1),
+	}
+	host, err := NewHost(driver, processor, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	device := newScheduledInputPublisherTestDevice()
+	identity, err := host.Register(context.Background(), 472, device)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serveCtx, cancelServe := context.WithCancel(context.Background())
+	defer cancelServe()
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- host.Serve(serveCtx) }()
+
+	endpointSequence, deviceSequence := uint64(1), uint64(1)
+	driver.operations <- Operation{
+		DeviceID: identity.DeviceID, Generation: identity.Generation,
+		EndpointAddress: 0x81, EndpointSequence: endpointSequence,
+		DeviceSequence: deviceSequence, Kind: OperationEndpointStart,
+	}
+	select {
+	case <-processor.lifecycle:
+	case <-time.After(time.Second):
+		t.Fatal("endpoint start was not processed")
+	}
+
+	device.reports <- []byte{1}
+	select {
+	case report := <-driver.reports:
+		if report.Sequence != 1 || string(report.Payload) != string([]byte{1}) {
+			t.Fatalf("first accepted report=%+v", report)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("first input report was not accepted")
+	}
+
+	commitAcrossLifecycle := func(kind OperationKind, payload byte, wantSequence uint64) {
+		t.Helper()
+		gate := newInputSubmitGate()
+		driver.gates <- gate
+		device.reports <- []byte{payload}
+		select {
+		case candidate := <-gate.started:
+			if candidate.Sequence != wantSequence || string(candidate.Payload) != string([]byte{payload}) {
+				t.Fatalf("gated candidate=%+v want sequence=%d payload=%d", candidate, wantSequence, payload)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("input %d did not reach the driver commit boundary", payload)
+		}
+
+		endpointSequence++
+		deviceSequence++
+		driver.operations <- Operation{
+			DeviceID: identity.DeviceID, Generation: identity.Generation,
+			EndpointAddress: 0x81, EndpointSequence: endpointSequence,
+			DeviceSequence: deviceSequence, Kind: kind,
+		}
+		select {
+		case sequence := <-processor.lifecycle:
+			t.Fatalf("lifecycle sequence %d crossed an uncommitted encoded report", sequence)
+		case <-time.After(25 * time.Millisecond):
+		}
+		select {
+		case report := <-driver.reports:
+			t.Fatalf("gated report was accepted before driver release: %+v", report)
+		default:
+		}
+
+		close(gate.release)
+		select {
+		case report := <-driver.reports:
+			if report.Sequence != wantSequence || string(report.Payload) != string([]byte{payload}) {
+				t.Fatalf("committed report=%+v want sequence=%d payload=%d", report, wantSequence, payload)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("encoded report %d was not committed", payload)
+		}
+		select {
+		case <-processor.lifecycle:
+		case <-time.After(time.Second):
+			t.Fatalf("lifecycle kind %d did not resume after input commit", kind)
+		}
+	}
+
+	commitAcrossLifecycle(OperationEndpointPurge, 2, 2)
+	endpointSequence++
+	deviceSequence++
+	driver.operations <- Operation{
+		DeviceID: identity.DeviceID, Generation: identity.Generation,
+		EndpointAddress: 0x81, EndpointSequence: endpointSequence,
+		DeviceSequence: deviceSequence, Kind: OperationEndpointStart,
+	}
+	select {
+	case <-processor.lifecycle:
+	case <-time.After(time.Second):
+		t.Fatal("endpoint restart after purge was not processed")
+	}
+	device.reports <- []byte{3}
+	select {
+	case report := <-driver.reports:
+		if report.Sequence != 3 || string(report.Payload) != string([]byte{3}) {
+			t.Fatalf("post-purge report=%+v", report)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("publisher did not resume after purge/start")
+	}
+
+	commitAcrossLifecycle(OperationEndpointReset, 4, 4)
+	device.reports <- []byte{5}
+	select {
+	case report := <-driver.reports:
+		if report.Sequence != 5 || string(report.Payload) != string([]byte{5}) {
+			t.Fatalf("post-reset report=%+v", report)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("publisher did not resume after endpoint reset")
+	}
+
+	cancelServe()
+	select {
+	case err = <-serveDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("host did not stop")
+	}
+}
+
+func TestHostOwnerCancellationBoundsWedgedEncodedInputCommit(t *testing.T) {
+	baseDriver := &fastInputDriver{
+		fakeHostDriver: newFakeHostDriver(), reports: make(chan InputReport, 2),
+	}
+	driver := &gatedFastInputDriver{
+		fastInputDriver: baseDriver, gates: make(chan *inputSubmitGate, 1),
+	}
+	processor := &recordingProcessor{
+		processed: make(chan uint64, 1), lifecycle: make(chan uint64, 2),
+		resets: make(chan DeviceIdentity, 1),
+	}
+	host, err := NewHost(driver, processor, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	device := newScheduledInputPublisherTestDevice()
+	identity, err := host.Register(context.Background(), 473, device)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- host.Serve(context.Background()) }()
+	driver.operations <- Operation{
+		DeviceID: identity.DeviceID, Generation: identity.Generation,
+		EndpointAddress: 0x81, EndpointSequence: 1, DeviceSequence: 1,
+		Kind: OperationEndpointStart,
+	}
+	select {
+	case <-processor.lifecycle:
+	case <-time.After(time.Second):
+		t.Fatal("endpoint start was not processed")
+	}
+
+	gate := newInputSubmitGate()
+	driver.gates <- gate
+	device.reports <- []byte{0x5a}
+	select {
+	case <-gate.started:
+	case <-time.After(time.Second):
+		t.Fatal("input did not reach wedged driver boundary")
+	}
+	unregisterDone := make(chan error, 1)
+	go func() { unregisterDone <- host.Unregister(context.Background(), identity) }()
+	select {
+	case unregisterErr := <-unregisterDone:
+		t.Fatalf("unregister crossed an uncommitted report: %v", unregisterErr)
+	case <-time.After(25 * time.Millisecond):
+	}
+	driver.mu.Lock()
+	destroyedBeforeStop := len(driver.destroyed)
+	driver.mu.Unlock()
+	if destroyedBeforeStop != 0 {
+		t.Fatal("driver removal crossed the pending input commit")
+	}
+
+	// Endpoint lifecycle intentionally joins the commit. Owner-session
+	// cancellation is the bounded escape hatch for a driver that never accepts
+	// it, and must release both Serve and a waiting Unregister.
+	host.Close()
+	select {
+	case err = <-serveDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("owner cancellation did not release the wedged publisher")
+	}
+	select {
+	case err = <-unregisterDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("owner cancellation did not release unregister")
+	}
+	select {
+	case report := <-driver.reports:
+		t.Fatalf("owner-cancelled input was accepted: %+v", report)
+	default:
 	}
 }
 

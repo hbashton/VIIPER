@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/Alia5/VIIPER/device"
 	"github.com/Alia5/VIIPER/usb"
@@ -128,15 +129,42 @@ func (x *Xbox360) HandleTransfer(ctx context.Context, ep uint32, dir uint32, out
 // ReadInterruptInput implements usb.InterruptInputDevice for the native UDE
 // input lane without changing the USB/IP report ownership contract.
 func (x *Xbox360) ReadInterruptInput(ctx context.Context, ep uint32, dst []byte) (int, error) {
+	return x.readInterruptInput(ctx, nil, ep, dst)
+}
+
+func (x *Xbox360) ReadScheduledInterruptInput(
+	ctx context.Context, deadline <-chan time.Time, ep uint32, dst []byte,
+) (int, error) {
+	return x.readInterruptInput(ctx, deadline, ep, dst)
+}
+
+func (x *Xbox360) readInterruptInput(
+	ctx context.Context, deadline <-chan time.Time, ep uint32, dst []byte,
+) (int, error) {
 	if ep != 1 {
 		return 0, fmt.Errorf("Xbox 360 interrupt-IN endpoint %d is unsupported", ep)
 	}
+	if deadline != nil && ctx.Err() != nil {
+		return 0, ctx.Err()
+	}
+	inputReady := false
 	select {
 	case <-ctx.Done():
-		if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		if deadline != nil || !errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			return 0, ctx.Err()
 		}
+	case <-deadline:
 	case <-x.inputSignal:
+		inputReady = true
+	}
+	if deadline != nil && ctx.Err() != nil {
+		if inputReady {
+			select {
+			case x.inputSignal <- struct{}{}:
+			default:
+			}
+		}
+		return 0, ctx.Err()
 	}
 	x.inputMu.RLock()
 	st := x.inputState

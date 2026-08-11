@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/Alia5/VIIPER/device"
 	"github.com/Alia5/VIIPER/usb"
@@ -119,13 +120,40 @@ func (k *Keyboard) HandleTransfer(ctx context.Context, ep uint32, dir uint32, ou
 
 // ReadInterruptInput implements usb.InterruptInputDevice for native UDE.
 func (k *Keyboard) ReadInterruptInput(ctx context.Context, ep uint32, dst []byte) (int, error) {
+	return k.readInterruptInput(ctx, nil, ep, dst)
+}
+
+func (k *Keyboard) ReadScheduledInterruptInput(
+	ctx context.Context, deadline <-chan time.Time, ep uint32, dst []byte,
+) (int, error) {
+	return k.readInterruptInput(ctx, deadline, ep, dst)
+}
+
+func (k *Keyboard) readInterruptInput(
+	ctx context.Context, deadline <-chan time.Time, ep uint32, dst []byte,
+) (int, error) {
 	if ep != 1 {
 		return 0, fmt.Errorf("keyboard interrupt-IN endpoint %d is unsupported", ep)
+	}
+	if deadline != nil && ctx.Err() != nil {
+		return 0, ctx.Err()
 	}
 	select {
 	case <-ctx.Done():
 		return 0, ctx.Err()
+	case <-deadline:
+		if ctx.Err() != nil {
+			return 0, ctx.Err()
+		}
+		return 0, context.DeadlineExceeded
 	case st := <-k.inputCh:
+		if deadline != nil && ctx.Err() != nil {
+			select {
+			case k.inputCh <- st:
+			default:
+			}
+			return 0, ctx.Err()
+		}
 		return st.BuildReportInto(dst)
 	}
 }

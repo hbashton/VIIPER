@@ -517,19 +517,47 @@ func (d *DualSense) HandleTransfer(ctx context.Context, ep uint32, dir uint32, o
 // completed, so encoding here removes the per-sample report allocation without
 // changing USB/IP behavior.
 func (d *DualSense) ReadInterruptInput(ctx context.Context, ep uint32, dst []byte) (int, error) {
+	return d.readInterruptInput(ctx, nil, ep, dst)
+}
+
+// ReadScheduledInterruptInput preserves the DualSense report encoder and its
+// packet-counter/sensor-timestamp cadence while letting native UDE reuse one
+// endpoint timer instead of allocating a context timer for every idle sample.
+func (d *DualSense) ReadScheduledInterruptInput(
+	ctx context.Context, deadline <-chan time.Time, ep uint32, dst []byte,
+) (int, error) {
+	return d.readInterruptInput(ctx, deadline, ep, dst)
+}
+
+func (d *DualSense) readInterruptInput(
+	ctx context.Context, deadline <-chan time.Time, ep uint32, dst []byte,
+) (int, error) {
 	if ep&0x0f != EndpointIn&0x0f {
 		return 0, fmt.Errorf("DualSense interrupt-IN endpoint %d is unsupported", ep)
+	}
+	if deadline != nil && ctx.Err() != nil {
+		return 0, ctx.Err()
 	}
 	var is InputState
 	select {
 	case <-ctx.Done():
-		if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		if deadline != nil || !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return 0, ctx.Err()
+		}
+		d.mtx.Lock()
+		is = d.inputState
+		d.mtx.Unlock()
+	case <-deadline:
+		if ctx.Err() != nil {
 			return 0, ctx.Err()
 		}
 		d.mtx.Lock()
 		is = d.inputState
 		d.mtx.Unlock()
 	case is = <-d.inputCh:
+		if deadline != nil && ctx.Err() != nil {
+			return 0, ctx.Err()
+		}
 	}
 	d.mtx.Lock()
 	ms := *d.metaState

@@ -401,19 +401,47 @@ func (d *DualShock4) publishSpeakerPCM(revision uint64, pcm []byte) bool {
 // writes the controller's next HID sample into caller-owned storage; USB/IP
 // continues to use HandleTransfer and its independently owned report slice.
 func (d *DualShock4) ReadInterruptInput(ctx context.Context, ep uint32, dst []byte) (int, error) {
+	return d.readInterruptInput(ctx, nil, ep, dst)
+}
+
+// ReadScheduledInterruptInput keeps the exact DualShock 4 packet counter and
+// sensor timestamp encoder while native UDE supplies a reusable endpoint
+// deadline instead of a fresh timer-backed context for every idle sample.
+func (d *DualShock4) ReadScheduledInterruptInput(
+	ctx context.Context, deadline <-chan time.Time, ep uint32, dst []byte,
+) (int, error) {
+	return d.readInterruptInput(ctx, deadline, ep, dst)
+}
+
+func (d *DualShock4) readInterruptInput(
+	ctx context.Context, deadline <-chan time.Time, ep uint32, dst []byte,
+) (int, error) {
 	if ep&0x0f != EndpointIn&0x0f {
 		return 0, fmt.Errorf("DualShock 4 interrupt-IN endpoint %d is unsupported", ep)
+	}
+	if deadline != nil && ctx.Err() != nil {
+		return 0, ctx.Err()
 	}
 	var is InputState
 	select {
 	case <-ctx.Done():
-		if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		if deadline != nil || !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return 0, ctx.Err()
+		}
+		d.mtx.Lock()
+		is = *d.inputState
+		d.mtx.Unlock()
+	case <-deadline:
+		if ctx.Err() != nil {
 			return 0, ctx.Err()
 		}
 		d.mtx.Lock()
 		is = *d.inputState
 		d.mtx.Unlock()
 	case next := <-d.inputCh:
+		if deadline != nil && ctx.Err() != nil {
+			return 0, ctx.Err()
+		}
 		is = *next
 	}
 	d.mtx.Lock()

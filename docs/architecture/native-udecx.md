@@ -95,6 +95,12 @@ The transport is intentionally split by USB semantics:
   URB because KMDF can invoke it synchronously on UdeCx's submitter thread.
   The Go publisher allocates one buffer from the endpoint's descriptor at
   publisher startup and supported controller engines encode directly into it.
+  Each active publisher also owns one reusable service-deadline timer. The
+  controller receives that timer's channel separately from the lifecycle
+  context, so an idle deadline still replays cached state while purge, reset,
+  D0 exit, and owner shutdown still cancel the read. This preserves the exact
+  DualSense/DualShock report builders, counters, and sensor timestamps while
+  removing the timer-backed context allocation from every service interval.
   The serial overlapped IOCTL copies the report before that buffer is reused,
   eliminating per-sample Go heap work without shared-memory lifetime hazards.
   Input timing is therefore host-poll-driven rather than dependent on a second
@@ -183,6 +189,12 @@ handle. The handle is therefore always the last object released.
 This deliberately removes TCP, WSK, USB/IP framing, and attach bookkeeping.
 The direct input lane removes the highest-frequency HID broker path without
 mixing report ownership into the proven PlayStation media/state transport.
+The authenticated DS4Windows-to-service API which feeds that lane keeps its
+wire format but reuses one bounded receive slab per connection and decrypts
+records in place before copying into the caller's buffer. Full-duplex access
+uses independent read/write locks; concurrent writers are serialized into
+whole records with monotonic nonces, and a partially emitted record closes the
+now-unrecoverable stream instead of permitting a corrupt retry.
 Once correctness gates pass, high-rate media payloads may move to a
 preallocated ring while keeping the same token/generation lifecycle. Control
 and lifecycle operations remain IOCTL based.
@@ -569,6 +581,13 @@ stall an independent pad's registration or removal.
   client. Continuous control and isochronous traffic no longer allocates a new
   wire buffer for every URB; an allocation gate protects the caller-buffer
   encoder while the existing public marshal API remains available for tooling.
+- Allocation microbenchmarks cover both authenticated stream directions and
+  input-deadline scheduling. On the development Windows x64 host, replacing a
+  timer-backed context per service interval reduced the isolated scheduling
+  cost from 4 allocations/272 bytes to zero. Authenticated 512-byte record
+  writes moved from 3 allocations/592 bytes to zero, and reads from 3
+  allocations/1092 bytes to zero. These are GC/jitter controls, not substitutes
+  for the signed HID latency gate.
 - Product changes to scheduling, thread priority, DPC behavior, or queue depth
   require a named, bounded-memory WPR capture of the signed live gate. CPU
   sampled/precise, ready-thread, context-switch, WDF DPC, interrupt, and ISR
