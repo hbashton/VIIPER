@@ -23,7 +23,7 @@ const (
 	nativeMutexBoundaryName   = "VIIPER_NATIVE_INSTALL_ADMIN_BOUNDARY_V1"
 	nativeMutexObjectSDDL     = "O:BAG:BAD:P(A;;GA;;;SY)(A;;GA;;;BA)"
 
-	nativeMutexNamespaceRaceRetries = 100
+	nativeMutexNamespaceRaceRetries = 5000
 )
 
 var (
@@ -34,7 +34,9 @@ var (
 	nativeCreatePrivateNamespaceW    = nativeMutexKernel32.NewProc("CreatePrivateNamespaceW")
 	nativeOpenPrivateNamespaceW      = nativeMutexKernel32.NewProc("OpenPrivateNamespaceW")
 	nativeClosePrivateNamespace      = nativeMutexKernel32.NewProc("ClosePrivateNamespace")
-	nativeMutexNamespaceOpenMu       sync.Mutex
+	nativeMutexNamespaceOnce         sync.Once
+	nativeMutexNamespaceProcessScope *nativeMutexNamespace
+	nativeMutexNamespaceProcessErr   error
 )
 
 type nativeMutexNamespace struct {
@@ -42,9 +44,10 @@ type nativeMutexNamespace struct {
 	namespace windows.Handle
 }
 
-// close releases the namespace before deleting the boundary descriptor. Every
-// caller keeps this scope alive until after its mutex handle is closed, as the
-// private-namespace contract requires for new opens and named-object lookup.
+// close is used only while initialization is incomplete. A successfully
+// created/opened namespace is retained for the process lifetime: Microsoft
+// documents that after the creator closes its namespace handle, existing
+// objects continue to work but subsequent OpenPrivateNamespace calls fail.
 func (scope *nativeMutexNamespace) close() {
 	if scope == nil {
 		return
@@ -101,14 +104,6 @@ func createNativeMutexBoundary() (windows.Handle, error) {
 // ERROR_ALREADY_EXISTS and OpenPrivateNamespace, so retry only that absence
 // race; all access and boundary failures remain fail-closed.
 func createOrOpenNativeMutexNamespace() (*nativeMutexNamespace, error) {
-	// CreatePrivateNamespace and OpenPrivateNamespace are not an atomic
-	// create-or-open operation. Serialize callers in this process so a second
-	// installer goroutine cannot observe the first creator's half-published
-	// alias. The bounded retry below still closes the same race with another
-	// elevated process.
-	nativeMutexNamespaceOpenMu.Lock()
-	defer nativeMutexNamespaceOpenMu.Unlock()
-
 	boundary, err := createNativeMutexBoundary()
 	if err != nil {
 		return nil, fmt.Errorf("create native install mutex boundary: %w", err)
@@ -167,6 +162,14 @@ func createOrOpenNativeMutexNamespace() (*nativeMutexNamespace, error) {
 	}
 	scope.close()
 	return nil, fmt.Errorf("create or open native install mutex namespace after creator race: %w", lastErr)
+}
+
+func nativeMutexProcessNamespace() (*nativeMutexNamespace, error) {
+	nativeMutexNamespaceOnce.Do(func() {
+		nativeMutexNamespaceProcessScope, nativeMutexNamespaceProcessErr =
+			createOrOpenNativeMutexNamespace()
+	})
+	return nativeMutexNamespaceProcessScope, nativeMutexNamespaceProcessErr
 }
 
 func nativePrivateMutexName(objectName string) (*uint16, error) {
@@ -232,28 +235,25 @@ func acquireNativeNamedMutex(
 		return nil, err
 	}
 	runtime.LockOSThread()
-	scope, err := createOrOpenNativeMutexNamespace()
+	scope, err := nativeMutexProcessNamespace()
 	if err != nil {
 		runtime.UnlockOSThread()
 		return nil, err
 	}
 	attributes, err := nativeMutexSecurityAttributes()
 	if err != nil {
-		scope.close()
 		runtime.UnlockOSThread()
 		return nil, fmt.Errorf("create native mutex security descriptor: %w", err)
 	}
 	handle, err := createNamedNativeMutex(attributes, name)
 	runtime.KeepAlive(attributes.SecurityDescriptor)
 	if err != nil {
-		scope.close()
 		runtime.UnlockOSThread()
 		return nil, fmt.Errorf("create protected native mutex: %w", err)
 	}
 	status, err := windows.WaitForSingleObject(handle, nativeMutexWaitMilliseconds(timeout))
 	if err != nil || (status != windows.WAIT_OBJECT_0 && status != windows.WAIT_ABANDONED) {
 		windows.CloseHandle(handle) //nolint:errcheck
-		scope.close()
 		runtime.UnlockOSThread()
 		if err != nil {
 			return nil, fmt.Errorf("wait for protected native mutex: %w", err)
@@ -265,7 +265,7 @@ func acquireNativeNamedMutex(
 		once.Do(func() {
 			windows.ReleaseMutex(handle) //nolint:errcheck
 			windows.CloseHandle(handle)  //nolint:errcheck
-			scope.close()
+			runtime.KeepAlive(scope)
 			runtime.UnlockOSThread()
 		})
 	}, nil
@@ -282,11 +282,11 @@ func nativeNamedMutexHeldByAnotherOwner(objectName string) (bool, error) {
 	}
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
-	scope, err := createOrOpenNativeMutexNamespace()
+	scope, err := nativeMutexProcessNamespace()
 	if err != nil {
 		return false, err
 	}
-	defer scope.close()
+	defer runtime.KeepAlive(scope)
 	handle, err := windows.OpenMutex(
 		windows.SYNCHRONIZE|windows.MUTEX_MODIFY_STATE, false, name,
 	)
