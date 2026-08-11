@@ -3603,6 +3603,8 @@ struct PackageBackup {
 
 class LocalSecurityDescriptor final {
 public:
+    LocalSecurityDescriptor() = default;
+
     ~LocalSecurityDescriptor() {
         if (value_ != nullptr) {
             LocalFree(value_);

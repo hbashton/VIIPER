@@ -23,7 +23,7 @@ const (
 	nativeMutexBoundaryName   = "VIIPER_NATIVE_INSTALL_ADMIN_BOUNDARY_V1"
 	nativeMutexObjectSDDL     = "O:BAG:BAD:P(A;;GA;;;SY)(A;;GA;;;BA)"
 
-	nativeMutexNamespaceRaceRetries = 16
+	nativeMutexNamespaceRaceRetries = 100
 )
 
 var (
@@ -34,6 +34,7 @@ var (
 	nativeCreatePrivateNamespaceW    = nativeMutexKernel32.NewProc("CreatePrivateNamespaceW")
 	nativeOpenPrivateNamespaceW      = nativeMutexKernel32.NewProc("OpenPrivateNamespaceW")
 	nativeClosePrivateNamespace      = nativeMutexKernel32.NewProc("ClosePrivateNamespace")
+	nativeMutexNamespaceOpenMu       sync.Mutex
 )
 
 type nativeMutexNamespace struct {
@@ -100,6 +101,14 @@ func createNativeMutexBoundary() (windows.Handle, error) {
 // ERROR_ALREADY_EXISTS and OpenPrivateNamespace, so retry only that absence
 // race; all access and boundary failures remain fail-closed.
 func createOrOpenNativeMutexNamespace() (*nativeMutexNamespace, error) {
+	// CreatePrivateNamespace and OpenPrivateNamespace are not an atomic
+	// create-or-open operation. Serialize callers in this process so a second
+	// installer goroutine cannot observe the first creator's half-published
+	// alias. The bounded retry below still closes the same race with another
+	// elevated process.
+	nativeMutexNamespaceOpenMu.Lock()
+	defer nativeMutexNamespaceOpenMu.Unlock()
+
 	boundary, err := createNativeMutexBoundary()
 	if err != nil {
 		return nil, fmt.Errorf("create native install mutex boundary: %w", err)
@@ -133,7 +142,8 @@ func createOrOpenNativeMutexNamespace() (*nativeMutexNamespace, error) {
 			return scope, nil
 		}
 		createErr = nativeMutexCallError(createErr)
-		if !errors.Is(createErr, windows.ERROR_ALREADY_EXISTS) {
+		if !errors.Is(createErr, windows.ERROR_ALREADY_EXISTS) &&
+			!errors.Is(createErr, windows.ERROR_DUP_NAME) {
 			scope.close()
 			return nil, fmt.Errorf("create native install mutex namespace: %w", createErr)
 		}
@@ -148,11 +158,12 @@ func createOrOpenNativeMutexNamespace() (*nativeMutexNamespace, error) {
 		}
 		openErr = nativeMutexCallError(openErr)
 		lastErr = openErr
-		if !errors.Is(openErr, windows.ERROR_FILE_NOT_FOUND) {
+		if !errors.Is(openErr, windows.ERROR_FILE_NOT_FOUND) &&
+			!errors.Is(openErr, windows.ERROR_DUP_NAME) {
 			scope.close()
 			return nil, fmt.Errorf("open native install mutex namespace: %w", openErr)
 		}
-		runtime.Gosched()
+		time.Sleep(time.Millisecond)
 	}
 	scope.close()
 	return nil, fmt.Errorf("create or open native install mutex namespace after creator race: %w", lastErr)
