@@ -112,7 +112,11 @@ $allDriverCSource = (Get-ChildItem -LiteralPath $driverSourceDirectory -Filter '
 foreach ($requiredHeaderContract in @(
         'FAST_MUTEX DeviceLock;',
         'KEVENT BrokerOperationsDrained;',
+        'KEVENT CompletionOperationsDrained;',
         'KEVENT FileCleanupsDrained;',
+        'WDFDPC CompletionDpc;',
+        'LIST_ENTRY CompletionQueue;',
+        'volatile LONG PendingCompletions;',
         'volatile LONG ShuttingDown;')) {
     if (-not $header.Contains($requiredHeaderContract)) {
         throw "Missing native teardown contract in ViiperUde.h: $requiredHeaderContract"
@@ -142,67 +146,114 @@ if ($deviceSource -notmatch
 }
 if ($deviceSource -notmatch
         'WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE\(&attributes,\s*UDECXUSBENDPOINT\);[\s\S]{0,300}?attributes\.ExecutionLevel\s*=\s*WdfExecutionLevelPassive\s*;[\s\S]{0,300}?WdfIoQueueCreate') {
-    throw 'Every endpoint queue must explicitly run at PASSIVE_LEVEL for direct UdeCx completion.'
+    throw 'Every endpoint queue must explicitly run at PASSIVE_LEVEL for buffer preparation and broker admission.'
 }
 if (($controllerSource + $deviceSource + $brokerSource) -match
         'WdfWaitLock(?:Acquire|Release)\s*\([^;\r\n]*DeviceLock') {
     throw 'DeviceLock must remain embedded; a sibling WDF lock is unsafe during UdeCx child cleanup.'
 }
-if ($header -notmatch 'WDFWORKITEM\s+CompletionWorkItem\s*;' -or
-        $brokerSource -notmatch
-        'WDF_WORKITEM_CONFIG_INIT\s*\(\s*&workItemConfig\s*,\s*ViiperEvtCompletionWorkItem\s*\)') {
-    throw 'UdeCx broker completion must use the preallocated passive completion work item.'
+if ($brokerSource -notmatch
+        'WDF_DPC_CONFIG_INIT\s*\(\s*&dpcConfig\s*,\s*ViiperEvtCompletionDpc\s*\)[\s\S]{0,200}?dpcConfig\.AutomaticSerialization\s*=\s*WdfFalse\s*;[\s\S]{0,300}?WdfDpcCreate') {
+    throw 'UdeCx completion must use one preallocated, nonserialized controller DPC.'
 }
-if ($allDriverCSource -match
-        'CompletionDpc|ViiperEvtCompletionDpc|WdfDpc(?:Create|Enqueue|Cancel)|KeRaiseIrql') {
-    throw 'UdeCx completion must never execute through a DPC or synthetic DISPATCH_LEVEL transition.'
+if ($controllerSource -notmatch
+        'InitializeListHead\s*\(\s*&context->CompletionQueue\s*\)[\s\S]{0,300}?KeInitializeEvent\s*\(\s*&context->CompletionOperationsDrained') {
+    throw 'The controller must initialize the intrusive completion queue and its drain event before broker creation.'
 }
-$dpcCallbackNames = [regex]::Matches($header, 'EVT_WDF_DPC\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)\s*;')
-foreach ($dpcCallbackName in $dpcCallbackNames) {
-    $callbackName = [regex]::Escape($dpcCallbackName.Groups['name'].Value)
-    $dpcBody = [regex]::Match(
-        $allDriverCSource,
-        "(?ms)^VOID\s+$callbackName\s*\([^)]*\)\s*\{(?<body>.*?)^\}")
-    if ($dpcBody.Success -and $dpcBody.Groups['body'].Value -match 'UdecxUrbComplete') {
-        throw "WDF DPC callback '$($dpcCallbackName.Groups['name'].Value)' must not complete a UdeCx URB."
-    }
+if ($allDriverCSource -match 'Ke(?:Raise|Lower)Irql') {
+    throw 'The UdeCx completion boundary must be a real WDF DPC, never a synthetic IRQL transition.'
 }
-$completionWorkerMatch = [regex]::Match(
+$completionDpcMatch = [regex]::Match(
     $brokerSource,
-    '(?ms)^VOID\s+ViiperEvtCompletionWorkItem\s*\([^)]*\)\s*\{(?<body>.*?)^\}')
-if (-not $completionWorkerMatch.Success -or
-        $completionWorkerMatch.Groups['body'].Value -notmatch 'UdecxUrbComplete' -or
-        $completionWorkerMatch.Groups['body'].Value -notmatch
-            'KeGetCurrentIrql\s*\(\s*\)\s*==\s*PASSIVE_LEVEL') {
-    throw 'Could not verify that broker UdeCx completion is owned by the passive work item.'
+    '(?ms)^VOID\s+ViiperEvtCompletionDpc\s*\([^)]*\)\s*\{(?<body>.*?)^\}')
+if (-not $completionDpcMatch.Success -or
+        $completionDpcMatch.Groups['body'].Value -notmatch
+            'KeGetCurrentIrql\s*\(\s*\)\s*==\s*DISPATCH_LEVEL' -or
+        $completionDpcMatch.Groups['body'].Value -match 'PAGED_CODE' -or
+        $completionDpcMatch.Groups['body'].Value -notmatch
+            'RemoveHeadList[\s\S]*UdecxUrbComplete[\s\S]*ViiperClearSlotLocked[\s\S]*ViiperEndpointOperationCompleted[\s\S]*InterlockedDecrement\s*\(\s*&controllerContext->PendingCompletions[\s\S]*KeSetEvent\s*\(\s*&controllerContext->CompletionOperationsDrained') {
+    throw 'The completion DPC must run at exact DISPATCH_LEVEL, complete once, release ownership afterward, and signal final drain.'
+}
+$completionQueueMatch = [regex]::Match(
+    $brokerSource,
+    '(?ms)^BOOLEAN\s+ViiperQueueUrbCompletion\s*\([^)]*\)\s*\{(?<body>.*?)^\}')
+if (-not $completionQueueMatch.Success -or
+        $completionQueueMatch.Groups['body'].Value -notmatch 'requestContext->CompletionQueued' -or
+        $completionQueueMatch.Groups['body'].Value -notmatch
+            'WdfObjectReference\s*\(\s*Request\s*\)[\s\S]*WdfObjectReference\s*\(\s*Endpoint\s*\)' -or
+        $completionQueueMatch.Groups['body'].Value -notmatch
+            'KeClearEvent\s*\(\s*&controllerContext->CompletionOperationsDrained\s*\)[\s\S]*InterlockedIncrement\s*\(\s*&controllerContext->PendingCompletions\s*\)[\s\S]*InsertTailList\s*\(\s*&controllerContext->CompletionQueue[\s\S]*WdfDpcEnqueue') {
+    throw 'Completion admission must reject duplicate ownership, reference both WDF objects, account drain, and enqueue the DPC.'
 }
 $unownedCompletionMatch = [regex]::Match(
     $brokerSource,
     '(?ms)^VOID\s+ViiperCompleteUnownedUrb\s*\([^)]*\)\s*\{(?<body>.*?)^\}')
 if (-not $unownedCompletionMatch.Success -or
-        $unownedCompletionMatch.Groups['body'].Value -notmatch 'UdecxUrbComplete' -or
-        $unownedCompletionMatch.Groups['body'].Value -notmatch
-            'KeGetCurrentIrql\s*\(\s*\)\s*==\s*PASSIVE_LEVEL') {
-    throw 'Unowned endpoint URBs must complete directly under an asserted PASSIVE_LEVEL contract.'
+        $unownedCompletionMatch.Groups['body'].Value -notmatch 'ViiperQueueUrbCompletion' -or
+        $unownedCompletionMatch.Groups['body'].Value -match 'UdecxUrbComplete') {
+    throw 'Rejected endpoint URBs must transfer terminal ownership to the shared completion DPC.'
 }
 $retrievedInputCompletionMatch = [regex]::Match(
     $deviceSource,
     '(?ms)^static\s+VOID\s+ViiperCompleteRetrievedInputUrb\s*\([^)]*\)\s*\{(?<body>.*?)^\}')
 if (-not $retrievedInputCompletionMatch.Success -or
-        $retrievedInputCompletionMatch.Groups['body'].Value -match 'KeRaiseIrql' -or
-        $retrievedInputCompletionMatch.Groups['body'].Value -notmatch
-            'KeGetCurrentIrql\s*\(\s*\)\s*==\s*PASSIVE_LEVEL') {
-    throw 'Retrieved input URBs must complete directly under an asserted PASSIVE_LEVEL contract.'
+        $retrievedInputCompletionMatch.Groups['body'].Value -notmatch 'ViiperQueueUrbCompletion' -or
+        $retrievedInputCompletionMatch.Groups['body'].Value -match 'UdecxUrbComplete') {
+    throw 'Retrieved fast-input URBs must transfer terminal ownership to the shared completion DPC.'
 }
 $allUdeCxCompletionCalls = [regex]::Matches(
     $allDriverCSource,
     'UdecxUrbComplete(?:WithNtStatus)?\s*\(').Count
-$approvedUdeCxCompletionCalls =
-    [regex]::Matches($completionWorkerMatch.Groups['body'].Value, 'UdecxUrbComplete(?:WithNtStatus)?\s*\(').Count +
-    [regex]::Matches($unownedCompletionMatch.Groups['body'].Value, 'UdecxUrbComplete(?:WithNtStatus)?\s*\(').Count +
-    [regex]::Matches($retrievedInputCompletionMatch.Groups['body'].Value, 'UdecxUrbComplete(?:WithNtStatus)?\s*\(').Count
-if ($allUdeCxCompletionCalls -ne $approvedUdeCxCompletionCalls) {
-    throw 'Every UdeCx completion call must remain inside an approved PASSIVE_LEVEL completion surface.'
+$dpcUdeCxCompletionCalls = [regex]::Matches(
+    $completionDpcMatch.Groups['body'].Value,
+    'UdecxUrbComplete(?:WithNtStatus)?\s*\(').Count
+if ($dpcUdeCxCompletionCalls -ne 2 -or
+        $allUdeCxCompletionCalls -ne $dpcUdeCxCompletionCalls) {
+    throw 'Every UdeCx URB terminal call must remain exclusively inside the DISPATCH_LEVEL completion DPC.'
+}
+$cancelMatch = [regex]::Match(
+    $brokerSource,
+    '(?ms)^VOID\s+ViiperEvtUrbCancel\s*\([^)]*\)\s*\{(?<body>.*?)^\}')
+if (-not $cancelMatch.Success -or
+        $cancelMatch.Groups['body'].Value -notmatch
+            'pending->State\s*=\s*ViiperUdePendingDpcCompletion[\s\S]*ViiperQueueUrbCompletion') {
+    throw 'WDF cancellation must claim the slot exactly once before queueing its DISPATCH_LEVEL completion.'
+}
+$canceledOnQueueMatch = [regex]::Match(
+    $brokerSource,
+    '(?ms)^VOID\s+ViiperEvtUrbCanceledOnQueue\s*\([^)]*\)\s*\{(?<body>.*?)^\}')
+if ($deviceSource -notmatch
+        'queueConfig\.EvtIoCanceledOnQueue\s*=\s*ViiperEvtUrbCanceledOnQueue\s*;' -or
+        -not $canceledOnQueueMatch.Success -or
+        $canceledOnQueueMatch.Groups['body'].Value -notmatch
+            'ViiperEndpointOperationStarted\s*\(\s*endpoint\s*\)[\s\S]*ViiperQueueUrbCompletion') {
+    throw 'Every endpoint queue must override synchronous queued cancellation and transfer it through endpoint rundown to the DPC.'
+}
+$queueUrbMatch = [regex]::Match(
+    $brokerSource,
+    '(?ms)^NTSTATUS\s+ViiperQueueUrb\s*\([^)]*\)\s*\{(?<body>.*?)^\}')
+if (-not $queueUrbMatch.Success -or
+        $queueUrbMatch.Groups['body'].Value -notmatch
+            'ViiperEndpointOperationStarted\s*\(\s*endpoint\s*\)[\s\S]*ViiperAllocatePendingSlot' -or
+        $queueUrbMatch.Groups['body'].Value -notmatch
+            'queueCancelledCompletion[\s\S]*ViiperUdePendingDpcCompletion[\s\S]*ViiperQueueUrbCompletion') {
+    throw 'URB admission must enter endpoint rundown before rejection and route mark-cancel races through the DPC.'
+}
+$purgeWorkItemMatch = [regex]::Match(
+    $deviceSource,
+    '(?ms)^VOID\s+ViiperEvtEndpointPurgeWorkItem\s*\([^)]*\)\s*\{(?<body>.*?)^\}')
+if (-not $purgeWorkItemMatch.Success -or
+        $purgeWorkItemMatch.Groups['body'].Value -notmatch
+            'KeWaitForSingleObject\s*\(\s*&endpointContext->OperationsDrained[\s\S]*UdecxUsbEndpointPurgeComplete') {
+    throw 'Endpoint purge-complete must remain behind the forwarded-URB completion drain.'
+}
+$completionDrainMatch = [regex]::Match(
+    $brokerSource,
+    '(?ms)^VOID\s+ViiperDrainUrbCompletions\s*\([^)]*\)\s*\{(?<body>.*?)^\}')
+if (-not $completionDrainMatch.Success -or
+        $completionDrainMatch.Groups['body'].Value -notmatch
+            'CompletionOperationsDrained[\s\S]*WdfDpcCancel\s*\(\s*controllerContext->CompletionDpc\s*,\s*TRUE\s*\)[\s\S]*IsListEmpty\s*\(\s*&controllerContext->CompletionQueue\s*\)[\s\S]*WdfDpcEnqueue') {
+    throw 'Terminal DPC rundown must wait, join, verify the list, and re-arm work canceled before dispatch.'
 }
 $controllerCleanupMatch = [regex]::Match(
     $controllerSource,
@@ -231,8 +282,8 @@ $selfManagedCleanupMatch = [regex]::Match(
     '(?ms)^VOID\s+ViiperEvtDeviceSelfManagedIoCleanup\s*\([^)]*\)\s*\{(?<body>.*?)^\}')
 if (-not $selfManagedCleanupMatch.Success -or
         $selfManagedCleanupMatch.Groups['body'].Value -notmatch
-            'ViiperPurgeOwnerOperations[\s\S]*BrokerOperationsDrained[\s\S]*WdfWorkItemFlush[\s\S]*ViiperBeginControllerShutdown') {
-    throw 'Terminal rundown must drain and flush broker completion before asynchronous child teardown.'
+            'ViiperPurgeOwnerOperations[\s\S]*BrokerOperationsDrained[\s\S]*ViiperDrainUrbCompletions[\s\S]*ViiperBeginControllerShutdown') {
+    throw 'Terminal rundown must drain and join all completion-DPC ownership before asynchronous child teardown.'
 }
 $controllerShutdownMatch = [regex]::Match(
     $deviceSource,
@@ -243,4 +294,4 @@ if (-not $controllerShutdownMatch.Success -or
 }
 
 $stampState = if ($RequireStampedInf) { 'stamped output' } else { 'source template' }
-Write-Host "VIIPER UDE target and teardown contracts are aligned: Windows 10 1809, KMDF 1.27, deterministic DriverVer ($stampState)."
+Write-Host "VIIPER UDE target, DISPATCH completion, and teardown contracts are aligned: Windows 10 1809, KMDF 1.27, deterministic DriverVer ($stampState)."

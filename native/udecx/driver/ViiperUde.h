@@ -26,7 +26,7 @@ typedef enum VIIPER_UDE_PENDING_STATE {
     ViiperUdePendingPublishing,
     ViiperUdePendingInFlight,
     ViiperUdePendingCompleting,
-    ViiperUdePendingPassiveCompletion
+    ViiperUdePendingDpcCompletion
 } VIIPER_UDE_PENDING_STATE;
 
 typedef struct VIIPER_UDE_PENDING_SLOT {
@@ -82,6 +82,14 @@ typedef struct VIIPER_UDE_REQUEST_CONTEXT {
     ULONG IsoPacketCount;
     ULONG IsoStartFrame;
     BOOLEAN DirectionIn;
+    // Protected by the controller BrokerLock. The DPC removes and snapshots
+    // these fields before UdeCx may recycle this request context.
+    LIST_ENTRY CompletionEntry;
+    WDFREQUEST CompletionRequest;
+    NTSTATUS CompletionStatus;
+    USBD_STATUS CompletionUsbdStatus;
+    BOOLEAN CompleteWithNtStatus;
+    BOOLEAN CompletionQueued;
 } VIIPER_UDE_REQUEST_CONTEXT;
 
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(VIIPER_UDE_REQUEST_CONTEXT, ViiperGetRequestContext)
@@ -97,13 +105,16 @@ typedef struct VIIPER_UDE_CONTROLLER_CONTEXT {
     WDFMEMORY PendingStorage;
     VIIPER_UDE_PENDING_SLOT *PendingSlots;
     ULONG NextPendingSlot;
-    ULONG NextCompletionSlot;
     ULONG NextManagementSlot;
     WDFMEMORY NotificationStorage;
     VIIPER_UDE_NOTIFICATION *Notifications;
     WDFMEMORY ManagementStorage;
     VIIPER_UDE_MANAGEMENT_SLOT *ManagementSlots;
-    WDFWORKITEM CompletionWorkItem;
+    // One nonpageable FIFO owns every terminal UdeCx URB completion. Request
+    // contexts provide its entries, so the completion boundary never allocates.
+    WDFDPC CompletionDpc;
+    LIST_ENTRY CompletionQueue;
+    BOOLEAN CompletionDpcActive;
     ULONG NotificationHead;
     ULONG NotificationTail;
     ULONG NotificationCount;
@@ -113,6 +124,7 @@ typedef struct VIIPER_UDE_CONTROLLER_CONTEXT {
     WDFQUEUE InputQueue;
     WDFQUEUE WaitingDequeues;
     KEVENT BrokerOperationsDrained;
+    KEVENT CompletionOperationsDrained;
     KEVENT OwnerAdmissionsDrained;
     KEVENT FileCleanupsDrained;
     BOOLEAN CleanupInProgress;
@@ -124,6 +136,7 @@ typedef struct VIIPER_UDE_CONTROLLER_CONTEXT {
     volatile LONG CleanupRetries;
     volatile LONG ActiveDevices;
     volatile LONG PendingOperations;
+    volatile LONG PendingCompletions;
     volatile LONG WaitingDequeueCount;
     volatile LONG64 OperationsDequeued;
     volatile LONG64 OperationsCompleted;
@@ -227,11 +240,12 @@ EVT_UDECX_USB_ENDPOINT_RESET ViiperEvtEndpointReset;
 EVT_UDECX_USB_ENDPOINT_PURGE ViiperEvtEndpointPurge;
 EVT_UDECX_USB_ENDPOINT_START ViiperEvtEndpointStart;
 EVT_WDF_IO_QUEUE_IO_INTERNAL_DEVICE_CONTROL ViiperEvtEndpointIoInternalControl;
+EVT_WDF_IO_QUEUE_IO_CANCELED_ON_QUEUE ViiperEvtUrbCanceledOnQueue;
 EVT_WDF_IO_QUEUE_STATE ViiperEvtFastInputQueueReady;
 EVT_WDF_WORKITEM ViiperEvtFastInputWorkItem;
 EVT_WDF_WORKITEM ViiperEvtEndpointPurgeWorkItem;
 EVT_WDF_WORKITEM ViiperEvtEndpointResetWorkItem;
-EVT_WDF_WORKITEM ViiperEvtCompletionWorkItem;
+EVT_WDF_DPC ViiperEvtCompletionDpc;
 EVT_WDF_OBJECT_CONTEXT_CLEANUP ViiperEvtVirtualDeviceCleanup;
 EVT_WDF_OBJECT_CONTEXT_CLEANUP ViiperEvtEndpointCleanup;
 
@@ -248,6 +262,18 @@ VOID ViiperCompleteUnownedUrb(
     _In_ WDFDEVICE Controller,
     _In_ WDFREQUEST Request,
     _In_ NTSTATUS Status);
+_IRQL_requires_max_(DISPATCH_LEVEL)
+BOOLEAN ViiperQueueUrbCompletion(
+    _In_ WDFDEVICE Controller,
+    _In_ UDECXUSBENDPOINT Endpoint,
+    _In_ WDFREQUEST Request,
+    _In_ ULONG PendingSlot,
+    _In_ ULONGLONG Token,
+    _In_ NTSTATUS Status,
+    _In_ USBD_STATUS UsbdStatus,
+    _In_ BOOLEAN CompleteWithNtStatus);
+_IRQL_requires_(PASSIVE_LEVEL)
+VOID ViiperDrainUrbCompletions(_In_ WDFDEVICE Controller);
 NTSTATUS ViiperSubmitInputReport(_In_ WDFQUEUE Queue, _In_ WDFREQUEST Request);
 NTSTATUS ViiperValidateBrokerOwner(_In_ WDFDEVICE Controller, _In_ WDFREQUEST Request);
 PURB ViiperGetUrb(_In_ WDFREQUEST Request);
@@ -258,7 +284,9 @@ NTSTATUS ViiperCopyTransferBuffer(
     _In_ ULONG Length,
     _In_ BOOLEAN ToUrb);
 VOID ViiperPurgeEndpointOperations(_In_ UDECXUSBENDPOINT Endpoint, _In_ NTSTATUS Status);
+_IRQL_requires_max_(DISPATCH_LEVEL)
 VOID ViiperEndpointOperationStarted(_In_ UDECXUSBENDPOINT Endpoint);
+_IRQL_requires_max_(DISPATCH_LEVEL)
 VOID ViiperEndpointOperationCompleted(_In_ UDECXUSBENDPOINT Endpoint);
 VOID ViiperPurgeOwnerOperations(_In_ WDFDEVICE Controller, _In_ NTSTATUS Status);
 NTSTATUS ViiperQueueEndpointLifecycleEvent(

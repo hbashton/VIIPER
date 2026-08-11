@@ -166,7 +166,9 @@ ViiperEvtDeviceAdd(
     context = ViiperGetControllerContext(device);
     RtlZeroMemory(context, sizeof(*context));
     ExInitializeFastMutex(&context->DeviceLock);
+    InitializeListHead(&context->CompletionQueue);
     KeInitializeEvent(&context->BrokerOperationsDrained, NotificationEvent, TRUE);
+    KeInitializeEvent(&context->CompletionOperationsDrained, NotificationEvent, TRUE);
     KeInitializeEvent(&context->OwnerAdmissionsDrained, NotificationEvent, TRUE);
     KeInitializeEvent(&context->FileCleanupsDrained, NotificationEvent, TRUE);
 
@@ -219,6 +221,9 @@ ViiperEvtControllerCleanup(
     // still callable. WDF invokes child cleanup before parent cleanup, so this
     // callback is deliberately limited to invariant checks over context data.
     NT_ASSERT(InterlockedCompareExchange(&context->PendingOperations, 0, 0) == 0);
+    NT_ASSERT(InterlockedCompareExchange(&context->PendingCompletions, 0, 0) == 0);
+    NT_ASSERT(IsListEmpty(&context->CompletionQueue));
+    NT_ASSERT(!context->CompletionDpcActive);
     NT_ASSERT(InterlockedCompareExchange(&context->ActiveOwnerAdmissions, 0, 0) == 0);
     NT_ASSERT(InterlockedCompareExchange(&context->ActiveFileCleanups, 0, 0) == 0);
     NT_ASSERT(InterlockedCompareExchange(&context->ActiveDevices, 0, 0) == 0);
@@ -295,9 +300,8 @@ ViiperEvtDeviceSelfManagedIoCleanup(
     NT_ASSERT(InterlockedCompareExchange(&context->ActiveOwnerAdmissions, 0, 0) == 0);
 
     ViiperPurgeOwnerOperations(Device, STATUS_DEVICE_REMOVED);
-    if (context->CompletionWorkItem != WDF_NO_HANDLE) {
+    if (context->CompletionDpc != WDF_NO_HANDLE) {
         if (InterlockedCompareExchange(&context->PendingOperations, 0, 0) != 0) {
-            WdfWorkItemEnqueue(context->CompletionWorkItem);
             (VOID)KeWaitForSingleObject(
                 &context->BrokerOperationsDrained,
                 Executive,
@@ -305,10 +309,10 @@ ViiperEvtDeviceSelfManagedIoCleanup(
                 FALSE,
                 NULL);
         }
-        // BrokerOperationsDrained closes the admission race; Flush then joins
-        // the passive callback after its final request dereference. UdeCx URB
-        // completion is PASSIVE-only, so no DPC may own this work.
-        WdfWorkItemFlush(context->CompletionWorkItem);
+        // BrokerOperationsDrained covers tracked slots. The second join also
+        // covers rejected and fast-input URBs, then cancels/joins the reusable
+        // DPC only after its intrusive request list is empty.
+        ViiperDrainUrbCompletions(Device);
     }
 
     if (context->BrokerLock != WDF_NO_HANDLE) {

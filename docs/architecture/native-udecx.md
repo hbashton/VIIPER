@@ -17,6 +17,11 @@ after transfer ordering, cancellation, teardown, and recovery are proven.
   cancelled before `UdecxUsbEndpointPurgeComplete` is called.
 - The local usbip-win2 0.9.7.8 reference proves that UdeCx can expose VIIPER's
   bidirectional isochronous PlayStation audio topology on Windows.
+- Its WHLK-released UDE lineage invokes normal-response URB completion at
+  `DISPATCH_LEVEL`; current upstream moved every terminal path to a real WDF
+  DPC.
+  ViGEmBus is not a UdeCx driver, so its mixed request-completion contexts are
+  evidence for manual-queue/cache ownership only, not for UDE completion IRQL.
 - Its controller contract also reports chained-MDL, high-speed, and SuperSpeed
   compatibility for a root controller with USB 2 and USB 3 ports. VIIPER
   mirrors that capability set and explicitly forwards post-enumeration child
@@ -116,16 +121,38 @@ cannot replay itself into multiple successor polls. Live validation requires
 both forward publication and a completed Windows poll without inventing a
 strict one-to-one relationship.
 
-Both `UdecxUrbComplete` and `UdecxUrbCompleteWithNtStatus` require
-`PASSIVE_LEVEL`. VIIPER therefore uses one preallocated controller work item to
-finish bounded broker slots, including cancellations that can originate at
-dispatch level. The worker drains every ready slot per invocation, so the
-PASSIVE transition neither allocates per request nor creates one work item per
-packet. Direct producer input already runs on an explicitly passive queue and
-can complete there. A late cached poll first crosses the preallocated endpoint
-work-item boundary because `WdfIoQueueReadyNotify` is permitted to run inline on
-the UdeCx submitter thread; the boundary avoids recursive successor-poll
-completion while preserving the documented passive completion contract.
+Microsoft's UDE programming guide and host-controller I/O guide require URB
+completion at `DISPATCH_LEVEL` for USB-client compatibility. They additionally
+require synchronously handled URBs, `EvtIoCanceledOnQueue`, and request-cancel
+paths to complete from a separate DPC. The individual
+`UdecxUrbComplete`/`UdecxUrbCompleteWithNtStatus` API pages conflict with that
+guidance by listing `PASSIVE_LEVEL`; the current WDK declarations carry no IRQL
+SAL annotation that resolves the conflict (verified against the project's
+pinned WDK 10.0.28000.1839). VIIPER follows the UDE-specific
+compatibility rule because it explicitly covers terminal and cancellation
+behavior and agrees with usbip-win2's WHLK-released DISPATCH behavior. Current
+usbip-win2 upstream uses a WDF DPC; VIIPER does not copy the older reference's
+synthetic IRQL raise.
+
+One preallocated controller WDF DPC is the only function that calls either
+UdeCx URB completion API. A request-context intrusive queue holds request and
+endpoint references without per-transfer allocation. Broker replies,
+cancellation, admission rejection, and direct interrupt-IN all claim exactly
+one queue entry. Every endpoint queue registers `EvtIoCanceledOnQueue`,
+overriding KMDF's synchronous default so a URB canceled before dispatch follows
+the same path. The DPC runs at asserted `DISPATCH_LEVEL`, makes the terminal
+call, then retires the broker slot or direct endpoint operation and signals the
+drain event. Teardown closes admission, waits the tracked broker count, joins
+the completion count, and uses `WdfDpcCancel(..., TRUE)` only after the list is
+empty; a canceled pre-dispatch invocation is re-armed rather than abandoned.
+
+Buffer lookup, validation, copies, and user-mode publication remain on the
+explicitly passive queues and work items. A late cached poll still crosses the
+preallocated endpoint work-item boundary because `WdfIoQueueReadyNotify` can
+run inline on the UdeCx submitter thread; that work item consumes one cache
+token and prepares the buffer, then transfers terminal ownership to the shared
+DPC. No payload, endpoint ordering, or isochronous scheduling behavior changes
+at this execution-level boundary.
 
 Input publishers start and stop from UdeCx endpoint lifecycle notifications,
 retain their sequence across a purge/start cycle, and are cancelled before
@@ -329,11 +356,11 @@ a wedged provider cannot retain the installer mutex indefinitely.
   contract.
 - Controller removal closes a single `ShuttingDown` admission gate in
   `EvtDeviceSelfManagedIoCleanup`, while the controller's queues, timer,
-  passive completion worker, locks, and broker storage are still valid.
+  completion DPC, locks, and broker storage are still valid.
   Cleanup first joins any file cleanup that crossed the owner lock before the
   gate, then purges user-mode queues, aborts every admitted broker operation,
-  waits for the tracked operation count to reach zero, and flushes the worker
-  before revoking device-table handles. The final controller
+  waits for tracked and untracked completion counts to reach zero, and joins
+  the DPC before revoking device-table handles. The final controller
   `EvtCleanupCallback` performs only invariant checks because KMDF has already
   cleaned up child objects by then.
 - UdeCx USB-device deletion remains asynchronous. Shutdown snapshots and
@@ -442,16 +469,12 @@ a wedged provider cannot retain the installer mutex indefinitely.
   threads.
 - Every mark-cancelable transition revalidates its prior state under the broker
   lock. If KMDF invokes cancellation before that lock is reacquired, the cancel
-  callback's passive-completion ownership is final and cannot be overwritten
+  callback's DPC-completion ownership is final and cannot be overwritten
   by admission or publication.
 - Broker dequeue validation, wait-count admission, and transfer into the
   manual inverted-call queue share the owner lock with file cleanup. No close
   can finish purging that queue and then have an already-validated request
   appear behind the purge boundary.
-- The process-death cleanup timer takes its own temporary reference to the
-  owner file object before dropping the owner lock. Concurrent cleanup can
-  release the controller's long-lived reference without leaving the retry path
-  with a stale WDF handle.
 - Child creation is protected by an owner-admission barrier. Cleanup closes
   admission under the owner lock and waits for every admitted UdeCx create and
   PlugIn transaction before enumerating owned children. UdeCx calls run without
@@ -503,6 +526,27 @@ stall an independent pad's registration or removal.
 ## Release gates
 
 - No verifier findings under KMDF/USB/UdeCx stress.
+- The completion-execution contract has a two-machine signed-live gate. On a
+  clean disposable Windows 10 1809 x64 machine, stage
+  `Enable-ViiperUdeVerifierForNextBoot.ps1` (which selects only
+  `ViiperUde.sys`, Microsoft's `/standard` checks, and `oneboot`), restart, and
+  run `Invoke-ViiperUdeLiveValidation.ps1` in `Production` mode with
+  `-RequireDriverVerifier`, at least three iterations, both media/input probes,
+  and at least 180 seconds of media. On the current Windows 11 x64 HLK target,
+  run the same command with `-RestartRootDevice -ReleaseGate`. Both runs must
+  exercise normal broker replies, mark-cancel races, owner-process death,
+  endpoint reset/purge, root removal, and concurrent control/interrupt/ISO
+  traffic; `verifier /query` must show the reviewed image and there may be no
+  verifier violation, bugcheck, stuck request, nonzero terminal pending count,
+  or late duplicate completion.
+- The HLK gate is the complete Studio-generated applicable playlist, without
+  manually suppressing tests, for the VIIPER root controller and every
+  enumerated USB/HID/audio child on Windows 10 1809 x64 and the current Windows
+  11 x64 certification target. This includes every applicable Device
+  Fundamentals I/O, PnP, power, reliability and security test plus USB, HID,
+  and Audio tests. Every result must pass, or carry a Microsoft-approved
+  erratum recorded in the source-bound HLKX evidence; a locally filtered or
+  waived cancellation/IRQL failure is not a pass.
 - Repeated create/remove, service kill, process crash, sleep/resume, and device
   reconnect leave zero stale children and zero stuck requests.
 - Descriptor and protocol fuzzing rejects malformed inputs without a bugcheck.
@@ -555,13 +599,26 @@ authenticated commit order are documented in
 
 - Microsoft, *Write a UDE client driver*
   <https://learn.microsoft.com/windows-hardware/drivers/usbcon/writing-a-ude-client-driver>
+- Microsoft, *Handling I/O Requests in a USB Host Controller Driver*
+  <https://learn.microsoft.com/windows-hardware/drivers/usbcon/handling-i-o-requests-in-a-host-controller-driver>
 - Microsoft, `EVT_UDECX_USB_ENDPOINT_PURGE`
 - Microsoft, `UdecxUrbComplete` and `UdecxUrbCompleteWithNtStatus`
   <https://learn.microsoft.com/windows-hardware/drivers/ddi/udecxurb/nf-udecxurb-udecxurbcomplete>
+  <https://learn.microsoft.com/windows-hardware/drivers/ddi/udecxurb/nf-udecxurb-udecxurbcompletewithntstatus>
 - Microsoft, `EvtDeviceSelfManagedIoCleanup`
   <https://learn.microsoft.com/windows-hardware/drivers/ddi/wdfdevice/nc-wdfdevice-evt_wdf_device_self_managed_io_cleanup>
-- Microsoft, `WdfWorkItemEnqueue` and `WdfWorkItemFlush`
-  <https://learn.microsoft.com/windows-hardware/drivers/ddi/wdfworkitem/nf-wdfworkitem-wdfworkitemenqueue>
+- Microsoft, `EVT_WDF_DPC`, `WdfDpcEnqueue`, and `WdfDpcCancel`
+  <https://learn.microsoft.com/windows-hardware/drivers/ddi/wdfdpc/nc-wdfdpc-evt_wdf_dpc>
+  <https://learn.microsoft.com/windows-hardware/drivers/ddi/wdfdpc/nf-wdfdpc-wdfdpcenqueue>
+  <https://learn.microsoft.com/windows-hardware/drivers/ddi/wdfdpc/nf-wdfdpc-wdfdpccancel>
+- usbip-win2, separate UDE completion-DPC change
+  <https://github.com/vadimgrn/usbip-win2/commit/32244122278edb8a003d67f34ef8366d86761ad2>
+- usbip-win2 `v.0.9.7.8` source at `74f5a7f` (WHLK-released DISPATCH
+  behavior)
+  <https://github.com/vadimgrn/usbip-win2/tree/74f5a7fa8a4991f61bcee3ec846d3b182184f05d>
+- ViGEmBus source archive at `d986e1d` (manual-queue and target-lifecycle
+  reference; not UDE)
+  <https://github.com/nefarius/ViGEmBus/tree/d986e1d93708ec9b11049542fa6027272cce716c>
 - Microsoft, *KMDF Version History*
 - Microsoft, *Install the WDK using NuGet*
 - Microsoft Windows Driver Samples CI guidance

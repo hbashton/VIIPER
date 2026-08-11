@@ -969,6 +969,10 @@ ViiperCreateEndpointQueue(
 
     WDF_IO_QUEUE_CONFIG_INIT(&queueConfig, DispatchType);
     queueConfig.PowerManaged = WdfFalse;
+    // KMDF's default queued-cancellation path completes synchronously. UDE
+    // requires an explicit callback so even a never-dispatched URB can cross
+    // the shared completion DPC.
+    queueConfig.EvtIoCanceledOnQueue = ViiperEvtUrbCanceledOnQueue;
     if (DispatchType != WdfIoQueueDispatchManual) {
         queueConfig.EvtIoInternalDeviceControl = ViiperEvtEndpointIoInternalControl;
     }
@@ -1169,18 +1173,28 @@ ViiperEvtDefaultEndpointAdd(
 static
 VOID
 ViiperCompleteRetrievedInputUrb(
+    _In_ UDECXUSBENDPOINT Endpoint,
     _In_ WDFREQUEST Request,
     _In_ NTSTATUS Status
     )
 {
-    // The URB was parked in a manual queue and is therefore completed from a
-    // passive endpoint work item. UdeCx requires PASSIVE_LEVEL for both
-    // completion APIs, so completing from a DPC or raising IRQL is invalid.
-    NT_ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
-    if (NT_SUCCESS(Status)) {
-        UdecxUrbComplete(Request, USBD_STATUS_SUCCESS);
-    } else {
-        UdecxUrbCompleteWithNtStatus(Request, Status);
+    VIIPER_UDE_DEVICE_CONTEXT *deviceContext =
+        ViiperGetDeviceContext(ViiperGetEndpointContext(Endpoint)->Device);
+    BOOLEAN queued;
+
+    // The passive caller owns buffer validation/copying. Terminal completion
+    // and the endpoint rundown release are transferred together to the DPC.
+    queued = ViiperQueueUrbCompletion(
+        deviceContext->Controller,
+        Endpoint,
+        Request,
+        VIIPER_UDE_MAX_PENDING_OPERATIONS,
+        0,
+        Status,
+        NT_SUCCESS(Status) ? USBD_STATUS_SUCCESS : USBD_STATUS_INTERNAL_HC_ERROR,
+        !NT_SUCCESS(Status));
+    if (!queued) {
+        NT_ASSERT(FALSE);
     }
 }
 
@@ -1203,12 +1217,12 @@ ViiperCompleteCachedInputUrb(
         (urb->UrbHeader.Function != URB_FUNCTION_BULK_OR_INTERRUPT_TRANSFER &&
             urb->UrbHeader.Function != URB_FUNCTION_BULK_OR_INTERRUPT_TRANSFER_USING_CHAINED_MDL) ||
         (urb->UrbBulkOrInterruptTransfer.TransferFlags & USBD_TRANSFER_DIRECTION_IN) == 0) {
-        ViiperCompleteRetrievedInputUrb(Request, STATUS_INVALID_DEVICE_REQUEST);
+        ViiperCompleteRetrievedInputUrb(Endpoint, Request, STATUS_INVALID_DEVICE_REQUEST);
         return STATUS_INVALID_DEVICE_REQUEST;
     }
     transferLength = urb->UrbBulkOrInterruptTransfer.TransferBufferLength;
     if (endpointContext->InputReportLength > transferLength) {
-        ViiperCompleteRetrievedInputUrb(Request, STATUS_BUFFER_TOO_SMALL);
+        ViiperCompleteRetrievedInputUrb(Endpoint, Request, STATUS_BUFFER_TOO_SMALL);
         return STATUS_BUFFER_TOO_SMALL;
     }
     status = ViiperCopyTransferBuffer(
@@ -1218,7 +1232,7 @@ ViiperCompleteCachedInputUrb(
         endpointContext->InputReportLength,
         TRUE);
     if (!NT_SUCCESS(status)) {
-        ViiperCompleteRetrievedInputUrb(Request, status);
+        ViiperCompleteRetrievedInputUrb(Endpoint, Request, status);
         return status;
     }
 
@@ -1226,7 +1240,7 @@ ViiperCompleteCachedInputUrb(
     UdecxUrbSetBytesCompleted(Request, endpointContext->InputReportLength);
     InterlockedAdd64(&controllerContext->BytesFromDevice, endpointContext->InputReportLength);
     InterlockedIncrement64(&controllerContext->InputReportsCompleted);
-    ViiperCompleteRetrievedInputUrb(Request, STATUS_SUCCESS);
+    ViiperCompleteRetrievedInputUrb(Endpoint, Request, STATUS_SUCCESS);
     return STATUS_SUCCESS;
 }
 
@@ -1262,6 +1276,7 @@ ViiperEvtFastInputWorkItem(
         ViiperGetControllerContext(deviceContext->Controller);
     WDFREQUEST request = WDF_NO_HANDLE;
     BOOLEAN admitted = FALSE;
+    BOOLEAN completionQueued = FALSE;
 
     PAGED_CODE();
     WdfWaitLockAcquire(endpointContext->InputLock, NULL);
@@ -1291,10 +1306,15 @@ ViiperEvtFastInputWorkItem(
     // complete it on the allocation-free direct path.
     if (NT_SUCCESS(WdfIoQueueRetrieveNextRequest(endpointContext->Queue, &request))) {
         InterlockedExchange(&endpointContext->CachedDeliveryPending, FALSE);
+        ViiperInvalidateInputIfLifecycleClosed(endpoint);
         (VOID)ViiperCompleteCachedInputUrb(endpoint, request);
+        completionQueued = TRUE;
+    } else {
+        ViiperInvalidateInputIfLifecycleClosed(endpoint);
     }
-    ViiperInvalidateInputIfLifecycleClosed(endpoint);
-    ViiperEndpointOperationCompleted(endpoint);
+    if (!completionQueued) {
+        ViiperEndpointOperationCompleted(endpoint);
+    }
     WdfWaitLockRelease(endpointContext->InputLock);
 }
 
@@ -1458,13 +1478,12 @@ ViiperSubmitInputReport(
         return status == STATUS_NO_MORE_ENTRIES ? STATUS_SUCCESS : status;
     }
     InterlockedExchange(&endpointContext->CachedDeliveryPending, FALSE);
-    status = ViiperCompleteCachedInputUrb(endpoint, urbRequest);
     // Lifecycle admission can close after this operation was admitted. The
     // pre-boundary poll may finish, but its cached state must never survive the
     // reset/purge/D0 boundary. Revalidate under the same admission lock so
     // either this path or the lifecycle callback performs the final clear.
     ViiperInvalidateInputIfLifecycleClosed(endpoint);
-    ViiperEndpointOperationCompleted(endpoint);
+    status = ViiperCompleteCachedInputUrb(endpoint, urbRequest);
     WdfWaitLockRelease(endpointContext->InputLock);
     WdfObjectDereference(endpoint);
     return status;
@@ -1555,8 +1574,8 @@ ViiperEvtEndpointPurgeWorkItem(
 
     PAGED_CODE();
     // UdeCx requires every request forwarded out of the endpoint queue to be
-    // completed before PurgeComplete. The broker completion worker and direct
-    // input path signal this event only after their last owned URB completes.
+    // completed before PurgeComplete. The shared completion DPC releases both
+    // broker and direct-input ownership only after the terminal UdeCx call.
     (VOID)KeWaitForSingleObject(
         &endpointContext->OperationsDrained,
         Executive,
