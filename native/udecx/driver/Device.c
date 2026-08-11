@@ -790,6 +790,7 @@ ViiperDestroyVirtualDevice(
     if (!NT_SUCCESS(status)) {
         goto ExitAdmission;
     }
+    ViiperAbortDeviceManagementOperations(controller, device, STATUS_DEVICE_REMOVED);
     status = UdecxUsbDevicePlugOutAndDelete(device);
     if (!NT_SUCCESS(status)) {
         // PlugOutAndDelete consumes the UDE handle even when it reports a
@@ -817,6 +818,7 @@ ViiperDestroyOwnedDevices(
     for (;;) {
         UDECXUSBDEVICE device;
         VIIPER_UDE_DEVICE_CONTEXT *deviceContext;
+        BOOLEAN plugged;
         ULONGLONG deviceId = 0;
         ULONG index;
 
@@ -844,7 +846,12 @@ ViiperDestroyOwnedDevices(
             continue;
         }
         deviceContext = ViiperGetDeviceContext(device);
-        if (deviceContext->Plugged) {
+        plugged = deviceContext->Plugged;
+        ViiperAbortDeviceManagementOperations(Controller, device, STATUS_FILE_CLOSED);
+        // Completing a held UdeCx management request can make framework
+        // cleanup runnable once the slot pins are released. Do not access the
+        // device context after the exact-device management drain.
+        if (plugged) {
             if (!NT_SUCCESS(UdecxUsbDevicePlugOutAndDelete(device))) {
                 WdfDeviceSetFailed(Controller, WdfDeviceFailedAttemptRestart);
                 return FALSE;
@@ -1076,6 +1083,7 @@ ViiperBeginAcknowledgedDeviceReset(
     VIIPER_UDE_CONTROLLER_CONTEXT *controllerContext =
         ViiperGetControllerContext(deviceContext->Controller);
     NTSTATUS status;
+    ULONGLONG resetEpoch = 0;
 
     // Post-enumeration reset and device-configuration replacement are both
     // asynchronous UdeCx reset boundaries. Close every client-owned admission
@@ -1084,21 +1092,59 @@ ViiperBeginAcknowledgedDeviceReset(
     // operation; completion then reopens this exact kernel gate.
     WdfSpinLockAcquire(controllerContext->BrokerLock);
     if (InterlockedCompareExchange(&controllerContext->ShuttingDown, 0, 0) != 0 ||
+        InterlockedCompareExchange(&controllerContext->BrokerFaulted, FALSE, FALSE) != FALSE ||
         InterlockedCompareExchange(&deviceContext->Purging, 0, 0) != 0 ||
         InterlockedCompareExchange(&deviceContext->Resetting, TRUE, FALSE) != FALSE) {
         status = STATUS_DEVICE_BUSY;
     } else {
+        resetEpoch = (ULONGLONG)InterlockedIncrement64(&deviceContext->ResetEpoch);
+        if (resetEpoch == 0) {
+            resetEpoch = (ULONGLONG)InterlockedIncrement64(&deviceContext->ResetEpoch);
+        }
         status = STATUS_SUCCESS;
     }
     WdfSpinLockRelease(controllerContext->BrokerLock);
     if (!NT_SUCCESS(status)) {
         return STATUS_DEVICE_BUSY;
     }
+    // Device callbacks are explicitly passive on the UDECXUSBDEVICE object.
+    // The unresolved asynchronous reset prevents UdeCx from resuming endpoint
+    // transfers, so a read-only DriverNoRequests sample plus endpoint rundown
+    // is stable until Request is completed. Join every endpoint before the
+    // reset is published to the owner; owner acknowledgement repeats this
+    // exact-generation proof immediately before completion.
+    if (!ViiperQuiesceResetByIdentity(
+            deviceContext->Controller,
+            deviceContext->DeviceId,
+            deviceContext->Generation,
+            Device,
+            WDF_NO_HANDLE,
+            resetEpoch,
+            0,
+            TRUE,
+            FALSE)) {
+        // Removal/purge/fault won after this callback closed Resetting. Release
+        // only this callback-owned gate under the admission lock; the winning
+        // ShuttingDown/Purging/BrokerFaulted predicate remains closed. The
+        // caller owns the UdeCx request and completes the failed boundary.
+        WdfSpinLockAcquire(controllerContext->BrokerLock);
+        if ((ULONGLONG)InterlockedCompareExchange64(
+                &deviceContext->ResetEpoch, 0, 0) == resetEpoch) {
+            InterlockedExchange(&deviceContext->Resetting, FALSE);
+        }
+        WdfSpinLockRelease(controllerContext->BrokerLock);
+        return STATUS_DEVICE_NOT_READY;
+    }
     ViiperInvalidateDeviceInputReports(Device);
     status = ViiperQueueAcknowledgedDeviceLifecycleEvent(
         Device, Request, ViiperUdeOperationDeviceReset);
     if (!NT_SUCCESS(status)) {
-        InterlockedExchange(&deviceContext->Resetting, FALSE);
+        WdfSpinLockAcquire(controllerContext->BrokerLock);
+        if ((ULONGLONG)InterlockedCompareExchange64(
+                &deviceContext->ResetEpoch, 0, 0) == resetEpoch) {
+            InterlockedExchange(&deviceContext->Resetting, FALSE);
+        }
+        WdfSpinLockRelease(controllerContext->BrokerLock);
     }
     return status;
 }
@@ -1698,6 +1744,239 @@ ViiperSubmitInputReport(
     return status;
 }
 
+_IRQL_requires_(PASSIVE_LEVEL)
+static
+VOID
+ViiperWaitForEndpointQuiescence(
+    _In_ UDECXUSBENDPOINT Endpoint,
+    _In_ BOOLEAN RequireStopped
+    )
+{
+    VIIPER_UDE_ENDPOINT_CONTEXT *endpointContext = ViiperGetEndpointContext(Endpoint);
+    VIIPER_UDE_DEVICE_CONTEXT *deviceContext = ViiperGetDeviceContext(endpointContext->Device);
+    VIIPER_UDE_CONTROLLER_CONTEXT *controllerContext =
+        ViiperGetControllerContext(deviceContext->Controller);
+    LARGE_INTEGER retryInterval;
+
+    PAGED_CODE();
+    // One millisecond is used only on the cold purge/reset path. The ordinary
+    // case returns after one event wait and one read-only queue-state sample.
+    retryInterval.QuadPart = -10 * 1000;
+    for (;;) {
+        WDF_IO_QUEUE_STATE queueState;
+        BOOLEAN quiescent;
+        BOOLEAN queueQuiescent;
+        BOOLEAN stopped;
+
+        (VOID)KeWaitForSingleObject(
+            &endpointContext->OperationsDrained,
+            Executive,
+            KernelMode,
+            FALSE,
+            NULL);
+
+        // UdeCx exclusively owns START/PURGE state for the associated queue.
+        // Observe, but never mutate, that state. WDF_IO_QUEUE_IDLE proves both
+        // that no request remains queued and that every request already
+        // delivered to a callback has completed or been cancelled. Combined
+        // with the BrokerLock-owned rundown count, this closes the interval in
+        // which a delivered callback was preempted before it could increment
+        // ActiveOperations.
+        WdfSpinLockAcquire(controllerContext->BrokerLock);
+        queueState = WdfIoQueueGetState(endpointContext->Queue, NULL, NULL);
+        stopped = (queueState &
+            (WdfIoQueueAcceptRequests | WdfIoQueueDispatchRequests)) == 0;
+        // PURGE/removal owns a stopped queue and therefore requires full idle:
+        // no queued request and no driver-owned request. Endpoint RESET is a
+        // distinct asynchronous UdeCx contract; the queue may remain ready
+        // with an unconsumed interrupt poll, but UdeCx cannot resume endpoint
+        // I/O until its reset Request is completed. For that case, prove only
+        // that no request is currently delivered to a driver callback. The
+        // Resetting gate remains closed through a second proof at owner ack.
+        queueQuiescent = RequireStopped
+            ? stopped && WDF_IO_QUEUE_IDLE(queueState)
+            : (queueState & WdfIoQueueDriverNoRequests) != 0;
+        quiescent = queueQuiescent &&
+            InterlockedCompareExchange(&endpointContext->ActiveOperations, 0, 0) == 0 &&
+            (!RequireStopped || stopped);
+        WdfSpinLockRelease(controllerContext->BrokerLock);
+        if (quiescent) {
+            return;
+        }
+
+        // A callback can be between KMDF delivery and its first BrokerLock
+        // acquisition. It will either enter rundown and re-arm the event or
+        // finish its terminal DPC and make the queue idle. Avoid spinning while
+        // that passive callback is scheduled.
+        (VOID)KeDelayExecutionThread(KernelMode, FALSE, &retryInterval);
+    }
+}
+
+VOID
+ViiperQuiesceControllerEndpoints(
+    _In_ WDFDEVICE Controller
+    )
+{
+    VIIPER_UDE_CONTROLLER_CONTEXT *controllerContext =
+        ViiperGetControllerContext(Controller);
+    ULONG deviceIndex;
+
+    PAGED_CODE();
+    // On terminal removal KMDF purges non-power-managed queues before
+    // EvtDeviceSelfManagedIoCleanup. Hold the shared device index while
+    // observing every endpoint so EvtEndpointCleanup cannot invalidate a
+    // handle between lookup and the final queue/rundown proof. ShuttingDown is
+    // already set, so no direct-input or broker admission can reopen once the
+    // framework-owned queue is stopped and idle.
+    ViiperAcquireDeviceLockShared(controllerContext);
+    for (deviceIndex = 0; deviceIndex < VIIPER_UDE_MAX_DEVICES; ++deviceIndex) {
+        UDECXUSBDEVICE device = controllerContext->Devices[deviceIndex];
+        VIIPER_UDE_DEVICE_CONTEXT *deviceContext;
+        ULONG endpointIndex;
+
+        if (device == WDF_NO_HANDLE) {
+            continue;
+        }
+        deviceContext = ViiperGetDeviceContext(device);
+        for (endpointIndex = 0;
+             endpointIndex < RTL_NUMBER_OF(deviceContext->Endpoints);
+             ++endpointIndex) {
+            UDECXUSBENDPOINT endpoint = deviceContext->Endpoints[endpointIndex];
+
+            if (endpoint != WDF_NO_HANDLE) {
+                ViiperWaitForEndpointQuiescence(endpoint, TRUE);
+            }
+        }
+    }
+    ViiperReleaseDeviceLockShared(controllerContext);
+}
+
+BOOLEAN
+ViiperQuiesceResetByIdentity(
+    _In_ WDFDEVICE Controller,
+    _In_ ULONGLONG DeviceId,
+    _In_ ULONG Generation,
+    _In_ UDECXUSBDEVICE ExpectedDevice,
+    _In_opt_ UDECXUSBENDPOINT ExpectedEndpoint,
+    _In_ ULONGLONG ExpectedResetEpoch,
+    _In_ UCHAR EndpointAddress,
+    _In_ BOOLEAN WholeDevice,
+    _In_ BOOLEAN ReleaseGate
+    )
+{
+    VIIPER_UDE_CONTROLLER_CONTEXT *controllerContext =
+        ViiperGetControllerContext(Controller);
+    BOOLEAN found = FALSE;
+    ULONG deviceIndex;
+
+    PAGED_CODE();
+    // The asynchronous UdeCx reset request keeps the child alive. Retain the
+    // shared index as an additional cleanup fence while joining any terminal
+    // callback admitted after the reset event was first published.
+    ViiperAcquireDeviceLockShared(controllerContext);
+    for (deviceIndex = 0; deviceIndex < VIIPER_UDE_MAX_DEVICES; ++deviceIndex) {
+        UDECXUSBDEVICE device = controllerContext->Devices[deviceIndex];
+        VIIPER_UDE_DEVICE_CONTEXT *deviceContext;
+
+        if (device == WDF_NO_HANDLE || device != ExpectedDevice) {
+            continue;
+        }
+        deviceContext = ViiperGetDeviceContext(device);
+        if (deviceContext->DeviceId != DeviceId ||
+            deviceContext->Generation != Generation) {
+            continue;
+        }
+
+        if (WholeDevice) {
+            ULONG endpointIndex;
+            ULONGLONG currentResetEpoch;
+
+            WdfSpinLockAcquire(controllerContext->BrokerLock);
+            currentResetEpoch = (ULONGLONG)InterlockedCompareExchange64(
+                &deviceContext->ResetEpoch, 0, 0);
+            found = InterlockedCompareExchange(&controllerContext->ShuttingDown, 0, 0) == 0 &&
+                InterlockedCompareExchange(&controllerContext->BrokerFaulted, FALSE, FALSE) == FALSE &&
+                currentResetEpoch == ExpectedResetEpoch &&
+                InterlockedCompareExchange(&deviceContext->Resetting, 0, 0) != 0 &&
+                InterlockedCompareExchange(&deviceContext->Purging, 0, 0) == 0;
+            if (!found && ReleaseGate && currentResetEpoch == ExpectedResetEpoch) {
+                InterlockedExchange(&deviceContext->Resetting, FALSE);
+            }
+            WdfSpinLockRelease(controllerContext->BrokerLock);
+            if (!found) {
+                break;
+            }
+
+            for (endpointIndex = 0;
+                 endpointIndex < RTL_NUMBER_OF(deviceContext->Endpoints);
+                 ++endpointIndex) {
+                UDECXUSBENDPOINT endpoint = deviceContext->Endpoints[endpointIndex];
+
+                if (endpoint != WDF_NO_HANDLE) {
+                    ViiperWaitForEndpointQuiescence(endpoint, FALSE);
+                }
+            }
+            // Revalidate the lifecycle gate after every queue/rundown proof.
+            // BrokerLock is the admission linearization point; clearing here
+            // cannot target a reused identity because DeviceLock still pins
+            // this exact table entry and generation.
+            WdfSpinLockAcquire(controllerContext->BrokerLock);
+            currentResetEpoch = (ULONGLONG)InterlockedCompareExchange64(
+                &deviceContext->ResetEpoch, 0, 0);
+            found = InterlockedCompareExchange(&controllerContext->ShuttingDown, 0, 0) == 0 &&
+                InterlockedCompareExchange(&controllerContext->BrokerFaulted, FALSE, FALSE) == FALSE &&
+                currentResetEpoch == ExpectedResetEpoch &&
+                InterlockedCompareExchange(&deviceContext->Resetting, 0, 0) != 0 &&
+                InterlockedCompareExchange(&deviceContext->Purging, 0, 0) == 0;
+            if (ReleaseGate && currentResetEpoch == ExpectedResetEpoch) {
+                InterlockedExchange(&deviceContext->Resetting, FALSE);
+            }
+            WdfSpinLockRelease(controllerContext->BrokerLock);
+        } else {
+            UDECXUSBENDPOINT endpoint = deviceContext->Endpoints[EndpointAddress];
+
+            if (endpoint != WDF_NO_HANDLE && endpoint == ExpectedEndpoint) {
+                VIIPER_UDE_ENDPOINT_CONTEXT *endpointContext =
+                    ViiperGetEndpointContext(endpoint);
+
+                WdfSpinLockAcquire(controllerContext->BrokerLock);
+                found = InterlockedCompareExchange(&controllerContext->ShuttingDown, 0, 0) == 0 &&
+                    InterlockedCompareExchange(&controllerContext->BrokerFaulted, FALSE, FALSE) == FALSE &&
+                    (ULONGLONG)InterlockedCompareExchange64(
+                        &deviceContext->ResetEpoch, 0, 0) == ExpectedResetEpoch &&
+                    InterlockedCompareExchange(&deviceContext->Purging, 0, 0) == 0 &&
+                    InterlockedCompareExchange(&deviceContext->Resetting, 0, 0) == 0 &&
+                    InterlockedCompareExchange(&endpointContext->Resetting, 0, 0) != 0 &&
+                    InterlockedCompareExchange(&endpointContext->Purging, 0, 0) == 0;
+                if (!found && ReleaseGate) {
+                    InterlockedExchange(&endpointContext->Resetting, FALSE);
+                }
+                WdfSpinLockRelease(controllerContext->BrokerLock);
+                if (!found) {
+                    break;
+                }
+                ViiperWaitForEndpointQuiescence(endpoint, FALSE);
+                WdfSpinLockAcquire(controllerContext->BrokerLock);
+                found = InterlockedCompareExchange(&controllerContext->ShuttingDown, 0, 0) == 0 &&
+                    InterlockedCompareExchange(&controllerContext->BrokerFaulted, FALSE, FALSE) == FALSE &&
+                    (ULONGLONG)InterlockedCompareExchange64(
+                        &deviceContext->ResetEpoch, 0, 0) == ExpectedResetEpoch &&
+                    InterlockedCompareExchange(&deviceContext->Purging, 0, 0) == 0 &&
+                    InterlockedCompareExchange(&deviceContext->Resetting, 0, 0) == 0 &&
+                    InterlockedCompareExchange(&endpointContext->Resetting, 0, 0) != 0 &&
+                    InterlockedCompareExchange(&endpointContext->Purging, 0, 0) == 0;
+                if (ReleaseGate) {
+                    InterlockedExchange(&endpointContext->Resetting, FALSE);
+                }
+                WdfSpinLockRelease(controllerContext->BrokerLock);
+            }
+        }
+        break;
+    }
+    ViiperReleaseDeviceLockShared(controllerContext);
+    return found;
+}
+
 VOID
 ViiperEvtEndpointReset(
     _In_ UDECXUSBENDPOINT Endpoint,
@@ -1718,6 +1997,9 @@ ViiperEvtEndpointReset(
         InterlockedCompareExchange(&endpointContext->Resetting, TRUE, FALSE) != FALSE) {
         status = STATUS_DEVICE_BUSY;
     } else {
+        InterlockedExchange64(
+            &endpointContext->ResetDeviceEpoch,
+            InterlockedCompareExchange64(&deviceContext->ResetEpoch, 0, 0));
         status = STATUS_SUCCESS;
     }
     WdfSpinLockRelease(controllerContext->BrokerLock);
@@ -1745,32 +2027,52 @@ ViiperEvtEndpointResetWorkItem(
 {
     UDECXUSBENDPOINT endpoint = (UDECXUSBENDPOINT)WdfWorkItemGetParentObject(WorkItem);
     VIIPER_UDE_ENDPOINT_CONTEXT *endpointContext = ViiperGetEndpointContext(endpoint);
+    VIIPER_UDE_DEVICE_CONTEXT *deviceContext = ViiperGetDeviceContext(endpointContext->Device);
+    VIIPER_UDE_CONTROLLER_CONTEXT *controllerContext =
+        ViiperGetControllerContext(deviceContext->Controller);
     WDFREQUEST request;
     NTSTATUS status;
+    BOOLEAN resetCurrent;
 
     PAGED_CODE();
-    (VOID)KeWaitForSingleObject(
-        &endpointContext->OperationsDrained,
-        Executive,
-        KernelMode,
+    resetCurrent = ViiperQuiesceResetByIdentity(
+        deviceContext->Controller,
+        deviceContext->DeviceId,
+        deviceContext->Generation,
+        endpointContext->Device,
+        endpoint,
+        (ULONGLONG)InterlockedCompareExchange64(
+            &endpointContext->ResetDeviceEpoch, 0, 0),
+        endpointContext->Descriptor.bEndpointAddress,
         FALSE,
-        NULL);
-    NT_ASSERT(InterlockedCompareExchange(
-        &endpointContext->ActiveOperations, 0, 0) == 0);
-    // An input publisher admitted immediately before Resetting was raised is
-    // allowed to finish, then this barrier performs the final invalidation.
-    ViiperInvalidateEndpointInputReport(endpoint);
+        FALSE);
+    // The unresolved asynchronous reset Request keeps this endpoint unable to
+    // process transfers. No successor callback can be delivered between the
+    // read-only queue/rundown proof and publication; a callback delivered just
+    // before reset closure is included by DriverNoRequests and the terminal
+    // DPC-owned rundown. Owner acknowledgement repeats the proof. An input
+    // publisher admitted immediately before Resetting was raised may finish,
+    // then this barrier performs the final invalidation.
     request = endpointContext->ResetRequest;
     endpointContext->ResetRequest = WDF_NO_HANDLE;
-    if (InterlockedCompareExchange(&endpointContext->Purging, 0, 0) != 0) {
+    if (!resetCurrent) {
+        // A device reset may have won after this endpoint reset closed its own
+        // gate. Release only the endpoint-reset gate; the device reset, purge,
+        // shutdown, or broker-fault predicate independently keeps admission
+        // closed until its owner finishes recovery.
+        WdfSpinLockAcquire(controllerContext->BrokerLock);
         InterlockedExchange(&endpointContext->Resetting, FALSE);
+        WdfSpinLockRelease(controllerContext->BrokerLock);
         WdfRequestComplete(request, STATUS_DEVICE_NOT_READY);
         return;
     }
+    ViiperInvalidateEndpointInputReport(endpoint);
     status = ViiperQueueAcknowledgedEndpointLifecycleEvent(
         endpoint, request, ViiperUdeOperationEndpointReset);
     if (!NT_SUCCESS(status)) {
+        WdfSpinLockAcquire(controllerContext->BrokerLock);
         InterlockedExchange(&endpointContext->Resetting, FALSE);
+        WdfSpinLockRelease(controllerContext->BrokerLock);
         WdfRequestComplete(request, status);
     }
 }
@@ -1787,14 +2089,7 @@ ViiperEvtEndpointPurgeWorkItem(
     // UdeCx requires every request forwarded out of the endpoint queue to be
     // completed before PurgeComplete. The shared completion DPC releases both
     // broker and direct-input ownership only after the terminal UdeCx call.
-    (VOID)KeWaitForSingleObject(
-        &endpointContext->OperationsDrained,
-        Executive,
-        KernelMode,
-        FALSE,
-        NULL);
-    NT_ASSERT(InterlockedCompareExchange(
-        &endpointContext->ActiveOperations, 0, 0) == 0);
+    ViiperWaitForEndpointQuiescence(endpoint, TRUE);
     // The admission barrier is closed and all pre-boundary publishers have
     // drained, so no cached state can be republished after this clear.
     ViiperInvalidateEndpointInputReport(endpoint);

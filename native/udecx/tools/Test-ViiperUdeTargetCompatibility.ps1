@@ -273,21 +273,96 @@ $queueUrbMatch = [regex]::Match(
     '(?ms)^NTSTATUS\s+ViiperQueueUrb\s*\([^)]*\)\s*\{(?<body>.*?)^\}')
 if (-not $queueUrbMatch.Success -or
         $queueUrbMatch.Groups['body'].Value -notmatch
-            'ViiperEndpointOperationStarted\s*\(\s*endpoint\s*\)[\s\S]*ViiperAllocatePendingSlot' -or
+            'WdfSpinLockAcquire\s*\(\s*controllerContext->BrokerLock\s*\)[\s\S]*ViiperEndpointOperationStarted\s*\(\s*endpoint\s*\)[\s\S]*controllerContext->ShuttingDown[\s\S]*controllerContext->BrokerFaulted[\s\S]*deviceContext->InD0[\s\S]*deviceContext->Resetting[\s\S]*deviceContext->Purging[\s\S]*endpointContext->Resetting[\s\S]*endpointContext->Purging[\s\S]*WdfSpinLockRelease\s*\(\s*controllerContext->BrokerLock\s*\)[\s\S]*ViiperAllocatePendingSlot' -or
         $queueUrbMatch.Groups['body'].Value -notmatch
             'queueCancelledCompletion[\s\S]*ViiperUdePendingDpcCompletion[\s\S]*ViiperQueueUrbCompletion') {
-    throw 'URB admission must enter endpoint rundown before rejection and route mark-cancel races through the DPC.'
+    throw 'URB admission must combine rundown and lifecycle closure under BrokerLock, then route every rejection/cancel through the DPC.'
+}
+$endpointQuiescenceMatch = [regex]::Match(
+    $deviceSource,
+    '(?ms)^ViiperWaitForEndpointQuiescence\s*\([^)]*\)\s*\{(?<body>.*?)^\}')
+if (-not $endpointQuiescenceMatch.Success -or
+        $endpointQuiescenceMatch.Groups['body'].Value -notmatch
+            'KeWaitForSingleObject\s*\(\s*&endpointContext->OperationsDrained[\s\S]*WdfSpinLockAcquire\s*\(\s*controllerContext->BrokerLock\s*\)[\s\S]*WdfIoQueueGetState\s*\(\s*endpointContext->Queue[\s\S]*WDF_IO_QUEUE_IDLE[\s\S]*WdfIoQueueDriverNoRequests[\s\S]*endpointContext->ActiveOperations[\s\S]*WdfSpinLockRelease\s*\(\s*controllerContext->BrokerLock\s*\)[\s\S]*KeDelayExecutionThread') {
+    throw 'Endpoint quiescence must pair read-only WDF queue ownership with BrokerLock-owned rundown and a passive retry.'
 }
 $purgeWorkItemMatch = [regex]::Match(
     $deviceSource,
     '(?ms)^VOID\s+ViiperEvtEndpointPurgeWorkItem\s*\([^)]*\)\s*\{(?<body>.*?)^\}')
 if (-not $purgeWorkItemMatch.Success -or
         $purgeWorkItemMatch.Groups['body'].Value -notmatch
-            'KeWaitForSingleObject\s*\(\s*&endpointContext->OperationsDrained[\s\S]*UdecxUsbEndpointPurgeComplete') {
-    throw 'Endpoint purge-complete must remain behind the forwarded-URB completion drain.'
+            'ViiperWaitForEndpointQuiescence\s*\(\s*endpoint\s*,\s*TRUE\s*\)[\s\S]*UdecxUsbEndpointPurgeComplete') {
+    throw 'Endpoint purge-complete must remain behind stopped+idle WDF queue and forwarded-URB rundown proof.'
 }
-if ($deviceSource -match 'WdfIoQueue(?:Purge|Start)\s*\(') {
-    throw 'UdeCx owns the associated endpoint queue state; the client must only drain its forwarded paths.'
+$resetWorkItemMatch = [regex]::Match(
+    $deviceSource,
+    '(?ms)^VOID\s+ViiperEvtEndpointResetWorkItem\s*\([^)]*\)\s*\{(?<body>.*?)^\}')
+if (-not $resetWorkItemMatch.Success -or
+        $resetWorkItemMatch.Groups['body'].Value -notmatch
+            'ViiperQuiesceResetByIdentity[\s\S]*if\s*\(\s*!resetCurrent\s*\)[\s\S]*WdfSpinLockAcquire\s*\(\s*controllerContext->BrokerLock\s*\)[\s\S]*InterlockedExchange\s*\(\s*&endpointContext->Resetting\s*,\s*FALSE\s*\)[\s\S]*WdfSpinLockRelease\s*\(\s*controllerContext->BrokerLock\s*\)[\s\S]*WdfRequestComplete\s*\(\s*request\s*,\s*STATUS_DEVICE_NOT_READY\s*\)[\s\S]*ViiperQueueAcknowledgedEndpointLifecycleEvent') {
+    throw 'Endpoint reset publication must prove a live exact identity after DriverNoRequests/rundown and fail closed on removal.'
+}
+foreach ($associatedQueueMutation in @(
+        'WdfIoQueuePurge',
+        'WdfIoQueuePurgeSynchronously',
+        'WdfIoQueueStart',
+        'WdfIoQueueStop',
+        'WdfIoQueueStopSynchronously',
+        'WdfIoQueueDrain',
+        'WdfIoQueueDrainSynchronously')) {
+    if ($deviceSource -match ([regex]::Escape($associatedQueueMutation) + '\s*\(')) {
+        throw "UdeCx owns associated endpoint queue state; Device.c must not call $associatedQueueMutation."
+    }
+}
+$resetIdentityMatch = [regex]::Match(
+    $deviceSource,
+    '(?ms)^BOOLEAN\s+ViiperQuiesceResetByIdentity\s*\([^)]*\)\s*\{(?<body>.*?)^\}')
+if (-not $resetIdentityMatch.Success -or
+        $resetIdentityMatch.Groups['body'].Value -notmatch
+            'ViiperAcquireDeviceLockShared[\s\S]*device\s*!=\s*ExpectedDevice[\s\S]*DeviceId[\s\S]*Generation[\s\S]*ResetEpoch[\s\S]*ExpectedResetEpoch[\s\S]*Endpoints\[EndpointAddress\][\s\S]*endpoint\s*==\s*ExpectedEndpoint[\s\S]*ViiperWaitForEndpointQuiescence\s*\(\s*endpoint\s*,\s*FALSE\s*\)[\s\S]*if\s*\(\s*ReleaseGate\s*\)[\s\S]*endpointContext->Resetting[\s\S]*ViiperReleaseDeviceLockShared') {
+    throw 'Reset acknowledgement must prove and release only an exact pinned device/endpoint generation and reset epoch.'
+}
+$deviceResetAdmissionMatch = [regex]::Match(
+    $deviceSource,
+    '(?ms)^ViiperBeginAcknowledgedDeviceReset\s*\([^)]*\)\s*\{(?<body>.*?)^\}')
+$endpointResetAdmissionMatch = [regex]::Match(
+    $deviceSource,
+    '(?ms)^VOID\s+ViiperEvtEndpointReset\s*\([^)]*\)\s*\{(?<body>.*?)^\}')
+if (-not $deviceResetAdmissionMatch.Success -or
+        $deviceResetAdmissionMatch.Groups['body'].Value -notmatch
+            'BrokerFaulted[\s\S]*InterlockedCompareExchange\s*\(\s*&deviceContext->Resetting\s*,\s*TRUE\s*,\s*FALSE\s*\)[\s\S]*status\s*=\s*STATUS_DEVICE_BUSY[\s\S]*else[\s\S]*InterlockedIncrement64\s*\(\s*&deviceContext->ResetEpoch\s*\)[\s\S]*ViiperQuiesceResetByIdentity' -or
+        -not $endpointResetAdmissionMatch.Success -or
+        $endpointResetAdmissionMatch.Groups['body'].Value -notmatch
+            'InterlockedCompareExchange\s*\(\s*&endpointContext->Resetting\s*,\s*TRUE\s*,\s*FALSE\s*\)[\s\S]*else[\s\S]*ResetDeviceEpoch[\s\S]*deviceContext->ResetEpoch') {
+    throw 'Device reset must advance its private epoch only after admission, and endpoint reset must capture that epoch atomically.'
+}
+$managementSlotPinMatch = [regex]::Match(
+    $brokerSource,
+    '(?ms)^ViiperQueueAcknowledgedLifecycleEvent\s*\([^)]*\)\s*\{(?<body>.*?)^\}')
+$managementSlotClearMatch = [regex]::Match(
+    $brokerSource,
+    '(?ms)^ViiperClearManagementSlotLocked\s*\([^)]*\)\s*\{(?<body>.*?)^\}')
+$managementSlotReleaseMatch = [regex]::Match(
+    $brokerSource,
+    '(?ms)^ViiperReleaseManagementSlotReferences\s*\([^)]*\)\s*\{(?<body>.*?)^\}')
+if (-not $managementSlotPinMatch.Success -or
+        $managementSlotPinMatch.Groups['body'].Value -notmatch
+            'WdfObjectReference\s*\(\s*Device\s*\)[\s\S]*WdfObjectReference\s*\(\s*Endpoint\s*\)[\s\S]*ViiperUdeOperationEndpointReset[\s\S]*deviceContext->ResetEpoch[\s\S]*endpointContext->ResetDeviceEpoch[\s\S]*pending->Device\s*=\s*Device[\s\S]*pending->Endpoint\s*=\s*Endpoint[\s\S]*pending->ResetEpoch[\s\S]*WdfSpinLockRelease[\s\S]*ViiperReleaseManagementSlotReferences' -or
+        -not $managementSlotClearMatch.Success -or
+        $managementSlotClearMatch.Groups['body'].Value -notmatch
+            '\*DeviceReference\s*=\s*pending->Device[\s\S]*\*EndpointReference\s*=\s*pending->Endpoint[\s\S]*pending->Device\s*=\s*WDF_NO_HANDLE[\s\S]*pending->Endpoint\s*=\s*WDF_NO_HANDLE' -or
+        -not $managementSlotReleaseMatch.Success -or
+        $managementSlotReleaseMatch.Groups['body'].Value -notmatch
+            'WdfObjectDereference\s*\(\s*Endpoint\s*\)[\s\S]*WdfObjectDereference\s*\(\s*Device\s*\)') {
+    throw 'Management reset identities must pin exact WDF objects and release every pin outside BrokerLock.'
+}
+$managementCompletionMatch = [regex]::Match(
+    $brokerSource,
+    '(?ms)^ViiperCompleteManagementOperation\s*\([^)]*\)\s*\{(?<body>.*?)^\}')
+if (-not $managementCompletionMatch.Success -or
+        $managementCompletionMatch.Groups['body'].Value -notmatch
+            'ViiperQuiesceResetByIdentity[\s\S]*if\s*\(\s*!resetReleased\s*\)[\s\S]*WdfRequestComplete\s*\(\s*request\s*,\s*STATUS_DEVICE_NOT_READY\s*\)[\s\S]*ViiperClearManagementSlotLocked[\s\S]*return\s+STATUS_DEVICE_NOT_READY[\s\S]*WdfRequestComplete\s*\(\s*request\s*,\s*\(NTSTATUS\)Completion->Status\s*\)') {
+    throw 'Reset acknowledgement must fail closed on removal or identity reuse before applying owner status.'
 }
 $completionDrainMatch = [regex]::Match(
     $brokerSource,
@@ -324,15 +399,15 @@ $selfManagedCleanupMatch = [regex]::Match(
     '(?ms)^VOID\s+ViiperEvtDeviceSelfManagedIoCleanup\s*\([^)]*\)\s*\{(?<body>.*?)^\}')
 if (-not $selfManagedCleanupMatch.Success -or
         $selfManagedCleanupMatch.Groups['body'].Value -notmatch
-            'ViiperPurgeOwnerOperations[\s\S]*BrokerOperationsDrained[\s\S]*ViiperDrainUrbCompletions[\s\S]*ViiperBeginControllerShutdown') {
-    throw 'Terminal rundown must drain and join all completion-DPC ownership before asynchronous child teardown.'
+            'ViiperPurgeOwnerOperations[\s\S]*ViiperQuiesceControllerEndpoints[\s\S]*BrokerOperationsDrained[\s\S]*ViiperDrainUrbCompletions[\s\S]*PendingOperations[\s\S]*PendingCompletions[\s\S]*CompletionQueue[\s\S]*CompletionDpcActive[\s\S]*ViiperBeginControllerShutdown') {
+    throw 'Terminal rundown must prove every UdeCx endpoint queue stopped+idle, join completion-DPC ownership, then consume children.'
 }
 $controllerShutdownMatch = [regex]::Match(
     $deviceSource,
     '(?ms)^VOID\s+ViiperBeginControllerShutdown\s*\([^)]*\)\s*\{(?<body>.*?)^\}')
 if (-not $controllerShutdownMatch.Success -or
-        $controllerShutdownMatch.Groups['body'].Value -match 'KeWaitForSingleObject') {
-    throw 'UdeCx child teardown must remain asynchronous and must not synchronously await child cleanup.'
+        $controllerShutdownMatch.Groups['body'].Value -match 'KeWaitForSingleObject|WdfIoQueueGetState') {
+    throw 'UdeCx child teardown must remain asynchronous and must not use endpoint queues after the pre-consumption proof.'
 }
 
 $stampState = if ($RequireStampedInf) { 'stamped output' } else { 'source template' }

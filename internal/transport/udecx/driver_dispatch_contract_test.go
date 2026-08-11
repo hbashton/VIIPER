@@ -605,14 +605,14 @@ func TestNativeEndpointRundownPrecedesCleanupAndDPCMayRunImmediately(t *testing.
 	}
 	purgeWork := normalizedContract(nativeCFunction(t, device, "ViiperEvtEndpointPurgeWorkItem"))
 	requireContractOrder(t, purgeWork,
-		"KeWaitForSingleObject( &endpointContext->OperationsDrained",
-		"endpointContext->ActiveOperations",
+		"ViiperWaitForEndpointQuiescence(endpoint, TRUE);",
 		"ViiperInvalidateEndpointInputReport(endpoint);",
 		"UdecxUsbEndpointPurgeComplete(endpoint);")
 	resetWork := normalizedContract(nativeCFunction(t, device, "ViiperEvtEndpointResetWorkItem"))
 	requireContractOrder(t, resetWork,
-		"KeWaitForSingleObject( &endpointContext->OperationsDrained",
-		"endpointContext->ActiveOperations",
+		"resetCurrent = ViiperQuiesceResetByIdentity(",
+		"if (!resetCurrent)",
+		"WdfRequestComplete(request, STATUS_DEVICE_NOT_READY);",
 		"ViiperInvalidateEndpointInputReport(endpoint);",
 		"ViiperQueueAcknowledgedEndpointLifecycleEvent(")
 	start := normalizedContract(nativeCFunction(t, device, "ViiperEvtEndpointStart"))
@@ -738,13 +738,9 @@ func TestNativeDeviceAndBrokerLockOrderNeverReverses(t *testing.T) {
 	management := normalizedContract(nativeCFunction(t, broker, "ViiperCompleteManagementOperation"))
 	firstRelease := strings.Index(management,
 		"WdfSpinLockRelease(ControllerContext->BrokerLock);")
-	for _, setter := range []string{
-		"ViiperSetDeviceResettingByIdentity(",
-		"ViiperSetEndpointResettingByIdentity(",
-	} {
-		if firstRelease < 0 || strings.Index(management, setter) < firstRelease {
-			t.Fatalf("management path calls DeviceLock setter before releasing BrokerLock: %s", management)
-		}
+	resetProof := strings.Index(management, "ViiperQuiesceResetByIdentity(")
+	if firstRelease < 0 || resetProof < firstRelease {
+		t.Fatalf("management path acquires the reset identity fence before releasing BrokerLock: %s", management)
 	}
 }
 

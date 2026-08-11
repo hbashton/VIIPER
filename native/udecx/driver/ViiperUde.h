@@ -66,11 +66,28 @@ typedef struct VIIPER_UDE_NOTIFICATION {
 
 typedef struct VIIPER_UDE_MANAGEMENT_SLOT {
     WDFREQUEST Request;
+    // Private framework-object pins, never exposed on the broker ABI. They
+    // prevent a deleted WDF handle value from being recycled while a delayed
+    // lifecycle acknowledgement still names this slot. Callers compare these
+    // only with handles in the live DeviceLock-protected table; they never
+    // access an object's context after its cleanup callback.
+    UDECXUSBDEVICE Device;
+    UDECXUSBENDPOINT Endpoint;
+    WDFFILEOBJECT OwnerFile;
     ULONGLONG Token;
+    // One harmless success tombstone for an operation already delivered to
+    // user mode when kernel teardown completed its held UdeCx request. This
+    // never retains WDF objects and is consumed by the first late ACK.
+    ULONGLONG RetiredToken;
+    ULONGLONG RetiredDeviceId;
+    WDFFILEOBJECT RetiredOwnerFile;
     ULONGLONG DeviceId;
+    ULONGLONG ResetEpoch;
     ULONG Generation;
     ULONG DeviceGeneration;
+    ULONG RetiredDeviceGeneration;
     VIIPER_UDE_PENDING_STATE State;
+    BOOLEAN RetiredNotificationPending;
     ULONG Kind;
     UCHAR EndpointAddress;
 } VIIPER_UDE_MANAGEMENT_SLOT;
@@ -232,6 +249,7 @@ typedef struct VIIPER_UDE_DEVICE_CONTEXT {
     BOOLEAN Plugged;
     volatile LONG InD0;
     volatile LONG Resetting;
+    volatile LONG64 ResetEpoch;
     volatile LONG Purging;
     volatile LONG ActiveCounted;
     volatile LONG OwnerReferenced;
@@ -257,6 +275,7 @@ typedef struct VIIPER_UDE_ENDPOINT_CONTEXT {
     USB_ENDPOINT_DESCRIPTOR Descriptor;
     volatile LONG Purging;
     volatile LONG Resetting;
+    volatile LONG64 ResetDeviceEpoch;
     volatile LONG ActiveOperations;
     volatile LONG64 LastInputSequence;
     volatile LONG64 NextIsoStartFrame;
@@ -283,6 +302,7 @@ EVT_WDF_DEVICE_SELF_MANAGED_IO_INIT ViiperEvtDeviceSelfManagedIoInit;
 EVT_WDF_DEVICE_SELF_MANAGED_IO_CLEANUP ViiperEvtDeviceSelfManagedIoCleanup;
 EVT_WDF_DEVICE_FILE_CREATE ViiperEvtFileCreate;
 EVT_WDF_FILE_CLEANUP ViiperEvtFileCleanup;
+EVT_WDF_FILE_CLOSE ViiperEvtFileClose;
 EVT_WDF_IO_QUEUE_IO_DEVICE_CONTROL ViiperEvtIoDeviceControlRoute;
 EVT_WDF_IO_QUEUE_IO_DEVICE_CONTROL ViiperEvtIoDeviceControl;
 EVT_UDECX_WDF_DEVICE_QUERY_USB_CAPABILITY ViiperEvtQueryUsbCapability;
@@ -311,6 +331,17 @@ NTSTATUS ViiperInitializeBroker(_In_ WDFDEVICE Device);
 NTSTATUS ViiperCreateVirtualDevice(_In_ WDFQUEUE Queue, _In_ WDFREQUEST Request);
 NTSTATUS ViiperDestroyVirtualDevice(_In_ WDFQUEUE Queue, _In_ WDFREQUEST Request);
 BOOLEAN ViiperDestroyOwnedDevices(_In_ WDFDEVICE Controller, _In_ WDFFILEOBJECT OwnerFile);
+VOID ViiperQuiesceControllerEndpoints(_In_ WDFDEVICE Controller);
+BOOLEAN ViiperQuiesceResetByIdentity(
+    _In_ WDFDEVICE Controller,
+    _In_ ULONGLONG DeviceId,
+    _In_ ULONG Generation,
+    _In_ UDECXUSBDEVICE ExpectedDevice,
+    _In_opt_ UDECXUSBENDPOINT ExpectedEndpoint,
+    _In_ ULONGLONG ExpectedResetEpoch,
+    _In_ UCHAR EndpointAddress,
+    _In_ BOOLEAN WholeDevice,
+    _In_ BOOLEAN ReleaseGate);
 VOID ViiperBeginControllerShutdown(_In_ WDFDEVICE Controller);
 NTSTATUS ViiperQueueDequeueOperation(_In_ WDFQUEUE Queue, _In_ WDFREQUEST Request);
 NTSTATUS ViiperCompleteOperation(_In_ WDFQUEUE Queue, _In_ WDFREQUEST Request);
@@ -341,6 +372,13 @@ NTSTATUS ViiperCopyTransferBuffer(
     _In_ ULONG Length,
     _In_ BOOLEAN ToUrb);
 VOID ViiperPurgeEndpointOperations(_In_ UDECXUSBENDPOINT Endpoint, _In_ NTSTATUS Status);
+VOID ViiperAbortDeviceManagementOperations(
+    _In_ WDFDEVICE Controller,
+    _In_ UDECXUSBDEVICE Device,
+    _In_ NTSTATUS Status);
+VOID ViiperRetireManagementTombstonesForOwner(
+    _In_ WDFDEVICE Controller,
+    _In_opt_ WDFFILEOBJECT OwnerFile);
 _IRQL_requires_max_(DISPATCH_LEVEL)
 VOID ViiperEndpointOperationStarted(_In_ UDECXUSBENDPOINT Endpoint);
 _IRQL_requires_max_(DISPATCH_LEVEL)

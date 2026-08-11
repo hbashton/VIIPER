@@ -21,6 +21,7 @@ DEFINE_GUID(
 #pragma alloc_text(PAGE, ViiperEvtDeviceSelfManagedIoCleanup)
 #pragma alloc_text(PAGE, ViiperEvtFileCreate)
 #pragma alloc_text(PAGE, ViiperEvtFileCleanup)
+#pragma alloc_text(PAGE, ViiperEvtFileClose)
 #pragma alloc_text(PAGE, ViiperCreateQueues)
 #endif
 
@@ -137,7 +138,7 @@ ViiperEvtDeviceAdd(
     WDF_FILEOBJECT_CONFIG_INIT(
         &fileConfig,
         ViiperEvtFileCreate,
-        WDF_NO_EVENT_CALLBACK,
+        ViiperEvtFileClose,
         ViiperEvtFileCleanup);
     WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&fileAttributes, VIIPER_UDE_FILE_CONTEXT);
     fileAttributes.ExecutionLevel = WdfExecutionLevelPassive;
@@ -298,19 +299,42 @@ ViiperEvtDeviceSelfManagedIoCleanup(
     NT_ASSERT(InterlockedCompareExchange(&context->ActiveOwnerAdmissions, 0, 0) == 0);
 
     ViiperPurgeOwnerOperations(Device, STATUS_DEVICE_REMOVED);
+    // KMDF purges non-power-managed queues before terminal self-managed
+    // cleanup. Prove each still-valid UdeCx endpoint queue is stopped and idle,
+    // and that its BrokerLock-owned rundown is zero, before consuming any UDE
+    // device handle. The shared device index held by this helper also prevents
+    // endpoint EvtCleanup from invalidating a queue during the observation.
+    ViiperQuiesceControllerEndpoints(Device);
     if (context->CompletionDpc != WDF_NO_HANDLE) {
-        if (InterlockedCompareExchange(&context->PendingOperations, 0, 0) != 0) {
-            (VOID)KeWaitForSingleObject(
-                &context->BrokerOperationsDrained,
-                Executive,
-                KernelMode,
-                FALSE,
-                NULL);
+        for (;;) {
+            BOOLEAN stable;
+
+            if (InterlockedCompareExchange(&context->PendingOperations, 0, 0) != 0) {
+                (VOID)KeWaitForSingleObject(
+                    &context->BrokerOperationsDrained,
+                    Executive,
+                    KernelMode,
+                    FALSE,
+                    NULL);
+            }
+            // BrokerOperationsDrained covers tracked slots. The second join
+            // also covers rejected and fast-input URBs, then cancels/joins the
+            // reusable DPC only after its intrusive request list is empty.
+            ViiperDrainUrbCompletions(Device);
+
+            // Endpoint queue-idle proof precedes this observation, so no UdeCx
+            // callback can newly enter rundown. Recheck all controller-owned
+            // terminal state under BrokerLock to join the final DPC handoff.
+            WdfSpinLockAcquire(context->BrokerLock);
+            stable = InterlockedCompareExchange(&context->PendingOperations, 0, 0) == 0 &&
+                InterlockedCompareExchange(&context->PendingCompletions, 0, 0) == 0 &&
+                IsListEmpty(&context->CompletionQueue) &&
+                !context->CompletionDpcActive;
+            WdfSpinLockRelease(context->BrokerLock);
+            if (stable) {
+                break;
+            }
         }
-        // BrokerOperationsDrained covers tracked slots. The second join also
-        // covers rejected and fast-input URBs, then cancels/joins the reusable
-        // DPC only after its intrusive request list is empty.
-        ViiperDrainUrbCompletions(Device);
     }
 
     if (context->BrokerLock != WDF_NO_HANDLE) {
@@ -321,10 +345,16 @@ ViiperEvtDeviceSelfManagedIoCleanup(
         InterlockedExchange(&context->BrokerFaulted, FALSE);
         WdfSpinLockRelease(context->BrokerLock);
     }
+    // ControlQueue has been synchronously purged and all management slots were
+    // joined above, so no old owner completion can consume a tombstone now.
+    // Release any owner generation's retained capacity before a possible PnP
+    // restart of this same controller object.
+    ViiperRetireManagementTombstonesForOwner(Device, WDF_NO_HANDLE);
 
-    // PlugOutAndDelete owns asynchronous UdeCx cleanup. Do not wait here: a
-    // synchronous wait can deadlock the same PnP/UdeCx worker that must deliver
-    // the endpoint and device cleanup callbacks.
+    // Only after every associated endpoint queue and completion owner is
+    // quiescent may UdecxUsbDevicePlugOutAndDelete consume the child handles.
+    // Deletion remains asynchronous; never use a consumed device handle or wait
+    // for child EvtCleanup on this PnP worker.
     ViiperBeginControllerShutdown(Device);
 
     if (context->OwnerLock != WDF_NO_HANDLE) {
@@ -459,6 +489,33 @@ ViiperEvtFileCleanup(
         }
         WdfWaitLockRelease(context->OwnerLock);
     }
+}
+
+VOID
+ViiperEvtFileClose(
+    _In_ WDFFILEOBJECT FileObject
+    )
+{
+    VIIPER_UDE_FILE_CONTEXT *fileContext;
+
+    PAGED_CODE();
+    fileContext = ViiperGetFileContext(FileObject);
+    if (InterlockedCompareExchange(
+            &ViiperGetControllerContext(
+                WdfFileObjectGetDevice(FileObject))->ShuttingDown, 0, 0) != 0) {
+        // Terminal self-managed cleanup drained the whole control queue and
+        // cleared every tombstone while controller children were valid.
+        return;
+    }
+    if (InterlockedCompareExchange(&fileContext->BrokerOwner, 0, 0) == 0) {
+        return;
+    }
+    // Unlike EvtFileCleanup, KMDF invokes EvtFileClose only after all I/O for
+    // this file object is complete. That is the safe owner-session boundary
+    // for freeing unconsumed late-ACK tombstones without racing an old
+    // completion or erasing a successor broker's slots.
+    ViiperRetireManagementTombstonesForOwner(
+        WdfFileObjectGetDevice(FileObject), FileObject);
 }
 
 NTSTATUS
