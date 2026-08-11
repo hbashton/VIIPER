@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
@@ -33,6 +34,7 @@ const (
 )
 
 const e2eTransportEnvironment = "VIIPER_E2E_TRANSPORT"
+const e2eBenchmarkPassword = "testpassword1234"
 
 func selectedE2ETransport() (string, error) {
 	transport := strings.ToLower(strings.TrimSpace(os.Getenv(e2eTransportEnvironment)))
@@ -44,6 +46,22 @@ func selectedE2ETransport() (string, error) {
 			e2eTransportEnvironment, transport)
 	}
 	return transport, nil
+}
+
+func benchmarkAuthModeSupported(transport string, encrypted bool) bool {
+	return transport != "native-ude" || encrypted
+}
+
+func TestNativeE2EBenchmarkRequiresProductionAuthentication(t *testing.T) {
+	if benchmarkAuthModeSupported("native-ude", false) {
+		t.Fatal("native UDE benchmark accepted an unauthenticated stream")
+	}
+	if !benchmarkAuthModeSupported("native-ude", true) {
+		t.Fatal("native UDE benchmark rejected an authenticated stream")
+	}
+	if !benchmarkAuthModeSupported("usbip", false) {
+		t.Fatal("legacy USB/IP benchmark unexpectedly rejected its plaintext baseline")
+	}
 }
 
 func Benchmark_Xbox360_Delay(b *testing.B) {
@@ -168,6 +186,18 @@ func Benchmark_Xbox360_Delay(b *testing.B) {
 			useEncryption: true,
 		},
 	}
+	if transport == "native-ude" {
+		// The native broker owns local kernel topology and therefore requires
+		// authenticated localhost streams. Do not silently benchmark an
+		// unsupported plaintext path and label its failure as transport latency.
+		authenticated := benches[:0]
+		for _, candidate := range benches {
+			if benchmarkAuthModeSupported(transport, candidate.useEncryption) {
+				authenticated = append(authenticated, candidate)
+			}
+		}
+		benches = authenticated
+	}
 
 	b.SetParallelism(1)
 
@@ -183,6 +213,10 @@ func Benchmark_Xbox360_Delay(b *testing.B) {
 		existingGamepadSet[id] = true
 	}
 
+	credentialPath := filepath.Join(b.TempDir(), "viiper.key.txt")
+	if err := os.WriteFile(credentialPath, []byte(e2eBenchmarkPassword), 0o600); err != nil {
+		b.Fatalf("write benchmark credential: %v", err)
+	}
 	s := cmd.Server{
 		USBServerConfig: usb.ServerConfig{
 			Addr:              ":3244",
@@ -192,13 +226,14 @@ func Benchmark_Xbox360_Delay(b *testing.B) {
 			Addr:                        ":3245",
 			AutoAttachLocalClient:       true,
 			DeviceHandlerConnectTimeout: time.Second * 5,
-			Password:                    "testpassword1234",
+			Password:                    e2eBenchmarkPassword,
 			PlatformOpts: api.PlatformOpts{
 				AutoAttachWindowsNative: true,
 			},
 		},
 		ConnectionTimeout: 5 * time.Second,
 		Transport:         transport,
+		KeyFile:           credentialPath,
 	}
 	logger := slog.Default()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -208,7 +243,7 @@ func Benchmark_Xbox360_Delay(b *testing.B) {
 		serverDone <- s.StartServer(ctx, logger, nil)
 	}()
 
-	client := viiperclient.New("localhost:3245")
+	client := viiperclient.NewWithPassword("localhost:3245", e2eBenchmarkPassword)
 	var busResp *viipertypes.BusCreateResponse
 	var createErr error
 	for range 10 {
@@ -259,7 +294,7 @@ func Benchmark_Xbox360_Delay(b *testing.B) {
 	for _, bench := range benches {
 		benchClient := viiperclient.New("localhost:3245")
 		if bench.useEncryption {
-			benchClient = viiperclient.NewWithPassword("localhost:3245", "testpassword1234")
+			benchClient = viiperclient.NewWithPassword("localhost:3245", e2eBenchmarkPassword)
 		}
 		devStream, openErr := benchClient.OpenStream(ctx, busID, devInfo.DevID)
 		if openErr != nil {

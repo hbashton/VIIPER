@@ -8,8 +8,11 @@ installed, set `VIIPER_E2E_TRANSPORT=native-ude` to run the identical API,
 controller, SDL, press, and release workload through the native bus. The
 benchmark never installs or trusts a driver. Invalid transport names, a server
 that exits during startup, input timeouts, and stream failures fail the run;
-they are not reported as latency samples. Plain and encrypted cases open their
-own matching API stream, so their labels describe the path actually measured.
+they are not reported as latency samples. The harness writes and uses one
+private, known benchmark credential rather than accidentally reading a stale
+user credential. Plain and encrypted USB/IP cases open their own matching API
+stream. Native UDE runs only the authenticated cases because production native
+brokers deliberately reject unauthenticated localhost topology and streams.
 
 It groups repeated cycles when `-count > 1` and uses the single press E2E measurement (`E2E-InputDelay`) as the 100% baseline.
 
@@ -49,9 +52,16 @@ Runs use a fixed-iteration benchtime (e.g. `-benchtime=1000x`, `-benchtime=10000
 From repository root:
 
 ```bash
-cd testing/e2e
 # Single run, 1000 fixed iterations per sub benchmark
-go run ./scripts/lat_bench.go -benchtime=1000x -count=1 -format markdown
+go run ./_testing/e2e/scripts/lat_bench.go -pkg ./_testing/e2e -benchtime=1000x -count=1 -format markdown
+```
+
+For the production native path, use the same workload and select the encrypted
+results:
+
+```powershell
+$env:VIIPER_E2E_TRANSPORT = 'native-ude'
+go run ./_testing/e2e/scripts/lat_bench.go -pkg ./_testing/e2e -encryption encrypted -benchtime 1000x -count 5 -format markdown
 ```
 
 Results (Arch Linux / SteamDeck Kernel / Steam Deck LCD / Go 1.25+, 10k iterations):
