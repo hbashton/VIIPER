@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Alia5/VIIPER/internal/server/api/auth"
@@ -313,7 +314,8 @@ func (s *Server) handleConn(conn net.Conn) {
 		// path. Keep that reader in front of the connection for the device
 		// handler; otherwise the first input/microphone frame of a reconnect can
 		// disappear in the handshake reader and stall framing indefinitely.
-		streamConn := &bufferedReadConn{Conn: conn, reader: r}
+		streamConn := newStreamLifetimeConn(
+			&bufferedReadConn{Conn: conn, reader: r})
 		busIDStr, ok := params["busId"]
 		if !ok {
 			s.writeError(w, apierror.ErrBadRequest("missing busId parameter"))
@@ -399,6 +401,45 @@ func (s *Server) handleConn(conn net.Conn) {
 type bufferedReadConn struct {
 	net.Conn
 	reader *bufio.Reader
+}
+
+type streamLifetimeConn struct {
+	net.Conn
+	done chan struct{}
+	once sync.Once
+}
+
+func newStreamLifetimeConn(conn net.Conn) *streamLifetimeConn {
+	return &streamLifetimeConn{Conn: conn, done: make(chan struct{})}
+}
+
+func (c *streamLifetimeConn) StreamDone() <-chan struct{} {
+	return c.done
+}
+
+func (c *streamLifetimeConn) Read(buffer []byte) (int, error) {
+	n, err := c.Conn.Read(buffer)
+	if err != nil {
+		c.signalClosed()
+	}
+	return n, err
+}
+
+func (c *streamLifetimeConn) Write(buffer []byte) (int, error) {
+	n, err := c.Conn.Write(buffer)
+	if err != nil {
+		c.signalClosed()
+	}
+	return n, err
+}
+
+func (c *streamLifetimeConn) Close() error {
+	c.signalClosed()
+	return c.Conn.Close()
+}
+
+func (c *streamLifetimeConn) signalClosed() {
+	c.once.Do(func() { close(c.done) })
 }
 
 func (c *bufferedReadConn) Read(buffer []byte) (int, error) {

@@ -37,8 +37,8 @@ func TestPing(t *testing.T) {
 
 func TestPingReportsNegotiatedNativeBackend(t *testing.T) {
 	want := &viipertypes.NativeUDEInfo{
-		ABIMajor: 1, ABIMinor: 9, Capabilities: 0x0d,
-		ExpectedDriverPackageVersion: "0.1.0.8",
+		ABIMajor: 1, ABIMinor: 10, Capabilities: 0x0d,
+		ExpectedDriverPackageVersion: "0.1.0.9",
 		LoadedDriverBuildIdentity:    strings.Repeat("a", 64),
 		MaxDevices:                   32, MaxDescriptorBytes: 262144,
 		MaxTransferBytes: 1048576, MaxIsoPackets: 1024,

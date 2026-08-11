@@ -70,7 +70,7 @@ of the source-provenance evidence without becoming a user-machine dependency.
    owns the package mutex, then acquires the broker-service mutex.
 5. The nested command first checks for a true no-op: canonical protected
    service/image/credential state, no live legacy owner, stable service PID, and
-   authenticated `ping` with `Ready=true`, ABI 1.9, the exact capability mask,
+   authenticated `ping` with `Ready=true`, ABI 1.10, the exact capability mask,
    package version, and loaded-kernel build identity. If any part is unhealthy,
    it transactionally publishes the exact broker through a flushed protected
    sibling, creates or repairs the LocalSystem service, rotates its credential,

@@ -41,6 +41,28 @@ type gatedFastInputDriver struct {
 	gates chan *inputSubmitGate
 }
 
+type backpressureFastInputDriver struct {
+	*fastInputDriver
+	busyRemaining atomic.Int32
+	attempts      chan InputReport
+}
+
+func (d *backpressureFastInputDriver) SubmitInputReport(
+	ctx context.Context, report InputReport,
+) error {
+	copyReport := report
+	copyReport.Payload = append([]byte(nil), report.Payload...)
+	select {
+	case d.attempts <- copyReport:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	if d.busyRemaining.Add(-1) >= 0 {
+		return ErrInputQueueFull
+	}
+	return d.fastInputDriver.SubmitInputReport(ctx, report)
+}
+
 type independentlyBlockingCreateDriver struct {
 	*fakeHostDriver
 	blockedDevice uint64
@@ -982,6 +1004,67 @@ func TestHostPublishesInterruptInputDirectlyAfterEndpointStart(t *testing.T) {
 	case <-processor.lifecycle:
 	case <-time.After(time.Second):
 		t.Fatal("endpoint purge was not processed")
+	}
+	cancel()
+	select {
+	case err = <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("host did not stop")
+	}
+}
+
+func TestHostRetriesExactInputTransitionAfterKernelBackpressure(t *testing.T) {
+	base := &fastInputDriver{
+		fakeHostDriver: newFakeHostDriver(), reports: make(chan InputReport, 2),
+	}
+	driver := &backpressureFastInputDriver{
+		fastInputDriver: base, attempts: make(chan InputReport, 2),
+	}
+	driver.busyRemaining.Store(1)
+	processor := &recordingProcessor{
+		processed: make(chan uint64, 1), lifecycle: make(chan uint64, 2),
+		resets: make(chan DeviceIdentity, 1),
+	}
+	host, err := NewHost(driver, processor, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	device := newInputPublisherTestDevice()
+	identity, err := host.Register(context.Background(), 441, device)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- host.Serve(ctx) }()
+	driver.operations <- Operation{
+		DeviceID: identity.DeviceID, Generation: identity.Generation,
+		EndpointAddress: 0x81, EndpointSequence: 1, DeviceSequence: 1,
+		Kind: OperationEndpointStart,
+	}
+	select {
+	case <-processor.lifecycle:
+	case <-time.After(time.Second):
+		t.Fatal("endpoint start was not processed")
+	}
+	device.reports <- []byte{0x11, 0x22, 0x33}
+	first := <-driver.attempts
+	second := <-driver.attempts
+	if first.Sequence != second.Sequence || first.DeviceID != second.DeviceID ||
+		first.Generation != second.Generation || first.EndpointAddress != second.EndpointAddress ||
+		string(first.Payload) != string(second.Payload) {
+		t.Fatalf("retry changed accepted report: first=%+v second=%+v", first, second)
+	}
+	select {
+	case accepted := <-driver.reports:
+		if accepted.Sequence != first.Sequence || string(accepted.Payload) != string(first.Payload) {
+			t.Fatalf("accepted report=%+v first=%+v", accepted, first)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("kernel backpressure was not retried")
 	}
 	cancel()
 	select {

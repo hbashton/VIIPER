@@ -60,3 +60,42 @@ func TestScheduledInterruptInputPreservesDualShock4StateAndCadence(t *testing.T)
 		t.Fatalf("post-cancel timestamp=%d before previous=%d", thirdTimestamp, secondTimestamp)
 	}
 }
+
+func TestClassifiedNativeInputPreservesQueuedDualShock4Transitions(t *testing.T) {
+	dev, err := New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	press := NewInputState()
+	press.LX, press.Buttons = -51, ButtonCross
+	release := NewInputState()
+	release.LX = 67
+	dev.UpdateInputState(press)
+	dev.UpdateInputState(release)
+
+	buffer := make([]byte, InputReportSize)
+	never := make(chan time.Time)
+	written, transition, err := dev.ReadClassifiedScheduledInterruptInput(
+		context.Background(), never, EndpointIn&0x0f, buffer)
+	if err != nil || written != InputReportSize || !transition ||
+		buffer[1] != uint8(int16(press.LX)+128) {
+		t.Fatalf("press read=(%d, %t, %v) state=%x", written, transition, err, buffer[:12])
+	}
+	written, transition, err = dev.ReadClassifiedScheduledInterruptInput(
+		context.Background(), never, EndpointIn&0x0f, buffer)
+	if err != nil || written != InputReportSize || !transition ||
+		buffer[1] != uint8(int16(release.LX)+128) {
+		t.Fatalf("release read=(%d, %t, %v) state=%x", written, transition, err, buffer[:12])
+	}
+	analog := *release
+	analog.LX = 19
+	if err = dev.UpdateInputState(&analog); err != nil {
+		t.Fatal(err)
+	}
+	written, transition, err = dev.ReadClassifiedScheduledInterruptInput(
+		context.Background(), never, EndpointIn&0x0f, buffer)
+	if err != nil || written != InputReportSize || transition ||
+		buffer[1] != uint8(int16(analog.LX)+128) {
+		t.Fatalf("analog read=(%d, %t, %v) state=%x", written, transition, err, buffer[:12])
+	}
+}

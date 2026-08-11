@@ -76,7 +76,7 @@ The kernel driver owns only Windows USB presentation and transfer lifecycle.
     installer to the exact matching native-driver package. The service also
     recognizes the parameter/length errors returned by native previews from
     before that distinct status existed, so an upgrade cannot strand ABI 1.7.
-    ABI 1.9 additionally returns the 32-byte identity compiled into the loaded
+    ABI 1.9+ additionally returns the 32-byte identity compiled into the loaded
     kernel image: SHA-256 over the canonical source revision, driver-package
     version, ABI, and exact-capability tuple. The broker binary and schema-2
     accepted-package manifest derive the same value from their protected build
@@ -92,16 +92,16 @@ The kernel driver owns only Windows USB presentation and transfer lifecycle.
 
 The transport is intentionally split by USB semantics:
 
-- interrupt-IN input reports use the ViGEm-style manual-queue fast path. The
-  Windows poll stays parked in the endpoint queue; one versioned
-  `SUBMIT_INPUT_REPORT` call atomically replaces the endpoint's preallocated
-  latest-state cache and completes a waiting URB without an allocation or
-  broker round trip. If the state arrives first, KMDF's manual-queue ready
-  notification schedules one preallocated passive work item, which completes
-  one later poll from that cache. The ready callback itself never completes an
-  URB because KMDF can invoke it synchronously on UdeCx's submitter thread.
-  The Go publisher allocates one buffer from the endpoint's descriptor at
-  publisher startup and supported controller engines encode directly into it.
+- interrupt-IN input reports use a manual-queue fast path. The Windows poll
+  stays parked in the endpoint queue; one versioned `SUBMIT_INPUT_REPORT` call
+  completes a waiting URB without an allocation or broker round trip. ABI 1.10
+  classifies newly queued controller states separately from deadline-generated
+  cadence snapshots. Each endpoint holds a bounded preallocated transition
+  FIFO and one latest-state snapshot: Windows consumes every accepted edge in
+  order, while idle 1 ms DS4/DualSense reports update only the snapshot and
+  cannot crowd edges out. The passive ready callback copies one report directly
+  and transfers terminal ownership to the required completion DPC. The Go
+  publisher allocates one descriptor-sized buffer at endpoint start.
   Each active publisher also owns one reusable service-deadline timer. The
   controller receives that timer's channel separately from the lifecycle
   context, so an idle deadline still replays cached state while purge, reset,
@@ -125,14 +125,10 @@ The transport is intentionally split by USB semantics:
   instead of being consumed and silently truncated. The USB/IP microphone path
   retains its existing allocation and timeout ownership contract.
 
-The input counters intentionally measure opposite sides of that cache:
-`InputReportsSubmitted` counts accepted latest-state publications, while
-`InputReportsCompleted` counts Windows interrupt-IN polls completed from the
-cache. Several publications can coalesce before a Windows poll, so completion
-can trail submission. A one-shot cached-delivery token ensures a publication
-cannot replay itself into multiple successor polls. Live validation requires
-both forward publication and a completed Windows poll without inventing a
-strict one-to-one relationship.
+The input counters intentionally measure opposite sides of the fast path:
+`InputReportsSubmitted` counts accepted publications, while
+`InputReportsCompleted` counts Windows interrupt-IN polls. Idle publications
+may coalesce into the latest snapshot, but transition publications do not.
 
 Microsoft's UDE programming guide and host-controller I/O guide require URB
 completion at `DISPATCH_LEVEL` for USB-client compatibility. They additionally
@@ -176,7 +172,7 @@ and the removed generation remains closed.
 
 Dynamic endpoint cleanup leaves an address-scoped retirement tombstone for
 the current device generation. This lets the kernel acknowledge and discard
-the single latest-state input report that can cross asynchronous cleanup before
+the final admitted input report that can cross asynchronous cleanup before
 user mode consumes the ordered purge event, without accepting reports for an
 endpoint that was never configured.
 
@@ -436,7 +432,7 @@ a wedged provider cannot retain the installer mutex indefinitely.
   restart or disappear across a live or pre-callback-delivery request, and the
   client never mutates UdeCx-owned queue state.
 - Endpoint reset and endpoint-configuration callbacks are asynchronous UdeCx
-  management requests, not notifications. ABI 1.9 preserves the
+  management requests, not notifications. ABI 1.10 preserves the
   generation-bound management tokens introduced in ABI 1.8 and adds the
   source-bound loaded-kernel identity to negotiation. Windows receives the
   request completion only after the Go controller engine has applied the reset
@@ -481,8 +477,9 @@ a wedged provider cannot retain the installer mutex indefinitely.
 - Each fast interrupt-IN endpoint has its own passive lock. Different
   controllers publish concurrently, while accidental concurrent submissions
   for one endpoint cannot reorder reports or replay a coalesced sequence.
-- If a fresh report arrives before Windows posts its next HID poll, the passive
-  manual-queue ready callback copies that cached state immediately and hands
+- If reports arrive before Windows posts its next HID poll, the passive
+  manual-queue ready callback copies the oldest transition (or latest idle
+  snapshot when no transition is pending) and hands
   terminal ownership to the shared completion DPC. The required asynchronous
   DISPATCH_LEVEL completion remains intact without an intervening system-worker
   scheduling hop on first poll, resume, or idle recovery.
@@ -511,12 +508,13 @@ a wedged provider cannot retain the installer mutex indefinitely.
   span. Chained or short mappings fall through to a bounded MDL-chain walk;
   the driver never treats the URB length as permission to overrun one mapping.
 - Interrupt-IN queues are manual and completed from a generation-owned,
-  sequence-checked latest-state cache. The queue-ready callback only enqueues a
-  preallocated work item; that separate execution boundary consumes one cached
-  delivery token and one poll. A synchronously replenished Windows poll is left
-  parked for the next producer instead of becoming a kernel replay loop.
-  Endpoint purge/reset and device reset/D0 exit invalidate the cache and token
-  after closing admission, so no held button can cross a lifecycle boundary.
+  sequence-checked transition FIFO plus latest-state snapshot. The passive
+  queue-ready callback copies directly, then the shared DPC performs the only
+  terminal UdeCx completion. A synchronously replenished Windows poll drains at
+  most one queued transition and is otherwise left parked for the next
+  producer. Endpoint purge/reset and device reset/D0 exit invalidate the FIFO,
+  snapshot, and delivery token after closing admission, so no held button can
+  cross a lifecycle boundary.
   Output and media endpoints retain independent ordered queues.
 - A direct input report that was already submitted when D0 exit, device reset,
   unplug, or endpoint purge begins is acknowledged and discarded at that exact

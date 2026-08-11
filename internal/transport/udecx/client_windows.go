@@ -686,6 +686,9 @@ func (c *Client) SubmitInputReport(ctx context.Context, report InputReport) erro
 		return err
 	}
 	_, err := c.ioctl(ctx, ioctlSubmitInputReport, metadata[:], report.Payload)
+	if errors.Is(err, windows.ERROR_BUSY) {
+		return ErrInputQueueFull
+	}
 	return err
 }
 

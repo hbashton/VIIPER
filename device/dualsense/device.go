@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -14,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Alia5/VIIPER/device"
+	"github.com/Alia5/VIIPER/device/internal/inputstatequeue"
 	"github.com/Alia5/VIIPER/device/internal/microphonebuffer"
 	"github.com/Alia5/VIIPER/usb"
 )
@@ -51,19 +51,19 @@ const (
 	outputFlag2LightbarBrightness = 0x01
 	outputFlag2LightbarSetup      = 0x02
 
-	outputRightTriggerOffset = 11
-	outputLeftTriggerOffset  = 22
-	outputTriggerLength      = 11
-	outputPlayerLedsOffset   = 44
-	outputLightbarOffset     = 45
+	outputRightTriggerOffset     = 11
+	outputLeftTriggerOffset      = 22
+	outputTriggerLength          = 11
+	outputPlayerLedsOffset       = 44
+	outputLightbarOffset         = 45
+	inputTransitionQueueCapacity = 256
 )
 
 type DualSense struct {
-	deviceType     string
-	inputCh        chan InputState
-	inputState     InputState
-	inputPublishMu sync.Mutex
-	metaState      *MetaState
+	deviceType string
+	inputQueue *inputstatequeue.Queue[InputState]
+	inputState InputState
+	metaState  *MetaState
 
 	// Output and media publication use independent gates. HID state remains
 	// valid across an audio-pipe reset, while speaker/haptics data does not.
@@ -198,8 +198,9 @@ func new(o *device.CreateOptions, edge bool) (*DualSense, error) {
 		"interfaces", len(d.descriptor.Interfaces))
 
 	d.inputState = *NewInputState()
-	d.inputCh = make(chan InputState, 1)
-	d.inputCh <- d.inputState
+	d.inputQueue = inputstatequeue.New(
+		d.inputState, dualSenseInputEdgeSignature(d.inputState),
+		inputTransitionQueueCapacity)
 	d.timestampBase = time.Now()
 
 	return d, nil
@@ -314,26 +315,35 @@ func (d *DualSense) beginSpeakerStream() *dualSenseSpeakerStreamTelemetry {
 	return telemetry
 }
 
-func (d *DualSense) UpdateInputState(state *InputState) {
-	d.inputPublishMu.Lock()
-	defer d.inputPublishMu.Unlock()
+func (d *DualSense) UpdateInputState(state *InputState) error {
+	return d.UpdateInputStateUntil(nil, state)
+}
 
+func (d *DualSense) UpdateInputStateUntil(done <-chan struct{}, state *InputState) error {
 	next := *NewInputState()
 	if state != nil {
 		next = *state
 	}
-
+	if err := d.inputQueue.PublishUntil(
+		done, next, dualSenseInputEdgeSignature(next)); err != nil {
+		return err
+	}
 	d.mtx.Lock()
 	d.inputState = next
 	d.mtx.Unlock()
+	return nil
+}
 
-	select {
-	case <-d.inputCh:
-	default:
-	}
-	select {
-	case d.inputCh <- next:
-	default:
+func dualSenseInputEdgeSignature(state InputState) uint64 {
+	return uint64(state.Buttons) |
+		uint64(state.DPad)<<32 |
+		uint64(encodeTouchStatus(state.Touch1Active, state.Touch1Tracking))<<40 |
+		uint64(encodeTouchStatus(state.Touch2Active, state.Touch2Tracking))<<48
+}
+
+func (d *DualSense) InvalidateInterruptInput(endpoint uint8) {
+	if endpoint == 0 || endpoint&0x0f == EndpointIn&0x0f {
+		d.inputQueue.Invalidate()
 	}
 }
 
@@ -476,22 +486,14 @@ func (d *DualSense) HandleTransfer(ctx context.Context, ep uint32, dir uint32, o
 	if dir == usb.DirectionIn {
 		switch epNumber {
 		case EndpointIn & 0x0F:
-			select {
-			case <-ctx.Done():
-				if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-					d.mtx.Lock()
-					is := d.inputState
-					ms := *d.metaState
-					d.mtx.Unlock()
-					return d.buildUSBInputReport(&is, &ms)
-				}
+			is, _, err := d.inputQueue.Wait(ctx, nil)
+			if err != nil {
 				return nil
-			case is := <-d.inputCh:
-				d.mtx.Lock()
-				ms := *d.metaState
-				d.mtx.Unlock()
-				return d.buildUSBInputReport(&is, &ms)
 			}
+			d.mtx.Lock()
+			ms := *d.metaState
+			d.mtx.Unlock()
+			return d.buildUSBInputReport(&is, &ms)
 		case EndpointMicrophoneIn & 0x0F:
 			return d.handleMicrophoneIn(ctx)
 		default:
@@ -517,7 +519,8 @@ func (d *DualSense) HandleTransfer(ctx context.Context, ep uint32, dir uint32, o
 // completed, so encoding here removes the per-sample report allocation without
 // changing USB/IP behavior.
 func (d *DualSense) ReadInterruptInput(ctx context.Context, ep uint32, dst []byte) (int, error) {
-	return d.readInterruptInput(ctx, nil, ep, dst)
+	written, _, err := d.readInterruptInput(ctx, nil, ep, dst)
+	return written, err
 }
 
 // ReadScheduledInterruptInput preserves the DualSense report encoder and its
@@ -526,43 +529,34 @@ func (d *DualSense) ReadInterruptInput(ctx context.Context, ep uint32, dst []byt
 func (d *DualSense) ReadScheduledInterruptInput(
 	ctx context.Context, deadline <-chan time.Time, ep uint32, dst []byte,
 ) (int, error) {
+	written, _, err := d.readInterruptInput(ctx, deadline, ep, dst)
+	return written, err
+}
+
+func (d *DualSense) ReadClassifiedScheduledInterruptInput(
+	ctx context.Context, deadline <-chan time.Time, ep uint32, dst []byte,
+) (int, bool, error) {
 	return d.readInterruptInput(ctx, deadline, ep, dst)
 }
 
 func (d *DualSense) readInterruptInput(
 	ctx context.Context, deadline <-chan time.Time, ep uint32, dst []byte,
-) (int, error) {
+) (int, bool, error) {
 	if ep&0x0f != EndpointIn&0x0f {
-		return 0, fmt.Errorf("DualSense interrupt-IN endpoint %d is unsupported", ep)
+		return 0, false, fmt.Errorf("DualSense interrupt-IN endpoint %d is unsupported", ep)
 	}
 	if deadline != nil && ctx.Err() != nil {
-		return 0, ctx.Err()
+		return 0, false, ctx.Err()
 	}
-	var is InputState
-	select {
-	case <-ctx.Done():
-		if deadline != nil || !errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return 0, ctx.Err()
-		}
-		d.mtx.Lock()
-		is = d.inputState
-		d.mtx.Unlock()
-	case <-deadline:
-		if ctx.Err() != nil {
-			return 0, ctx.Err()
-		}
-		d.mtx.Lock()
-		is = d.inputState
-		d.mtx.Unlock()
-	case is = <-d.inputCh:
-		if deadline != nil && ctx.Err() != nil {
-			return 0, ctx.Err()
-		}
+	is, transition, err := d.inputQueue.Wait(ctx, deadline)
+	if err != nil {
+		return 0, false, err
 	}
 	d.mtx.Lock()
 	ms := *d.metaState
 	d.mtx.Unlock()
-	return d.buildUSBInputReportInto(&is, &ms, dst)
+	written, err := d.buildUSBInputReportInto(&is, &ms, dst)
+	return written, transition, err
 }
 
 func (d *DualSense) QueueMicrophonePCMFrame(frame []byte) {

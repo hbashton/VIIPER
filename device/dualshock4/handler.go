@@ -486,6 +486,7 @@ func (w *dualShock4OutputWriter) requestStop() {
 
 func readDualShock4InputStream(conn net.Conn, ds4 *DualShock4,
 	logger *slog.Logger, microphoneInput bool, frameVersion byte) error {
+	streamDone := api.StreamDone(conn)
 	if !microphoneInput {
 		buf := make([]byte, InputStateSize)
 		for {
@@ -501,7 +502,9 @@ func readDualShock4InputStream(conn net.Conn, ds4 *DualShock4,
 			if err := state.UnmarshalBinary(buf); err != nil {
 				return fmt.Errorf("unmarshal input state: %w", err)
 			}
-			ds4.UpdateInputState(&state)
+			if err := ds4.UpdateInputStateUntil(streamDone, &state); err != nil {
+				return fmt.Errorf("queue input state: %w", err)
+			}
 		}
 	}
 
@@ -581,7 +584,9 @@ func readDualShock4InputStream(conn net.Conn, ds4 *DualShock4,
 			if err := state.UnmarshalBinary(input); err != nil {
 				return fmt.Errorf("unmarshal framed DualShock 4 input state: %w", err)
 			}
-			ds4.UpdateInputState(&state)
+			if err := ds4.UpdateInputStateUntil(streamDone, &state); err != nil {
+				return fmt.Errorf("queue framed DualShock 4 input state: %w", err)
+			}
 		case StreamFrameMicrophonePCM:
 			ds4.QueueMicrophonePCMFrame(microphonePCM)
 		}

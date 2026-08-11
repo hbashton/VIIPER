@@ -109,7 +109,7 @@ $driverVersion = $versionNodes[0].InnerText.Trim()
 $source = $SourceRevision.ToLowerInvariant()
 $buildIdentity = & (Join-Path $PSScriptRoot 'Get-ViiperUdeBuildIdentity.ps1') `
     -SourceRevision $source -DriverPackageVersion $driverVersion `
-    -ABIMajor 1 -ABIMinor 9 -Capabilities 13
+    -ABIMajor 1 -ABIMinor 10 -Capabilities 13
 
 $manifest = [ordered]@{
     schema = 2
@@ -120,7 +120,7 @@ $manifest = [ordered]@{
     sourceRevision = $source
     driverPackageVersion = $driverVersion
     driverABIMajor = 1
-    driverABIMinor = 9
+    driverABIMinor = 10
     driverCapabilities = '0x0000000d'
     driverBuildIdentity = $buildIdentity
     testSignerCertificateSha256 = $certificateSha256
@@ -185,6 +185,6 @@ $lockSha256 = (Get-FileHash -LiteralPath $lockPath -Algorithm SHA256).Hash.ToLow
 
 Write-Host "Created compact source-bound local test package at '$output'."
 Write-Host "Source: $source"
-Write-Host "Driver: $driverVersion / ABI 1.9 / $buildIdentity"
+Write-Host "Driver: $driverVersion / ABI 1.10 / $buildIdentity"
 Write-Host "Test signer certificate SHA-256: $certificateSha256"
 Write-Host "Local test package lock SHA-256: $lockSha256"

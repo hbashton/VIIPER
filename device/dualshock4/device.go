@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -13,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Alia5/VIIPER/device"
+	"github.com/Alia5/VIIPER/device/internal/inputstatequeue"
 	"github.com/Alia5/VIIPER/device/internal/microphonebuffer"
 	"github.com/Alia5/VIIPER/usb"
 )
@@ -20,13 +20,13 @@ import (
 const (
 	microphoneTargetClientFrames  = 6  // 60 ms absorbs the DS4's 8/8/8/16 ms framing and host scheduling jitter.
 	microphoneMaximumClientFrames = 20 // 200 ms emergency ceiling for full-duplex BT bursts; steady state remains about 55 ms.
+	inputTransitionQueueCapacity  = 256
 )
 
 type DualShock4 struct {
-	inputCh        chan *InputState
-	inputState     *InputState
-	inputPublishMu sync.Mutex
-	metaState      *MetaState
+	inputQueue *inputstatequeue.Queue[InputState]
+	inputState *InputState
+	metaState  *MetaState
 
 	outputPublishMu  sync.RWMutex
 	speakerPublishMu sync.RWMutex
@@ -121,8 +121,9 @@ func New(o *device.CreateOptions) (*DualShock4, error) {
 		"interfaces", len(d.descriptor.Interfaces))
 
 	d.inputState = NewInputState()
-	d.inputCh = make(chan *InputState, 1)
-	d.inputCh <- d.inputState
+	d.inputQueue = inputstatequeue.New(
+		*d.inputState, dualShock4InputEdgeSignature(*d.inputState),
+		inputTransitionQueueCapacity)
 	d.timestampBase = time.Now()
 
 	return d, nil
@@ -187,24 +188,40 @@ func (d *DualShock4) replaceSpeakerCallbacks(update func()) {
 	}
 }
 
-func (d *DualShock4) UpdateInputState(state *InputState) {
-	d.inputPublishMu.Lock()
-	defer d.inputPublishMu.Unlock()
+func (d *DualShock4) UpdateInputState(state *InputState) error {
+	return d.UpdateInputStateUntil(nil, state)
+}
 
+func (d *DualShock4) UpdateInputStateUntil(done <-chan struct{}, state *InputState) error {
 	next := *NewInputState()
 	if state != nil {
 		next = *state
 	}
-	nextPtr := &next
-
-	d.mtx.Lock()
-	d.inputState = nextPtr
-	d.mtx.Unlock()
-	select {
-	case <-d.inputCh:
-	default:
+	if err := d.inputQueue.PublishUntil(
+		done, next, dualShock4InputEdgeSignature(next)); err != nil {
+		return err
 	}
-	d.inputCh <- nextPtr
+	d.mtx.Lock()
+	d.inputState = &next
+	d.mtx.Unlock()
+	return nil
+}
+
+func dualShock4InputEdgeSignature(state InputState) uint64 {
+	signature := uint64(state.Buttons) | uint64(state.DPad)<<16
+	if state.Touch1Active {
+		signature |= 1 << 24
+	}
+	if state.Touch2Active {
+		signature |= 1 << 32
+	}
+	return signature
+}
+
+func (d *DualShock4) InvalidateInterruptInput(endpoint uint8) {
+	if endpoint == 0 || endpoint&0x0f == EndpointIn&0x0f {
+		d.inputQueue.Invalidate()
+	}
 }
 
 func (d *DualShock4) GetDescriptor() *usb.Descriptor {
@@ -320,22 +337,14 @@ func (d *DualShock4) HandleTransfer(ctx context.Context, ep uint32, dir uint32, 
 	if dir == usb.DirectionIn {
 		switch epNumber {
 		case 4:
-			select {
-			case <-ctx.Done():
-				if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-					d.mtx.Lock()
-					is := d.inputState
-					ms := *d.metaState
-					d.mtx.Unlock()
-					return d.buildUSBInputReport(is, &ms)
-				}
+			is, _, err := d.inputQueue.Wait(ctx, nil)
+			if err != nil {
 				return nil
-			case is := <-d.inputCh:
-				d.mtx.Lock()
-				ms := *d.metaState
-				d.mtx.Unlock()
-				return d.buildUSBInputReport(is, &ms)
 			}
+			d.mtx.Lock()
+			ms := *d.metaState
+			d.mtx.Unlock()
+			return d.buildUSBInputReport(&is, &ms)
 		case EndpointMicrophoneIn & 0x0F:
 			return d.handleMicrophoneIn(ctx)
 		default:
@@ -401,7 +410,8 @@ func (d *DualShock4) publishSpeakerPCM(revision uint64, pcm []byte) bool {
 // writes the controller's next HID sample into caller-owned storage; USB/IP
 // continues to use HandleTransfer and its independently owned report slice.
 func (d *DualShock4) ReadInterruptInput(ctx context.Context, ep uint32, dst []byte) (int, error) {
-	return d.readInterruptInput(ctx, nil, ep, dst)
+	written, _, err := d.readInterruptInput(ctx, nil, ep, dst)
+	return written, err
 }
 
 // ReadScheduledInterruptInput keeps the exact DualShock 4 packet counter and
@@ -410,44 +420,34 @@ func (d *DualShock4) ReadInterruptInput(ctx context.Context, ep uint32, dst []by
 func (d *DualShock4) ReadScheduledInterruptInput(
 	ctx context.Context, deadline <-chan time.Time, ep uint32, dst []byte,
 ) (int, error) {
+	written, _, err := d.readInterruptInput(ctx, deadline, ep, dst)
+	return written, err
+}
+
+func (d *DualShock4) ReadClassifiedScheduledInterruptInput(
+	ctx context.Context, deadline <-chan time.Time, ep uint32, dst []byte,
+) (int, bool, error) {
 	return d.readInterruptInput(ctx, deadline, ep, dst)
 }
 
 func (d *DualShock4) readInterruptInput(
 	ctx context.Context, deadline <-chan time.Time, ep uint32, dst []byte,
-) (int, error) {
+) (int, bool, error) {
 	if ep&0x0f != EndpointIn&0x0f {
-		return 0, fmt.Errorf("DualShock 4 interrupt-IN endpoint %d is unsupported", ep)
+		return 0, false, fmt.Errorf("DualShock 4 interrupt-IN endpoint %d is unsupported", ep)
 	}
 	if deadline != nil && ctx.Err() != nil {
-		return 0, ctx.Err()
+		return 0, false, ctx.Err()
 	}
-	var is InputState
-	select {
-	case <-ctx.Done():
-		if deadline != nil || !errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return 0, ctx.Err()
-		}
-		d.mtx.Lock()
-		is = *d.inputState
-		d.mtx.Unlock()
-	case <-deadline:
-		if ctx.Err() != nil {
-			return 0, ctx.Err()
-		}
-		d.mtx.Lock()
-		is = *d.inputState
-		d.mtx.Unlock()
-	case next := <-d.inputCh:
-		if deadline != nil && ctx.Err() != nil {
-			return 0, ctx.Err()
-		}
-		is = *next
+	is, transition, err := d.inputQueue.Wait(ctx, deadline)
+	if err != nil {
+		return 0, false, err
 	}
 	d.mtx.Lock()
 	ms := *d.metaState
 	d.mtx.Unlock()
-	return d.buildUSBInputReportInto(&is, &ms, dst)
+	written, err := d.buildUSBInputReportInto(&is, &ms, dst)
+	return written, transition, err
 }
 
 func (d *DualShock4) QueueMicrophonePCMFrame(frame []byte) {

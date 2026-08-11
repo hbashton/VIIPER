@@ -949,14 +949,32 @@ ViiperEvtVirtualDeviceCleanup(
 
 static
 VOID
+ViiperClearEndpointInputReportLocked(
+    _In_ VIIPER_UDE_ENDPOINT_CONTEXT *EndpointContext
+    )
+{
+    InterlockedExchange(&EndpointContext->InputReportValid, FALSE);
+    InterlockedExchange(&EndpointContext->CachedDeliveryPending, FALSE);
+    InterlockedExchange(&EndpointContext->InputSnapshotPending, FALSE);
+    InterlockedExchange(&EndpointContext->InputTransitionHead, 0);
+    InterlockedExchange(&EndpointContext->InputTransitionCount, 0);
+}
+
+static
+VOID
 ViiperInvalidateEndpointInputReport(
     _In_ UDECXUSBENDPOINT Endpoint
     )
 {
     VIIPER_UDE_ENDPOINT_CONTEXT *endpointContext = ViiperGetEndpointContext(Endpoint);
 
-    InterlockedExchange(&endpointContext->InputReportValid, FALSE);
-    InterlockedExchange(&endpointContext->CachedDeliveryPending, FALSE);
+    if (endpointContext->InputLock != WDF_NO_HANDLE) {
+        WdfWaitLockAcquire(endpointContext->InputLock, NULL);
+    }
+    ViiperClearEndpointInputReportLocked(endpointContext);
+    if (endpointContext->InputLock != WDF_NO_HANDLE) {
+        WdfWaitLockRelease(endpointContext->InputLock);
+    }
 }
 
 static
@@ -976,7 +994,9 @@ ViiperInvalidateInputIfLifecycleClosed(
         InterlockedCompareExchange(&deviceContext->Resetting, 0, 0) != 0 ||
         InterlockedCompareExchange(&endpointContext->Purging, 0, 0) != 0 ||
         InterlockedCompareExchange(&endpointContext->Resetting, 0, 0) != 0) {
-        ViiperInvalidateEndpointInputReport(Endpoint);
+        // Both callers already own InputLock. Clearing under that same lock
+        // makes lifecycle invalidation atomic with FIFO append/dequeue.
+        ViiperClearEndpointInputReportLocked(endpointContext);
     }
     WdfSpinLockRelease(controllerContext->BrokerLock);
 }
@@ -1328,6 +1348,10 @@ ViiperEvtEndpointAdd(
         dispatchType = WdfIoQueueDispatchSequential;
     } else if ((descriptor.bEndpointAddress & USB_ENDPOINT_DIRECTION_MASK) != 0 &&
         (descriptor.bmAttributes & USB_ENDPOINT_TYPE_MASK) == USB_ENDPOINT_TYPE_INTERRUPT) {
+        ULONG packetBytes = descriptor.wMaxPacketSize & 0x07ff;
+        ULONG transactions = 1 + ((descriptor.wMaxPacketSize >> 11) & 0x03);
+        SIZE_T transitionBytes;
+
         endpointContext->FastInput = TRUE;
         dispatchType = WdfIoQueueDispatchManual;
         WDF_OBJECT_ATTRIBUTES_INIT(&attributes);
@@ -1336,6 +1360,34 @@ ViiperEvtEndpointAdd(
         if (!NT_SUCCESS(status)) {
             return status;
         }
+        endpointContext->InputTransitionStride = packetBytes * transactions;
+        if (endpointContext->InputTransitionStride == 0 ||
+            endpointContext->InputTransitionStride > VIIPER_UDE_MAX_INPUT_REPORT_BYTES) {
+            return STATUS_INVALID_PARAMETER;
+        }
+        endpointContext->InputTransitionCapacity = min(
+            VIIPER_UDE_MAX_INPUT_TRANSITIONS,
+            VIIPER_UDE_MAX_INPUT_TRANSITION_BYTES / endpointContext->InputTransitionStride);
+        if (endpointContext->InputTransitionCapacity == 0) {
+            return STATUS_INVALID_PARAMETER;
+        }
+        transitionBytes = (SIZE_T)endpointContext->InputTransitionStride *
+            endpointContext->InputTransitionCapacity;
+        WDF_OBJECT_ATTRIBUTES_INIT(&attributes);
+        attributes.ParentObject = endpoint;
+        status = WdfMemoryCreate(
+            &attributes,
+            NonPagedPoolNx,
+            0x56495549,
+            transitionBytes,
+            &endpointContext->InputTransitionMemory,
+            (PVOID *)&endpointContext->InputTransitionReports);
+        if (!NT_SUCCESS(status)) {
+            endpointContext->InputTransitionMemory = WDF_NO_HANDLE;
+            endpointContext->InputTransitionReports = NULL;
+            return status;
+        }
+        RtlZeroMemory(endpointContext->InputTransitionReports, transitionBytes);
     } else {
         dispatchType = WdfIoQueueDispatchParallel;
     }
@@ -1433,8 +1485,21 @@ ViiperPrepareCachedInputUrb(
     VIIPER_UDE_CONTROLLER_CONTEXT *controllerContext =
         ViiperGetControllerContext(deviceContext->Controller);
     PURB urb = ViiperGetUrb(Request);
+    PUCHAR report = endpointContext->InputReport;
+    ULONG reportLength = endpointContext->InputReportLength;
+    ULONG transitionHead = 0;
+    BOOLEAN transition = FALSE;
     ULONG transferLength;
     NTSTATUS status;
+
+    if (InterlockedCompareExchange(&endpointContext->InputTransitionCount, 0, 0) > 0) {
+        transitionHead = (ULONG)InterlockedCompareExchange(
+            &endpointContext->InputTransitionHead, 0, 0);
+        report = endpointContext->InputTransitionReports +
+            ((SIZE_T)transitionHead * endpointContext->InputTransitionStride);
+        reportLength = endpointContext->InputTransitionLengths[transitionHead];
+        transition = TRUE;
+    }
 
     if (urb == NULL ||
         (urb->UrbHeader.Function != URB_FUNCTION_BULK_OR_INTERRUPT_TRANSFER &&
@@ -1443,22 +1508,26 @@ ViiperPrepareCachedInputUrb(
         return STATUS_INVALID_DEVICE_REQUEST;
     }
     transferLength = urb->UrbBulkOrInterruptTransfer.TransferBufferLength;
-    if (endpointContext->InputReportLength > transferLength) {
-        return STATUS_BUFFER_TOO_SMALL;
+    if (reportLength > transferLength) {
+        status = STATUS_BUFFER_TOO_SMALL;
+    } else {
+        status = ViiperCopyTransferBuffer(Request, urb, report, reportLength, TRUE);
     }
-    status = ViiperCopyTransferBuffer(
-        Request,
-        urb,
-        endpointContext->InputReport,
-        endpointContext->InputReportLength,
-        TRUE);
     if (!NT_SUCCESS(status)) {
         return status;
     }
 
-    urb->UrbBulkOrInterruptTransfer.TransferBufferLength = endpointContext->InputReportLength;
-    UdecxUrbSetBytesCompleted(Request, endpointContext->InputReportLength);
-    InterlockedAdd64(&controllerContext->BytesFromDevice, endpointContext->InputReportLength);
+    urb->UrbBulkOrInterruptTransfer.TransferBufferLength = reportLength;
+    UdecxUrbSetBytesCompleted(Request, reportLength);
+    if (transition) {
+        InterlockedExchange(
+            &endpointContext->InputTransitionHead,
+            (LONG)((transitionHead + 1) % endpointContext->InputTransitionCapacity));
+        InterlockedDecrement(&endpointContext->InputTransitionCount);
+    } else {
+        InterlockedExchange(&endpointContext->InputSnapshotPending, FALSE);
+    }
+    InterlockedAdd64(&controllerContext->BytesFromDevice, reportLength);
     InterlockedIncrement64(&controllerContext->InputReportsCompleted);
     return STATUS_SUCCESS;
 }
@@ -1478,7 +1547,7 @@ ViiperEvtFastInputQueueReady(
     NTSTATUS completionStatus = STATUS_SUCCESS;
     BOOLEAN admitted = FALSE;
     BOOLEAN deliveryReady = FALSE;
-    BOOLEAN completionQueued = FALSE;
+    BOOLEAN completionAdmitted = FALSE;
 
     PAGED_CODE();
     // KMDF explicitly permits a passive ReadyNotify callback to retrieve the
@@ -1527,30 +1596,49 @@ ViiperEvtFastInputQueueReady(
         return;
     }
 
-    // One cached-delivery token represents one accepted publication which
-    // arrived before its Windows poll. Consume exactly one parked request.
-    // Completing it can cause HIDClass to post a successor; leaving that poll
-    // parked prevents a cache replay loop and lets the next producer update
-    // complete it on the allocation-free direct path.
-    if (NT_SUCCESS(WdfIoQueueRetrieveNextRequest(Queue, &request))) {
-        InterlockedExchange(&endpointContext->CachedDeliveryPending, FALSE);
+    // ReadyNotify is edge-triggered on empty -> non-empty. Microsoft requires
+    // manual-queue callbacks to retrieve in a loop, otherwise multiple host
+    // polls which arrived together can remain stranded while retained input
+    // also remains pending. The initial operation is a callback-lifetime hold;
+    // each retrieved URB receives its own rundown count transferred to the DPC.
+    for (;;) {
+        completionAdmitted = FALSE;
+        WdfSpinLockAcquire(controllerContext->BrokerLock);
+        if (InterlockedCompareExchange(&controllerContext->ShuttingDown, 0, 0) == 0 &&
+            InterlockedCompareExchange(&controllerContext->BrokerFaulted, FALSE, FALSE) == FALSE &&
+            InterlockedCompareExchange(&deviceContext->InD0, 0, 0) != 0 &&
+            InterlockedCompareExchange(&deviceContext->Purging, 0, 0) == 0 &&
+            InterlockedCompareExchange(&deviceContext->Resetting, 0, 0) == 0 &&
+            InterlockedCompareExchange(&endpointContext->Purging, 0, 0) == 0 &&
+            InterlockedCompareExchange(&endpointContext->Resetting, 0, 0) == 0 &&
+            InterlockedCompareExchange(&endpointContext->InputReportValid, 0, 0) != 0 &&
+            (InterlockedCompareExchange(&endpointContext->InputTransitionCount, 0, 0) > 0 ||
+                InterlockedCompareExchange(&endpointContext->InputSnapshotPending, 0, 0) != 0)) {
+            ViiperEndpointOperationStarted(endpoint);
+            completionAdmitted = TRUE;
+        }
+        WdfSpinLockRelease(controllerContext->BrokerLock);
+        if (!completionAdmitted) {
+            break;
+        }
+
+        request = WDF_NO_HANDLE;
+        if (!NT_SUCCESS(WdfIoQueueRetrieveNextRequest(Queue, &request))) {
+            ViiperEndpointOperationCompleted(endpoint);
+            break;
+        }
         ViiperInvalidateInputIfLifecycleClosed(endpoint);
         completionStatus = ViiperPrepareCachedInputUrb(endpoint, request);
-        completionQueued = TRUE;
-    } else {
-        ViiperInvalidateInputIfLifecycleClosed(endpoint);
+        InterlockedExchange(
+            &endpointContext->CachedDeliveryPending,
+            InterlockedCompareExchange(&endpointContext->InputTransitionCount, 0, 0) > 0 ||
+                InterlockedCompareExchange(&endpointContext->InputSnapshotPending, 0, 0) != 0);
+        ViiperCompleteRetrievedInputUrb(endpoint, request, completionStatus);
     }
     WdfWaitLockRelease(endpointContext->InputLock);
-    if (completionQueued) {
-        // Queue only after the last endpoint-local lock access. The DPC may run
-        // immediately and performs the final rundown release after UDE's
-        // mandatory DISPATCH_LEVEL terminal completion.
-        ViiperCompleteRetrievedInputUrb(endpoint, request, completionStatus);
-    } else {
-        // This is the final endpoint access: the locked decrement may let the
-        // purge worker complete and permit UdeCx cleanup immediately after it.
-        ViiperEndpointOperationCompleted(endpoint);
-    }
+    // Release the callback-lifetime hold only after the final endpoint access.
+    // Every queued completion owns a separate count until its DPC completes.
+    ViiperEndpointOperationCompleted(endpoint);
 }
 
 NTSTATUS
@@ -1612,7 +1700,8 @@ ViiperSubmitInputReport(
         input->PayloadOffset != sizeof(*input) || input->PayloadLength == 0 ||
         input->PayloadLength > VIIPER_UDE_MAX_INPUT_REPORT_BYTES ||
         payloadLength != input->PayloadLength ||
-        input->Reserved1[0] != 0 || input->Reserved1[1] != 0 || input->Reserved1[2] != 0) {
+        (input->Flags & ~VIIPER_UDE_INPUT_REPORT_TRANSITION) != 0 ||
+        input->Reserved1[0] != 0 || input->Reserved1[1] != 0) {
         InterlockedIncrement64(&controllerContext->InvalidMessages);
         return STATUS_INVALID_PARAMETER;
     }
@@ -1708,26 +1797,60 @@ ViiperSubmitInputReport(
         ViiperEndpointOperationCompleted(endpoint);
         return STATUS_INVALID_DEVICE_STATE;
     }
-    // Claim and cache every accepted sequence, including when no Windows poll
-    // is parked. The queue-ready callback will satisfy the next poll from this
-    // exact latest state instead of waiting for or fabricating another feeder
-    // update.
+    if (input->PayloadLength > endpointContext->InputTransitionStride) {
+        WdfWaitLockRelease(endpointContext->InputLock);
+        ViiperEndpointOperationCompleted(endpoint);
+        InterlockedIncrement64(&controllerContext->InvalidMessages);
+        return STATUS_INVALID_BUFFER_SIZE;
+    }
+    if ((input->Flags & VIIPER_UDE_INPUT_REPORT_TRANSITION) != 0 &&
+        InterlockedCompareExchange(&endpointContext->InputTransitionCount, 0, 0) >=
+            (LONG)endpointContext->InputTransitionCapacity) {
+        WdfWaitLockRelease(endpointContext->InputLock);
+        ViiperEndpointOperationCompleted(endpoint);
+        InterlockedIncrement64(&controllerContext->QueueExhaustions);
+        return STATUS_DEVICE_BUSY;
+    }
+    // Every accepted sample refreshes the cadence snapshot. Only a newly
+    // queued controller state is also appended to the bounded transition FIFO;
+    // deadline-generated idle samples therefore cannot crowd out press/release
+    // edges while Windows has no interrupt poll parked.
     InterlockedExchange64(&endpointContext->LastInputSequence, (LONG64)input->Sequence);
     RtlCopyMemory(endpointContext->InputReport, payload, input->PayloadLength);
     endpointContext->InputReportLength = input->PayloadLength;
     InterlockedExchange(&endpointContext->InputReportValid, TRUE);
+    if ((input->Flags & VIIPER_UDE_INPUT_REPORT_TRANSITION) != 0) {
+        ULONG count = (ULONG)InterlockedCompareExchange(
+            &endpointContext->InputTransitionCount, 0, 0);
+        ULONG head = (ULONG)InterlockedCompareExchange(
+            &endpointContext->InputTransitionHead, 0, 0);
+        ULONG tail = (head + count) % endpointContext->InputTransitionCapacity;
+        RtlCopyMemory(
+            endpointContext->InputTransitionReports +
+                ((SIZE_T)tail * endpointContext->InputTransitionStride),
+            payload,
+            input->PayloadLength);
+        endpointContext->InputTransitionLengths[tail] = (USHORT)input->PayloadLength;
+        InterlockedIncrement(&endpointContext->InputTransitionCount);
+        InterlockedExchange(&endpointContext->InputSnapshotPending, FALSE);
+    } else {
+        InterlockedExchange(&endpointContext->InputSnapshotPending, TRUE);
+    }
     InterlockedIncrement64(&controllerContext->InputReportsSubmitted);
     status = WdfIoQueueRetrieveNextRequest(endpointContext->Queue, &urbRequest);
     if (!NT_SUCCESS(status)) {
         InterlockedExchange(
             &endpointContext->CachedDeliveryPending,
-            status == STATUS_NO_MORE_ENTRIES ? TRUE : FALSE);
+            InterlockedCompareExchange(
+                &endpointContext->InputTransitionCount, 0, 0) > 0 ||
+                InterlockedCompareExchange(
+                    &endpointContext->InputSnapshotPending, 0, 0) != 0);
         ViiperInvalidateInputIfLifecycleClosed(endpoint);
         WdfWaitLockRelease(endpointContext->InputLock);
         ViiperEndpointOperationCompleted(endpoint);
         // The cached report now owns this state. Queue-ready delivery services
         // the next Windows poll even if the physical feeder becomes idle.
-        return status == STATUS_NO_MORE_ENTRIES ? STATUS_SUCCESS : status;
+        return STATUS_SUCCESS;
     }
     InterlockedExchange(&endpointContext->CachedDeliveryPending, FALSE);
     // Lifecycle admission can close after this operation was admitted. The
@@ -1736,12 +1859,19 @@ ViiperSubmitInputReport(
     // either this path or the lifecycle callback performs the final clear.
     ViiperInvalidateInputIfLifecycleClosed(endpoint);
     status = ViiperPrepareCachedInputUrb(endpoint, urbRequest);
+    InterlockedExchange(
+        &endpointContext->CachedDeliveryPending,
+        InterlockedCompareExchange(&endpointContext->InputTransitionCount, 0, 0) > 0 ||
+            InterlockedCompareExchange(&endpointContext->InputSnapshotPending, 0, 0) != 0);
     WdfWaitLockRelease(endpointContext->InputLock);
     // This call is the active-operation handoff. It performs every remaining
     // endpoint lookup before enqueuing the DPC; the caller performs no endpoint
     // access after a concurrently running DPC can release rundown.
     ViiperCompleteRetrievedInputUrb(endpoint, urbRequest, status);
-    return status;
+    // The producer publication was accepted before servicing this host poll.
+    // A malformed/short URB fails through its own DPC but does not make user
+    // mode retry an already-accepted sequence or discard the retained edge.
+    return STATUS_SUCCESS;
 }
 
 _IRQL_requires_(PASSIVE_LEVEL)

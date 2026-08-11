@@ -129,7 +129,8 @@ type contractInputReport struct {
 	DeviceId        uint64
 	Generation      uint32
 	EndpointAddress uint8
-	Reserved1       [3]uint8
+	Flags           uint8
+	Reserved1       [2]uint8
 	PayloadOffset   uint32
 	PayloadLength   uint32
 	Sequence        uint64
@@ -210,6 +211,7 @@ func TestNativeProtocolHeaderMatchesGoContract(t *testing.T) {
 		"VIIPER_UDE_MAX_ISO_PACKETS":             MaxIsoPackets,
 		"VIIPER_UDE_MAX_INPUT_REPORT_BYTES":      MaxInputReportBytes,
 		"VIIPER_UDE_MAX_PENDING_OPERATIONS":      MaxPendingOperations,
+		"VIIPER_UDE_INPUT_REPORT_TRANSITION":     uint64(InputReportTransition),
 		"VIIPER_UDE_MS_OS_10_STRING_INDEX":       uint64(MicrosoftOS10StringIndex),
 		"VIIPER_UDE_MS_OS_10_STRING_LENGTH":      MicrosoftOS10StringLength,
 		"VIIPER_UDE_MS_OS_10_VENDOR_CODE_OFFSET": MicrosoftOS10VendorCodeOffset,

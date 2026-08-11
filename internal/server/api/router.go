@@ -32,6 +32,20 @@ type HandlerFunc func(req *Request, res *Response, logger *slog.Logger) error
 // the handler encountered a terminal failure; the dispatcher/server will log it.
 type StreamHandlerFunc func(conn net.Conn, dev *usb.Device, logger *slog.Logger) error
 
+type streamLifetime interface {
+	StreamDone() <-chan struct{}
+}
+
+// StreamDone is closed when the server, peer, or a replacement stream closes
+// conn. Device handlers use it to cancel bounded backpressure without leaving
+// displaced stream cleanup blocked behind an input queue.
+func StreamDone(conn net.Conn) <-chan struct{} {
+	if lifetime, ok := conn.(streamLifetime); ok {
+		return lifetime.StreamDone()
+	}
+	return nil
+}
+
 // Router implements simple path pattern matching with placeholders in {name}.
 type Router struct {
 	routes       []routeEntry

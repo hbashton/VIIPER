@@ -23,6 +23,64 @@ func nativeProcessorForTest(t *testing.T) *NativeProcessor {
 	return processor
 }
 
+type inputLifecycleTestDevice struct {
+	*altSettingTestDevice
+	invalidated []uint8
+}
+
+func (d *inputLifecycleTestDevice) InvalidateInterruptInput(endpoint uint8) {
+	d.invalidated = append(d.invalidated, endpoint)
+}
+
+func TestNativeProcessorInvalidatesRetainedInputAtEveryGenerationBoundary(t *testing.T) {
+	desc := &usbdevice.Descriptor{
+		Device: usbdevice.DeviceDescriptor{Speed: uint32(udecx.DeviceSpeedHigh)},
+		Interfaces: []usbdevice.InterfaceConfig{{
+			Descriptor: usbdevice.InterfaceDescriptor{
+				BInterfaceNumber: 0, BAlternateSetting: 0, BNumEndpoints: 1,
+			},
+			Endpoints: []usbdevice.EndpointDescriptor{{
+				BEndpointAddress: 0x84, BMAttributes: 0x03,
+				WMaxPacketSize: 64, BInterval: 4,
+			}},
+		}},
+	}
+	dev := &inputLifecycleTestDevice{
+		altSettingTestDevice: &altSettingTestDevice{desc: desc},
+	}
+	processor := nativeProcessorForTest(t)
+	endpoint := udecx.Operation{
+		DeviceID: 1, Generation: 1, EndpointAddress: 0x84,
+		EndpointAttributes: 0x03, EndpointInterval: 4,
+		EndpointMaxPacketSize: 64,
+	}
+	for _, kind := range []udecx.OperationKind{
+		udecx.OperationEndpointStart,
+		udecx.OperationEndpointPurge,
+		udecx.OperationEndpointReset,
+	} {
+		endpoint.Kind = kind
+		if err := processor.Lifecycle(context.Background(), dev, endpoint); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, kind := range []udecx.OperationKind{
+		udecx.OperationDeviceD0Exit,
+		udecx.OperationDeviceD0Entry,
+		udecx.OperationDeviceReset,
+	} {
+		if err := processor.Lifecycle(context.Background(), dev, udecx.Operation{
+			DeviceID: 1, Generation: 1, Kind: kind,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := []uint8{0x84, 0x84, 0x84, 0, 0, 0}
+	if !bytes.Equal(dev.invalidated, want) {
+		t.Fatalf("input invalidations=%x want %x", dev.invalidated, want)
+	}
+}
+
 func TestNativeProcessorServesControlDescriptor(t *testing.T) {
 	dev := newNativeTransportTestDevice()
 	op := udecx.Operation{

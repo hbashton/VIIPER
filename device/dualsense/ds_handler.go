@@ -193,6 +193,7 @@ func releaseDualSenseIdentity(devPtr *usb.Device, deviceName string) {
 }
 
 func readDualSenseV5InputStream(conn net.Conn, dse *DualSense, logger *slog.Logger) error {
+	streamDone := api.StreamDone(conn)
 	header := make([]byte, StreamFrameHeaderSize)
 	input := make([]byte, InputStateSize)
 	microphonePCM := make([]byte, USBMicrophoneClientFrameSize)
@@ -265,7 +266,9 @@ func readDualSenseV5InputStream(conn net.Conn, dse *DualSense, logger *slog.Logg
 			if err := state.UnmarshalBinary(input); err != nil {
 				return fmt.Errorf("unmarshal framed input state: %w", err)
 			}
-			dse.UpdateInputState(&state)
+			if err := dse.UpdateInputStateUntil(streamDone, &state); err != nil {
+				return fmt.Errorf("queue framed DualSense input state: %w", err)
+			}
 		case StreamFrameMicrophonePCM:
 			dse.QueueMicrophonePCMFrame(microphonePCM)
 		}

@@ -13,7 +13,7 @@ func TestBuildIdentityCanonicalVectorAndValidation(t *testing.T) {
 	t.Parallel()
 
 	const revision = "0123456789abcdef0123456789abcdef01234567"
-	const wantHex = "335a8840a585df17ecc7bafa05fed2dc1b43c376a7b39245b6ee3185e50219d2"
+	const wantHex = "0a82bea09a529c6bf632234ceda2bcaa536713a71008a4fc7f262cd602850a90"
 	identity, err := DeriveBuildIdentity(revision, DriverPackageVersion,
 		ABIMajor, ABIMinor, AdvertisedCapabilities)
 	if err != nil {
@@ -414,12 +414,13 @@ func TestCompletionEncodingIntoCallerBufferDoesNotAllocate(t *testing.T) {
 func TestInputReportMarshalling(t *testing.T) {
 	raw, err := (InputReport{
 		DeviceID: 5, Generation: 7, EndpointAddress: 0x81,
-		Sequence: 11, Payload: []byte{1, 2, 3},
+		Transition: true, Sequence: 11, Payload: []byte{1, 2, 3},
 	}).MarshalBinary()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(raw) != InputReportSize+3 ||
+		raw[29] != InputReportTransition || raw[30] != 0 || raw[31] != 0 ||
 		binary.LittleEndian.Uint32(raw[32:36]) != InputReportSize ||
 		binary.LittleEndian.Uint32(raw[36:40]) != 3 ||
 		binary.LittleEndian.Uint64(raw[40:48]) != 11 ||
@@ -441,6 +442,25 @@ func TestInputReportMetadataEncodingDoesNotAllocate(t *testing.T) {
 	})
 	if allocations != 0 {
 		t.Fatalf("input-report metadata encoding allocated %.2f objects per call", allocations)
+	}
+}
+
+func TestInputReportMetadataClearsReusedTransitionFlag(t *testing.T) {
+	report := InputReport{
+		DeviceID: 5, Generation: 7, EndpointAddress: 0x81,
+		Transition: true, Sequence: 11, Payload: []byte{1},
+	}
+	var metadata [InputReportSize]byte
+	if err := report.marshalMetadata(metadata[:]); err != nil {
+		t.Fatal(err)
+	}
+	report.Transition = false
+	report.Sequence++
+	if err := report.marshalMetadata(metadata[:]); err != nil {
+		t.Fatal(err)
+	}
+	if metadata[29] != 0 || metadata[30] != 0 || metadata[31] != 0 {
+		t.Fatalf("reused input metadata retained flags/reserved bytes: %x", metadata[29:32])
 	}
 }
 

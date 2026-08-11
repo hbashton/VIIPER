@@ -237,10 +237,15 @@ func TestNativeCachedInputReadyUsesCompletionDPCWithoutWorkerHop(t *testing.T) {
 	requireContractOrder(t, ready,
 		"ViiperEndpointOperationStarted(endpoint);",
 		"WdfWaitLockAcquire(endpointContext->InputLock, NULL);",
+		"for (;;)",
 		"WdfIoQueueRetrieveNextRequest(Queue, &request)",
 		"ViiperPrepareCachedInputUrb(endpoint, request);",
+		"ViiperCompleteRetrievedInputUrb(endpoint, request, completionStatus);",
 		"WdfWaitLockRelease(endpointContext->InputLock);",
-		"ViiperCompleteRetrievedInputUrb(endpoint, request, completionStatus);")
+		"ViiperEndpointOperationCompleted(endpoint);")
+	if strings.Count(ready, "ViiperEndpointOperationStarted(endpoint);") != 2 {
+		t.Fatal("ReadyNotify must hold one callback rundown reference and one per queued DPC")
+	}
 	if strings.Contains(ready, "WdfWorkItemEnqueue") ||
 		strings.Contains(ready, "UdecxUrbComplete(") {
 		t.Fatal("ReadyNotify either retains a worker hop or completes a UDE URB synchronously")
@@ -250,6 +255,38 @@ func TestNativeCachedInputReadyUsesCompletionDPCWithoutWorkerHop(t *testing.T) {
 	if !strings.Contains(complete, "ViiperQueueUrbCompletion(") {
 		t.Fatal("cached input no longer transfers terminal completion to the shared DPC")
 	}
+}
+
+func TestNativeFastInputQueuesTransitionsButCoalescesIdleCadence(t *testing.T) {
+	header := nativeContractSource(t, "native", "udecx", "include", "ViiperUdeProtocol.h")
+	if !strings.Contains(header, "#define VIIPER_UDE_INPUT_REPORT_TRANSITION 0x01") {
+		t.Fatal("native ABI does not classify discrete input transitions")
+	}
+	device := nativeContractSource(t, "native", "udecx", "driver", "Device.c")
+	submit := normalizedContract(nativeCFunction(t, device, "ViiperSubmitInputReport"))
+	requireContractOrder(t, submit,
+		"if ((input->Flags & VIIPER_UDE_INPUT_REPORT_TRANSITION) != 0 &&",
+		"return STATUS_DEVICE_BUSY;",
+		"InterlockedExchange64(&endpointContext->LastInputSequence",
+		"RtlCopyMemory(endpointContext->InputReport",
+		"if ((input->Flags & VIIPER_UDE_INPUT_REPORT_TRANSITION) != 0) {",
+		"InterlockedIncrement(&endpointContext->InputTransitionCount);",
+		"WdfIoQueueRetrieveNextRequest(endpointContext->Queue")
+	ready := normalizedContract(nativeCFunction(t, device, "ViiperEvtFastInputQueueReady"))
+	requireContractOrder(t, ready,
+		"ViiperPrepareCachedInputUrb(endpoint, request);",
+		"&endpointContext->CachedDeliveryPending",
+		"&endpointContext->InputTransitionCount",
+		"&endpointContext->InputSnapshotPending",
+		"ViiperCompleteRetrievedInputUrb(endpoint, request, completionStatus);")
+	prepare := normalizedContract(nativeCFunction(t, device, "ViiperPrepareCachedInputUrb"))
+	requireContractOrder(t, prepare,
+		"if (InterlockedCompareExchange(&endpointContext->InputTransitionCount",
+		"report = endpointContext->InputTransitionReports",
+		"ViiperCopyTransferBuffer(Request, urb, report, reportLength, TRUE)",
+		"if (!NT_SUCCESS(status))",
+		"UdecxUrbSetBytesCompleted(Request, reportLength);",
+		"InterlockedDecrement(&endpointContext->InputTransitionCount)")
 }
 
 func TestNativeBrokerFaultFencesAdmissionAndPublication(t *testing.T) {
@@ -559,8 +596,8 @@ func TestNativeEndpointRundownPrecedesCleanupAndDPCMayRunImmediately(t *testing.
 		t.Fatalf("ActiveOperations has %d decrement sites, want one BrokerLock-owned transition", got)
 	}
 	startedCalls := regexp.MustCompile(`ViiperEndpointOperationStarted\s*\([^)]*\)\s*;`)
-	if got := len(startedCalls.FindAllString(broker+device, -1)); got != 4 {
-		t.Fatalf("endpoint rundown has %d admission call sites, want the four audited BrokerLock callers", got)
+	if got := len(startedCalls.FindAllString(broker+device, -1)); got != 5 {
+		t.Fatalf("endpoint rundown has %d admission call sites, want four callback admissions plus the ReadyNotify DPC handoff", got)
 	}
 
 	for _, name := range []string{

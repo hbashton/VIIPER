@@ -16,12 +16,12 @@ import (
 const (
 	Magic    uint32 = 0x45445556
 	ABIMajor uint16 = 1
-	ABIMinor uint16 = 9
+	ABIMinor uint16 = 10
 	// DriverPackageVersion is the native driver package version built and
 	// shipped with this service. Runtime negotiation proves the loaded driver
 	// carries this version in its source-bound build identity; package
 	// installation additionally verifies DriverVer and the signed catalog.
-	DriverPackageVersion = "0.1.0.8"
+	DriverPackageVersion = "0.1.0.9"
 	BuildIdentitySize    = sha256.Size
 
 	HeaderSize            = 16
@@ -36,12 +36,13 @@ const (
 	InputReportSize       = 48
 	StatsSize             = 144
 
-	MaxDevices           = 32
-	MaxDescriptorBytes   = 256 * 1024
-	MaxTransferBytes     = 1024 * 1024
-	MaxIsoPackets        = 1024
-	MaxInputReportBytes  = 4096
-	MaxPendingOperations = 4096
+	MaxDevices                  = 32
+	MaxDescriptorBytes          = 256 * 1024
+	MaxTransferBytes            = 1024 * 1024
+	MaxIsoPackets               = 1024
+	MaxInputReportBytes         = 4096
+	MaxPendingOperations        = 4096
+	InputReportTransition uint8 = 0x01
 	// TransferFlagDirectionIn is the wire value of
 	// USBD_TRANSFER_DIRECTION_IN from usb.h.
 	TransferFlagDirectionIn uint32 = 0x00000001
@@ -67,6 +68,7 @@ var (
 	ErrInvalidRange      = errors.New("native UDE message contains an invalid range")
 	ErrLimitExceeded     = errors.New("native UDE message exceeds a negotiated limit")
 	ErrBuildIdentity     = errors.New("native UDE build identity is unavailable or invalid")
+	ErrInputQueueFull    = errors.New("native UDE input transition queue is full")
 )
 
 type Capabilities uint32
@@ -495,6 +497,7 @@ type InputReport struct {
 	DeviceID        uint64
 	Generation      uint32
 	EndpointAddress uint8
+	Transition      bool
 	Sequence        uint64
 	Payload         []byte
 }
@@ -519,6 +522,10 @@ func (m InputReport) marshalMetadata(dst []byte) error {
 	binary.LittleEndian.PutUint64(dst[16:24], m.DeviceID)
 	binary.LittleEndian.PutUint32(dst[24:28], m.Generation)
 	dst[28] = m.EndpointAddress
+	dst[29], dst[30], dst[31] = 0, 0, 0
+	if m.Transition {
+		dst[29] = InputReportTransition
+	}
 	binary.LittleEndian.PutUint32(dst[32:36], InputReportSize)
 	binary.LittleEndian.PutUint32(dst[36:40], uint32(len(m.Payload)))
 	binary.LittleEndian.PutUint64(dst[40:48], m.Sequence)

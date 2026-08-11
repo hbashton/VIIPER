@@ -17,6 +17,8 @@ EXTERN_C const GUID GUID_DEVINTERFACE_VIIPER_UDE;
 // host-controller interface must retain UdeCx's canonical unqualified path.
 #define VIIPER_UDE_BROKER_REFERENCE_STRING L"broker"
 #define VIIPER_UDE_MAX_PENDING_MANAGEMENT 256
+#define VIIPER_UDE_MAX_INPUT_TRANSITIONS 256
+#define VIIPER_UDE_MAX_INPUT_TRANSITION_BYTES 65536
 #define VIIPER_UDE_MANAGEMENT_SLOT_FLAG 0x80000000UL
 
 typedef enum VIIPER_UDE_PENDING_STATE {
@@ -281,8 +283,16 @@ typedef struct VIIPER_UDE_ENDPOINT_CONTEXT {
     volatile LONG64 NextIsoStartFrame;
     volatile LONG InputReportValid;
     volatile LONG CachedDeliveryPending;
+    volatile LONG InputSnapshotPending;
     ULONG InputReportLength;
     UCHAR InputReport[VIIPER_UDE_MAX_INPUT_REPORT_BYTES];
+    WDFMEMORY InputTransitionMemory;
+    PUCHAR InputTransitionReports;
+    ULONG InputTransitionStride;
+    ULONG InputTransitionCapacity;
+    volatile LONG InputTransitionHead;
+    volatile LONG InputTransitionCount;
+    USHORT InputTransitionLengths[VIIPER_UDE_MAX_INPUT_TRANSITIONS];
     // BrokerLock protects this FIFO and every slot AdmissionEntry.  It keeps
     // same-endpoint publication ordered without scanning the controller-wide
     // 4096-slot table on every USB transfer.

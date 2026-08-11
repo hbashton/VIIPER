@@ -61,6 +61,18 @@ type ScheduledInterruptInputDevice interface {
 	) (int, error)
 }
 
+// ClassifiedScheduledInterruptInputDevice identifies whether a scheduled
+// report came from a newly queued controller state or from the deadline replay
+// of the current state. Native transports use that distinction to preserve
+// discrete edges while coalescing only idle cadence snapshots when Windows has
+// not yet posted its next interrupt poll.
+type ClassifiedScheduledInterruptInputDevice interface {
+	ScheduledInterruptInputDevice
+	ReadClassifiedScheduledInterruptInput(
+		ctx context.Context, deadline <-chan time.Time, ep uint32, dst []byte,
+	) (written int, transition bool, err error)
+}
+
 // IsochronousInputDevice is the corresponding optional caller-buffer contract
 // for isochronous IN packets. The transport supplies exactly the packet region
 // owned by the current URB. The native scheduler invokes this at the packet's
@@ -100,4 +112,12 @@ type InterfaceAltSettingDevice interface {
 // audio stream teardown even for virtual isochronous endpoints.
 type EndpointResetDevice interface {
 	ResetEndpoint(endpointAddress uint8)
+}
+
+// InterruptInputLifecycleDevice discards retained pre-boundary controller
+// transitions without changing the device's current state. Native transport
+// reset, purge, configuration, and power boundaries invoke it after joining
+// the old publisher so stale edges cannot replay into the next generation.
+type InterruptInputLifecycleDevice interface {
+	InvalidateInterruptInput(endpointAddress uint8)
 }

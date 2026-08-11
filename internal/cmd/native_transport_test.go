@@ -54,16 +54,16 @@ func TestNativeUDETransportCloseWaitsForHostBeforeClosingClient(t *testing.T) {
 func TestNativeUDETransportStatusIsSnapshot(t *testing.T) {
 	session := &nativeUDETransportSession{}
 	session.info.ABIMajor = 1
-	session.info.ABIMinor = 9
+	session.info.ABIMinor = 10
 	session.ready.Store(true)
 
 	ready, first := session.Status()
-	if !ready || first.ABIMajor != 1 || first.ABIMinor != 9 {
+	if !ready || first.ABIMajor != 1 || first.ABIMinor != 10 {
 		t.Fatalf("unexpected native status: ready=%v info=%+v", ready, first)
 	}
 	first.ABIMinor = 99
 	_, second := session.Status()
-	if second.ABIMinor != 9 {
+	if second.ABIMinor != 10 {
 		t.Fatal("Status exposed mutable session state")
 	}
 }

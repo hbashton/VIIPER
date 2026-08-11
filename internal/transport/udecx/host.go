@@ -527,6 +527,7 @@ func (h *Host) runInputPublisher(ctx context.Context, entry *registeredDevice, p
 	defer close(publisher.done)
 	reader, direct := entry.device.(usb.InterruptInputDevice)
 	scheduledReader, scheduled := entry.device.(usb.ScheduledInterruptInputDevice)
+	classifiedReader, classified := entry.device.(usb.ClassifiedScheduledInterruptInputDevice)
 	var reportBuffer []byte
 	var deadlineTimer *time.Timer
 	if direct {
@@ -543,10 +544,16 @@ func (h *Host) runInputPublisher(ctx context.Context, entry *registeredDevice, p
 	}
 	for {
 		var payload []byte
+		transition := false
 		if direct {
 			var written int
 			var err error
-			if deadlineTimer != nil {
+			if deadlineTimer != nil && classified {
+				deadlineTimer.Reset(publisher.interval)
+				written, transition, err = classifiedReader.ReadClassifiedScheduledInterruptInput(
+					ctx, deadlineTimer.C, uint32(publisher.endpoint&0x0f), reportBuffer)
+				stopInputDeadlineTimer(deadlineTimer)
+			} else if deadlineTimer != nil {
 				deadlineTimer.Reset(publisher.interval)
 				written, err = scheduledReader.ReadScheduledInterruptInput(
 					ctx, deadlineTimer.C, uint32(publisher.endpoint&0x0f), reportBuffer)
@@ -619,10 +626,33 @@ func (h *Host) runInputPublisher(ctx context.Context, entry *registeredDevice, p
 				entry.identity.DeviceID, publisher.endpoint, err))
 			return
 		}
-		if err := h.input.SubmitInputReport(publisher.submitCtx, InputReport{
+		report := InputReport{
 			DeviceID: entry.identity.DeviceID, Generation: entry.identity.Generation,
-			EndpointAddress: publisher.endpoint, Sequence: sequence, Payload: payload,
-		}); err != nil {
+			EndpointAddress: publisher.endpoint, Transition: transition,
+			Sequence: sequence, Payload: payload,
+		}
+		for {
+			err = h.input.SubmitInputReport(publisher.submitCtx, report)
+			if !errors.Is(err, ErrInputQueueFull) {
+				break
+			}
+			// The kernel retained every earlier transition and rejected this one
+			// before accepting its sequence. Wait one endpoint interval, then retry
+			// this exact report. This propagates bounded backpressure without
+			// dropping an edge or faulting the owner session.
+			retryInterval := publisher.interval
+			if retryInterval <= 0 {
+				retryInterval = time.Millisecond
+			}
+			retryTimer := time.NewTimer(retryInterval)
+			select {
+			case <-publisher.submitCtx.Done():
+				stopInputDeadlineTimer(retryTimer)
+				return
+			case <-retryTimer.C:
+			}
+		}
+		if err != nil {
 			if publisher.submitCtx.Err() != nil {
 				return
 			}

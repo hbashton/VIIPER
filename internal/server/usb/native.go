@@ -136,8 +136,15 @@ func (p *NativeProcessor) lockSession(key nativeSessionKey) *nativeSessionState 
 
 func (p *NativeProcessor) resetDeviceLocked(dev usbdevice.Device, identity udecx.DeviceIdentity,
 	session *nativeSessionState) {
+	p.invalidateInterruptInput(dev, 0)
 	p.server.resetInterfaceAlts(dev)
 	p.clearDeviceTransportLocked(identity, session)
+}
+
+func (p *NativeProcessor) invalidateInterruptInput(dev usbdevice.Device, endpoint uint8) {
+	if input, ok := dev.(usbdevice.InterruptInputLifecycleDevice); ok {
+		input.InvalidateInterruptInput(endpoint)
+	}
 }
 
 func (p *NativeProcessor) clearDeviceTransportLocked(identity udecx.DeviceIdentity,
@@ -181,9 +188,11 @@ func (p *NativeProcessor) Lifecycle(ctx context.Context, dev usbdevice.Device, o
 	switch op.Kind {
 	case udecx.OperationEndpointStart:
 		p.clearEndpointLanes(key)
+		p.invalidateInterruptInput(dev, op.EndpointAddress)
 		p.activateEndpointLocked(dev, op, session)
 	case udecx.OperationEndpointPurge:
 		p.clearEndpointLanes(key)
+		p.invalidateInterruptInput(dev, op.EndpointAddress)
 		// Closing the last endpoint of an alternate setting already establishes
 		// the controller's media-generation boundary through
 		// SetInterfaceAltSetting(0). Reset the individual pipe only when the
@@ -196,6 +205,7 @@ func (p *NativeProcessor) Lifecycle(ctx context.Context, dev usbdevice.Device, o
 		}
 	case udecx.OperationEndpointReset:
 		p.clearEndpointLanes(key)
+		p.invalidateInterruptInput(dev, op.EndpointAddress)
 		if resetter, ok := dev.(usbdevice.EndpointResetDevice); ok {
 			resetter.ResetEndpoint(op.EndpointAddress)
 		}
@@ -205,6 +215,7 @@ func (p *NativeProcessor) Lifecycle(ctx context.Context, dev usbdevice.Device, o
 		// A link-power transition is not a USB reset. Preserve the selected
 		// audio interfaces and controller state, but discard stale service-clock
 		// anchors so the first resumed transfer starts from the current time.
+		p.invalidateInterruptInput(dev, 0)
 		p.clearDeviceLanes(identity)
 	case udecx.OperationSetInterface:
 		// UdeCx is documented by usbip-win2 0.9.7.8 to return incorrect
@@ -536,6 +547,7 @@ func (p *NativeProcessor) processControl(ctx context.Context, dev usbdevice.Devi
 		// publishes that notification exactly once. Retire the native endpoint
 		// activity and media-clock state here after the host's device barrier has
 		// joined every pre-configuration callback.
+		p.invalidateInterruptInput(dev, 0)
 		p.clearDeviceTransportLocked(identity, session)
 		session.mu.Unlock()
 	}
