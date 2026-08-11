@@ -1185,14 +1185,6 @@ ViiperEvtEndpointAdd(
         if (!NT_SUCCESS(status)) {
             return status;
         }
-        WDF_WORKITEM_CONFIG_INIT(&workItemConfig, ViiperEvtFastInputWorkItem);
-        WDF_OBJECT_ATTRIBUTES_INIT(&attributes);
-        attributes.ParentObject = endpoint;
-        status = WdfWorkItemCreate(
-            &workItemConfig, &attributes, &endpointContext->InputReadyWorkItem);
-        if (!NT_SUCCESS(status)) {
-            return status;
-        }
     } else {
         dispatchType = WdfIoQueueDispatchParallel;
     }
@@ -1332,25 +1324,6 @@ ViiperEvtFastInputQueueReady(
 {
     UDECXUSBENDPOINT endpoint = (UDECXUSBENDPOINT)Context;
     VIIPER_UDE_ENDPOINT_CONTEXT *endpointContext = ViiperGetEndpointContext(endpoint);
-
-    UNREFERENCED_PARAMETER(Queue);
-    PAGED_CODE();
-    // WdfIoQueueReadyNotify is allowed to invoke this callback synchronously
-    // on UdeCx's URB submitter thread, including before registration returns.
-    // A cached poll must therefore cross a real execution boundary before it
-    // is retrieved and completed. KMDF 1.7+ safely coalesces repeated enqueue
-    // calls for one reusable work item while it is already queued.
-    WdfWorkItemEnqueue(endpointContext->InputReadyWorkItem);
-}
-
-VOID
-ViiperEvtFastInputWorkItem(
-    _In_ WDFWORKITEM WorkItem
-    )
-{
-    UDECXUSBENDPOINT endpoint =
-        (UDECXUSBENDPOINT)WdfWorkItemGetParentObject(WorkItem);
-    VIIPER_UDE_ENDPOINT_CONTEXT *endpointContext = ViiperGetEndpointContext(endpoint);
     VIIPER_UDE_DEVICE_CONTEXT *deviceContext = ViiperGetDeviceContext(endpointContext->Device);
     VIIPER_UDE_CONTROLLER_CONTEXT *controllerContext =
         ViiperGetControllerContext(deviceContext->Controller);
@@ -1359,6 +1332,12 @@ ViiperEvtFastInputWorkItem(
     BOOLEAN completionQueued = FALSE;
 
     PAGED_CODE();
+    // KMDF explicitly permits a passive ReadyNotify callback to retrieve the
+    // request that made a manual queue non-empty. Copy the already-cached
+    // latest state here, then transfer terminal ownership to the driver's
+    // completion DPC. The DPC is the separate DISPATCH_LEVEL boundary required
+    // by the UDE/host-controller completion contract; a system work item before
+    // that DPC only adds scheduler latency to the first poll after idle/resume.
     WdfWaitLockAcquire(endpointContext->InputLock, NULL);
     WdfSpinLockAcquire(controllerContext->BrokerLock);
     if (InterlockedCompareExchange(&controllerContext->ShuttingDown, 0, 0) == 0 &&
@@ -1384,7 +1363,7 @@ ViiperEvtFastInputWorkItem(
     // Completing it can cause HIDClass to post a successor; leaving that poll
     // parked prevents a cache replay loop and lets the next producer update
     // complete it on the allocation-free direct path.
-    if (NT_SUCCESS(WdfIoQueueRetrieveNextRequest(endpointContext->Queue, &request))) {
+    if (NT_SUCCESS(WdfIoQueueRetrieveNextRequest(Queue, &request))) {
         InterlockedExchange(&endpointContext->CachedDeliveryPending, FALSE);
         ViiperInvalidateInputIfLifecycleClosed(endpoint);
         (VOID)ViiperCompleteCachedInputUrb(endpoint, request);

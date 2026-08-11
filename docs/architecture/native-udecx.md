@@ -427,6 +427,11 @@ a wedged provider cannot retain the installer mutex indefinitely.
 - Each fast interrupt-IN endpoint has its own passive lock. Different
   controllers publish concurrently, while accidental concurrent submissions
   for one endpoint cannot reorder reports or replay a coalesced sequence.
+- If a fresh report arrives before Windows posts its next HID poll, the passive
+  manual-queue ready callback copies that cached state immediately and hands
+  terminal ownership to the shared completion DPC. The required asynchronous
+  DISPATCH_LEVEL completion remains intact without an intervening system-worker
+  scheduling hop on first poll, resume, or idle recovery.
 - A lost ordered lifecycle notification faults both the broker and the direct
   interrupt-IN producer lane. Already-published broker completions remain
   drainable, but no new controller state is admitted into a generation whose

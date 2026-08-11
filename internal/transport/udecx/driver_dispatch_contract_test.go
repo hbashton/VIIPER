@@ -219,3 +219,33 @@ func TestNativeFastInputSubmissionAvoidsSecondKMDFQueueHop(t *testing.T) {
 		t.Fatal("hot input report is still forwarded before completion")
 	}
 }
+
+func TestNativeCachedInputReadyUsesCompletionDPCWithoutWorkerHop(t *testing.T) {
+	device := nativeContractSource(t, "native", "udecx", "driver", "Device.c")
+	header := nativeContractSource(t, "native", "udecx", "driver", "ViiperUde.h")
+	if strings.Contains(device+header, "InputReadyWorkItem") ||
+		strings.Contains(device+header, "ViiperEvtFastInputWorkItem") {
+		t.Fatal("cached input delivery still crosses a generic system work item")
+	}
+
+	createQueue := normalizedContract(nativeCFunction(t, device, "ViiperCreateEndpointQueue"))
+	if !strings.Contains(createQueue, "attributes.ExecutionLevel = WdfExecutionLevelPassive;") {
+		t.Fatal("manual fast-input queue no longer pins ReadyNotify to PASSIVE_LEVEL")
+	}
+	ready := normalizedContract(nativeCFunction(t, device, "ViiperEvtFastInputQueueReady"))
+	requireContractOrder(t, ready,
+		"WdfWaitLockAcquire(endpointContext->InputLock, NULL);",
+		"ViiperEndpointOperationStarted(endpoint);",
+		"WdfIoQueueRetrieveNextRequest(Queue, &request)",
+		"ViiperCompleteCachedInputUrb(endpoint, request);",
+		"WdfWaitLockRelease(endpointContext->InputLock);")
+	if strings.Contains(ready, "WdfWorkItemEnqueue") ||
+		strings.Contains(ready, "UdecxUrbComplete(") {
+		t.Fatal("ReadyNotify either retains a worker hop or completes a UDE URB synchronously")
+	}
+
+	complete := normalizedContract(nativeCFunction(t, device, "ViiperCompleteRetrievedInputUrb"))
+	if !strings.Contains(complete, "ViiperQueueUrbCompletion(") {
+		t.Fatal("cached input no longer transfers terminal completion to the shared DPC")
+	}
+}
