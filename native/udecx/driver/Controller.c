@@ -494,5 +494,24 @@ ViiperCreateQueues(
 
     WDF_IO_QUEUE_CONFIG_INIT(&queueConfig, WdfIoQueueDispatchManual);
     queueConfig.PowerManaged = WdfFalse;
+    // Overlapped dequeue IOCTLs are routinely cancelled when a host worker is
+    // retired.  KMDF removes those requests from a manual queue without a
+    // retrieve call, so account for that ownership path explicitly instead of
+    // leaving WaitingDequeueCount permanently inflated for the owner session.
+    queueConfig.EvtIoCanceledOnQueue = ViiperEvtDequeueCanceledOnQueue;
     return WdfIoQueueCreate(Device, &queueConfig, &attributes, &context->WaitingDequeues);
+}
+
+VOID
+ViiperEvtDequeueCanceledOnQueue(
+    _In_ WDFQUEUE Queue,
+    _In_ WDFREQUEST Request
+    )
+{
+    VIIPER_UDE_CONTROLLER_CONTEXT *context =
+        ViiperGetControllerContext(WdfIoQueueGetDevice(Queue));
+    LONG remaining = InterlockedDecrement(&context->WaitingDequeueCount);
+
+    NT_ASSERT(remaining >= 0);
+    WdfRequestComplete(Request, STATUS_CANCELLED);
 }

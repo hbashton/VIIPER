@@ -79,6 +79,14 @@ ViiperQueueCancelEventLocked(
     if (!Pending->PublishedToOwner) {
         return FALSE;
     }
+    // BrokerFaulted is a terminal owner-session boundary.  The one broker
+    // fault notification already tells user mode to tear down; admitting more
+    // cancel records after it can only delay that terminal record and consume
+    // the queue capacity reserved for lifecycle ordering.
+    if (InterlockedCompareExchange(
+            &ControllerContext->BrokerFaulted, FALSE, FALSE) != FALSE) {
+        return FALSE;
+    }
     // Keep one slot reserved for a broker-fault event. Losing cancellation or
     // lifecycle state is not recoverable within the current owner session.
     if (ControllerContext->NotificationCount >= VIIPER_UDE_MAX_PENDING_OPERATIONS - 1) {
@@ -785,12 +793,16 @@ ViiperQueueEndpointLifecycleEvent(
     VIIPER_UDE_DEVICE_CONTEXT *deviceContext = ViiperGetDeviceContext(endpointContext->Device);
     VIIPER_UDE_CONTROLLER_CONTEXT *controllerContext =
         ViiperGetControllerContext(deviceContext->Controller);
+    BOOLEAN ownerActive;
     BOOLEAN active;
     BOOLEAN queued;
+    BOOLEAN faulted;
 
     WdfSpinLockAcquire(controllerContext->BrokerLock);
-    active = InterlockedCompareExchange(&controllerContext->ShuttingDown, 0, 0) == 0 &&
+    ownerActive = InterlockedCompareExchange(&controllerContext->ShuttingDown, 0, 0) == 0 &&
         ViiperLifecycleOwnerSessionActiveLocked(deviceContext);
+    active = ownerActive && InterlockedCompareExchange(
+        &controllerContext->BrokerFaulted, FALSE, FALSE) == FALSE;
     queued = active &&
         ViiperQueueLifecycleEventLocked(
             controllerContext,
@@ -800,14 +812,25 @@ ViiperQueueEndpointLifecycleEvent(
             0,
             0,
             0);
+    faulted = ownerActive && InterlockedCompareExchange(
+        &controllerContext->BrokerFaulted, FALSE, FALSE) != FALSE;
     WdfSpinLockRelease(controllerContext->BrokerLock);
+    if (queued || faulted) {
+        // Queue overflow can publish the terminal broker-fault record instead
+        // of this lifecycle event.  Dispatch that record even though the
+        // original insertion failed, otherwise already-waiting dequeue IOCTLs
+        // can remain parked forever with the fault hidden behind them.
+        // Lifecycle publication has priority over ordinary URBs.  Wake only
+        // the notification path here so a purge/reset callback cannot also
+        // publish unrelated media merely because it reported a boundary.
+        ViiperDispatchNotificationEvents(deviceContext->Controller);
+    }
     if (!active) {
         return STATUS_DEVICE_NOT_READY;
     }
     if (!queued) {
         return STATUS_INSUFFICIENT_RESOURCES;
     }
-    ViiperDispatchNotificationEvents(deviceContext->Controller);
     return STATUS_SUCCESS;
 }
 
@@ -820,23 +843,31 @@ ViiperQueueDeviceLifecycleEvent(
     VIIPER_UDE_DEVICE_CONTEXT *deviceContext = ViiperGetDeviceContext(Device);
     VIIPER_UDE_CONTROLLER_CONTEXT *controllerContext =
         ViiperGetControllerContext(deviceContext->Controller);
+    BOOLEAN ownerActive;
     BOOLEAN active;
     BOOLEAN queued;
+    BOOLEAN faulted;
 
     WdfSpinLockAcquire(controllerContext->BrokerLock);
-    active = InterlockedCompareExchange(&controllerContext->ShuttingDown, 0, 0) == 0 &&
+    ownerActive = InterlockedCompareExchange(&controllerContext->ShuttingDown, 0, 0) == 0 &&
         ViiperLifecycleOwnerSessionActiveLocked(deviceContext);
+    active = ownerActive && InterlockedCompareExchange(
+        &controllerContext->BrokerFaulted, FALSE, FALSE) == FALSE;
     queued = active &&
         ViiperQueueLifecycleEventLocked(
             controllerContext, deviceContext, NULL, Kind, 0, 0, 0);
+    faulted = ownerActive && InterlockedCompareExchange(
+        &controllerContext->BrokerFaulted, FALSE, FALSE) != FALSE;
     WdfSpinLockRelease(controllerContext->BrokerLock);
+    if (queued || faulted) {
+        ViiperDispatchNotificationEvents(deviceContext->Controller);
+    }
     if (!active) {
         return STATUS_DEVICE_NOT_READY;
     }
     if (!queued) {
         return STATUS_INSUFFICIENT_RESOURCES;
     }
-    ViiperDispatchNotificationEvents(deviceContext->Controller);
     return STATUS_SUCCESS;
 }
 
@@ -850,12 +881,16 @@ ViiperQueueInterfaceLifecycleEvent(
     VIIPER_UDE_DEVICE_CONTEXT *deviceContext = ViiperGetDeviceContext(Device);
     VIIPER_UDE_CONTROLLER_CONTEXT *controllerContext =
         ViiperGetControllerContext(deviceContext->Controller);
+    BOOLEAN ownerActive;
     BOOLEAN active;
     BOOLEAN queued;
+    BOOLEAN faulted;
 
     WdfSpinLockAcquire(controllerContext->BrokerLock);
-    active = InterlockedCompareExchange(&controllerContext->ShuttingDown, 0, 0) == 0 &&
+    ownerActive = InterlockedCompareExchange(&controllerContext->ShuttingDown, 0, 0) == 0 &&
         ViiperLifecycleOwnerSessionActiveLocked(deviceContext);
+    active = ownerActive && InterlockedCompareExchange(
+        &controllerContext->BrokerFaulted, FALSE, FALSE) == FALSE;
     queued = active &&
         ViiperQueueLifecycleEventLocked(
             controllerContext,
@@ -865,14 +900,18 @@ ViiperQueueInterfaceLifecycleEvent(
             InterfaceNumber,
             InterfaceSetting,
             0);
+    faulted = ownerActive && InterlockedCompareExchange(
+        &controllerContext->BrokerFaulted, FALSE, FALSE) != FALSE;
     WdfSpinLockRelease(controllerContext->BrokerLock);
+    if (queued || faulted) {
+        ViiperDispatchNotificationEvents(deviceContext->Controller);
+    }
     if (!active) {
         return STATUS_DEVICE_NOT_READY;
     }
     if (!queued) {
         return STATUS_INSUFFICIENT_RESOURCES;
     }
-    ViiperDispatchNotificationEvents(deviceContext->Controller);
     return STATUS_SUCCESS;
 }
 
@@ -894,15 +933,18 @@ ViiperQueueAcknowledgedLifecycleEvent(
     ULONG offset;
     NTSTATUS status = STATUS_INSUFFICIENT_RESOURCES;
     BOOLEAN canAllocate = TRUE;
+    BOOLEAN ownerActive = FALSE;
+    BOOLEAN faulted = FALSE;
 
     if (Endpoint != WDF_NO_HANDLE) {
         descriptor = &ViiperGetEndpointContext(Endpoint)->Descriptor;
     }
 
     WdfSpinLockAcquire(controllerContext->BrokerLock);
+    ownerActive = ViiperLifecycleOwnerSessionActiveLocked(deviceContext);
     if (InterlockedCompareExchange(&controllerContext->ShuttingDown, 0, 0) != 0 ||
         InterlockedCompareExchange(&controllerContext->BrokerFaulted, FALSE, FALSE) != FALSE ||
-        !ViiperLifecycleOwnerSessionActiveLocked(deviceContext)) {
+        !ownerActive) {
         status = STATUS_DEVICE_NOT_READY;
         canAllocate = FALSE;
     } else if (controllerContext->NotificationCount >=
@@ -957,12 +999,14 @@ ViiperQueueAcknowledgedLifecycleEvent(
         status = STATUS_SUCCESS;
         break;
     }
+    faulted = ownerActive && InterlockedCompareExchange(
+        &controllerContext->BrokerFaulted, FALSE, FALSE) != FALSE;
     WdfSpinLockRelease(controllerContext->BrokerLock);
 
     if (status == STATUS_INSUFFICIENT_RESOURCES) {
         InterlockedIncrement64(&controllerContext->QueueExhaustions);
     }
-    if (NT_SUCCESS(status)) {
+    if (NT_SUCCESS(status) || faulted) {
         ViiperDispatchNotificationEvents(deviceContext->Controller);
     }
     return status;
@@ -1024,6 +1068,7 @@ ViiperAllocatePendingSlot(
 
     WdfSpinLockAcquire(ControllerContext->BrokerLock);
     if (InterlockedCompareExchange(&ControllerContext->ShuttingDown, 0, 0) != 0 ||
+        InterlockedCompareExchange(&ControllerContext->BrokerFaulted, FALSE, FALSE) != FALSE ||
         InterlockedCompareExchange(&endpointContext->Purging, 0, 0) != 0 ||
         InterlockedCompareExchange(&endpointContext->Resetting, 0, 0) != 0 ||
         InterlockedCompareExchange(&deviceContext->Resetting, 0, 0) != 0 ||
@@ -1769,6 +1814,15 @@ ViiperDispatchAvailable(
         ViiperDispatchNotificationEvents(Controller);
         WdfSpinLockAcquire(controllerContext->BrokerLock);
         if (InterlockedCompareExchange(&controllerContext->ShuttingDown, 0, 0) != 0) {
+            WdfSpinLockRelease(controllerContext->BrokerLock);
+            break;
+        }
+        // Once lifecycle notification loss faults the owner session, only the
+        // notification FIFO may drain. Publishing another control/media URB
+        // would cross a reset or power boundary which user mode can no longer
+        // reconstruct.
+        if (InterlockedCompareExchange(
+                &controllerContext->BrokerFaulted, FALSE, FALSE) != FALSE) {
             WdfSpinLockRelease(controllerContext->BrokerLock);
             break;
         }

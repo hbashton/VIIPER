@@ -249,3 +249,169 @@ func TestNativeCachedInputReadyUsesCompletionDPCWithoutWorkerHop(t *testing.T) {
 		t.Fatal("cached input no longer transfers terminal completion to the shared DPC")
 	}
 }
+
+func TestNativeBrokerFaultFencesAdmissionAndPublication(t *testing.T) {
+	broker := nativeContractSource(t, "native", "udecx", "driver", "Broker.c")
+
+	allocate := normalizedContract(nativeCFunction(t, broker, "ViiperAllocatePendingSlot"))
+	requireContractOrder(t, allocate,
+		"WdfSpinLockAcquire(ControllerContext->BrokerLock);",
+		"ControllerContext->BrokerFaulted",
+		"pending->Request = Request;")
+
+	dispatch := normalizedContract(nativeCFunction(t, broker, "ViiperDispatchAvailable"))
+	requireContractOrder(t, dispatch,
+		"ViiperDispatchNotificationEvents(Controller);",
+		"controllerContext->BrokerFaulted",
+		"controllerContext->NextDispatchSlot + index")
+
+	cancel := normalizedContract(nativeCFunction(t, broker, "ViiperQueueCancelEventLocked"))
+	requireContractOrder(t, cancel,
+		"if (!Pending->PublishedToOwner)",
+		"ControllerContext->BrokerFaulted",
+		"ControllerContext->NotificationCount")
+
+	for _, function := range []string{
+		"ViiperQueueEndpointLifecycleEvent",
+		"ViiperQueueDeviceLifecycleEvent",
+		"ViiperQueueInterfaceLifecycleEvent",
+	} {
+		lifecycle := normalizedContract(nativeCFunction(t, broker, function))
+		requireContractOrder(t, lifecycle,
+			"active = ownerActive && InterlockedCompareExchange( &controllerContext->BrokerFaulted",
+			"queued = active &&",
+			"faulted = ownerActive && InterlockedCompareExchange( &controllerContext->BrokerFaulted",
+			"WdfSpinLockRelease(controllerContext->BrokerLock);",
+			"if (queued || faulted)",
+			"ViiperDispatchNotificationEvents(deviceContext->Controller);")
+	}
+
+	acknowledged := normalizedContract(nativeCFunction(t, broker, "ViiperQueueAcknowledgedLifecycleEvent"))
+	requireContractOrder(t, acknowledged,
+		"controllerContext->BrokerFaulted",
+		"ViiperFaultBrokerLocked(controllerContext)",
+		"faulted = ownerActive && InterlockedCompareExchange( &controllerContext->BrokerFaulted",
+		"WdfSpinLockRelease(controllerContext->BrokerLock);",
+		"if (NT_SUCCESS(status) || faulted)",
+		"ViiperDispatchNotificationEvents(deviceContext->Controller);")
+}
+
+func TestNativeManualDequeueCancellationRetiresAccounting(t *testing.T) {
+	controller := nativeContractSource(t, "native", "udecx", "driver", "Controller.c")
+	header := nativeContractSource(t, "native", "udecx", "driver", "ViiperUde.h")
+	createQueues := normalizedContract(nativeCFunction(t, controller, "ViiperCreateQueues"))
+	requireContractOrder(t, createQueues,
+		"WDF_IO_QUEUE_CONFIG_INIT(&queueConfig, WdfIoQueueDispatchManual);",
+		"queueConfig.EvtIoCanceledOnQueue = ViiperEvtDequeueCanceledOnQueue;",
+		"WdfIoQueueCreate(Device, &queueConfig")
+	if !strings.Contains(header,
+		"EVT_WDF_IO_QUEUE_IO_CANCELED_ON_QUEUE ViiperEvtDequeueCanceledOnQueue;") {
+		t.Fatal("manual dequeue cancellation callback lost its KMDF declaration")
+	}
+	cancel := normalizedContract(nativeCFunction(t, controller, "ViiperEvtDequeueCanceledOnQueue"))
+	requireContractOrder(t, cancel,
+		"InterlockedDecrement(&context->WaitingDequeueCount);",
+		"NT_ASSERT(remaining >= 0);",
+		"WdfRequestComplete(Request, STATUS_CANCELLED);")
+}
+
+func TestNativeBrokerMixedLaneFairnessModel(t *testing.T) {
+	// Exercise the exact round-robin slot selection and per-endpoint-head rule
+	// with control, HID/state, speaker ISO, and microphone ISO traffic from
+	// several controllers.  Deterministic head cancellations model purge/reset
+	// pressure while proving that an unrelated endpoint is never starved.
+	const slots = 4096
+	type laneKey struct {
+		device   int
+		endpoint byte
+	}
+	type admission struct {
+		lane     laneKey
+		sequence int
+		queued   bool
+		linked   bool
+	}
+
+	endpoints := []byte{0x00, 0x01, 0x02, 0x82}
+	pending := make([]admission, slots)
+	queues := make(map[laneKey][]int)
+	allocated := 0
+	for round := 1; round <= 8; round++ {
+		for device := 0; device < 8; device++ {
+			for _, endpoint := range endpoints {
+				lane := laneKey{device: device, endpoint: endpoint}
+				pending[allocated] = admission{
+					lane: lane, sequence: round, queued: true, linked: true,
+				}
+				queues[lane] = append(queues[lane], allocated)
+				allocated++
+			}
+		}
+	}
+
+	// Cancel selected heads before dispatch, exactly like the kernel unlink
+	// transition: remove the old head and expose its same-endpoint successor.
+	for lane, queue := range queues {
+		if (lane.device+int(lane.endpoint))%7 == 0 {
+			pending[queue[0]].linked = false
+			pending[queue[0]].queued = false
+			queues[lane] = queue[1:]
+		}
+	}
+
+	cursor := 0
+	delivered := make(map[laneKey][]int)
+	remaining := 0
+	for _, queue := range queues {
+		remaining += len(queue)
+	}
+	maxInspections := 0
+	totalInspections := 0
+	for remaining != 0 {
+		selected := -1
+		inspections := 0
+		for offset := 0; offset < slots; offset++ {
+			inspections++
+			candidate := (cursor + offset) % slots
+			item := pending[candidate]
+			queue := queues[item.lane]
+			if item.queued && item.linked && len(queue) != 0 && queue[0] == candidate {
+				selected = candidate
+				break
+			}
+		}
+		if selected < 0 {
+			t.Fatalf("mixed native traffic stranded %d endpoint admissions", remaining)
+		}
+		if inspections > maxInspections {
+			maxInspections = inspections
+		}
+		totalInspections += inspections
+		item := pending[selected]
+		delivered[item.lane] = append(delivered[item.lane], item.sequence)
+		queue := queues[item.lane]
+		queues[item.lane] = queue[1:]
+		pending[selected].linked = false
+		pending[selected].queued = false
+		cursor = (selected + 1) % slots
+		remaining--
+	}
+
+	for lane, sequences := range delivered {
+		for index := 1; index < len(sequences); index++ {
+			if sequences[index] != sequences[index-1]+1 {
+				t.Fatalf("lane %+v lost FIFO order: %v", lane, sequences)
+			}
+		}
+	}
+	if len(delivered) != 8*len(endpoints) {
+		t.Fatalf("only %d/%d independent lanes made progress", len(delivered), 8*len(endpoints))
+	}
+	// The independent allocation/dispatch cursors make every healthy admission
+	// the first inspected slot.  Each of the four deliberately canceled heads
+	// costs one extra inspection, never a controller-table wrap.
+	if maxInspections != 2 || totalInspections != allocated {
+		t.Fatalf("mixed native traffic inspected max=%d total=%d, want max=2 total=%d",
+			maxInspections, totalInspections, allocated)
+	}
+}
