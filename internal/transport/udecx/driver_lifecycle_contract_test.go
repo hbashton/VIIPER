@@ -151,10 +151,10 @@ func TestKernelDelayedCleanupCannotBlockOrRevokeReusedSlot(t *testing.T) {
 		"*Device = current;")
 	cleanup := normalizedContract(nativeCFunction(t, device, "ViiperEvtVirtualDeviceCleanup"))
 	requireContractOrder(t, cleanup,
+		"InterlockedExchange(&deviceContext->OwnerReferenced, 0)",
 		"ViiperReleaseDeviceSlot(controllerContext, device, deviceContext->Slot);",
 		"ViiperRetireActiveDevice(controllerContext, deviceContext);",
-		"InterlockedExchange(&deviceContext->OwnerReferenced, 0)",
-		"WdfObjectDereference(deviceContext->OwnerFile);")
+		"WdfObjectDereference(ownerFile);")
 
 	destroyOwned := nativeCFunction(t, device, "ViiperDestroyOwnedDevices")
 	for _, forbidden := range []string{"EvtVirtualDeviceCleanup", "ActiveDevices", "CleanupRetries"} {
@@ -162,6 +162,66 @@ func TestKernelDelayedCleanupCannotBlockOrRevokeReusedSlot(t *testing.T) {
 			t.Fatalf("logical owner release still waits on physical cleanup state %q", forbidden)
 		}
 	}
+}
+
+func TestKernelStaleChildCannotNotifySuccessorOwner(t *testing.T) {
+	broker := nativeContractSource(t, "native", "udecx", "driver", "Broker.c")
+	device := nativeContractSource(t, "native", "udecx", "driver", "Device.c")
+
+	ownerGate := normalizedContract(nativeCFunction(
+		t, broker, "ViiperLifecycleOwnerSessionActiveLocked"))
+	requireContractOrder(t, ownerGate,
+		"InterlockedCompareExchange(&DeviceContext->Purging, 0, 0) != 0",
+		"InterlockedCompareExchange(&DeviceContext->OwnerReferenced, 0, 0) == 0",
+		"ownerFile = DeviceContext->OwnerFile;",
+		"if (ownerFile == WDF_NO_HANDLE)",
+		"fileContext = ViiperGetFileContext(ownerFile);",
+		"InterlockedCompareExchange(&fileContext->BrokerOwner, 0, 0) != 0",
+		"InterlockedCompareExchange(&fileContext->Negotiated, 0, 0) != 0",
+		"InterlockedCompareExchange(&fileContext->Closing, 0, 0) == 0")
+	if strings.Contains(ownerGate, "WdfWaitLockAcquire(") {
+		t.Fatalf("lifecycle owner gate reverses cleanup lock order: %s", ownerGate)
+	}
+
+	insert := normalizedContract(nativeCFunction(t, broker, "ViiperQueueLifecycleEventLocked"))
+	requireContractOrder(t, insert,
+		"if (!ViiperLifecycleOwnerSessionActiveLocked(DeviceContext))",
+		"event = &ControllerContext->Notifications[ControllerContext->NotificationTail];",
+		"InterlockedIncrement64( &DeviceContext->EndpointSequences[event->EndpointAddress])",
+		"InterlockedIncrement64( &DeviceContext->DeviceSequence)")
+
+	for _, name := range []string{
+		"ViiperQueueEndpointLifecycleEvent",
+		"ViiperQueueDeviceLifecycleEvent",
+		"ViiperQueueInterfaceLifecycleEvent",
+		"ViiperQueueAcknowledgedLifecycleEvent",
+	} {
+		producer := normalizedContract(nativeCFunction(t, broker, name))
+		requireContractOrder(t, producer,
+			"WdfSpinLockAcquire(controllerContext->BrokerLock);",
+			"ViiperLifecycleOwnerSessionActiveLocked(deviceContext)",
+			"ViiperQueueLifecycleEventLocked(",
+			"WdfSpinLockRelease(controllerContext->BrokerLock);")
+	}
+
+	remove := normalizedContract(nativeCFunction(t, device, "ViiperBeginRemoveDevice"))
+	requireContractOrder(t, remove,
+		"WdfSpinLockAcquire(ControllerContext->BrokerLock);",
+		"InterlockedExchange(&deviceContext->Purging, TRUE);",
+		"WdfSpinLockRelease(ControllerContext->BrokerLock);",
+		"ControllerContext->Devices[index] = WDF_NO_HANDLE;")
+
+	cleanup := normalizedContract(nativeCFunction(t, device, "ViiperEvtVirtualDeviceCleanup"))
+	requireContractOrder(t, cleanup,
+		"WdfSpinLockAcquire(controllerContext->BrokerLock);",
+		"InterlockedExchange(&deviceContext->Purging, TRUE);",
+		"InterlockedExchange(&deviceContext->OwnerReferenced, 0)",
+		"ownerFile = deviceContext->OwnerFile;",
+		"deviceContext->OwnerFile = WDF_NO_HANDLE;",
+		"WdfSpinLockRelease(controllerContext->BrokerLock);",
+		"ViiperReleaseDeviceSlot(controllerContext, device, deviceContext->Slot);",
+		"if (ownerFile != WDF_NO_HANDLE)",
+		"WdfObjectDereference(ownerFile);")
 }
 
 func TestKernelNeverUsesConsumedUDEDeviceHandle(t *testing.T) {

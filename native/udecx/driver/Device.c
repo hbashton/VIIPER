@@ -746,18 +746,34 @@ ViiperEvtVirtualDeviceCleanup(
     UDECXUSBDEVICE device = (UDECXUSBDEVICE)DeviceObject;
     VIIPER_UDE_DEVICE_CONTEXT *deviceContext = ViiperGetDeviceContext(device);
     VIIPER_UDE_CONTROLLER_CONTEXT *controllerContext;
+    WDFFILEOBJECT ownerFile = WDF_NO_HANDLE;
 
     PAGED_CODE();
     if (deviceContext->Controller == WDF_NO_HANDLE) {
         return;
     }
     controllerContext = ViiperGetControllerContext(deviceContext->Controller);
+
+    // Lifecycle notification admission reads OwnerFile while holding
+    // BrokerLock. Revoke both that admission and the reference which pins the
+    // file context under the same lock, then release the reference outside the
+    // lock. An atomic OwnerReferenced test alone is not a lifetime pin: cleanup
+    // could otherwise dereference the file after the test and before the
+    // notifier reads its context.
+    WdfSpinLockAcquire(controllerContext->BrokerLock);
+    InterlockedExchange(&deviceContext->Purging, TRUE);
+    if (InterlockedExchange(&deviceContext->OwnerReferenced, 0) != 0) {
+        ownerFile = deviceContext->OwnerFile;
+        deviceContext->OwnerFile = WDF_NO_HANDLE;
+    }
+    WdfSpinLockRelease(controllerContext->BrokerLock);
+
     ViiperReleaseDeviceSlot(controllerContext, device, deviceContext->Slot);
     // Normal removal retired the logical count before PlugOutAndDelete. This
     // is only the fallback for an unexpected framework-owned deletion.
     ViiperRetireActiveDevice(controllerContext, deviceContext);
-    if (InterlockedExchange(&deviceContext->OwnerReferenced, 0) != 0) {
-        WdfObjectDereference(deviceContext->OwnerFile);
+    if (ownerFile != WDF_NO_HANDLE) {
+        WdfObjectDereference(ownerFile);
     }
 }
 

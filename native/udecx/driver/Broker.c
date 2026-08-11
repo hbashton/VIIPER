@@ -661,6 +661,41 @@ ViiperDrainUrbCompletions(
 
 static
 BOOLEAN
+ViiperLifecycleOwnerSessionActiveLocked(
+    _In_ VIIPER_UDE_DEVICE_CONTEXT *DeviceContext
+    )
+{
+    WDFFILEOBJECT ownerFile;
+    VIIPER_UDE_FILE_CONTEXT *fileContext;
+
+    // Device removal is asynchronous in UdeCx.  The old child can therefore
+    // deliver endpoint/power callbacks after its logical table slot has been
+    // released and a successor broker has connected.  The child retains its
+    // creating file object until EvtCleanup, so that file's permanent Closing
+    // transition is the generation fence which prevents those callbacks from
+    // entering the controller-wide notification FIFO of the new session.
+    //
+    // BrokerLock is the lifecycle admission linearization point.  Do not take
+    // OwnerLock here: cleanup takes OwnerLock before BrokerLock and reversing
+    // that order would deadlock.  Closing is set before cleanup takes either
+    // lock, while Purging is set under BrokerLock before the logical slot is
+    // released.
+    if (InterlockedCompareExchange(&DeviceContext->Purging, 0, 0) != 0 ||
+        InterlockedCompareExchange(&DeviceContext->OwnerReferenced, 0, 0) == 0) {
+        return FALSE;
+    }
+    ownerFile = DeviceContext->OwnerFile;
+    if (ownerFile == WDF_NO_HANDLE) {
+        return FALSE;
+    }
+    fileContext = ViiperGetFileContext(ownerFile);
+    return InterlockedCompareExchange(&fileContext->BrokerOwner, 0, 0) != 0 &&
+        InterlockedCompareExchange(&fileContext->Negotiated, 0, 0) != 0 &&
+        InterlockedCompareExchange(&fileContext->Closing, 0, 0) == 0;
+}
+
+static
+BOOLEAN
 ViiperQueueLifecycleEventLocked(
     _In_ VIIPER_UDE_CONTROLLER_CONTEXT *ControllerContext,
     _In_ VIIPER_UDE_DEVICE_CONTEXT *DeviceContext,
@@ -673,6 +708,13 @@ ViiperQueueLifecycleEventLocked(
 {
     VIIPER_UDE_NOTIFICATION *event;
 
+    // Keep this defensive check in the common insertion primitive so a future
+    // lifecycle producer cannot bypass the old-owner generation fence.  It is
+    // deliberately before both sequence increments: a stale child must leave
+    // no observable hole in its successor's lifecycle stream.
+    if (!ViiperLifecycleOwnerSessionActiveLocked(DeviceContext)) {
+        return FALSE;
+    }
     if (ControllerContext->NotificationCount >= VIIPER_UDE_MAX_PENDING_OPERATIONS - 1) {
         (VOID)ViiperFaultBrokerLocked(ControllerContext);
         return FALSE;
@@ -712,10 +754,13 @@ ViiperQueueEndpointLifecycleEvent(
     VIIPER_UDE_DEVICE_CONTEXT *deviceContext = ViiperGetDeviceContext(endpointContext->Device);
     VIIPER_UDE_CONTROLLER_CONTEXT *controllerContext =
         ViiperGetControllerContext(deviceContext->Controller);
+    BOOLEAN active;
     BOOLEAN queued;
 
     WdfSpinLockAcquire(controllerContext->BrokerLock);
-    queued = InterlockedCompareExchange(&controllerContext->ShuttingDown, 0, 0) == 0 &&
+    active = InterlockedCompareExchange(&controllerContext->ShuttingDown, 0, 0) == 0 &&
+        ViiperLifecycleOwnerSessionActiveLocked(deviceContext);
+    queued = active &&
         ViiperQueueLifecycleEventLocked(
             controllerContext,
             deviceContext,
@@ -725,6 +770,9 @@ ViiperQueueEndpointLifecycleEvent(
             0,
             0);
     WdfSpinLockRelease(controllerContext->BrokerLock);
+    if (!active) {
+        return STATUS_DEVICE_NOT_READY;
+    }
     if (!queued) {
         return STATUS_INSUFFICIENT_RESOURCES;
     }
@@ -741,13 +789,19 @@ ViiperQueueDeviceLifecycleEvent(
     VIIPER_UDE_DEVICE_CONTEXT *deviceContext = ViiperGetDeviceContext(Device);
     VIIPER_UDE_CONTROLLER_CONTEXT *controllerContext =
         ViiperGetControllerContext(deviceContext->Controller);
+    BOOLEAN active;
     BOOLEAN queued;
 
     WdfSpinLockAcquire(controllerContext->BrokerLock);
-    queued = InterlockedCompareExchange(&controllerContext->ShuttingDown, 0, 0) == 0 &&
+    active = InterlockedCompareExchange(&controllerContext->ShuttingDown, 0, 0) == 0 &&
+        ViiperLifecycleOwnerSessionActiveLocked(deviceContext);
+    queued = active &&
         ViiperQueueLifecycleEventLocked(
             controllerContext, deviceContext, NULL, Kind, 0, 0, 0);
     WdfSpinLockRelease(controllerContext->BrokerLock);
+    if (!active) {
+        return STATUS_DEVICE_NOT_READY;
+    }
     if (!queued) {
         return STATUS_INSUFFICIENT_RESOURCES;
     }
@@ -765,10 +819,13 @@ ViiperQueueInterfaceLifecycleEvent(
     VIIPER_UDE_DEVICE_CONTEXT *deviceContext = ViiperGetDeviceContext(Device);
     VIIPER_UDE_CONTROLLER_CONTEXT *controllerContext =
         ViiperGetControllerContext(deviceContext->Controller);
+    BOOLEAN active;
     BOOLEAN queued;
 
     WdfSpinLockAcquire(controllerContext->BrokerLock);
-    queued = InterlockedCompareExchange(&controllerContext->ShuttingDown, 0, 0) == 0 &&
+    active = InterlockedCompareExchange(&controllerContext->ShuttingDown, 0, 0) == 0 &&
+        ViiperLifecycleOwnerSessionActiveLocked(deviceContext);
+    queued = active &&
         ViiperQueueLifecycleEventLocked(
             controllerContext,
             deviceContext,
@@ -778,6 +835,9 @@ ViiperQueueInterfaceLifecycleEvent(
             InterfaceSetting,
             0);
     WdfSpinLockRelease(controllerContext->BrokerLock);
+    if (!active) {
+        return STATUS_DEVICE_NOT_READY;
+    }
     if (!queued) {
         return STATUS_INSUFFICIENT_RESOURCES;
     }
@@ -811,7 +871,7 @@ ViiperQueueAcknowledgedLifecycleEvent(
     WdfSpinLockAcquire(controllerContext->BrokerLock);
     if (InterlockedCompareExchange(&controllerContext->ShuttingDown, 0, 0) != 0 ||
         InterlockedCompareExchange(&controllerContext->BrokerFaulted, FALSE, FALSE) != FALSE ||
-        InterlockedCompareExchange(&deviceContext->Purging, 0, 0) != 0) {
+        !ViiperLifecycleOwnerSessionActiveLocked(deviceContext)) {
         status = STATUS_DEVICE_NOT_READY;
         canAllocate = FALSE;
     } else if (controllerContext->NotificationCount >=
