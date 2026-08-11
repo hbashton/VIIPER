@@ -1140,9 +1140,7 @@ ViiperEvtUrbCancel(
         VIIPER_UDE_PENDING_SLOT *pending =
             &controllerContext->PendingSlots[slot];
         if (ViiperSlotMatches(pending, Request, token)) {
-            dispatchSuccessor = pending->AdmissionLinked &&
-                (pending->State == ViiperUdePendingPreparing ||
-                    pending->State == ViiperUdePendingQueued);
+            dispatchSuccessor = pending->AdmissionLinked;
             notifyOwner = ViiperQueueCancelEventLocked(controllerContext, pending);
             pending->CompletionStatus = STATUS_CANCELLED;
             pending->CompletionUsbdStatus = USBD_STATUS_CANCELED;
@@ -1169,11 +1167,12 @@ ViiperEvtUrbCancel(
             ViiperDispatchNotificationEvents(controller);
         }
         if (dispatchSuccessor) {
-            // A queued endpoint head can be canceled without another broker
-            // IOCTL arriving to restart publication.  Wake the dispatcher
-            // after retiring that head so an already-waiting dequeue cannot
-            // strand its successor.  Publishing cancellations are excluded:
-            // their active dispatch loop performs this continuation itself.
+            // An endpoint head can be canceled without another broker IOCTL
+            // arriving to restart publication. WdfRequestUnmarkCancelable may
+            // return STATUS_CANCELLED before this callback runs, so even a
+            // Publishing head cannot rely on its old dispatch loop to observe
+            // the unlink. Wake dispatch after retiring every linked head so an
+            // already-waiting dequeue cannot strand its successor.
             ViiperDispatchAvailable(controller);
         }
     }

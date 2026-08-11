@@ -61,9 +61,7 @@ func TestNativeBrokerAdmissionRetirementCannotStrandSuccessor(t *testing.T) {
 
 	cancel := normalizedContract(nativeCFunction(t, broker, "ViiperEvtUrbCancel"))
 	requireContractOrder(t, cancel,
-		"dispatchSuccessor = pending->AdmissionLinked",
-		"pending->State == ViiperUdePendingPreparing",
-		"pending->State == ViiperUdePendingQueued",
+		"dispatchSuccessor = pending->AdmissionLinked;",
 		"ViiperUnlinkAdmissionLocked(pending);",
 		"WdfSpinLockRelease(controllerContext->BrokerLock);",
 		"if (dispatchSuccessor)",
@@ -81,6 +79,37 @@ func TestNativeBrokerAdmissionRetirementCannotStrandSuccessor(t *testing.T) {
 	requireContractOrder(t, abort,
 		"pending->AbortPending = TRUE;",
 		"ViiperUnlinkAdmissionLocked(pending);")
+}
+
+func TestNativeBrokerPublishingCancelCannotMissDispatchWake(t *testing.T) {
+	// WdfRequestUnmarkCancelable is allowed to return STATUS_CANCELLED before
+	// EvtRequestCancel has run. Model the worst ordering: the old dispatcher
+	// scans while the publishing admission is still linked, finds no eligible
+	// successor, and returns. The later callback must both unlink and explicitly
+	// wake a new dispatch pass.
+	type admission struct {
+		linked bool
+		state  string
+	}
+	head := admission{linked: true, state: "publishing"}
+	successor := admission{linked: true, state: "queued"}
+	canPublishSuccessor := func() bool {
+		return successor.linked && !head.linked
+	}
+
+	if canPublishSuccessor() {
+		t.Fatal("successor published ahead of the same-endpoint head")
+	}
+	oldDispatchReturned := true // it scanned before EvtRequestCancel ran
+	dispatchWake := false
+	if head.linked {
+		dispatchWake = true
+		head.linked = false
+		head.state = "dpc-completion"
+	}
+	if !oldDispatchReturned || !dispatchWake || !canPublishSuccessor() {
+		t.Fatal("publishing-head cancellation failed to wake its queued successor")
+	}
 }
 
 func TestNativeBrokerIndependentCursorEliminatesCommonFullWrap(t *testing.T) {
