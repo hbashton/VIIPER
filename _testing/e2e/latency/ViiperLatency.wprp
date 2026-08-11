@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Source-controlled sequential-file profile for the production latency gate. -->
+<WindowsPerformanceRecorder Version="1.0" Author="VIIPER" Team="VIIPER" Comments="Controller latency evidence" Company="VIIPER" Copyright="VIIPER contributors">
+  <Profiles>
+    <SystemCollector Id="ViiperLatencySystemCollector" Name="NT Kernel Logger">
+      <BufferSize Value="1024"/>
+      <Buffers Value="256"/>
+    </SystemCollector>
+    <EventCollector Id="ViiperLatencyEventCollector" Name="VIIPER latency sample markers">
+      <BufferSize Value="256"/>
+      <Buffers Value="128"/>
+    </EventCollector>
+    <SystemProvider Id="ViiperLatencySystemProvider">
+      <Keywords>
+        <Keyword Value="CpuConfig"/>
+        <Keyword Value="Loader"/>
+        <Keyword Value="ProcessThread"/>
+        <Keyword Value="CSwitch"/>
+        <Keyword Value="ReadyThread"/>
+        <Keyword Value="SampledProfile"/>
+        <Keyword Value="DPC"/>
+        <Keyword Value="Interrupt"/>
+        <Keyword Value="WDFDPC"/>
+        <Keyword Value="WDFInterrupt"/>
+      </Keywords>
+      <Stacks>
+        <Stack Value="CSwitch"/>
+        <Stack Value="ReadyThread"/>
+        <Stack Value="SampledProfile"/>
+      </Stacks>
+    </SystemProvider>
+    <EventProvider Id="ViiperLatencyMarkerProvider" Name="e1726ef8-c2e6-4dad-bbf7-2d871b953ab1" Level="5"/>
+    <Profile Id="ViiperLatency.Verbose.File" Name="ViiperLatency" Description="VIIPER controller latency with exact TraceLogging sample markers" DetailLevel="Verbose" LoggingMode="File">
+      <Collectors>
+        <SystemCollectorId Value="ViiperLatencySystemCollector">
+          <SystemProviderId Value="ViiperLatencySystemProvider"/>
+        </SystemCollectorId>
+        <EventCollectorId Value="ViiperLatencyEventCollector">
+          <EventProviders>
+            <EventProviderId Value="ViiperLatencyMarkerProvider"/>
+          </EventProviders>
+        </EventCollectorId>
+      </Collectors>
+    </Profile>
+  </Profiles>
+</WindowsPerformanceRecorder>

@@ -9,7 +9,7 @@ must not be presented as interchangeable evidence.
 - `_testing/e2e/scripts/Invoke-ViiperE2ELatencyGate.ps1` is the opt-in Windows
   production gate. It records every press and release observed through SDL,
   compares authenticated USB/IP and native UDE runs, and emits a strict JSON
-  evidence artifact plus a bounded-memory WPR trace.
+  evidence artifact plus a source-controlled sequential-file WPR trace.
 
 No live latency result is checked into this document. A passing result exists
 only when the production command below succeeds on the stated machine and its
@@ -17,7 +17,11 @@ source-bound artifacts are retained.
 
 ### Evidence boundary
 
-This is an exact-source, production-authentic API-to-consumer path gate. The Go
+This is an exact-source native-path, production-authentic API-to-consumer gate.
+The USB/IP comparator is deliberately labeled
+`version-probed-functional-baseline-not-source-bound`: the wrapper proves the
+supported 0.9.7.7 command and functional port contract, not the source revision
+of that third-party installed driver. The Go
 test starts `cmd.Server` in process at the clean `HEAD` under test and uses the
 repository's Go client over real localhost TCP. Beyond that process boundary it
 uses the installed USB/IP or native UDE transport, the actual Windows controller
@@ -81,31 +85,54 @@ processing, the selected virtual USB transport, Windows controller input, SDL's
 event path, and consumer wake-up. It does not claim display, engine-frame, or
 network latency.
 
-Go's `time.Now`/`time.Since` monotonic readings are used for interval
-subtraction. On Windows, the Go runtime sources that clock from QPC; Microsoft
-recommends QPC for sub-microsecond interval and latency measurement. SDL's event
-timestamp is retained independently to reject absent, stale, or regressing
-events. The harness never subtracts the SDL clock from the Go clock.
+Raw `QueryPerformanceCounter` ticks bracket every interval and are converted
+with the once-recorded `QueryPerformanceFrequency`; that conversion is the
+canonical `latency_ns`. The strict parser recomputes it exactly and rejects an
+overflow, clock regression, cross-sample QPC regression, or JSON latency that
+does not match its retained ticks. Go's monotonic clock is used only for wait
+deadlines. Microsoft recommends QPC for sub-microsecond interval and latency
+measurement. SDL's event timestamp is retained independently to reject absent,
+stale, or regressing events. The harness never subtracts the SDL clock from the
+QPC clock.
 
-The observer uses `SDL_WaitEventTimeout`, not a tight state loop. Unexpected
+The observer uses `SDL_WaitEventTimeout`, not a tight state loop. It observes
+the complete unmeasured dwell, then drains exact queued button events, checks
+the current state, captures QPC, and places an `SDL_GetTicksNS` fence directly
+beside the input write. An event must be strictly newer than that fence; an
+older or same-tick event is rejected rather than misattributed to the write.
+SDL and the authenticated TCP write expose no shared atomic operation, so this
+is a stale-edge exclusion/admission proof, not a claim of cryptographic causal
+identity across the irreducible final function-call boundary. Unexpected
 same-state edges from the exact device are counted as duplicates while the wait
 continues. A missing expected edge increments the appropriate miss counter and
 terminates that transport/controller run. The final quiet window is also an SDL
 event wait, so late release duplicates are not hidden and no measurement-side
 busy poll consumes a CPU core.
 
+The source-bound SDL build enables its Windows RawInput backend before
+initialization. SDL's default Xbox backend exposes only a logical `XInput#N`
+path; RawInput retains the exact HID device-interface path needed to bind the
+observed controller to Windows PnP ancestry. This makes the Xbox arm an SDL
+RawInput consumer-path measurement, not an XInput API polling measurement. A
+logical XInput path or failure to enable RawInput fails closed rather than
+falling back to VID/PID-only identity.
+
 ## Source and device binding
 
 The PowerShell entry point fails closed before measurement unless all of the
 following are true:
 
-- `HEAD` equals the caller-supplied 40-64 digit source revision;
+- `HEAD` equals the caller-supplied 40- or 64-digit source revision;
 - the tracked and untracked source tree is clean and every submodule is at its
   recorded revision;
 - the native package passes the existing production Microsoft-signature and
   submission-manifest gate;
 - the installed `ViiperUde.sys` hash matches that verified package and the one
   VIIPER root devnode reports a Microsoft signer;
+- the live Go harness is linked with the clean `HEAD` as
+  `nativeSourceRevision`, and the build identity negotiated from the loaded
+  kernel image exactly matches the verified manifest identity (the installed
+  file hash alone is not presented as loaded-image proof);
 - the SDL DLL hash matches the caller-supplied source-build hash;
 - the DLL actually loaded by the Go test is that exact absolute SDL path and
   hash;
@@ -115,7 +142,14 @@ following are true:
 - `DeviceAdd` returns the expected controller type, VID, PID, bus, device ID,
   and (for USB/IP) exact auto-attached import port;
 - all baseline SDL gamepads remain present and exactly one stable new SDL ID is
-  created; its path, GUID, real type, VID, and PID must match the API device.
+  created; its path, GUID, real type, VID, and PID must match the API device;
+- the SDL HID interface resolves to an exact present Windows PnP ancestry. A
+  native run must terminate at service `ViiperUde`/hardware ID
+  `ROOT\VIIPER\UDE`; USB/IP must terminate at service `usbip2_ude`/INF hardware
+  ID `ROOT\USBIP_WIN2\UDE` (the OS-assigned devnode instance is commonly
+  `ROOT\USB\####` and is recorded separately). The gate follows the unified
+  `DEVPKEY_Device_Parent` relation through that anchor to `HTREE\ROOT\0`; a
+  truncated/cyclic chain or a second matching anchor is rejected.
 
 The gate does not install, update, stop, replace, or remove a driver or service.
 Run it on a disposable test machine with the verified production package and
@@ -124,8 +158,9 @@ already own the API ports or native broker handle.
 
 ## Statistics and pass policy
 
-The artifact retains every sample as
-`{sequence, transition, latency_ns, sdl_event_timestamp_ns}`. It reports press,
+The artifact retains every sample's sequence, transition, monotonic latency,
+SDL event/pre-write-fence timestamps, raw QPC start/end/pre-marker ticks, and canonical
+TraceLogging marker ID. It reports press,
 release, and combined distributions for each controller/transport:
 
 - p50, p95, and p99 use the nearest-rank definition (`ceil(p * N)`, one based);
@@ -192,12 +227,21 @@ $revision = (git rev-parse HEAD).Trim()
   -Samples 256
 ```
 
-The wrapper verifies and uses `GeneralProfile.Verbose.Memory`, names the
-recording instance, rejects dropped events, and saves the trace on both pass and
-test failure. The profile includes context-switch, ready-thread, sampled-profile,
-DPC, interrupt, and WDF evidence needed to investigate a tail. The ETL is not
-parsed into latency samples and is not a substitute for the SDL consumer
-timestamps.
+The wrapper verifies and uses the checked-in `ViiperLatency.wprp` in sequential
+file mode, names the recording instance, rejects any reported event/buffer
+loss, and saves the trace on both pass and test failure. The profile includes
+context-switch, ready-thread, sampled-profile, DPC, interrupt, and WDF evidence
+needed to investigate a tail. A fixed TraceLogging provider captures another
+QPC value after the measured end and then emits each marker. The wrapper decodes
+the ETL oldest-first and requires exact chronological, one-to-one marker and
+QPC/timestamp/latency payload equality with the strictly parsed JSON; missing,
+duplicate, reordered, extra, or undecodable markers fail closed.
+The exact decoded marker set is retained beside the JSON as
+`<OutputPath>.etl-markers.json`, and the production wrapper invokes the same Go
+strict parser/recomputation verifier used by deterministic tests on the JSON,
+decoded-marker, and ETL evidence pair.
+The ETL remains corroborating scheduler evidence, not a substitute for SDL's
+consumer timestamp.
 
 Directly setting the live-test environment variable is intentionally
 insufficient. The Go test also requires the preflight marker, expected source
@@ -233,10 +277,22 @@ misses, duplicates, or a live release pass from it.
   define the nanosecond event timestamp, device ID, button, and edge.
 - [`SDL_WaitEventTimeout`](https://wiki.libsdl.org/SDL3/SDL_WaitEventTimeout) is
   the blocking event-consumer primitive used by the observer.
+- [`SDL_HINT_JOYSTICK_RAWINPUT`](https://wiki.libsdl.org/SDL3/SDL_HINT_JOYSTICK_RAWINPUT)
+  documents that RawInput is disabled by default, handles XInput-capable
+  devices, and must be enabled before SDL initialization.
 - [Microsoft high-resolution timestamp guidance](https://learn.microsoft.com/en-us/windows/win32/sysinfo/acquiring-high-resolution-time-stamps)
   recommends QPC for interval and latency measurements.
+- [Microsoft `CM_Get_Parent` and unified-parent guidance](https://learn.microsoft.com/en-us/windows/win32/api/cfgmgr32/nf-cfgmgr32-cm_get_parent)
+  identifies `DEVPKEY_Device_Parent` as the Windows Vista-and-later device-tree
+  parent relation used by the identity proof.
 - [Microsoft WPR command-line guidance](https://learn.microsoft.com/en-us/windows-hardware/test/wpt/wpr-command-line-options)
   documents named instances, memory/file modes, profiles, start, and stop.
+- [Microsoft WPR logging-mode guidance](https://learn.microsoft.com/en-us/windows-hardware/test/wpt/logging-mode)
+  distinguishes sequential file logging from bounded circular memory logging.
+- [Microsoft `Get-WinEvent` guidance](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.diagnostics/get-winevent)
+  documents ETL `Path`, `ProviderName` filtering, and oldest-first decoding.
+- [Microsoft TraceLogging capture guidance](https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/capture-and-view-tracelogging-data)
+  documents collecting self-describing providers with WPR/WPA.
 - [ViGEmBus](https://github.com/nefarius/ViGEmBus/tree/d986e1d93708ec9b11049542fa6027272cce716c)
   is the virtual-controller lifecycle and replay-method reference. Its design
   motivates testing through an unmodified game-consumer API; no ViGEm latency

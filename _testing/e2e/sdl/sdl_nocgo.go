@@ -49,6 +49,10 @@ func Init(InitFlags) error {
 	return errors.New("SDL3 end-to-end benchmarks require CGO and the vendored SDL3 development files")
 }
 
+func EnableWindowsRawInput() error {
+	return errors.New("SDL3 end-to-end benchmarks require CGO and the vendored SDL3 development files")
+}
+
 func Quit() {}
 
 func UpdateGamepads() {}
@@ -84,3 +88,9 @@ func (*Gamepad) WaitButtonEvent(GamepadButton, bool, int32) bool { return false 
 func (*Gamepad) WaitButtonTransition(GamepadButton, int32) (GamepadButtonEvent, bool, error) {
 	return GamepadButtonEvent{}, false, errors.New("SDL3 end-to-end benchmarks require CGO")
 }
+
+func (*Gamepad) PollButtonTransition(GamepadButton) (GamepadButtonEvent, bool, error) {
+	return GamepadButtonEvent{}, false, errors.New("SDL3 end-to-end benchmarks require CGO")
+}
+
+func TicksNS() uint64 { return 0 }

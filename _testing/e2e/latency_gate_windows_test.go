@@ -32,6 +32,7 @@ import (
 	"github.com/Alia5/VIIPER/internal/cmd"
 	"github.com/Alia5/VIIPER/internal/server/api"
 	serverusb "github.com/Alia5/VIIPER/internal/server/usb"
+	"github.com/Alia5/VIIPER/internal/testsupport/latencytrace"
 	"github.com/Alia5/VIIPER/viiperclient"
 	"github.com/Alia5/VIIPER/viipertypes"
 	"golang.org/x/sys/windows"
@@ -48,6 +49,8 @@ const (
 	liveLatencySDLSHA256         = "VIIPER_E2E_SDL_DLL_SHA256"
 	liveLatencyPackageManifest   = "VIIPER_E2E_PACKAGE_MANIFEST_SHA256"
 	liveLatencyDriverSHA256      = "VIIPER_E2E_NATIVE_DRIVER_SHA256"
+	liveLatencyTraceProfileSHA   = "VIIPER_E2E_TRACE_PROFILE_SHA256"
+	liveLatencyDriverBuildID     = "VIIPER_E2E_NATIVE_DRIVER_BUILD_IDENTITY"
 	liveLatencyAPIAddress        = "127.0.0.1:33245"
 	liveLatencyUSBIPAddress      = "127.0.0.1:33244"
 	liveLatencyPassword          = "testpassword1234"
@@ -59,14 +62,16 @@ const (
 )
 
 type liveLatencyConfig struct {
-	outputPath         string
-	samplePairs        int
-	expectedRevision   string
-	sdlRevision        string
-	sdlDLLPath         string
-	sdlDLLSHA256       string
-	packageManifestSHA string
-	driverSHA256       string
+	outputPath          string
+	samplePairs         int
+	expectedRevision    string
+	sdlRevision         string
+	sdlDLLPath          string
+	sdlDLLSHA256        string
+	packageManifestSHA  string
+	driverSHA256        string
+	traceProfileSHA256  string
+	driverBuildIdentity string
 }
 
 type liveControllerWorkload struct {
@@ -145,10 +150,29 @@ func TestLiveControllerToGameLatencyGate(t *testing.T) {
 	if err = validateLiveLatencySource(config); err != nil {
 		t.Fatal(err)
 	}
+	if err = sdl.EnableWindowsRawInput(); err != nil {
+		t.Fatalf("enable SDL RawInput for exact Windows source identity: %v", err)
+	}
 	if err = sdl.Init(sdl.InitFlagGamepad | sdl.InitFlagEvents); err != nil {
 		t.Fatalf("initialize source-bound SDL event observer: %v", err)
 	}
 	defer sdl.Quit()
+	traceProvider, err := latencytrace.NewProvider()
+	if err != nil {
+		t.Fatalf("initialize source-controlled latency TraceLogging provider: %v", err)
+	}
+	defer traceProvider.Close()
+	traceEnableDeadline := time.Now().Add(time.Second)
+	for !traceProvider.Enabled() && time.Now().Before(traceEnableDeadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !traceProvider.Enabled() {
+		t.Fatal("source-controlled latency TraceLogging provider was not enabled by WPR")
+	}
+	qpcFrequency, err := latencytrace.Frequency()
+	if err != nil {
+		t.Fatalf("query QPC frequency: %v", err)
+	}
 	loadedSDL, err := loadedModulePath("SDL3.dll")
 	if err != nil {
 		t.Fatal(err)
@@ -178,6 +202,13 @@ func TestLiveControllerToGameLatencyGate(t *testing.T) {
 		SDLBinarySHA256:             loadedHash,
 		NativePackageManifestSHA256: config.packageManifestSHA,
 		NativeDriverSHA256:          config.driverSHA256,
+		NativeDriverBuildIdentity:   config.driverBuildIdentity,
+		QPCFrequency:                qpcFrequency,
+		TraceProviderName:           latency.TraceProviderName,
+		TraceProviderGUID:           latency.TraceProviderGUID,
+		TraceProfileSHA256:          config.traceProfileSHA256,
+		USBIPBaselineMode:           latency.USBIPBaselineMode,
+		USBIPBaselineVersion:        latency.USBIPBaselineVersion,
 		GoVersion:                   runtime.Version(),
 		GOOS:                        runtime.GOOS,
 		GOARCH:                      runtime.GOARCH,
@@ -218,7 +249,8 @@ func TestLiveControllerToGameLatencyGate(t *testing.T) {
 		}
 		for _, block := range latency.ProductionBlockSchedule(config.samplePairs) {
 			report.Runs = append(report.Runs,
-				runLiveLatencyTransport(gateCtx, block, controller))
+				runLiveLatencyTransport(gateCtx, block, controller, traceProvider,
+					qpcFrequency, config.driverBuildIdentity))
 		}
 		if err = latency.Finalize(&report); err != nil {
 			t.Fatalf("finalize %s source-bound latency report: %v", controller.apiType, err)
@@ -263,17 +295,20 @@ func loadLiveLatencyConfig() (liveLatencyConfig, error) {
 			"%s=1 is required; use the production preflight wrapper", liveLatencyPreflight)
 	}
 	config := liveLatencyConfig{
-		outputPath:         strings.TrimSpace(os.Getenv(liveLatencyOutput)),
-		expectedRevision:   strings.ToLower(strings.TrimSpace(os.Getenv(liveLatencyExpectedRevision))),
-		sdlRevision:        strings.ToLower(strings.TrimSpace(os.Getenv(liveLatencySDLRevision))),
-		sdlDLLPath:         strings.TrimSpace(os.Getenv(liveLatencySDLDLL)),
-		sdlDLLSHA256:       strings.ToLower(strings.TrimSpace(os.Getenv(liveLatencySDLSHA256))),
-		packageManifestSHA: strings.ToLower(strings.TrimSpace(os.Getenv(liveLatencyPackageManifest))),
-		driverSHA256:       strings.ToLower(strings.TrimSpace(os.Getenv(liveLatencyDriverSHA256))),
+		outputPath:          strings.TrimSpace(os.Getenv(liveLatencyOutput)),
+		expectedRevision:    strings.ToLower(strings.TrimSpace(os.Getenv(liveLatencyExpectedRevision))),
+		sdlRevision:         strings.ToLower(strings.TrimSpace(os.Getenv(liveLatencySDLRevision))),
+		sdlDLLPath:          strings.TrimSpace(os.Getenv(liveLatencySDLDLL)),
+		sdlDLLSHA256:        strings.ToLower(strings.TrimSpace(os.Getenv(liveLatencySDLSHA256))),
+		packageManifestSHA:  strings.ToLower(strings.TrimSpace(os.Getenv(liveLatencyPackageManifest))),
+		driverSHA256:        strings.ToLower(strings.TrimSpace(os.Getenv(liveLatencyDriverSHA256))),
+		traceProfileSHA256:  strings.ToLower(strings.TrimSpace(os.Getenv(liveLatencyTraceProfileSHA))),
+		driverBuildIdentity: strings.ToLower(strings.TrimSpace(os.Getenv(liveLatencyDriverBuildID))),
 	}
 	if config.outputPath == "" || config.expectedRevision == "" || config.sdlRevision == "" ||
 		config.sdlDLLPath == "" || config.sdlDLLSHA256 == "" ||
-		config.packageManifestSHA == "" || config.driverSHA256 == "" {
+		config.packageManifestSHA == "" || config.driverSHA256 == "" ||
+		config.traceProfileSHA256 == "" || config.driverBuildIdentity == "" {
 		return liveLatencyConfig{}, errors.New("production latency provenance environment is incomplete")
 	}
 	if !filepath.IsAbs(config.outputPath) || !filepath.IsAbs(config.sdlDLLPath) {
@@ -363,6 +398,9 @@ func runLiveLatencyTransport(
 	ctx context.Context,
 	block latency.BlockSpec,
 	controller liveControllerWorkload,
+	traceProvider *latencytrace.Provider,
+	qpcFrequency int64,
+	expectedDriverBuildIdentity string,
 ) (result latency.Run) {
 	transport := block.Transport
 	result.Order = block.Order
@@ -385,7 +423,7 @@ func runLiveLatencyTransport(
 	}
 	result.Controller.BaselineGamepadIDs = gamepadIDsAsInt32(baseline)
 
-	server, err := startLatencyServer(ctx, transport, tempDir)
+	server, err := startLatencyServer(ctx, transport, tempDir, expectedDriverBuildIdentity)
 	if err != nil {
 		result.Failure = err.Error()
 		return result
@@ -456,7 +494,8 @@ func runLiveLatencyTransport(
 		result.Failure = fmt.Sprintf("authenticated API failed immediately after rejection probe: %v", reprobeErr)
 		return result
 	}
-	if err = validatePing(transport, reprobe); err != nil || reprobe.Version != server.ping.Version {
+	if err = validatePing(transport, reprobe, expectedDriverBuildIdentity); err != nil ||
+		reprobe.Version != server.ping.Version {
 		result.Failure = fmt.Sprintf(
 			"authenticated API identity changed after rejection probe: response=%+v error=%v",
 			reprobe, err)
@@ -517,6 +556,10 @@ func runLiveLatencyTransport(
 		result.Failure = err.Error()
 		return result
 	}
+	if err = bindControllerPnP(&result.Controller, transport, device.USBIPPort); err != nil {
+		result.Failure = err.Error()
+		return result
+	}
 
 	streamCtx, cancelStream := context.WithTimeout(ctx, 10*time.Second)
 	stream, err = server.client.OpenStream(streamCtx, 1, device.DevID)
@@ -531,7 +574,7 @@ func runLiveLatencyTransport(
 		result.Failure = fmt.Sprintf("settle exact SDL source before measurement: %v", err)
 		return result
 	}
-	lastEventTimestamp, err = warmControllerPath(gamepad, stream, controller, lastEventTimestamp)
+	lastEventTimestamp, err = warmControllerPath(gamepad, stream, controller, lastEventTimestamp, qpcFrequency)
 	if err != nil {
 		result.Failure = fmt.Sprintf("warm exact controller-to-SDL path: %v", err)
 		return result
@@ -539,18 +582,30 @@ func runLiveLatencyTransport(
 	observedDown := false
 	lastSequence := block.FirstSequence + block.SamplePairs - 1
 	for sequence := block.FirstSequence; sequence <= lastSequence; sequence++ {
-		sleepForProductionPhase(sequence, latency.TransitionPress)
-		lastEventTimestamp, err = measureTransition(
-			gamepad, stream, sequence, latency.TransitionPress, true,
-			controller.state(true), &observedDown, lastEventTimestamp, &result)
+		lastEventTimestamp, err = waitForCausalDwell(gamepad, sequence,
+			latency.TransitionPress, &observedDown, lastEventTimestamp, &result)
 		if err != nil {
 			result.Failure = err.Error()
 			return result
 		}
-		sleepForProductionPhase(sequence, latency.TransitionRelease)
+		lastEventTimestamp, err = measureTransition(
+			gamepad, stream, sequence, latency.TransitionPress, true,
+			controller.state(true), &observedDown, lastEventTimestamp, &result,
+			controller.apiType, transport, block.TransportBlock, traceProvider, qpcFrequency)
+		if err != nil {
+			result.Failure = err.Error()
+			return result
+		}
+		lastEventTimestamp, err = waitForCausalDwell(gamepad, sequence,
+			latency.TransitionRelease, &observedDown, lastEventTimestamp, &result)
+		if err != nil {
+			result.Failure = err.Error()
+			return result
+		}
 		lastEventTimestamp, err = measureTransition(
 			gamepad, stream, sequence, latency.TransitionRelease, false,
-			controller.state(false), &observedDown, lastEventTimestamp, &result)
+			controller.state(false), &observedDown, lastEventTimestamp, &result,
+			controller.apiType, transport, block.TransportBlock, traceProvider, qpcFrequency)
 		if err != nil {
 			result.Failure = err.Error()
 			return result
@@ -566,7 +621,9 @@ func runLiveLatencyTransport(
 	return result
 }
 
-func startLatencyServer(ctx context.Context, transport, tempDir string) (*latencyServerSession, error) {
+func startLatencyServer(ctx context.Context, transport, tempDir,
+	expectedDriverBuildIdentity string,
+) (*latencyServerSession, error) {
 	for _, address := range []string{liveLatencyAPIAddress, liveLatencyUSBIPAddress} {
 		listener, err := net.Listen("tcp", address)
 		if err != nil {
@@ -613,7 +670,7 @@ func startLatencyServer(ctx context.Context, transport, tempDir string) (*latenc
 		ping, pingErr := client.PingCtx(pingCtx)
 		cancelPing()
 		if pingErr == nil {
-			if err := validatePing(transport, ping); err != nil {
+			if err := validatePing(transport, ping, expectedDriverBuildIdentity); err != nil {
 				cancelServer()
 				<-serverDone
 				return nil, err
@@ -649,20 +706,47 @@ func (session *latencyServerSession) close() error {
 	}
 }
 
-func validatePing(transport string, ping *viipertypes.PingResponse) error {
+func validatePing(transport string, ping *viipertypes.PingResponse,
+	expectedDriverBuildIdentity string,
+) error {
 	if ping == nil || ping.Server != "VIIPER" || ping.Transport != transport ||
 		ping.Version == "" || ping.Ready == nil || !*ping.Ready {
 		return fmt.Errorf("authenticated ping does not prove live %s transport: %+v", transport, ping)
 	}
 	if transport == latency.TransportNativeUDE {
 		if ping.NativeUDE == nil || ping.NativeUDE.ABIMajor == 0 ||
-			ping.NativeUDE.ExpectedDriverPackageVersion == "" {
+			ping.NativeUDE.ExpectedDriverPackageVersion == "" ||
+			ping.NativeUDE.LoadedDriverBuildIdentity == "" ||
+			ping.NativeUDE.LoadedDriverBuildIdentity != expectedDriverBuildIdentity {
 			return fmt.Errorf("authenticated ping lacks native ABI/package proof: %+v", ping)
 		}
 	} else if ping.NativeUDE != nil {
 		return fmt.Errorf("USB/IP ping returned contradictory native proof: %+v", ping.NativeUDE)
 	}
 	return nil
+}
+
+func TestValidatePingRequiresExpectedLoadedDriverIdentity(t *testing.T) {
+	ready := true
+	expected := strings.Repeat("a", 64)
+	ping := &viipertypes.PingResponse{
+		Server: "VIIPER", Version: "0.1.0", Transport: latency.TransportNativeUDE,
+		Ready: &ready,
+		NativeUDE: &viipertypes.NativeUDEInfo{
+			ABIMajor: 1, ExpectedDriverPackageVersion: "0.1.0.4",
+			LoadedDriverBuildIdentity: expected,
+		},
+	}
+	if err := validatePing(latency.TransportNativeUDE, ping, expected); err != nil {
+		t.Fatalf("matching negotiated identity was rejected: %v", err)
+	}
+	if err := validatePing(latency.TransportNativeUDE, ping, strings.Repeat("b", 64)); err == nil {
+		t.Fatal("mismatched negotiated identity was accepted before the native workload")
+	}
+	ping.NativeUDE.LoadedDriverBuildIdentity = ""
+	if err := validatePing(latency.TransportNativeUDE, ping, expected); err == nil {
+		t.Fatal("absent negotiated identity was accepted before the native workload")
+	}
 }
 
 func serverProof(ping *viipertypes.PingResponse) latency.ServerProof {
@@ -675,6 +759,7 @@ func serverProof(ping *viipertypes.PingResponse) latency.ServerProof {
 			ABIMajor: ping.NativeUDE.ABIMajor, ABIMinor: ping.NativeUDE.ABIMinor,
 			Capabilities:                 ping.NativeUDE.Capabilities,
 			ExpectedDriverPackageVersion: ping.NativeUDE.ExpectedDriverPackageVersion,
+			LoadedDriverBuildIdentity:    ping.NativeUDE.LoadedDriverBuildIdentity,
 		}
 	}
 	return proof
@@ -833,22 +918,33 @@ func warmControllerPath(
 	stream *viiperclient.DeviceStream,
 	controller liveControllerWorkload,
 	lastTimestamp uint64,
+	qpcFrequency int64,
 ) (uint64, error) {
 	observedDown := false
 	warmup := latency.Run{}
 	var err error
 	for sequence := 1; sequence <= latency.ProductionWarmupPairs; sequence++ {
-		sleepForProductionPhase(sequence, latency.TransitionPress)
-		lastTimestamp, err = measureTransition(
-			gamepad, stream, sequence, latency.TransitionPress, true,
-			controller.state(true), &observedDown, lastTimestamp, &warmup)
+		lastTimestamp, err = waitForCausalDwell(gamepad, sequence, latency.TransitionPress,
+			&observedDown, lastTimestamp, &warmup)
 		if err != nil {
 			return lastTimestamp, err
 		}
-		sleepForProductionPhase(sequence, latency.TransitionRelease)
+		lastTimestamp, err = measureTransition(
+			gamepad, stream, sequence, latency.TransitionPress, true,
+			controller.state(true), &observedDown, lastTimestamp, &warmup,
+			"", "", 0, nil, qpcFrequency)
+		if err != nil {
+			return lastTimestamp, err
+		}
+		lastTimestamp, err = waitForCausalDwell(gamepad, sequence, latency.TransitionRelease,
+			&observedDown, lastTimestamp, &warmup)
+		if err != nil {
+			return lastTimestamp, err
+		}
 		lastTimestamp, err = measureTransition(
 			gamepad, stream, sequence, latency.TransitionRelease, false,
-			controller.state(false), &observedDown, lastTimestamp, &warmup)
+			controller.state(false), &observedDown, lastTimestamp, &warmup,
+			"", "", 0, nil, qpcFrequency)
 		if err != nil {
 			return lastTimestamp, err
 		}
@@ -866,10 +962,44 @@ func warmControllerPath(
 	return lastTimestamp, nil
 }
 
-func sleepForProductionPhase(sequence int, transition latency.Transition) {
+func waitForCausalDwell(
+	gamepad *sdl.Gamepad,
+	sequence int,
+	transition latency.Transition,
+	observedDown *bool,
+	lastTimestamp uint64,
+	result *latency.Run,
+) (uint64, error) {
 	delay := liveLatencyTransitionDelay +
 		time.Duration(latency.ProductionPhaseOffsetNS(sequence, transition))
-	time.Sleep(delay)
+	deadline := time.Now().Add(delay)
+	for {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			break
+		}
+		if remaining < time.Millisecond {
+			time.Sleep(remaining)
+			continue
+		}
+		event, received, err := gamepad.WaitButtonTransition(
+			sdl.GamepadButtonSouth, int32(remaining/time.Millisecond))
+		if err != nil {
+			return lastTimestamp, fmt.Errorf("%s sample %d SDL causal dwell: %w", transition, sequence, err)
+		}
+		if !received {
+			continue
+		}
+		updatedTimestamp, rejection := latency.RejectPreWriteEdge(
+			lastTimestamp, event.TimestampNS, event.Down, &result.Duplicates)
+		lastTimestamp = updatedTimestamp
+		*observedDown = event.Down
+		return lastTimestamp, fmt.Errorf("%s sample %d pre-write dwell: %w", transition, sequence, rejection)
+	}
+	if gamepad.GetButton(sdl.GamepadButtonSouth) != *observedDown {
+		return lastTimestamp, fmt.Errorf("%s sample %d SDL state changed without an observed edge during pre-write dwell", transition, sequence)
+	}
+	return lastTimestamp, nil
 }
 
 func measureTransition(
@@ -882,6 +1012,11 @@ func measureTransition(
 	observedDown *bool,
 	lastTimestamp uint64,
 	result *latency.Run,
+	controllerType string,
+	transport string,
+	transportBlock int,
+	traceProvider *latencytrace.Provider,
+	qpcFrequency int64,
 ) (uint64, error) {
 	if *observedDown == wantDown {
 		return lastTimestamp, fmt.Errorf("%s sample %d started from the wrong observed state", transition, sequence)
@@ -890,6 +1025,35 @@ func measureTransition(
 		return lastTimestamp, err
 	}
 	started := time.Now()
+	for {
+		event, received, err := gamepad.PollButtonTransition(sdl.GamepadButtonSouth)
+		if err != nil {
+			return lastTimestamp, fmt.Errorf("%s sample %d pre-write SDL drain: %w", transition, sequence, err)
+		}
+		if !received {
+			break
+		}
+		updatedTimestamp, rejection := latency.RejectPreWriteEdge(
+			lastTimestamp, event.TimestampNS, event.Down, &result.Duplicates)
+		lastTimestamp = updatedTimestamp
+		*observedDown = event.Down
+		return lastTimestamp, fmt.Errorf("%s sample %d final pre-write queue drain: %w", transition, sequence, rejection)
+	}
+	if gamepad.GetButton(sdl.GamepadButtonSouth) != *observedDown {
+		return lastTimestamp, fmt.Errorf("%s sample %d SDL state changed before its input write", transition, sequence)
+	}
+	startQPC, err := latencytrace.Counter()
+	if err != nil {
+		return lastTimestamp, fmt.Errorf("%s sample %d query pre-write QPC: %w", transition, sequence, err)
+	}
+	// Keep the SDL clock admission fence adjacent to WriteBinary. There is no
+	// cross-process primitive that can make these two calls atomic; requiring
+	// the observed event timestamp to be strictly newer closes same-tick stale
+	// edges and leaves only this irreducible function-call boundary.
+	sdlFenceTimestamp := sdl.TicksNS()
+	if sdlFenceTimestamp == 0 {
+		return lastTimestamp, fmt.Errorf("%s sample %d could not establish its SDL pre-write timestamp fence", transition, sequence)
+	}
 	if err := stream.WriteBinary(inputState); err != nil {
 		return lastTimestamp, fmt.Errorf("%s sample %d authenticated WriteBinary: %w", transition, sequence, err)
 	}
@@ -911,9 +1075,14 @@ func measureTransition(
 			return lastTimestamp, fmt.Errorf("%s sample %d timed out after %s", transition, sequence,
 				liveLatencyTransitionTimeout)
 		}
-		if event.TimestampNS == 0 || (lastTimestamp != 0 && event.TimestampNS < lastTimestamp) {
-			return lastTimestamp, fmt.Errorf("%s sample %d returned an absent or regressed SDL event timestamp",
-				transition, sequence)
+		if timestampErr := latency.ValidatePostWriteTimestamp(
+			lastTimestamp, sdlFenceTimestamp, event.TimestampNS); timestampErr != nil {
+			if event.TimestampNS != 0 && (lastTimestamp == 0 || event.TimestampNS >= lastTimestamp) &&
+				event.TimestampNS <= sdlFenceTimestamp {
+				incrementEdgeCounter(&result.Duplicates, event.Down)
+			}
+			return lastTimestamp, fmt.Errorf("%s sample %d SDL timestamp fence: %w",
+				transition, sequence, timestampErr)
 		}
 		lastTimestamp = event.TimestampNS
 		if event.Down == *observedDown {
@@ -925,15 +1094,31 @@ func measureTransition(
 			*observedDown = event.Down
 			continue
 		}
-		elapsed := time.Since(started)
-		if elapsed <= 0 {
-			return lastTimestamp, fmt.Errorf("%s sample %d produced non-positive monotonic latency", transition, sequence)
-		}
 		*observedDown = event.Down
-		result.Samples = append(result.Samples, latency.Sample{
-			Sequence: sequence, Transition: transition, LatencyNS: int64(elapsed),
-			EventTimestampNS: event.TimestampNS,
-		})
+		endQPC, qpcErr := latencytrace.Counter()
+		if qpcErr != nil {
+			return lastTimestamp, fmt.Errorf("%s sample %d query observed-edge QPC: %w", transition, sequence, qpcErr)
+		}
+		latencyNS, qpcErr := latency.QPCIntervalNS(startQPC, endQPC, qpcFrequency)
+		if qpcErr != nil {
+			return lastTimestamp, fmt.Errorf("%s sample %d convert observed QPC interval: %w", transition, sequence, qpcErr)
+		}
+		sample := latency.Sample{
+			Sequence: sequence, Transition: transition, LatencyNS: latencyNS,
+			EventTimestampNS: event.TimestampNS, SDLFenceTimestampNS: sdlFenceTimestamp,
+			StartQPCTicks: startQPC, EndQPCTicks: endQPC,
+		}
+		if traceProvider != nil {
+			sample.MarkerID = latency.SampleMarkerID(controllerType, transport, transportBlock, sequence, transition)
+			sample.MarkerQPCTicks, err = latencytrace.Counter()
+			if err != nil {
+				return lastTimestamp, fmt.Errorf("%s sample %d query pre-marker QPC: %w", transition, sequence, err)
+			}
+			if err = traceProvider.WriteSample(controllerType, transport, transportBlock, sample); err != nil {
+				return lastTimestamp, fmt.Errorf("%s sample %d TraceLogging marker: %w", transition, sequence, err)
+			}
+		}
+		result.Samples = append(result.Samples, sample)
 		return lastTimestamp, nil
 	}
 }

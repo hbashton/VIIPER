@@ -7,7 +7,7 @@ param(
     [string]$SubmissionManifestPath,
 
     [Parameter(Mandatory = $true)]
-    [ValidatePattern('^[0-9a-fA-F]{40,64}$')]
+    [ValidatePattern('^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$')]
     [string]$ExpectedSourceRevision,
 
     [Parameter(Mandatory = $true)]
@@ -127,9 +127,11 @@ if (-not [string]::Equals($actualSDLHash, $SDLBinarySHA256,
 }
 
 $signatureGate = Join-Path $repository 'native\udecx\tools\Test-ViiperUdeSignedPackage.ps1'
+$manifest = Resolve-CanonicalPath -Path $SubmissionManifestPath
+$manifestHashBeforeGate = (Get-FileHash -LiteralPath $manifest -Algorithm SHA256).Hash.ToLowerInvariant()
 & $signatureGate `
     -PackageDirectory $SignedPackageDirectory `
-    -SubmissionManifestPath $SubmissionManifestPath `
+    -SubmissionManifestPath $manifest `
     -ExpectedSourceRevision $ExpectedSourceRevision `
     -ValidationMode Production
 
@@ -143,7 +145,7 @@ $installedDriver = Resolve-DriverImagePath -ImagePath ([string]$service.ImagePat
 $packageDriverHash = (Get-FileHash -LiteralPath $packageDriver -Algorithm SHA256).Hash.ToLowerInvariant()
 $installedDriverHash = (Get-FileHash -LiteralPath $installedDriver -Algorithm SHA256).Hash.ToLowerInvariant()
 if ($packageDriverHash -ne $installedDriverHash) {
-    throw "The loaded VIIPER UDE service image does not match the verified package. Installed='$installedDriver'."
+    throw "The installed VIIPER UDE service image does not match the verified package. Installed='$installedDriver'."
 }
 $devnodes = @(Get-CimInstance -ClassName Win32_PnPSignedDriver | Where-Object {
     [string]$_.DeviceID -like 'ROOT\VIIPER\UDE*'
@@ -154,24 +156,36 @@ if ($devnodes.Count -ne 1) {
 if (-not [bool]$devnodes[0].IsSigned -or [string]$devnodes[0].Signer -notmatch '(?i)Microsoft') {
     throw "The installed VIIPER UDE devnode is not backed by a Microsoft-signed driver (Signer='$($devnodes[0].Signer)')."
 }
-$manifest = Resolve-CanonicalPath -Path $SubmissionManifestPath
 $manifestHash = (Get-FileHash -LiteralPath $manifest -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($manifestHash -ne $manifestHashBeforeGate) {
+    throw 'The native submission manifest changed while its signature/package gate was running.'
+}
+$manifestDocument = Get-Content -LiteralPath $manifest -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+$driverBuildIdentity = ([string]$manifestDocument.driverBuildIdentity).Trim().ToLowerInvariant()
+if ($driverBuildIdentity -notmatch '^[0-9a-f]{64}$') {
+    throw 'The verified submission manifest has no canonical native driver build identity.'
+}
 
 $output = Resolve-NewEvidencePath -Path $OutputPath -Repository $repository -Label 'Latency JSON output'
 $trace = Resolve-NewEvidencePath -Path $WprTracePath -Repository $repository -Label 'WPR trace output'
-if ([string]::Equals($output, $trace, [StringComparison]::OrdinalIgnoreCase)) {
-    throw 'The latency JSON and WPR trace must use different evidence paths.'
+$markers = Resolve-NewEvidencePath -Path "$output.etl-markers.json" -Repository $repository -Label 'Decoded ETL marker output'
+if ([string]::Equals($output, $trace, [StringComparison]::OrdinalIgnoreCase) -or
+    [string]::Equals($output, $markers, [StringComparison]::OrdinalIgnoreCase) -or
+    [string]::Equals($trace, $markers, [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'The latency JSON, WPR trace, and decoded marker evidence must use three different paths.'
 }
 $go = Get-Command $GoExecutable -ErrorAction Stop
 $wpr = Get-Command wpr.exe -ErrorAction Stop
-$wprProfile = 'GeneralProfile.Verbose'
-$profileDetailsOutput = @(& $wpr.Source -profiledetails $wprProfile 2>&1)
+$wprProfilePath = Resolve-CanonicalPath -Path (Join-Path $repository '_testing\e2e\latency\ViiperLatency.wprp')
+$wprProfileHash = (Get-FileHash -LiteralPath $wprProfilePath -Algorithm SHA256).Hash.ToLowerInvariant()
+$wprProfile = "$wprProfilePath!ViiperLatency"
+$profileDetailsOutput = @(& $wpr.Source -profiledetails $wprProfile -filemode 2>&1)
 if ($LASTEXITCODE -ne 0) {
     throw "WPR could not describe '$wprProfile'.`n$($profileDetailsOutput -join [Environment]::NewLine)"
 }
 $profileDetails = $profileDetailsOutput | Out-String
-if ($profileDetails -notmatch '(?im)^Profile\s*:\s*GeneralProfile\.Verbose\.Memory\s*$') {
-    throw "WPR '$wprProfile' is not the required bounded-memory profile.`n$profileDetails"
+if ($profileDetails -notmatch '(?im)^Profile\s*:\s*ViiperLatency\.Verbose\.File\s*$') {
+    throw "WPR '$wprProfile' is not the required source-controlled sequential-file profile.`n$profileDetails"
 }
 foreach ($eventName in @('DPC', 'Interrupt', 'WDFDPC', 'WDFInterrupt')) {
     if ([regex]::Matches($profileDetails, "(?im)^\s*$eventName\s*$").Count -lt 1) {
@@ -190,7 +204,8 @@ $environmentNames = @(
     'VIIPER_E2E_LATENCY_OUTPUT', 'VIIPER_E2E_LATENCY_SAMPLES',
     'VIIPER_E2E_EXPECTED_SOURCE_REVISION', 'VIIPER_E2E_SDL_SOURCE_REVISION',
     'VIIPER_E2E_SDL_DLL_PATH', 'VIIPER_E2E_SDL_DLL_SHA256',
-    'VIIPER_E2E_PACKAGE_MANIFEST_SHA256', 'VIIPER_E2E_NATIVE_DRIVER_SHA256'
+    'VIIPER_E2E_PACKAGE_MANIFEST_SHA256', 'VIIPER_E2E_NATIVE_DRIVER_SHA256',
+    'VIIPER_E2E_TRACE_PROFILE_SHA256', 'VIIPER_E2E_NATIVE_DRIVER_BUILD_IDENTITY'
 )
 $savedEnvironment = @{}
 foreach ($name in $environmentNames) {
@@ -198,6 +213,7 @@ foreach ($name in $environmentNames) {
 }
 
 $wprInstance = "ViiperE2ELatency-$PID-$([guid]::NewGuid().ToString('N'))"
+$nativeRevisionLDFlag = "-X github.com/Alia5/VIIPER/internal/transport/udecx.nativeSourceRevision=$headRevision"
 $wprStarted = $false
 $wprFailure = $null
 $testExitCode = -1
@@ -218,32 +234,38 @@ try {
     $env:VIIPER_E2E_SDL_DLL_SHA256 = $actualSDLHash
     $env:VIIPER_E2E_PACKAGE_MANIFEST_SHA256 = $manifestHash
     $env:VIIPER_E2E_NATIVE_DRIVER_SHA256 = $installedDriverHash
+    $env:VIIPER_E2E_TRACE_PROFILE_SHA256 = $wprProfileHash
+    $env:VIIPER_E2E_NATIVE_DRIVER_BUILD_IDENTITY = $driverBuildIdentity
 
-    $startOutput = @(& $wpr.Source -start $wprProfile -instancename $wprInstance 2>&1)
+    $startOutput = @(& $wpr.Source -start $wprProfile -filemode -instancename $wprInstance 2>&1)
     if ($LASTEXITCODE -ne 0) {
-        throw "Could not start the bounded-memory WPR capture (exit $LASTEXITCODE).`n$($startOutput -join [Environment]::NewLine)"
+        throw "Could not start the sequential-file WPR capture (exit $LASTEXITCODE).`n$($startOutput -join [Environment]::NewLine)"
     }
     $wprStarted = $true
 
-    & $go.Source test -mod=readonly -count=1 -timeout=20m `
+    & $go.Source -C $repository test -mod=readonly -count=1 -timeout=20m -ldflags $nativeRevisionLDFlag `
         -run '^TestLiveControllerToGameLatencyGate$' -v ./_testing/e2e
     $testExitCode = $LASTEXITCODE
 }
 finally {
     if ($wprStarted) {
-        $statusOutput = @(& $wpr.Source -status -instancename $wprInstance 2>&1)
+        $statusOutput = @(& $wpr.Source -status collectors -details -instancename $wprInstance 2>&1)
         $statusExitCode = $LASTEXITCODE
         $statusText = $statusOutput | Out-String
         if ($statusExitCode -ne 0) {
             $wprFailure = "WPR status failed with exit $statusExitCode. $($statusOutput -join ' ')"
         }
         else {
-            $droppedMatch = [regex]::Match($statusText, '(?im)^\s*Dropped Event\s*:\s*(?<count>\d+)\s*$')
-            if (-not $droppedMatch.Success) {
-                $wprFailure = "WPR did not report its dropped-event count. $($statusOutput -join ' ')"
+            $lossMatches = [regex]::Matches($statusText,
+                '(?im)^\s*(?<name>(?:Dropped\s+Events?|Events?\s+Lost|Buffers?\s+Lost))\s*:\s*(?<count>\d+)\s*$')
+            if ($lossMatches.Count -eq 0) {
+                $wprFailure = "WPR did not report any event/buffer loss counters. $($statusOutput -join ' ')"
             }
-            elseif ([uint64]$droppedMatch.Groups['count'].Value -ne 0) {
-                $wprFailure = "WPR dropped $($droppedMatch.Groups['count'].Value) event(s); the trace is incomplete."
+            else {
+                $nonZeroLoss = @($lossMatches | Where-Object { [uint64]$_.Groups['count'].Value -ne 0 })
+                if ($nonZeroLoss.Count -ne 0) {
+                    $wprFailure = "WPR reported event/buffer loss: $($nonZeroLoss.Value -join '; ')."
+                }
             }
         }
 
@@ -291,9 +313,144 @@ if ([string]$report.schema -cne 'viiper.controller-to-game.latency-suite/v1' -or
     [string]$report.provenance.sdl_binary_sha256 -cne $actualSDLHash -or
     [string]$report.provenance.native_package_manifest_sha256 -cne $manifestHash -or
     [string]$report.provenance.native_driver_sha256 -cne $installedDriverHash -or
+    [string]$report.provenance.native_driver_build_identity -cne $driverBuildIdentity -or
     [string]$report.verdict -cne 'pass' -or
     @($report.cases).Count -ne 3) {
     throw "The latency JSON artifact is not a passing source-bound production-controller suite."
+}
+
+$expectedMarkers = @{}
+foreach ($case in @($report.cases)) {
+    foreach ($run in @($case.runs)) {
+        foreach ($sample in @($run.samples)) {
+            $markerID = [string]$sample.trace_marker_id
+            if ([string]::IsNullOrWhiteSpace($markerID) -or $expectedMarkers.ContainsKey($markerID)) {
+                throw "The strictly parsed JSON contains an absent or duplicate trace marker '$markerID'."
+            }
+            $expectedMarkers[$markerID] = @{
+                Controller = [string]$case.workload.controller_type
+                Transport = [string]$run.transport
+                TransportBlock = [string]$run.transport_block
+                Sequence = [string]$sample.sequence
+                Transition = [string]$sample.transition
+                StartQPCTicks = [string]$sample.start_qpc_ticks
+                EndQPCTicks = [string]$sample.end_qpc_ticks
+                MarkerQPCTicks = [string]$sample.trace_marker_qpc_ticks
+                LatencyNS = [string]$sample.latency_ns
+                SDLEventTimestampNS = [string]$sample.sdl_event_timestamp_ns
+                SDLFenceTimestampNS = [string]$sample.sdl_prewrite_fence_timestamp_ns
+            }
+        }
+    }
+}
+$traceMarkers = @{}
+$decodedMarkers = [Collections.Generic.List[object]]::new()
+$requiredTraceFields = @(
+    'MarkerID', 'Controller', 'Transport', 'TransportBlock', 'Sequence', 'Transition',
+    'StartQPCTicks', 'EndQPCTicks', 'MarkerQPCTicks', 'LatencyNS',
+    'SDLEventTimestampNS', 'SDLFenceTimestampNS'
+)
+try {
+    $traceEvents = @(Get-WinEvent -FilterHashtable @{
+        Path = $trace
+        ProviderName = 'VIIPER-LatencyGate'
+    } -Oldest -ErrorAction Stop)
+}
+catch {
+    throw "The ETL could not be decoded for exact TraceLogging attribution: $($_.Exception.Message)"
+}
+foreach ($event in $traceEvents) {
+    [xml]$xml = $event.ToXml()
+    if (-not [string]::Equals([string]$xml.Event.System.Provider.Name,
+            'VIIPER-LatencyGate', [StringComparison]::Ordinal) -or
+        -not [string]::Equals([string]$xml.Event.System.Provider.Guid,
+            '{e1726ef8-c2e6-4dad-bbf7-2d871b953ab1}', [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'A decoded latency event does not have the exact source-controlled provider name and GUID.'
+    }
+    $fields = @{}
+    foreach ($data in @($xml.Event.EventData.Data)) {
+        $name = [string]$data.Name
+        if ([string]::IsNullOrWhiteSpace($name) -or $fields.ContainsKey($name)) {
+            throw 'A latency ETL marker contains absent or duplicate named payload fields.'
+        }
+        $fields[$name] = [string]$data.InnerText
+    }
+    if ($fields.Count -ne $requiredTraceFields.Count -or
+        @($requiredTraceFields | Where-Object { -not $fields.ContainsKey($_) }).Count -ne 0) {
+        throw 'A latency ETL marker does not contain the exact source-controlled payload schema.'
+    }
+    $markerID = [string]$fields['MarkerID']
+    if ([string]::IsNullOrWhiteSpace($markerID) -or $traceMarkers.ContainsKey($markerID)) {
+        throw "The ETL contains an absent or duplicate latency marker '$markerID'."
+    }
+    if (-not $expectedMarkers.ContainsKey($markerID)) {
+        throw "The ETL contains an unreported latency marker '$markerID'."
+    }
+    $expected = $expectedMarkers[$markerID]
+    foreach ($fieldName in @('Controller', 'Transport', 'TransportBlock', 'Sequence', 'Transition',
+            'StartQPCTicks', 'EndQPCTicks', 'MarkerQPCTicks', 'LatencyNS',
+            'SDLEventTimestampNS', 'SDLFenceTimestampNS')) {
+        if ([string]$fields[$fieldName] -cne [string]$expected[$fieldName]) {
+            throw "ETL marker '$markerID' field '$fieldName' does not match its JSON sample."
+        }
+    }
+    $traceMarkers[$markerID] = $true
+    $decodedMarkers.Add([pscustomobject]@{
+        trace_marker_id = $markerID
+        controller = [string]$fields['Controller']
+        transport = [string]$fields['Transport']
+        transport_block = [int]$fields['TransportBlock']
+        sequence = [int]$fields['Sequence']
+        transition = [string]$fields['Transition']
+        start_qpc_ticks = [long]$fields['StartQPCTicks']
+        end_qpc_ticks = [long]$fields['EndQPCTicks']
+        trace_marker_qpc_ticks = [long]$fields['MarkerQPCTicks']
+        latency_ns = [long]$fields['LatencyNS']
+        sdl_event_timestamp_ns = [uint64]$fields['SDLEventTimestampNS']
+        sdl_prewrite_fence_timestamp_ns = [uint64]$fields['SDLFenceTimestampNS']
+    })
+}
+if ($traceMarkers.Count -ne $expectedMarkers.Count) {
+    $missingMarkers = @($expectedMarkers.Keys | Where-Object { -not $traceMarkers.ContainsKey($_) })
+    throw "The ETL has $($traceMarkers.Count) exact sample markers for $($expectedMarkers.Count) JSON samples; missing: $($missingMarkers -join ', ')."
+}
+$markerJSON = ConvertTo-Json -InputObject @($decodedMarkers) -Depth 3 -Compress
+$markerBytes = [Text.UTF8Encoding]::new($false).GetBytes($markerJSON)
+$markerStream = [IO.File]::Open($markers, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+try {
+    $markerStream.Write($markerBytes, 0, $markerBytes.Length)
+    $markerStream.Flush($true)
+}
+finally {
+    $markerStream.Dispose()
+}
+$verifyExitCode = -1
+try {
+    $env:CGO_ENABLED = '0'
+    $env:GOENV = 'off'
+    $env:GOFLAGS = ''
+    $env:GOTOOLCHAIN = 'local'
+    $env:GOWORK = 'off'
+    $verifyOutput = @(& $go.Source -C $repository run -mod=readonly ./_testing/e2e/cmd/verifylatency `
+        -input $output `
+        -markers $markers `
+        -source $headRevision `
+        -sdl-revision $sdlRevision `
+        -sdl-sha256 $actualSDLHash `
+        -manifest-sha256 $manifestHash `
+        -driver-sha256 $installedDriverHash `
+        -driver-build-identity $driverBuildIdentity `
+        -trace-profile-sha256 $wprProfileHash `
+        -samples $Samples 2>&1)
+    $verifyExitCode = $LASTEXITCODE
+}
+finally {
+    foreach ($name in @('CGO_ENABLED', 'GOENV', 'GOFLAGS', 'GOTOOLCHAIN', 'GOWORK')) {
+        [Environment]::SetEnvironmentVariable($name, $savedEnvironment[$name], 'Process')
+    }
+}
+if ($verifyExitCode -ne 0) {
+    throw "The strict Go evidence verifier rejected the JSON/ETL evidence pair.`n$($verifyOutput -join [Environment]::NewLine)"
 }
 $requiredControllers = @('xbox360', 'dualshock4', 'dualsensegamepadv5')
 for ($index = 0; $index -lt $requiredControllers.Count; $index++) {
@@ -327,4 +484,5 @@ if ($LASTEXITCODE -ne 0 -or $postStatus.Count -ne 0) {
 }
 
 Write-Host "Validated source-bound controller-to-game latency evidence: '$output'."
-Write-Host "Captured bounded-memory WPR evidence: '$trace'."
+Write-Host "Captured source-controlled sequential-file WPR evidence: '$trace'."
+Write-Host "Retained the exactly decoded ETL marker evidence: '$markers'."

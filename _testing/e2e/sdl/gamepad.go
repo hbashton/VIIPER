@@ -80,6 +80,28 @@ static inline int wait_gamepad_button_transition(
     }
 }
 
+static inline int poll_gamepad_button_transition(
+    SDL_JoystickID which,
+    SDL_GamepadButton button,
+    bool *down,
+    Uint64 *timestamp_ns)
+{
+    SDL_ClearError();
+    SDL_Event event;
+    while (SDL_PollEvent(&event)) {
+        if ((event.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN ||
+             event.type == SDL_EVENT_GAMEPAD_BUTTON_UP) &&
+            event.gbutton.which == which &&
+            event.gbutton.button == (Uint8)button) {
+            *down = event.gbutton.down;
+            *timestamp_ns = event.gbutton.timestamp;
+            return 1;
+        }
+    }
+    const char *error = SDL_GetError();
+    return error != NULL && error[0] != '\0' ? -1 : 0;
+}
+
 static inline int gamepad_binding_input_button(const SDL_GamepadBinding *b)
 {
 	return b->input.button;
@@ -153,6 +175,22 @@ type GamepadButtonLabel int32
 type GamepadButtonEvent struct {
 	Down        bool
 	TimestampNS uint64
+}
+
+// EnableWindowsRawInput makes SDL expose an actual Windows device-interface
+// path for XInput-capable controllers. SDL's default XInput backend reports a
+// logical "XInput#N" path, which cannot be causally bound to a PnP devnode.
+// The production latency gate calls this before SDL_Init and then still fails
+// closed unless the resulting path resolves to the selected transport anchor.
+func EnableWindowsRawInput() error {
+	name := C.CString("SDL_JOYSTICK_RAWINPUT")
+	defer C.free(unsafe.Pointer(name))
+	value := C.CString("1")
+	defer C.free(unsafe.Pointer(value))
+	if !bool(C.SDL_SetHint(name, value)) {
+		return &SDLError{eStr: "SDL rejected the source-identity RawInput hint"}
+	}
+	return nil
 }
 
 // GamepadBindingType describes the type of a gamepad control binding.
@@ -469,6 +507,30 @@ func (g *Gamepad) WaitButtonTransition(
 	}
 	return GamepadButtonEvent{Down: bool(down), TimestampNS: uint64(timestampNS)}, true, nil
 }
+
+// PollButtonTransition drains SDL's already-queued events and returns an exact
+// edge for this gamepad/button without waiting. The latency gate uses it as a
+// final causal fence immediately before issuing the input write.
+func (g *Gamepad) PollButtonTransition(button GamepadButton) (GamepadButtonEvent, bool, error) {
+	if g == nil || g.cGamepad == nil {
+		return GamepadButtonEvent{}, false, &SDLError{eStr: "invalid gamepad handle"}
+	}
+	var down C.bool
+	var timestampNS C.Uint64
+	result := C.poll_gamepad_button_transition(
+		C.SDL_GetGamepadID(g.cGamepad), C.SDL_GamepadButton(button), &down, &timestampNS)
+	if result < 0 {
+		return GamepadButtonEvent{}, false, GetError()
+	}
+	if result == 0 {
+		return GamepadButtonEvent{}, false, nil
+	}
+	return GamepadButtonEvent{Down: bool(down), TimestampNS: uint64(timestampNS)}, true, nil
+}
+
+// TicksNS returns SDL's monotonically increasing nanosecond clock used by
+// SDL_GamepadButtonEvent.timestamp.
+func TicksNS() uint64 { return uint64(C.SDL_GetTicksNS()) }
 
 // GetButtonLabel gets the label of a button on a gamepad.
 func (g *Gamepad) GetButtonLabel(button GamepadButton) GamepadButtonLabel {

@@ -35,12 +35,62 @@ func TestCalculateNearestRankDistributionAndJitter(t *testing.T) {
 	}
 }
 
+func TestQPCIntervalNSFailsClosed(t *testing.T) {
+	got, err := QPCIntervalNS(10, 410, 1_000_000)
+	if err != nil || got != 400_000 {
+		t.Fatalf("QPCIntervalNS()=(%d, %v), want (400000, nil)", got, err)
+	}
+	for _, test := range []struct {
+		name                  string
+		start, end, frequency int64
+	}{
+		{name: "zero start", start: 0, end: 2, frequency: 1},
+		{name: "reversed", start: 2, end: 1, frequency: 1},
+		{name: "zero frequency", start: 1, end: 2, frequency: 0},
+		{name: "sub nanosecond", start: 1, end: 2, frequency: 2_000_000_000},
+		{name: "overflow", start: 1, end: math.MaxInt64, frequency: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := QPCIntervalNS(test.start, test.end, test.frequency); err == nil {
+				t.Fatal("invalid QPC interval was accepted")
+			}
+		})
+	}
+}
+
 func TestCalculateRejectsMissingAndNonPositiveSamples(t *testing.T) {
 	if _, err := Calculate(nil); err == nil {
 		t.Fatal("zero samples were accepted")
 	}
 	if _, err := Calculate([]int64{1, 0, 2}); err == nil {
 		t.Fatal("a zero latency sample was accepted")
+	}
+}
+
+func TestUSBIPAnchorUsesINFHardwareIDAndOSAssignedInstance(t *testing.T) {
+	// usbip-win2's INF binds ROOT\USBIP_WIN2\UDE to usbip2_ude, while live
+	// SetupAPI/pnputil evidence exposes the present OS-assigned instance as
+	// ROOT\USB\####. Preserve all three identities; none substitutes for another.
+	proof := ControllerProof{
+		PNPInstanceID:             `HID\VID_045E&PID_028E\1`,
+		PNPAncestorIDs:            []string{`HID\VID_045E&PID_028E\1`, `USB\VID_045E&PID_028E\1`, `ROOT\USB\0002`},
+		PNPAncestorServices:       []string{"HidUsb", "usbccgp", "usbip2_ude"},
+		PNPAncestorHardwareIDs:    [][]string{{`HID_DEVICE_SYSTEM_GAME`}, {`USB\VID_045E&PID_028E`}, {`ROOT\USBIP_WIN2\UDE`}},
+		PNPAncestorLocationInfo:   []string{"", "Port_#0007.Hub_#0001", ""},
+		PNPAncestorLocationPaths:  [][]string{{}, {`USBROOT(0)#USB(7)`}, {}},
+		TransportAnchorInstanceID: `ROOT\USB\0002`,
+		TransportAnchorService:    "usbip2_ude",
+	}
+	if err := ValidateTransportAncestry(TransportUSBIP, 7, proof); err != nil {
+		t.Fatalf("exact USB/IP INF anchor rejected: %v", err)
+	}
+	if err := ValidateTransportAncestry(TransportUSBIP, 8, proof); err == nil ||
+		!strings.Contains(err.Error(), "root-hub port 8") {
+		t.Fatalf("wrong USB/IP import port was not rejected: %v", err)
+	}
+	proof.PNPAncestorHardwareIDs[2] = []string{`ROOT\USB\0002`}
+	if err := ValidateTransportAncestry(TransportUSBIP, 7, proof); err == nil {
+		t.Fatal("OS-assigned instance ID was accepted as a substitute for the USB/IP INF hardware ID")
 	}
 }
 
@@ -143,6 +193,14 @@ func TestParseReportRejectsUnknownTrailingAndForgedData(t *testing.T) {
 		unauthenticated.Runs[0].UnauthenticatedRejected = false
 		if err := Finalize(unauthenticated); err == nil || !strings.Contains(err.Error(), "unauthenticated") {
 			t.Fatalf("unauthenticated source error=%v", err)
+		}
+	})
+
+	t.Run("noncanonical source revision length", func(t *testing.T) {
+		report := validReport(t)
+		report.Provenance.SourceRevision = strings.Repeat("a", 41)
+		if err := Finalize(report); err == nil || !strings.Contains(err.Error(), "40- or 64") {
+			t.Fatalf("noncanonical revision error=%v", err)
 		}
 	})
 }
@@ -275,9 +333,76 @@ func TestFinalizeRejectsWeakenedPolicyAndOutOfOrderSamples(t *testing.T) {
 
 	t.Run("event clock regression", func(t *testing.T) {
 		report := validReport(t)
-		report.Runs[0].Samples[1].EventTimestampNS = 1
+		report.Runs[0].Samples[1].EventTimestampNS = report.Runs[0].Samples[0].EventTimestampNS - 1
+		report.Runs[0].Samples[1].SDLFenceTimestampNS = report.Runs[0].Samples[1].EventTimestampNS - 1
 		if err := Finalize(report); err == nil || !strings.Contains(err.Error(), "event clock") {
 			t.Fatalf("event clock error=%v", err)
+		}
+	})
+
+	t.Run("pre-write SDL edge", func(t *testing.T) {
+		report := validReport(t)
+		report.Runs[0].Samples[0].SDLFenceTimestampNS =
+			report.Runs[0].Samples[0].EventTimestampNS + 1
+		if err := Finalize(report); err == nil || !strings.Contains(err.Error(), "causal fence") {
+			t.Fatalf("pre-write SDL edge error=%v", err)
+		}
+	})
+
+	t.Run("forged trace marker", func(t *testing.T) {
+		report := validReport(t)
+		report.Runs[0].Samples[0].MarkerID = "another-sample"
+		if err := Finalize(report); err == nil || !strings.Contains(err.Error(), "trace marker") {
+			t.Fatalf("forged trace marker error=%v", err)
+		}
+	})
+
+	t.Run("trace marker inside measured interval", func(t *testing.T) {
+		report := validReport(t)
+		report.Runs[0].Samples[0].MarkerQPCTicks =
+			report.Runs[0].Samples[0].EndQPCTicks - 1
+		if err := Finalize(report); err == nil || !strings.Contains(err.Error(), "QPC interval") {
+			t.Fatalf("in-interval marker error=%v", err)
+		}
+	})
+
+	t.Run("latency disagrees with raw QPC", func(t *testing.T) {
+		report := validReport(t)
+		report.Runs[0].Samples[0].LatencyNS++
+		if err := Finalize(report); err == nil || !strings.Contains(err.Error(), "inconsistent latency") {
+			t.Fatalf("forged QPC latency error=%v", err)
+		}
+	})
+
+	t.Run("wrong native ancestry", func(t *testing.T) {
+		report := validReport(t)
+		run := &report.Runs[1]
+		run.Controller.PNPAncestorIDs[len(run.Controller.PNPAncestorIDs)-1] = `ROOT\USB\0002`
+		run.Controller.PNPAncestorServices[len(run.Controller.PNPAncestorServices)-1] = "usbip2_ude"
+		run.Controller.PNPAncestorHardwareIDs[len(run.Controller.PNPAncestorHardwareIDs)-1] = []string{`ROOT\USBIP_WIN2\UDE`}
+		if err := Finalize(report); err == nil || !strings.Contains(err.Error(), "anchor") {
+			t.Fatalf("wrong native ancestry error=%v", err)
+		}
+	})
+
+	t.Run("wrong loaded native build", func(t *testing.T) {
+		report := validReport(t)
+		report.Runs[1].Server.NativeUDE.LoadedDriverBuildIdentity = strings.Repeat("2", 64)
+		if err := Finalize(report); err == nil || !strings.Contains(err.Error(), "signed package manifest") {
+			t.Fatalf("wrong loaded driver identity error=%v", err)
+		}
+	})
+
+	t.Run("ambiguous USBIP ancestry", func(t *testing.T) {
+		report := validReport(t)
+		run := &report.Runs[0]
+		run.Controller.PNPAncestorIDs = append(run.Controller.PNPAncestorIDs, `ROOT\USB\0003`)
+		run.Controller.PNPAncestorServices = append(run.Controller.PNPAncestorServices, "usbip2_ude")
+		run.Controller.PNPAncestorHardwareIDs = append(run.Controller.PNPAncestorHardwareIDs, []string{`ROOT\USBIP_WIN2\UDE`})
+		run.Controller.PNPAncestorLocationInfo = append(run.Controller.PNPAncestorLocationInfo, "")
+		run.Controller.PNPAncestorLocationPaths = append(run.Controller.PNPAncestorLocationPaths, []string{})
+		if err := Finalize(report); err == nil || !strings.Contains(err.Error(), "anchor") {
+			t.Fatalf("ambiguous USB/IP ancestry error=%v", err)
 		}
 	})
 }
@@ -297,7 +422,7 @@ func TestFinalizeRejectsSameMachineNativeTailRegression(t *testing.T) {
 						continue
 					}
 					for sampleIndex := range run.Samples {
-						run.Samples[sampleIndex].LatencyNS = 1_500_000
+						setSampleLatency(&run.Samples[sampleIndex], 1_500_000, report.Provenance.QPCFrequency)
 					}
 				}
 			},
@@ -307,7 +432,7 @@ func TestFinalizeRejectsSameMachineNativeTailRegression(t *testing.T) {
 			mutate: func(report *Report) {
 				nativeSecond := &report.Runs[2]
 				for index := len(nativeSecond.Samples) - 6; index < len(nativeSecond.Samples); index++ {
-					nativeSecond.Samples[index].LatencyNS = 2_600_000
+					setSampleLatency(&nativeSecond.Samples[index], 2_600_000, report.Provenance.QPCFrequency)
 				}
 			},
 		},
@@ -315,7 +440,8 @@ func TestFinalizeRejectsSameMachineNativeTailRegression(t *testing.T) {
 			name: "max", metric: "max",
 			mutate: func(report *Report) {
 				nativeSecond := &report.Runs[2]
-				nativeSecond.Samples[len(nativeSecond.Samples)-1].LatencyNS = 5_600_000
+				setSampleLatency(&nativeSecond.Samples[len(nativeSecond.Samples)-1], 5_600_000,
+					report.Provenance.QPCFrequency)
 			},
 		},
 	}
@@ -349,6 +475,13 @@ func validReport(t *testing.T) *Report {
 			SDLBinarySHA256:             strings.Repeat("c", 64),
 			NativePackageManifestSHA256: strings.Repeat("d", 64),
 			NativeDriverSHA256:          strings.Repeat("e", 64),
+			NativeDriverBuildIdentity:   strings.Repeat("1", 64),
+			QPCFrequency:                1_000_000_000,
+			TraceProviderName:           TraceProviderName,
+			TraceProviderGUID:           TraceProviderGUID,
+			TraceProfileSHA256:          strings.Repeat("f", 64),
+			USBIPBaselineMode:           USBIPBaselineMode,
+			USBIPBaselineVersion:        USBIPBaselineVersion,
 			GoVersion:                   "go1.26.2",
 			GOOS:                        "windows",
 			GOARCH:                      "amd64",
@@ -412,25 +545,54 @@ func validReport(t *testing.T) *Report {
 		}
 		if block.Transport == TransportUSBIP {
 			run.Device.USBIPPort = 1
+			run.Controller.PNPInstanceID = `HID\VID_045E&PID_028E\1`
+			run.Controller.PNPAncestorIDs = []string{run.Controller.PNPInstanceID, `USB\VID_045E&PID_028E\1`, `ROOT\USB\0002`}
+			run.Controller.PNPAncestorServices = []string{"HidUsb", "usbccgp", "usbip2_ude"}
+			run.Controller.PNPAncestorHardwareIDs = [][]string{{`HID_DEVICE_SYSTEM_GAME`}, {`USB\VID_045E&PID_028E`}, {`ROOT\USBIP_WIN2\UDE`}}
+			run.Controller.PNPAncestorLocationInfo = []string{"", "Port_#0001.Hub_#0001", ""}
+			run.Controller.PNPAncestorLocationPaths = [][]string{{}, {`USBROOT(0)#USB(1)`}, {}}
+			run.Controller.TransportAnchorInstanceID = `ROOT\USB\0002`
+			run.Controller.TransportAnchorService = "usbip2_ude"
 		} else {
 			run.Server.NativeUDE = &NativeServerProof{
 				ABIMajor: 1, ABIMinor: 0, Capabilities: 1,
 				ExpectedDriverPackageVersion: "0.1.0.3",
+				LoadedDriverBuildIdentity:    report.Provenance.NativeDriverBuildIdentity,
 			}
+			run.Controller.PNPInstanceID = `HID\VID_045E&PID_028E\2`
+			run.Controller.PNPAncestorIDs = []string{run.Controller.PNPInstanceID, `USB\VID_045E&PID_028E\2`, `ROOT\VIIPER\UDE\0000`}
+			run.Controller.PNPAncestorServices = []string{"HidUsb", "WUDFRd", "ViiperUde"}
+			run.Controller.PNPAncestorHardwareIDs = [][]string{{`HID_DEVICE_SYSTEM_GAME`}, {`USB\VID_045E&PID_028E`}, {`ROOT\VIIPER\UDE`}}
+			run.Controller.PNPAncestorLocationInfo = []string{"", "", ""}
+			run.Controller.PNPAncestorLocationPaths = [][]string{{}, {}, {}}
+			run.Controller.TransportAnchorInstanceID = `ROOT\VIIPER\UDE\0000`
+			run.Controller.TransportAnchorService = "ViiperUde"
 		}
 		transportOffset := 0
 		if block.Transport == TransportNativeUDE {
 			transportOffset = 50_000
 		}
 		lastSequence := block.FirstSequence + block.SamplePairs - 1
+		qpcCursor := int64(runIndex+1) * 1_000_000_000_000
 		for sequence := block.FirstSequence; sequence <= lastSequence; sequence++ {
 			base := int64(400_000 + transportOffset + sequence*10)
 			timestamp := uint64(runIndex+1)*1_000_000_000 + uint64(sequence*2)
+			pressStartQPC := qpcCursor
+			pressEndQPC := pressStartQPC + base
+			releaseStartQPC := pressStartQPC + 10_000_000
+			releaseEndQPC := releaseStartQPC + base + 5
 			run.Samples = append(run.Samples,
 				Sample{Sequence: sequence, Transition: TransitionPress,
-					LatencyNS: base, EventTimestampNS: timestamp},
+					LatencyNS: base, EventTimestampNS: timestamp, SDLFenceTimestampNS: timestamp - 1,
+					StartQPCTicks: pressStartQPC, EndQPCTicks: pressEndQPC,
+					MarkerQPCTicks: pressEndQPC + 1,
+					MarkerID:       SampleMarkerID("xbox360", run.Transport, run.TransportBlock, sequence, TransitionPress)},
 				Sample{Sequence: sequence, Transition: TransitionRelease,
-					LatencyNS: base + 5, EventTimestampNS: timestamp + 1})
+					LatencyNS: base + 5, EventTimestampNS: timestamp + 1, SDLFenceTimestampNS: timestamp,
+					StartQPCTicks: releaseStartQPC, EndQPCTicks: releaseEndQPC,
+					MarkerQPCTicks: releaseEndQPC + 1,
+					MarkerID:       SampleMarkerID("xbox360", run.Transport, run.TransportBlock, sequence, TransitionRelease)})
+			qpcCursor = pressStartQPC + 20_000_000
 		}
 		report.Runs = append(report.Runs, run)
 	}
@@ -441,6 +603,12 @@ func validReport(t *testing.T) *Report {
 		t.Fatalf("fixture failed: %v", report.Failures)
 	}
 	return report
+}
+
+func setSampleLatency(sample *Sample, latencyNS, qpcFrequency int64) {
+	sample.LatencyNS = latencyNS
+	sample.EndQPCTicks = sample.StartQPCTicks + latencyNS*qpcFrequency/int64(time.Second)
+	sample.MarkerQPCTicks = sample.EndQPCTicks + 1
 }
 
 func validSuite(t *testing.T) *SuiteReport {
@@ -478,6 +646,11 @@ func validSuite(t *testing.T) *SuiteReport {
 			run.Controller.SDLInstanceID = int32(100 + caseIndex*10 + runIndex)
 			run.Controller.NewGamepadIDs = []int32{run.Controller.SDLInstanceID}
 			run.Controller.SDLPath = identity.controller + "-" + run.Transport
+			for sampleIndex := range run.Samples {
+				sample := &run.Samples[sampleIndex]
+				sample.MarkerID = SampleMarkerID(identity.controller, run.Transport,
+					run.TransportBlock, sample.Sequence, sample.Transition)
+			}
 		}
 		if err := Finalize(&report); err != nil {
 			t.Fatal(err)

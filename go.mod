@@ -4,6 +4,7 @@ go 1.26.2
 
 require (
 	fyne.io/systray v1.12.1
+	github.com/Microsoft/go-winio v0.6.2
 	github.com/alecthomas/kong v1.15.0
 	github.com/alecthomas/kong-toml v0.4.0
 	github.com/alecthomas/kong-yaml v0.2.0

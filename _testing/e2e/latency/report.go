@@ -32,6 +32,10 @@ const (
 	TransportUSBIP                         = "usbip"
 	TransportNativeUDE                     = "native-ude"
 	AuthenticationMode                     = "password-authenticated-encrypted-stream"
+	TraceProviderName                      = "VIIPER-LatencyGate"
+	TraceProviderGUID                      = "{e1726ef8-c2e6-4dad-bbf7-2d871b953ab1}"
+	USBIPBaselineMode                      = "version-probed-functional-baseline-not-source-bound"
+	USBIPBaselineVersion                   = "0.9.7.7"
 	MinimumProductionSamplePairs           = 256
 	MaximumProductionSamplePairs           = 10_000
 	ProductionWarmupPairs                  = 16
@@ -118,10 +122,15 @@ func ProductionPhaseOffsetNS(sequence int, transition Transition) int64 {
 }
 
 type Sample struct {
-	Sequence         int        `json:"sequence"`
-	Transition       Transition `json:"transition"`
-	LatencyNS        int64      `json:"latency_ns"`
-	EventTimestampNS uint64     `json:"sdl_event_timestamp_ns"`
+	Sequence            int        `json:"sequence"`
+	Transition          Transition `json:"transition"`
+	LatencyNS           int64      `json:"latency_ns"`
+	EventTimestampNS    uint64     `json:"sdl_event_timestamp_ns"`
+	SDLFenceTimestampNS uint64     `json:"sdl_prewrite_fence_timestamp_ns"`
+	StartQPCTicks       int64      `json:"start_qpc_ticks"`
+	EndQPCTicks         int64      `json:"end_qpc_ticks"`
+	MarkerQPCTicks      int64      `json:"trace_marker_qpc_ticks"`
+	MarkerID            string     `json:"trace_marker_id"`
 }
 
 type Counters struct {
@@ -151,6 +160,7 @@ type NativeServerProof struct {
 	ABIMinor                     uint16 `json:"abi_minor"`
 	Capabilities                 uint32 `json:"capabilities"`
 	ExpectedDriverPackageVersion string `json:"expected_driver_package_version"`
+	LoadedDriverBuildIdentity    string `json:"loaded_driver_build_identity"`
 }
 
 type ServerProof struct {
@@ -171,17 +181,25 @@ type DeviceProof struct {
 }
 
 type ControllerProof struct {
-	BaselineGamepadIDs []int32 `json:"baseline_gamepad_ids"`
-	NewGamepadIDs      []int32 `json:"new_gamepad_ids"`
-	SDLInstanceID      int32   `json:"sdl_instance_id"`
-	SDLPath            string  `json:"sdl_path"`
-	SDLGUID            string  `json:"sdl_guid"`
-	SDLName            string  `json:"sdl_name"`
-	SDLType            string  `json:"sdl_type"`
-	SDLReportedType    int32   `json:"sdl_reported_type"`
-	SDLRealType        int32   `json:"sdl_real_type"`
-	VendorID           uint16  `json:"vendor_id"`
-	ProductID          uint16  `json:"product_id"`
+	BaselineGamepadIDs        []int32    `json:"baseline_gamepad_ids"`
+	NewGamepadIDs             []int32    `json:"new_gamepad_ids"`
+	SDLInstanceID             int32      `json:"sdl_instance_id"`
+	SDLPath                   string     `json:"sdl_path"`
+	SDLGUID                   string     `json:"sdl_guid"`
+	SDLName                   string     `json:"sdl_name"`
+	SDLType                   string     `json:"sdl_type"`
+	SDLReportedType           int32      `json:"sdl_reported_type"`
+	SDLRealType               int32      `json:"sdl_real_type"`
+	VendorID                  uint16     `json:"vendor_id"`
+	ProductID                 uint16     `json:"product_id"`
+	PNPInstanceID             string     `json:"pnp_instance_id"`
+	PNPAncestorIDs            []string   `json:"pnp_ancestor_ids"`
+	PNPAncestorServices       []string   `json:"pnp_ancestor_services"`
+	PNPAncestorHardwareIDs    [][]string `json:"pnp_ancestor_hardware_ids"`
+	PNPAncestorLocationInfo   []string   `json:"pnp_ancestor_location_info"`
+	PNPAncestorLocationPaths  [][]string `json:"pnp_ancestor_location_paths"`
+	TransportAnchorInstanceID string     `json:"transport_anchor_instance_id"`
+	TransportAnchorService    string     `json:"transport_anchor_service"`
 }
 
 type Run struct {
@@ -226,9 +244,41 @@ type Provenance struct {
 	SDLBinarySHA256             string `json:"sdl_binary_sha256"`
 	NativePackageManifestSHA256 string `json:"native_package_manifest_sha256"`
 	NativeDriverSHA256          string `json:"native_driver_sha256"`
+	NativeDriverBuildIdentity   string `json:"native_driver_build_identity"`
+	QPCFrequency                int64  `json:"qpc_frequency"`
+	TraceProviderName           string `json:"trace_provider_name"`
+	TraceProviderGUID           string `json:"trace_provider_guid"`
+	TraceProfileSHA256          string `json:"trace_profile_sha256"`
+	USBIPBaselineMode           string `json:"usbip_baseline_mode"`
+	USBIPBaselineVersion        string `json:"usbip_baseline_version"`
 	GoVersion                   string `json:"go_version"`
 	GOOS                        string `json:"goos"`
 	GOARCH                      string `json:"goarch"`
+}
+
+// SampleMarkerID is the canonical cross-artifact identity shared by JSON and
+// the TraceLogging marker emitted after the SDL edge is observed.
+func SampleMarkerID(controller, transport string, block, sequence int, transition Transition) string {
+	return fmt.Sprintf("%s:%s:%d:%d:%s", controller, transport, block, sequence, transition)
+}
+
+// QPCIntervalNS converts a bounded raw QueryPerformanceCounter interval to
+// nanoseconds. Production samples are shorter than the per-transition timeout,
+// so rejecting rather than saturating on multiplication overflow is safe and
+// prevents a forged or corrupted interval from becoming a plausible latency.
+func QPCIntervalNS(start, end, frequency int64) (int64, error) {
+	if start <= 0 || end <= start || frequency <= 0 {
+		return 0, errors.New("QPC interval or frequency is invalid")
+	}
+	delta := end - start
+	if delta > math.MaxInt64/int64(time.Second) {
+		return 0, errors.New("QPC interval overflows nanosecond conversion")
+	}
+	nanoseconds := delta * int64(time.Second) / frequency
+	if nanoseconds <= 0 {
+		return 0, errors.New("QPC interval has sub-nanosecond or non-positive duration")
+	}
+	return nanoseconds, nil
 }
 
 type Policy struct {
@@ -293,7 +343,7 @@ type SuiteReport struct {
 }
 
 var (
-	revisionPattern = regexp.MustCompile(`^[0-9a-f]{40,64}$`)
+	revisionPattern = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
 	hashPattern     = regexp.MustCompile(`^[0-9a-f]{64}$`)
 )
 
@@ -543,18 +593,29 @@ func validateBase(report *Report) error {
 		return errors.New("generated_at is required")
 	}
 	if !revisionPattern.MatchString(report.Provenance.SourceRevision) {
-		return errors.New("source_revision must be a lowercase 40-64 digit Git revision")
+		return errors.New("source_revision must be a lowercase 40- or 64-digit Git revision")
 	}
 	if !revisionPattern.MatchString(report.Provenance.SDLSourceRevision) {
-		return errors.New("sdl_source_revision must be a lowercase 40-64 digit Git revision")
+		return errors.New("sdl_source_revision must be a lowercase 40- or 64-digit Git revision")
 	}
 	if report.Provenance.SDLBinaryPath == "" ||
 		!hashPattern.MatchString(report.Provenance.SDLBinarySHA256) {
 		return errors.New("the loaded SDL binary path and SHA-256 are required")
 	}
 	if !hashPattern.MatchString(report.Provenance.NativePackageManifestSHA256) ||
-		!hashPattern.MatchString(report.Provenance.NativeDriverSHA256) {
+		!hashPattern.MatchString(report.Provenance.NativeDriverSHA256) ||
+		!hashPattern.MatchString(report.Provenance.NativeDriverBuildIdentity) {
 		return errors.New("source-bound native package manifest and installed driver hashes are required")
+	}
+	if report.Provenance.QPCFrequency <= 0 ||
+		report.Provenance.TraceProviderName != TraceProviderName ||
+		report.Provenance.TraceProviderGUID != TraceProviderGUID ||
+		!hashPattern.MatchString(report.Provenance.TraceProfileSHA256) {
+		return errors.New("QPC and source-controlled TraceLogging provenance are incomplete")
+	}
+	if report.Provenance.USBIPBaselineMode != USBIPBaselineMode ||
+		report.Provenance.USBIPBaselineVersion != USBIPBaselineVersion {
+		return errors.New("USB/IP comparison must be explicitly labeled as the exact version-probed, non-source-bound baseline")
 	}
 	if report.Provenance.GoVersion == "" || report.Provenance.GOOS != "windows" ||
 		report.Provenance.GOARCH == "" {
@@ -604,7 +665,7 @@ func validateBase(report *Report) error {
 	}
 
 	for index := range report.Runs {
-		if err := validateRun(&report.Runs[index], report.Workload, schedule[index]); err != nil {
+		if err := validateRun(&report.Runs[index], report.Workload, report.Provenance, schedule[index]); err != nil {
 			return fmt.Errorf("order %d %s block %d: %w", index+1,
 				report.Runs[index].Transport, report.Runs[index].TransportBlock, err)
 		}
@@ -632,7 +693,7 @@ func validateBase(report *Report) error {
 	return nil
 }
 
-func validateRun(run *Run, workload Workload, block BlockSpec) error {
+func validateRun(run *Run, workload Workload, provenance Provenance, block BlockSpec) error {
 	if run.Order != block.Order || run.Transport != block.Transport ||
 		run.TransportBlock != block.TransportBlock ||
 		run.FirstSequence != block.FirstSequence || run.SamplePairs != block.SamplePairs {
@@ -649,6 +710,7 @@ func validateRun(run *Run, workload Workload, block BlockSpec) error {
 		return errors.New("more samples than the declared transport block")
 	}
 	var priorTimestamp uint64
+	var priorMarkerQPC int64
 	for index, sample := range run.Samples {
 		wantSequence := run.FirstSequence + index/2
 		wantTransition := TransitionPress
@@ -659,13 +721,23 @@ func validateRun(run *Run, workload Workload, block BlockSpec) error {
 			return fmt.Errorf("sample %d is %d/%s, want %d/%s", index,
 				sample.Sequence, sample.Transition, wantSequence, wantTransition)
 		}
-		if sample.LatencyNS <= 0 || sample.EventTimestampNS == 0 {
-			return fmt.Errorf("sample %d has invalid latency or SDL timestamp", index)
+		wantMarkerID := SampleMarkerID(workload.ControllerType, run.Transport,
+			run.TransportBlock, sample.Sequence, sample.Transition)
+		qpcLatencyNS, qpcErr := QPCIntervalNS(sample.StartQPCTicks,
+			sample.EndQPCTicks, provenance.QPCFrequency)
+		if qpcErr != nil || sample.LatencyNS != qpcLatencyNS || sample.EventTimestampNS == 0 ||
+			sample.SDLFenceTimestampNS == 0 ||
+			sample.EventTimestampNS <= sample.SDLFenceTimestampNS ||
+			(priorMarkerQPC != 0 && sample.StartQPCTicks < priorMarkerQPC) ||
+			sample.MarkerQPCTicks < sample.EndQPCTicks ||
+			sample.MarkerID != wantMarkerID {
+			return fmt.Errorf("sample %d has invalid or inconsistent latency, causal fence, QPC interval, or trace marker", index)
 		}
 		if priorTimestamp != 0 && sample.EventTimestampNS < priorTimestamp {
 			return fmt.Errorf("sample %d regressed the SDL event clock", index)
 		}
 		priorTimestamp = sample.EventTimestampNS
+		priorMarkerQPC = sample.MarkerQPCTicks
 	}
 	if run.Failure == "" && len(run.Samples) != 2*run.SamplePairs {
 		return errors.New("successful run does not contain every press/release sample")
@@ -688,8 +760,12 @@ func validateRun(run *Run, workload Workload, block BlockSpec) error {
 	}
 	if run.Transport == TransportNativeUDE {
 		if run.Server.NativeUDE == nil || run.Server.NativeUDE.ABIMajor == 0 ||
-			run.Server.NativeUDE.ExpectedDriverPackageVersion == "" || run.Device.USBIPPort != 0 {
+			run.Server.NativeUDE.ExpectedDriverPackageVersion == "" ||
+			run.Server.NativeUDE.LoadedDriverBuildIdentity == "" || run.Device.USBIPPort != 0 {
 			return errors.New("native transport proof is absent or contradictory")
+		}
+		if run.Server.NativeUDE.LoadedDriverBuildIdentity != provenance.NativeDriverBuildIdentity {
+			return errors.New("loaded native driver build identity does not match the signed package manifest")
 		}
 	} else if run.Transport == TransportUSBIP {
 		if run.Server.NativeUDE != nil || run.Device.USBIPPort <= 0 {
@@ -715,7 +791,83 @@ func validateRun(run *Run, workload Workload, block BlockSpec) error {
 		run.Controller.ProductID != workload.ExpectedProductID {
 		return errors.New("new SDL gamepad identity does not match the API-created controller")
 	}
+	if err := ValidateTransportAncestry(run.Transport, run.Device.USBIPPort, run.Controller); err != nil {
+		return err
+	}
 	return nil
+}
+
+// ValidateTransportAncestry rejects VID/PID-only substitutions and requires
+// exactly one transport-specific root anchor in the SDL interface's PnP chain.
+func ValidateTransportAncestry(transport string, usbipPort int32, proof ControllerProof) error {
+	if proof.PNPInstanceID == "" || len(proof.PNPAncestorIDs) == 0 ||
+		len(proof.PNPAncestorIDs) != len(proof.PNPAncestorServices) ||
+		len(proof.PNPAncestorIDs) != len(proof.PNPAncestorHardwareIDs) ||
+		len(proof.PNPAncestorIDs) != len(proof.PNPAncestorLocationInfo) ||
+		len(proof.PNPAncestorIDs) != len(proof.PNPAncestorLocationPaths) ||
+		!strings.EqualFold(proof.PNPAncestorIDs[0], proof.PNPInstanceID) {
+		return errors.New("SDL observer lacks an exact, internally consistent Windows PnP ancestry proof")
+	}
+	anchorCount := 0
+	for index, instanceID := range proof.PNPAncestorIDs {
+		service := proof.PNPAncestorServices[index]
+		hardwareIDs := proof.PNPAncestorHardwareIDs[index]
+		isAnchor := false
+		switch transport {
+		case TransportNativeUDE:
+			isAnchor = strings.EqualFold(service, "ViiperUde") &&
+				containsFold(hardwareIDs, `ROOT\VIIPER\UDE`)
+		case TransportUSBIP:
+			// Root-enumerated devnode instance IDs are OS-assigned (for example
+			// ROOT\USB\0002). The stable INF identity is the exact hardware ID.
+			isAnchor = strings.EqualFold(service, "usbip2_ude") &&
+				containsFold(hardwareIDs, `ROOT\USBIP_WIN2\UDE`)
+		default:
+			return fmt.Errorf("unsupported transport %q", transport)
+		}
+		if isAnchor {
+			anchorCount++
+			if !strings.EqualFold(proof.TransportAnchorInstanceID, instanceID) ||
+				!strings.EqualFold(proof.TransportAnchorService, service) {
+				return errors.New("reported transport anchor does not match the exact PnP ancestor")
+			}
+		}
+	}
+	if anchorCount != 1 {
+		return fmt.Errorf("PnP ancestry contains %d exact %s transport anchors, want 1", anchorCount, transport)
+	}
+	if transport == TransportUSBIP {
+		if usbipPort <= 0 {
+			return errors.New("USB/IP transport has no positive import-port identity")
+		}
+		portSegment := fmt.Sprintf("USB(%d)", usbipPort)
+		portMatched := false
+		for index, instanceID := range proof.PNPAncestorIDs {
+			if strings.EqualFold(instanceID, proof.TransportAnchorInstanceID) {
+				break
+			}
+			for _, locationPath := range proof.PNPAncestorLocationPaths[index] {
+				for _, segment := range strings.Split(locationPath, "#") {
+					if strings.EqualFold(segment, portSegment) {
+						portMatched = true
+					}
+				}
+			}
+		}
+		if !portMatched {
+			return fmt.Errorf("USB/IP PnP descendants do not prove returned root-hub port %d", usbipPort)
+		}
+	}
+	return nil
+}
+
+func containsFold(values []string, want string) bool {
+	for _, value := range values {
+		if strings.EqualFold(value, want) {
+			return true
+		}
+	}
+	return false
 }
 
 func expectedSDLRealType(controllerType string) int32 {
