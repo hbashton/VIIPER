@@ -2083,7 +2083,6 @@ ViiperEvtEndpointPurgeWorkItem(
     )
 {
     UDECXUSBENDPOINT endpoint = (UDECXUSBENDPOINT)WdfWorkItemGetParentObject(WorkItem);
-    VIIPER_UDE_ENDPOINT_CONTEXT *endpointContext = ViiperGetEndpointContext(endpoint);
 
     PAGED_CODE();
     // UdeCx requires every request forwarded out of the endpoint queue to be
