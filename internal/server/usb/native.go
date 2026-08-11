@@ -158,11 +158,20 @@ func (p *NativeProcessor) clearDeviceTransportLocked(identity udecx.DeviceIdenti
 	clear(session.active)
 }
 
-func (p *NativeProcessor) Lifecycle(_ context.Context, dev usbdevice.Device, op udecx.Operation) error {
+func (p *NativeProcessor) Lifecycle(ctx context.Context, dev usbdevice.Device, op udecx.Operation) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	identity := udecx.DeviceIdentity{DeviceID: op.DeviceID, Generation: op.Generation}
 	sessionKey := nativeSessionKey{deviceID: op.DeviceID, generation: op.Generation}
 	session := p.lockSession(sessionKey)
 	defer session.mu.Unlock()
+	// A newer device barrier may cancel this lifecycle operation while it waits
+	// behind an older callback on the same session. Recheck after acquiring the
+	// mutation lock so the retired reset/purge cannot cross the new boundary.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	key := nativeLaneKey{
 		deviceID: op.DeviceID, generation: op.Generation, endpoint: op.EndpointAddress,
 		attributes: op.EndpointAttributes, interval: op.EndpointInterval,
@@ -464,6 +473,13 @@ func resolveNativeIsoEndpoint(dev usbdevice.Device, op udecx.Operation) (nativeI
 }
 
 func (p *NativeProcessor) Process(ctx context.Context, dev usbdevice.Device, op udecx.Operation) (udecx.Completion, error) {
+	// The kernel cancel notification can win after Host's final cancellation
+	// check but immediately before this callback. Reject that already-retired
+	// request before reserving an ISO service window, activating an endpoint, or
+	// publishing an output/state report into the immutable controller engine.
+	if err := ctx.Err(); err != nil {
+		return udecx.Completion{}, err
+	}
 	if dev == nil {
 		return udecx.Completion{}, errors.New("native UDE operation has no device")
 	}
