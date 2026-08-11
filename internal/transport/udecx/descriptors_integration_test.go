@@ -1,6 +1,7 @@
 package udecx_test
 
 import (
+	"bytes"
 	"encoding/binary"
 	"testing"
 
@@ -61,8 +62,12 @@ func TestSnapshotDeviceCoversEveryProductionControllerTopology(t *testing.T) {
 					break
 				}
 			}
-			if string(nativeConfiguration) != string(configuration) {
-				t.Fatal("native UDE snapshot changed the production USB topology")
+			if desc.Device.Speed >= uint32(udecx.DeviceSpeedHigh) {
+				if !bytes.Equal(nativeConfiguration, configuration) {
+					t.Fatal("native UDE snapshot changed a high-speed production USB topology")
+				}
+			} else if bytes.Equal(nativeConfiguration, configuration) {
+				t.Fatal("native UDE snapshot omitted the required USBHUB3 full-speed endpoint projection")
 			}
 		})
 	}

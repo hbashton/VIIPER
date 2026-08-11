@@ -58,6 +58,67 @@ ViiperValidateDescriptorChain(
     return offset == Length;
 }
 
+static
+BOOLEAN
+ViiperValidateEndpointSchedules(
+    _In_reads_bytes_(Length) const UCHAR *Descriptor,
+    _In_ ULONG Length,
+    _In_ ULONG Speed
+    )
+{
+    ULONG offset = 0;
+
+    // The owner sends the UdeCx-facing descriptor, not the controller's
+    // logical full-speed descriptor. USBHUB3 schedules every UDE endpoint
+    // using high-speed interval rules. Reject an old or malformed privileged
+    // owner here, before UdecxUsbDeviceInitAddDescriptor can expose an unsafe
+    // ISO pipe to a client driver.
+    while (offset < Length) {
+        const UCHAR *item;
+        ULONG itemLength;
+        UCHAR transferType;
+
+        if (Length - offset < 2) {
+            return FALSE;
+        }
+        item = Descriptor + offset;
+        itemLength = item[0];
+        if (itemLength < 2 || itemLength > Length - offset) {
+            return FALSE;
+        }
+        if (item[1] != USB_ENDPOINT_DESCRIPTOR_TYPE) {
+            offset += itemLength;
+            continue;
+        }
+        if (itemLength < sizeof(USB_ENDPOINT_DESCRIPTOR)) {
+            return FALSE;
+        }
+
+        transferType = item[3] & USB_ENDPOINT_TYPE_MASK;
+        if (transferType == USB_ENDPOINT_TYPE_ISOCHRONOUS) {
+            if (Speed == 1) {
+                return FALSE;
+            }
+            if (Speed == 2) {
+                // Full-speed one-frame ISO is projected to the equivalent
+                // high-speed exponent before crossing this ABI.
+                if (item[6] != 4) {
+                    return FALSE;
+                }
+            } else if (item[6] == 0 || item[6] > 4) {
+                // Windows supports HS/SS ISO polling periods only through
+                // eight microframes. Client I/O above that may bugcheck.
+                return FALSE;
+            }
+        } else if (transferType == USB_ENDPOINT_TYPE_INTERRUPT &&
+                   (item[6] == 0 || item[6] > 16)) {
+            return FALSE;
+        }
+        offset += itemLength;
+    }
+    return offset == Length;
+}
+
 static const UCHAR microsoftOS10StringPrefix[] = {
     0x12, 0x03,
     0x4d, 0x00, 0x53, 0x00, 0x46, 0x00, 0x54, 0x00,
@@ -160,7 +221,9 @@ ViiperValidateCreateDevice(
                 descriptor[1] != USB_CONFIGURATION_DESCRIPTOR_TYPE ||
                 ((USHORT)descriptor[2] | ((USHORT)descriptor[3] << 8)) != (USHORT)record->Length ||
                 !ViiperValidateDescriptorChain(
-                    descriptor, record->Length, USB_CONFIGURATION_DESCRIPTOR_TYPE)) {
+                    descriptor, record->Length, USB_CONFIGURATION_DESCRIPTOR_TYPE) ||
+                !ViiperValidateEndpointSchedules(
+                    descriptor, record->Length, Input->Speed)) {
                 return FALSE;
             }
             foundConfiguration = TRUE;

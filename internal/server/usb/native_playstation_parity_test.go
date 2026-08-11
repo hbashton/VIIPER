@@ -65,9 +65,14 @@ func parityEndpoint(t *testing.T, dev usbdevice.Device, address uint8) usbdevice
 	return usbdevice.EndpointDescriptor{}
 }
 
-func endpointOperation(identity udecx.DeviceIdentity, kind udecx.OperationKind,
-	endpoint usbdevice.EndpointDescriptor,
+func endpointOperation(t *testing.T, identity udecx.DeviceIdentity, kind udecx.OperationKind,
+	speed uint32, endpoint usbdevice.EndpointDescriptor,
 ) udecx.Operation {
+	t.Helper()
+	endpoint, err := udecx.EndpointDescriptorForNativeUdeCx(udecx.DeviceSpeed(speed), endpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
 	return udecx.Operation{
 		DeviceID: identity.DeviceID, Generation: identity.Generation, Kind: kind,
 		EndpointAddress:       endpoint.BEndpointAddress,
@@ -85,7 +90,8 @@ func (h *playStationParityHarness) nativeLifecycle(t *testing.T, dev usbdevice.D
 		DeviceID: h.identity.DeviceID, Generation: h.identity.Generation, Kind: kind,
 	}
 	if address != 0 {
-		op = endpointOperation(h.identity, kind, parityEndpoint(t, dev, address))
+		op = endpointOperation(t, h.identity, kind, dev.GetDescriptor().Device.Speed,
+			parityEndpoint(t, dev, address))
 	}
 	if err := h.native.Lifecycle(context.Background(), dev, op); err != nil {
 		t.Fatalf("native lifecycle kind %d endpoint 0x%02x: %v", kind, address, err)
@@ -120,7 +126,8 @@ func (h *playStationParityHarness) nativeOutput(t *testing.T, dev usbdevice.Devi
 ) {
 	t.Helper()
 	endpoint := parityEndpoint(t, dev, address)
-	op := endpointOperation(h.identity, udecx.OperationTransfer, endpoint)
+	op := endpointOperation(t, h.identity, udecx.OperationTransfer,
+		dev.GetDescriptor().Device.Speed, endpoint)
 	op.Token = h.nextToken()
 	op.TransferLength = uint32(len(payload))
 	op.Payload = append([]byte(nil), payload...)
@@ -192,7 +199,8 @@ func (h *playStationParityHarness) nativeISO(t *testing.T, dev usbdevice.Device,
 ) udecx.Completion {
 	t.Helper()
 	endpoint := parityEndpoint(t, dev, address)
-	op := endpointOperation(h.identity, udecx.OperationTransfer, endpoint)
+	op := endpointOperation(t, h.identity, udecx.OperationTransfer,
+		dev.GetDescriptor().Device.Speed, endpoint)
 	op.Token = h.nextToken()
 	op.TransferLength = transferLength
 	op.IsoPackets = append([]udecx.IsoPacket(nil), packets...)

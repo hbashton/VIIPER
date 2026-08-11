@@ -206,6 +206,16 @@ func signatureFromDescriptor(endpoint usbdevice.EndpointDescriptor) nativeEndpoi
 	}
 }
 
+func nativeSignatureFromDescriptor(speed uint32,
+	endpoint usbdevice.EndpointDescriptor) (nativeEndpointSignature, bool) {
+	projected, err := udecx.EndpointDescriptorForNativeUdeCx(
+		udecx.DeviceSpeed(speed), endpoint)
+	if err != nil {
+		return nativeEndpointSignature{}, false
+	}
+	return signatureFromDescriptor(projected), true
+}
+
 func descriptorInterfaceAltForEndpoint(desc *usbdevice.Descriptor,
 	signature nativeEndpointSignature) (uint8, uint8, bool) {
 	if desc == nil || signature.address == 0 {
@@ -218,7 +228,8 @@ func descriptorInterfaceAltForEndpoint(desc *usbdevice.Descriptor,
 			continue
 		}
 		for _, endpoint := range iface.Endpoints {
-			if signatureFromDescriptor(endpoint) != signature {
+			projected, valid := nativeSignatureFromDescriptor(desc.Device.Speed, endpoint)
+			if !valid || projected != signature {
 				continue
 			}
 			candidateInterface := iface.Descriptor.BInterfaceNumber
@@ -256,8 +267,11 @@ func descriptorInterfaceAltIsActive(desc *usbdevice.Descriptor, interfaceNumber,
 			continue
 		}
 		for _, endpoint := range iface.Endpoints {
-			if _, ok := active[signatureFromDescriptor(endpoint)]; ok {
-				return true
+			projected, valid := nativeSignatureFromDescriptor(desc.Device.Speed, endpoint)
+			if valid {
+				if _, ok := active[projected]; ok {
+					return true
+				}
 			}
 		}
 	}
@@ -359,18 +373,20 @@ func nativeLaneKeyFromOperation(op udecx.Operation) nativeLaneKey {
 	}
 }
 
-func descriptorHasEndpointSignature(desc *usbdevice.Descriptor, signature nativeEndpointSignature) bool {
+func logicalEndpointForNativeSignature(desc *usbdevice.Descriptor,
+	signature nativeEndpointSignature) (usbdevice.EndpointDescriptor, bool) {
 	if desc == nil {
-		return false
+		return usbdevice.EndpointDescriptor{}, false
 	}
 	for _, iface := range desc.Interfaces {
 		for _, endpoint := range iface.Endpoints {
-			if signatureFromDescriptor(endpoint) == signature {
-				return true
+			projected, valid := nativeSignatureFromDescriptor(desc.Device.Speed, endpoint)
+			if valid && projected == signature {
+				return endpoint, true
 			}
 		}
 	}
-	return false
+	return usbdevice.EndpointDescriptor{}, false
 }
 
 func nativeIsoServiceInterval(speed uint32, bInterval uint8) (time.Duration, error) {
@@ -414,11 +430,12 @@ func resolveNativeIsoEndpoint(dev usbdevice.Device, op udecx.Operation) (nativeI
 			"native ISO endpoint 0x%02x direction %d disagrees with operation %d/flags %d",
 			signature.address, direction, op.Direction, flagDirection)
 	}
-	if !descriptorHasEndpointSignature(desc, signature) {
+	logicalEndpoint, ok := logicalEndpointForNativeSignature(desc, signature)
+	if !ok {
 		return nativeIsoEndpoint{}, fmt.Errorf(
 			"native ISO endpoint signature %+v is not present in the device descriptor", signature)
 	}
-	interval, err := nativeIsoServiceInterval(desc.Device.Speed, signature.interval)
+	interval, err := nativeIsoServiceInterval(desc.Device.Speed, logicalEndpoint.BInterval)
 	if err != nil {
 		return nativeIsoEndpoint{}, err
 	}

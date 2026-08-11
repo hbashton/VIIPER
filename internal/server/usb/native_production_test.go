@@ -462,6 +462,11 @@ func populateProductionEndpointMetadata(dev usbdevice.Device, op *udecx.Operatio
 			if endpoint.BEndpointAddress != op.EndpointAddress {
 				continue
 			}
+			endpoint, err := udecx.EndpointDescriptorForNativeUdeCx(
+				udecx.DeviceSpeed(dev.GetDescriptor().Device.Speed), endpoint)
+			if err != nil {
+				panic(err)
+			}
 			op.EndpointAttributes = endpoint.BMAttributes
 			op.EndpointInterval = endpoint.BInterval
 			op.EndpointMaxPacketSize = endpoint.WMaxPacketSize
@@ -491,7 +496,12 @@ func startNativeEndpoint(t *testing.T, processor *serverusb.NativeProcessor,
 			if endpoint.BEndpointAddress != endpointAddress {
 				continue
 			}
-			err := processor.Lifecycle(context.Background(), dev, udecx.Operation{
+			endpoint, err := udecx.EndpointDescriptorForNativeUdeCx(
+				udecx.DeviceSpeed(dev.GetDescriptor().Device.Speed), endpoint)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = processor.Lifecycle(context.Background(), dev, udecx.Operation{
 				DeviceID: 1, Generation: 1, Kind: udecx.OperationEndpointStart,
 				EndpointAddress:       endpoint.BEndpointAddress,
 				EndpointAttributes:    endpoint.BMAttributes,
@@ -524,6 +534,12 @@ func processNativeIso(t *testing.T, processor *serverusb.NativeProcessor,
 	for _, iface := range dev.GetDescriptor().Interfaces {
 		for _, descEndpoint := range iface.Endpoints {
 			if descEndpoint.BEndpointAddress == endpoint {
+				var err error
+				descEndpoint, err = udecx.EndpointDescriptorForNativeUdeCx(
+					udecx.DeviceSpeed(dev.GetDescriptor().Device.Speed), descEndpoint)
+				if err != nil {
+					t.Fatal(err)
+				}
 				op.EndpointAttributes = descEndpoint.BMAttributes
 				op.EndpointInterval = descEndpoint.BInterval
 				op.EndpointMaxPacketSize = descEndpoint.WMaxPacketSize

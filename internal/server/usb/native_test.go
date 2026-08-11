@@ -533,6 +533,37 @@ func TestResolveNativeIsoEndpointUsesDirectionAndAlternateSignature(t *testing.T
 	}
 }
 
+func TestResolveNativeIsoEndpointMapsProjectedFullSpeedSignatureToLogicalCadence(t *testing.T) {
+	desc := &usbdevice.Descriptor{
+		Device: usbdevice.DeviceDescriptor{Speed: uint32(udecx.DeviceSpeedFull)},
+		Interfaces: []usbdevice.InterfaceConfig{{
+			Descriptor: usbdevice.InterfaceDescriptor{BInterfaceNumber: 1, BAlternateSetting: 1},
+			Endpoints: []usbdevice.EndpointDescriptor{{
+				BEndpointAddress: 0x01, BMAttributes: 0x09,
+				WMaxPacketSize: 132, BInterval: 1,
+			}},
+		}},
+	}
+	dev := &altSettingTestDevice{desc: desc}
+	endpoint, err := resolveNativeIsoEndpoint(dev, udecx.Operation{
+		DeviceID: 1, Generation: 1, EndpointAddress: 0x01,
+		EndpointAttributes: 0x09, EndpointInterval: 4, EndpointMaxPacketSize: 132,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if endpoint.interval != time.Millisecond {
+		t.Fatalf("projected full-speed interval=%s want=1ms logical cadence", endpoint.interval)
+	}
+	_, err = resolveNativeIsoEndpoint(dev, udecx.Operation{
+		DeviceID: 1, Generation: 1, EndpointAddress: 0x01,
+		EndpointAttributes: 0x09, EndpointInterval: 1, EndpointMaxPacketSize: 132,
+	})
+	if err == nil {
+		t.Fatal("unprojected full-speed UdeCx signature was accepted")
+	}
+}
+
 func TestNativeIsoExplicitFrameRangeHandlesWrap(t *testing.T) {
 	base := time.Unix(700, 0)
 	processor := nativeProcessorForTest(t)

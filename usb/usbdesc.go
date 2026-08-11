@@ -255,8 +255,10 @@ func (d Descriptor) Bytes() []byte {
 
 // ConfigurationBytes builds the complete active USB configuration descriptor,
 // including IADs, alternate interfaces, HID/class descriptors, and endpoints.
-// Both the USB/IP server and the native UdeCx host use this single encoder so
-// Windows sees byte-identical device topology on either transport.
+// USB/IP emits these logical bytes directly. The native UdeCx host also uses
+// this encoder after applying only the endpoint scheduling projection required
+// by USBHUB3 for full-speed devices; interface topology and class data remain
+// identical.
 func (d Descriptor) ConfigurationBytes() ([]byte, error) {
 	var b bytes.Buffer
 	configValue := d.Configuration.BConfigurationValue
