@@ -21,6 +21,82 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+function ConvertTo-WindowsCommandLineArgument {
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Value)
+
+    if ($Value.Length -gt 0 -and $Value -notmatch '[\s"]') {
+        return $Value
+    }
+    $builder = [Text.StringBuilder]::new()
+    [void]$builder.Append('"')
+    $backslashes = 0
+    foreach ($character in $Value.ToCharArray()) {
+        if ($character -eq '\') {
+            ++$backslashes
+            continue
+        }
+        if ($character -eq '"') {
+            [void]$builder.Append(('\' * ($backslashes * 2 + 1)))
+            [void]$builder.Append('"')
+            $backslashes = 0
+            continue
+        }
+        [void]$builder.Append(('\' * $backslashes))
+        $backslashes = 0
+        [void]$builder.Append($character)
+    }
+    [void]$builder.Append(('\' * ($backslashes * 2)))
+    [void]$builder.Append('"')
+    return $builder.ToString()
+}
+
+function Invoke-BoundedValidationTool {
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [Parameter(Mandatory = $true)][string]$Operation,
+        [int]$TimeoutMilliseconds = 120000
+    )
+
+    $startInfo = [Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $FilePath
+    $startInfo.Arguments = (($Arguments | ForEach-Object {
+                ConvertTo-WindowsCommandLineArgument -Value $_
+            }) -join ' ')
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+
+    $process = [Diagnostics.Process]::new()
+    $process.StartInfo = $startInfo
+    try {
+        if (-not $process.Start()) {
+            throw "$Operation did not start."
+        }
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+        if (-not $process.WaitForExit($TimeoutMilliseconds)) {
+            try {
+                $process.Kill()
+                $process.WaitForExit()
+            }
+            catch {
+                throw "$Operation exceeded $TimeoutMilliseconds ms and could not be joined: $($_.Exception.Message)"
+            }
+            throw "$Operation exceeded $TimeoutMilliseconds ms and was terminated before package mutation."
+        }
+        $stdout = $stdoutTask.GetAwaiter().GetResult()
+        $stderr = $stderrTask.GetAwaiter().GetResult()
+        if ($stdout) { Write-Host $stdout.TrimEnd() }
+        if ($stderr) { Write-Host $stderr.TrimEnd() }
+        return $process.ExitCode
+    }
+    finally {
+        $process.Dispose()
+    }
+}
+
 function Get-CertificateEkuOids {
     param(
         [Parameter(Mandatory = $true)]
@@ -235,24 +311,30 @@ if ($requireExternalTools) {
     $signTool = Get-Command signtool.exe -ErrorAction Stop
     foreach ($name in @('ViiperUde.cat', 'ViiperUde.sys')) {
         $policy = if ($ValidationMode -eq 'LocalTest') { '/pa' } else { '/kp' }
-        & $signTool.Source verify $policy /v $files[$name]
-        if ($LASTEXITCODE -ne 0) {
-            throw "Signature policy validation failed for '$name' with exit code $LASTEXITCODE."
+        $exitCode = Invoke-BoundedValidationTool -FilePath $signTool.Source `
+            -Arguments @('verify', $policy, '/v', $files[$name]) `
+            -Operation "SignTool signature validation for '$name'"
+        if ($exitCode -ne 0) {
+            throw "Signature policy validation failed for '$name' with exit code $exitCode."
         }
     }
     foreach ($name in @('ViiperUde.inf', 'ViiperUde.sys')) {
         $policy = if ($ValidationMode -eq 'LocalTest') { '/pa' } else { '/kp' }
-        & $signTool.Source verify $policy /v /c $files['ViiperUde.cat'] $files[$name]
-        if ($LASTEXITCODE -ne 0) {
-            throw "'$name' is not a verified member of the exact catalog (exit code $LASTEXITCODE)."
+        $exitCode = Invoke-BoundedValidationTool -FilePath $signTool.Source `
+            -Arguments @('verify', $policy, '/v', '/c', $files['ViiperUde.cat'], $files[$name]) `
+            -Operation "SignTool catalog membership validation for '$name'"
+        if ($exitCode -ne 0) {
+            throw "'$name' is not a verified member of the exact catalog (exit code $exitCode)."
         }
     }
 
     $infVerif = Get-Command infverif.exe -ErrorAction Stop
     foreach ($mode in @('/h', '/u')) {
-        & $infVerif.Source $mode $files['ViiperUde.inf']
-        if ($LASTEXITCODE -ne 0) {
-            throw "InfVerif $mode rejected the signed package with exit code $LASTEXITCODE."
+        $exitCode = Invoke-BoundedValidationTool -FilePath $infVerif.Source `
+            -Arguments @($mode, $files['ViiperUde.inf']) `
+            -Operation "InfVerif $mode validation"
+        if ($exitCode -ne 0) {
+            throw "InfVerif $mode rejected the signed package with exit code $exitCode."
         }
     }
 }

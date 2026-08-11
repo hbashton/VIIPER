@@ -132,6 +132,11 @@ func TestLocalTestValidationCannotWeakenProduction(t *testing.T) {
 	contract := strings.ReplaceAll(string(contents), "\r\n", "\n")
 	for _, required := range []string{
 		"[ValidateSet('LocalTest', 'ControlledTest', 'Production')]",
+		"Invoke-BoundedValidationTool",
+		"$process.WaitForExit($TimeoutMilliseconds)",
+		"$process.StandardOutput.ReadToEndAsync()",
+		"$process.StandardError.ReadToEndAsync()",
+		"$process.Kill()",
 		"$ValidationMode -eq 'LocalTest'",
 		"testSignerCertificateSha256",
 		"Production validation requires a release-eligible HLK/WHCP",
@@ -142,6 +147,14 @@ func TestLocalTestValidationCannotWeakenProduction(t *testing.T) {
 	} {
 		if !strings.Contains(contract, required) {
 			t.Fatalf("signature route separation omitted %q", required)
+		}
+	}
+	for _, forbidden := range []string{
+		"& $signTool.Source verify",
+		"& $infVerif.Source",
+	} {
+		if strings.Contains(contract, forbidden) {
+			t.Fatalf("signature validation retained unbounded child execution %q", forbidden)
 		}
 	}
 }
