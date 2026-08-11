@@ -419,10 +419,11 @@ a wedged provider cannot retain the installer mutex indefinitely.
   Post-enumeration reset, device initialization, and configuration replacement
   share this one-child-at-a-time gate; concurrent reset transactions are
   rejected instead of interleaving two controller resets.
-- The controller's default KMDF queue only routes requests: interrupt-IN
-  submissions run on an independent parallel queue, while mutation, broker,
-  and lifecycle IOCTLs retain their serialized control queue. Large media
-  completions therefore cannot head-of-line block fresh controller input.
+- The controller's default KMDF queue is parallel and completes interrupt-IN
+  submissions directly. Mutation, broker, and lifecycle IOCTLs alone move to
+  the serialized control queue. This removes a redundant KMDF forwarding and
+  dispatch boundary from every fresh report while large media completions still
+  cannot head-of-line block controller input.
 - Each fast interrupt-IN endpoint has its own passive lock. Different
   controllers publish concurrently, while accidental concurrent submissions
   for one endpoint cannot reorder reports or replay a coalesced sequence.

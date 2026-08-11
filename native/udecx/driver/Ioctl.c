@@ -177,9 +177,6 @@ ViiperEvtIoDeviceControlRoute(
 {
     VIIPER_UDE_CONTROLLER_CONTEXT *context =
         ViiperGetControllerContext(WdfIoQueueGetDevice(Queue));
-    WDFQUEUE destination = IoControlCode == IOCTL_VIIPER_UDE_SUBMIT_INPUT_REPORT
-        ? context->InputQueue
-        : context->ControlQueue;
     NTSTATUS status;
 
     UNREFERENCED_PARAMETER(OutputBufferLength);
@@ -190,40 +187,21 @@ ViiperEvtIoDeviceControlRoute(
         return;
     }
 
-    // The default queue performs routing only. Keeping it parallel prevents a
-    // large media completion or lifecycle mutation on the serialized control
-    // queue from delaying an already encoded interrupt-IN report.
-    status = WdfRequestForwardToIoQueue(Request, destination);
+    if (IoControlCode == IOCTL_VIIPER_UDE_SUBMIT_INPUT_REPORT) {
+        // The default queue already has parallel/passive/no-synchronization
+        // semantics. Complete the hot interrupt-IN submission here instead of
+        // forwarding it through a second identically configured KMDF queue.
+        // Control, lifecycle, and media IOCTLs still move to the serialized
+        // control queue and therefore cannot head-of-line block fresh input.
+        status = ViiperSubmitInputReport(Queue, Request);
+        WdfRequestComplete(Request, status);
+        return;
+    }
+
+    status = WdfRequestForwardToIoQueue(Request, context->ControlQueue);
     if (!NT_SUCCESS(status)) {
         WdfRequestComplete(Request, status);
     }
-}
-
-VOID
-ViiperEvtInputIoDeviceControl(
-    _In_ WDFQUEUE Queue,
-    _In_ WDFREQUEST Request,
-    _In_ size_t OutputBufferLength,
-    _In_ size_t InputBufferLength,
-    _In_ ULONG IoControlCode
-    )
-{
-    VIIPER_UDE_CONTROLLER_CONTEXT *context =
-        ViiperGetControllerContext(WdfIoQueueGetDevice(Queue));
-    NTSTATUS status;
-
-    UNREFERENCED_PARAMETER(OutputBufferLength);
-    UNREFERENCED_PARAMETER(InputBufferLength);
-
-    if (InterlockedCompareExchange(&context->ShuttingDown, 0, 0) != 0) {
-        WdfRequestComplete(Request, STATUS_DEVICE_REMOVED);
-        return;
-    }
-
-    status = IoControlCode == IOCTL_VIIPER_UDE_SUBMIT_INPUT_REPORT
-        ? ViiperSubmitInputReport(Queue, Request)
-        : STATUS_INVALID_DEVICE_REQUEST;
-    WdfRequestComplete(Request, status);
 }
 
 VOID
@@ -267,7 +245,7 @@ ViiperEvtIoDeviceControl(
         status = ViiperCompleteOperation(Queue, Request);
         break;
     case IOCTL_VIIPER_UDE_SUBMIT_INPUT_REPORT:
-        // The router sends this IOCTL to the independent parallel input queue.
+        // The parallel default queue completes this hot-path IOCTL directly.
         // Reject it here rather than silently restoring head-of-line blocking.
         status = STATUS_INVALID_DEVICE_REQUEST;
         break;

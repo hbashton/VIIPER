@@ -1506,9 +1506,9 @@ ViiperSubmitInputReport(
         return STATUS_INVALID_DEVICE_STATE;
     }
 
-    // InputQueue is parallel so independent controllers never block one
-    // another. Serialize only this endpoint, preserving report order even if
-    // a faulty or hostile owner submits concurrent updates for the same pad.
+    // The default IOCTL queue is parallel so independent controllers never
+    // block one another. Serialize only this endpoint, preserving report order
+    // even if a faulty or hostile owner submits concurrent updates for one pad.
     WdfWaitLockAcquire(endpointContext->InputLock, NULL);
     WdfSpinLockAcquire(controllerContext->BrokerLock);
     if (InterlockedCompareExchange(&controllerContext->ShuttingDown, 0, 0) != 0 ||

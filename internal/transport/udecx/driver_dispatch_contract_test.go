@@ -188,3 +188,34 @@ func TestNativeBrokerEndpointFIFOModelsPublishAndCancelOrdering(t *testing.T) {
 		t.Fatal("cancellation did not expose the next same-endpoint admission")
 	}
 }
+
+func TestNativeFastInputSubmissionAvoidsSecondKMDFQueueHop(t *testing.T) {
+	controller := nativeContractSource(t, "native", "udecx", "driver", "Controller.c")
+	ioctl := nativeContractSource(t, "native", "udecx", "driver", "Ioctl.c")
+	header := nativeContractSource(t, "native", "udecx", "driver", "ViiperUde.h")
+	all := controller + ioctl + header
+	if strings.Contains(all, "WDFQUEUE InputQueue;") ||
+		strings.Contains(all, "context->InputQueue") ||
+		strings.Contains(all, "ViiperEvtInputIoDeviceControl") {
+		t.Fatal("native input still crosses the redundant parallel KMDF queue")
+	}
+
+	queues := normalizedContract(nativeCFunction(t, controller, "ViiperCreateQueues"))
+	requireContractOrder(t, queues,
+		"WDF_IO_QUEUE_CONFIG_INIT_DEFAULT_QUEUE(&queueConfig, WdfIoQueueDispatchParallel);",
+		"queueConfig.EvtIoDeviceControl = ViiperEvtIoDeviceControlRoute;",
+		"WDF_IO_QUEUE_CONFIG_INIT(&queueConfig, WdfIoQueueDispatchSequential);",
+		"queueConfig.EvtIoDeviceControl = ViiperEvtIoDeviceControl;")
+
+	route := normalizedContract(nativeCFunction(t, ioctl, "ViiperEvtIoDeviceControlRoute"))
+	requireContractOrder(t, route,
+		"InterlockedCompareExchange(&context->ShuttingDown, 0, 0)",
+		"if (IoControlCode == IOCTL_VIIPER_UDE_SUBMIT_INPUT_REPORT)",
+		"status = ViiperSubmitInputReport(Queue, Request);",
+		"WdfRequestComplete(Request, status);",
+		"return;",
+		"WdfRequestForwardToIoQueue(Request, context->ControlQueue)")
+	if strings.Contains(route, "WdfRequestForwardToIoQueue(Request, context->InputQueue)") {
+		t.Fatal("hot input report is still forwarded before completion")
+	}
+}
