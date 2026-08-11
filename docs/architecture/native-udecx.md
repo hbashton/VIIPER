@@ -76,6 +76,13 @@ The kernel driver owns only Windows USB presentation and transfer lifecycle.
     installer to the exact matching native-driver package. The service also
     recognizes the parameter/length errors returned by native previews from
     before that distinct status existed, so an upgrade cannot strand ABI 1.7.
+    ABI 1.9 additionally returns the 32-byte identity compiled into the loaded
+    kernel image: SHA-256 over the canonical source revision, driver-package
+    version, ABI, and exact-capability tuple. The broker binary and schema-2
+    accepted-package manifest derive the same value from their protected build
+    inputs. A stale
+    loaded image is rejected even when its on-disk replacement, ABI, and
+    capability mask otherwise look correct.
 11. Every packed wire structure has a compiler-independent size guard. The
     72-byte completion header carries two explicit reserved words; its size
     never depends on compiler tail padding. Every field offset is guarded too,
@@ -373,14 +380,19 @@ a wedged provider cannot retain the installer mutex indefinitely.
   completion DPC, locks, and broker storage are still valid.
   Cleanup first joins any file cleanup that crossed the owner lock before the
   gate, then purges user-mode queues, aborts every admitted broker operation,
-  waits for tracked and untracked completion counts to reach zero, and joins
-  the DPC before revoking device-table handles. The final controller
-  `EvtCleanupCallback` performs only invariant checks because KMDF has already
-  cleaned up child objects by then.
+  and uses KMDF's preceding non-power-managed queue purge as its terminal
+  endpoint fence. While a shared device-index lock still pins every endpoint,
+  it observes each UdeCx-owned queue as nonaccepting, nondispatching, and
+  `WDF_IO_QUEUE_IDLE`, with `ActiveOperations == 0` under the broker lock. This
+  includes a callback already delivered by WDF but preempted before its first
+  driver instruction. Only after that proof does cleanup join tracked and
+  untracked completion counts and the final DPC, then revoke and consume UDE
+  handles. The final controller `EvtCleanupCallback` performs only invariant
+  checks because KMDF has already cleaned up child objects by then.
 - UdeCx USB-device deletion remains asynchronous. Shutdown snapshots and
-  revokes each device under the embedded `FAST_MUTEX`, invokes
+  revokes each device under the embedded shared/exclusive push lock, invokes
   `UdecxUsbDevicePlugOutAndDelete` after dropping the lock, and never waits for
-  child cleanup from the PnP cleanup callback. Embedding the mutex in the
+  child cleanup from the PnP cleanup callback. Embedding the push lock in the
   controller context keeps endpoint/device cleanup independent of sibling WDF
   child deletion order.
 - Removal atomically revokes the UDE handle from the device table and retires
@@ -393,6 +405,14 @@ a wedged provider cannot retain the installer mutex indefinitely.
   and releasing the exclusive controller owner. Each retired child keeps its
   own reference on the old file object until `EvtCleanupCallback`; that late
   physical rundown cannot block a successor owner or clear a reused slot.
+- Child teardown aborts every exact-device reset/configuration request before
+  consuming its UdeCx handle. A reset notification still queued for user mode
+  is retired in O(1) and emitted as a benign cancel; an already delivered reset
+  keeps only a `(token, device ID, generation, owner)` tombstone, so its late
+  acknowledgement cannot reopen or mutate a replacement child. Management-slot
+  reuse remains closed until that acknowledgement arrives or KMDF invokes the
+  old owner's `EvtFileClose`, the documented post-I/O boundary. No teardown
+  performs a global notification-ring scan or blocks unrelated controllers.
 - A post-transfer UdeCx removal failure is terminal for the controller, not
   retryable for the child. The kernel accepts the broker's removal request and
   requests a PnP controller restart; user mode can retry only failures returned
@@ -408,28 +428,48 @@ a wedged provider cannot retain the installer mutex indefinitely.
   direct interrupt-IN fast path. UdeCx itself owns and purges the framework
   endpoint queue; VIIPER never starts or purges that queue. The purge callback
   closes admission and cancels only the requests already forwarded into
-  VIIPER-owned paths; a passive work item calls
-  `UdecxUsbEndpointPurgeComplete` only after the last forwarded URB has actually
-  completed. A pipe can therefore never restart or disappear across a live
-  request.
+  VIIPER-owned paths. A passive work item only observes the associated queue:
+  `WDF_IO_QUEUE_IDLE` proves both that no request remains queued and that every
+  WDF-delivered request has completed or been canceled, while the broker-lock
+  rundown proves its terminal DPC has released the endpoint. Only then may the
+  work item call `UdecxUsbEndpointPurgeComplete`. A pipe can therefore never
+  restart or disappear across a live or pre-callback-delivery request, and the
+  client never mutates UdeCx-owned queue state.
 - Endpoint reset and endpoint-configuration callbacks are asynchronous UdeCx
-  management requests, not notifications. ABI 1.8 gives only those lifecycle
-  operations a generation-bound management token. Windows receives the request
-  completion only after the Go controller engine has applied the reset or
-  alternate-setting transition. Start, purge, and power notifications remain
-  unacknowledged and cannot add a media round trip.
+  management requests, not notifications. ABI 1.9 preserves the
+  generation-bound management tokens introduced in ABI 1.8 and adds the
+  source-bound loaded-kernel identity to negotiation. Windows receives the
+  request completion only after the Go controller engine has applied the reset
+  or alternate-setting transition. Start, purge, and power notifications
+  remain unacknowledged and cannot add a media round trip.
 - Endpoint reset owns a gate separate from endpoint purge. The UdeCx reset
   callback closes both broker and direct-input admission under the broker lock,
-  cancels forwarded work, and defers its acknowledged lifecycle event until the
-  last already-admitted endpoint operation drains. User mode stops and joins
-  that endpoint's direct-input publisher before applying recovery, acknowledges
-  the reset, then resumes the same sequence. Reset never calls purge-complete or
-  waits for a later start callback, matching UdeCx's distinct reset and purge
-  contracts.
+  cancels forwarded work, and defers its acknowledged lifecycle event until a
+  read-only queue sample reports `WdfIoQueueDriverNoRequests` and the endpoint
+  rundown reaches zero. Unlike purge, reset may leave a parked interrupt poll
+  queued and the queue ready. This weaker queue predicate is stable because the
+  UdeCx reset is asynchronous: the endpoint cannot process successor transfers
+  until VIIPER completes the reset request. User mode stops and joins that
+  endpoint's direct-input publisher before applying recovery. At owner
+  acknowledgement the kernel repeats the exact `(device ID, generation,
+  pinned WDF device/endpoint, reset epoch)` proof, clears only that live reset
+  gate under the admission lock, and immediately completes the UdeCx request.
+  Generic framework references prevent opaque handle recycling until every
+  management-slot terminal path has cleared the slot outside the broker lock.
+  Missing, purged, removed, or reused identities fail closed and receive no
+  stale reset publication or successor gate change. Reset never calls
+  purge-complete or waits for a later start callback, matching UdeCx's distinct
+  reset and purge contracts.
 - Device reset closes direct input admission in the kernel callback and pauses
-  every user-mode publisher before controller state is cleared. Admission and
-  the active publishers reopen only after the generation-bound reset request
-  has been acknowledged, so no HID snapshot can cross the reset boundary.
+  every user-mode publisher before controller state is cleared. Every endpoint
+  first passes the same reset-specific driver-owned-request/rundown proof; if
+  purge or removal wins, the actual reset request fails without publishing a
+  dead generation. Successful device-reset admission also advances a private
+  64-bit epoch. Endpoint reset admission captures that epoch, so a later device
+  reset deterministically supersedes every older endpoint reset even when user
+  mode acknowledges them out of order. Admission and active publishers reopen
+  only after a second exact-generation/object/epoch proof at acknowledgement,
+  so no HID snapshot or late terminal callback can cross the reset boundary.
   Post-enumeration reset, device initialization, and configuration replacement
   share this one-child-at-a-time gate; concurrent reset transactions are
   rejected instead of interleaving two controller resets.
@@ -628,7 +668,17 @@ authenticated commit order are documented in
   <https://learn.microsoft.com/windows-hardware/drivers/usbcon/writing-a-ude-client-driver>
 - Microsoft, *Handling I/O Requests in a USB Host Controller Driver*
   <https://learn.microsoft.com/windows-hardware/drivers/usbcon/handling-i-o-requests-in-a-host-controller-driver>
+- Microsoft, `WdfRequestRetrieveOutputBuffer` (the buffered negotiation
+  response remains framework-owned until request completion)
+  <https://learn.microsoft.com/windows-hardware/drivers/ddi/wdfrequest/nf-wdfrequest-wdfrequestretrieveoutputbuffer>
 - Microsoft, `EVT_UDECX_USB_ENDPOINT_PURGE`
+- Microsoft, `EVT_UDECX_USB_ENDPOINT_RESET` (asynchronous reset request)
+  <https://learn.microsoft.com/windows-hardware/drivers/ddi/udecxusbendpoint/nc-udecxusbendpoint-evt_udecx_usb_endpoint_reset>
+- Microsoft, `WdfIoQueueGetState`, `WDF_IO_QUEUE_STATE`, and
+  `WDF_IO_QUEUE_IDLE` (idle includes requests delivered to the driver)
+  <https://learn.microsoft.com/windows-hardware/drivers/ddi/wdfio/nf-wdfio-wdfioqueuegetstate>
+  <https://learn.microsoft.com/windows-hardware/drivers/ddi/wdfio/ne-wdfio-_wdf_io_queue_state>
+  <https://learn.microsoft.com/windows-hardware/drivers/ddi/wdfio/nf-wdfio-wdf_io_queue_idle>
 - Microsoft, `UdecxUrbComplete` and `UdecxUrbCompleteWithNtStatus`
   <https://learn.microsoft.com/windows-hardware/drivers/ddi/udecxurb/nf-udecxurb-udecxurbcomplete>
   <https://learn.microsoft.com/windows-hardware/drivers/ddi/udecxurb/nf-udecxurb-udecxurbcompletewithntstatus>
