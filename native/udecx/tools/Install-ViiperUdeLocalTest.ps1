@@ -5,6 +5,9 @@ param(
     [ValidatePattern('^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$')]
     [string]$ExpectedSourceRevision,
     [Parameter(Mandatory = $true)]
+    [ValidatePattern('^[0-9a-fA-F]{64}$')]
+    [string]$ExpectedPackageLockSHA256,
+    [Parameter(Mandatory = $true)]
     [ValidatePattern('^S-1-5-21-(?:[0-9]+-){3}[0-9]+$')]
     [string]$TargetUserSID,
     [switch]$AcknowledgeDisposableTestMachine
@@ -13,15 +16,37 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+$installerScriptPath = (Resolve-Path -LiteralPath $PSCommandPath -ErrorAction Stop).Path
+$installerScriptItem = Get-Item -LiteralPath $installerScriptPath -Force -ErrorAction Stop
+if ($installerScriptItem.PSIsContainer -or
+    ($installerScriptItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw 'The local-test installer must be a regular non-reparse file.'
+}
+$installerScriptStream = [IO.FileStream]::new(
+    $installerScriptPath, [IO.FileMode]::Open, [IO.FileAccess]::Read,
+    [IO.FileShare]::Read)
+try {
+$installerScriptAlgorithm = [Security.Cryptography.SHA256]::Create()
+try {
+    $actualInstallerScriptSha256 = ([BitConverter]::ToString(
+        $installerScriptAlgorithm.ComputeHash($installerScriptStream))).Replace('-', '').ToLowerInvariant()
+}
+finally {
+    $installerScriptAlgorithm.Dispose()
+}
+
 if (-not $AcknowledgeDisposableTestMachine) {
     throw 'Local test driver installation is for a disposable test machine only. Pass -AcknowledgeDisposableTestMachine.'
 }
+$source = $ExpectedSourceRevision.ToLowerInvariant()
+$expectedPackageLockSha256 = $ExpectedPackageLockSHA256.ToLowerInvariant()
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = [Security.Principal.WindowsPrincipal]::new($identity)
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     throw 'Local VIIPER driver installation requires an elevated PowerShell session.'
 }
-$bcdOutput = (& bcdedit.exe /enum '{current}' 2>&1 | Out-String)
+$bcdeditPath = Join-Path ([Environment]::SystemDirectory) 'bcdedit.exe'
+$bcdOutput = (& $bcdeditPath /enum '{current}' 2>&1 | Out-String)
 if ($LASTEXITCODE -ne 0 -or $bcdOutput -notmatch '(?im)^\s*testsigning\s+Yes\s*$') {
     throw "The current boot entry does not report 'testsigning Yes'. Enable TESTSIGNING and reboot before installation.`n$bcdOutput"
 }
@@ -31,7 +56,7 @@ $lockPath = Join-Path $root 'local-test-package.lock.json'
 $manifestPath = Join-Path $root 'submission-manifest.json'
 $certificatePath = Join-Path $root 'ViiperUdeTest.cer'
 $helperPath = Join-Path $root 'ViiperUdeCtl.exe'
-$brokerPath = Join-Path $root 'viiper.exe'
+$packageBrokerPath = Join-Path $root 'viiper.exe'
 $signedPackage = Join-Path $root 'signed-package'
 $driverDirectory = Join-Path $root 'driver'
 
@@ -55,6 +80,233 @@ function Assert-ExactDirectoryEntries {
     }
 }
 
+function Initialize-ProtectedStagingDirectory {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if (Test-Path -LiteralPath $Path) {
+        throw "Refusing to reuse local-test staging directory '$Path'."
+    }
+    $expectedSecurity = [Security.AccessControl.DirectorySecurity]::new()
+    $expectedSecurity.SetSecurityDescriptorSddlForm(
+        'O:BAG:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)',
+        [Security.AccessControl.AccessControlSections]::All)
+    $directory = [IO.Directory]::CreateDirectory($Path, $expectedSecurity)
+    if (($directory.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "Local-test staging directory is a reparse point: '$Path'."
+    }
+    $actualSecurity = $directory.GetAccessControl(
+        [Security.AccessControl.AccessControlSections]::All)
+    $expectedBinary = [byte[]]::new($expectedSecurity.BinaryLength)
+    $actualBinary = [byte[]]::new($actualSecurity.BinaryLength)
+    $expectedSecurity.GetSecurityDescriptorBinaryForm($expectedBinary, 0)
+    $actualSecurity.GetSecurityDescriptorBinaryForm($actualBinary, 0)
+    if ([Convert]::ToBase64String($actualBinary) -cne
+        [Convert]::ToBase64String($expectedBinary)) {
+        throw "Local-test staging directory ACL verification failed for '$Path'."
+    }
+}
+
+function Copy-ExactBrokerToProtectedStage {
+    param(
+        [Parameter(Mandatory = $true)][string]$SourcePath,
+        [Parameter(Mandatory = $true)][string]$DestinationDirectory,
+        [Parameter(Mandatory = $true)][long]$ExpectedLength,
+        [Parameter(Mandatory = $true)][string]$ExpectedSHA256
+    )
+
+    $destinationPath = Join-Path $DestinationDirectory 'viiper.exe'
+    $sourceStream = [IO.FileStream]::new(
+        $SourcePath, [IO.FileMode]::Open, [IO.FileAccess]::Read,
+        [IO.FileShare]::Read)
+    try {
+        if ($sourceStream.Length -ne $ExpectedLength) {
+            throw 'The broker changed before protected staging.'
+        }
+        $sourceAlgorithm = [Security.Cryptography.SHA256]::Create()
+        try {
+            $sourceDigest = ([BitConverter]::ToString(
+                $sourceAlgorithm.ComputeHash($sourceStream))).Replace('-', '').ToLowerInvariant()
+        }
+        finally {
+            $sourceAlgorithm.Dispose()
+        }
+        if ($sourceDigest -cne $ExpectedSHA256) {
+            throw 'The broker changed before protected staging.'
+        }
+        $sourceStream.Position = 0
+        $destinationStream = [IO.FileStream]::new(
+            $destinationPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write,
+            [IO.FileShare]::None, 1MB, [IO.FileOptions]::WriteThrough)
+        try {
+            $sourceStream.CopyTo($destinationStream)
+            $destinationStream.Flush($true)
+        }
+        finally {
+            $destinationStream.Dispose()
+        }
+    }
+    finally {
+        $sourceStream.Dispose()
+    }
+    $staged = Get-Item -LiteralPath $destinationPath -Force -ErrorAction Stop
+    if ($staged.PSIsContainer -or
+        ($staged.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+        $staged.Length -ne $ExpectedLength -or
+        (Get-FileHash -LiteralPath $destinationPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne
+            $ExpectedSHA256) {
+        throw 'The protected staged broker failed exact verification.'
+    }
+    return $destinationPath
+}
+
+function Remove-ProtectedStagingDirectory {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$ProgramDataRoot
+    )
+
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return
+    }
+    $fullPath = [IO.Path]::GetFullPath($Path)
+    $expectedParent = [IO.Path]::GetFullPath($ProgramDataRoot).TrimEnd(
+        [IO.Path]::DirectorySeparatorChar)
+    if ([IO.Path]::GetDirectoryName($fullPath) -cne $expectedParent -or
+        [IO.Path]::GetFileName($fullPath) -notmatch '^VIIPER\.LocalTestStage\.[0-9a-f]{32}$') {
+        throw "Refusing unsafe local-test staging cleanup '$Path'."
+    }
+    $directory = Get-Item -LiteralPath $fullPath -Force -ErrorAction Stop
+    if (-not $directory.PSIsContainer -or
+        ($directory.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "Refusing unsafe local-test staging cleanup '$Path'."
+    }
+    $children = @(Get-ChildItem -LiteralPath $fullPath -Force)
+    if ($children.Count -gt 1 -or
+        ($children.Count -eq 1 -and
+            ($children[0].Name -cne 'viiper.exe' -or $children[0].PSIsContainer -or
+                ($children[0].Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0))) {
+        throw "Refusing local-test staging cleanup with unexpected entries in '$Path'."
+    }
+    if ($children.Count -eq 1) {
+        [IO.File]::Delete($children[0].FullName)
+    }
+    [IO.Directory]::Delete($fullPath, $false)
+}
+
+function ConvertTo-WindowsProcessArgument {
+    param([AllowEmptyString()][Parameter(Mandatory = $true)][string]$Value)
+
+    if ($Value.IndexOf([char]0) -ge 0) {
+        throw 'Native process argument contains NUL.'
+    }
+    if ($Value.Length -ne 0 -and $Value -notmatch '[\s"]') {
+        return $Value
+    }
+    $builder = [Text.StringBuilder]::new()
+    [void]$builder.Append([char]34)
+    $slashes = 0
+    foreach ($character in $Value.ToCharArray()) {
+        if ($character -eq [char]92) {
+            ++$slashes
+            continue
+        }
+        if ($character -eq [char]34) {
+            [void]$builder.Append([char]92, (2 * $slashes) + 1)
+            [void]$builder.Append([char]34)
+            $slashes = 0
+            continue
+        }
+        if ($slashes -ne 0) {
+            [void]$builder.Append([char]92, $slashes)
+            $slashes = 0
+        }
+        [void]$builder.Append($character)
+    }
+    if ($slashes -ne 0) {
+        [void]$builder.Append([char]92, 2 * $slashes)
+    }
+    [void]$builder.Append([char]34)
+    return $builder.ToString()
+}
+
+function Set-ExactProcessArguments {
+    param(
+        [Parameter(Mandatory = $true)][Diagnostics.ProcessStartInfo]$StartInfo,
+        [Parameter(Mandatory = $true)][string[]]$Arguments
+    )
+
+    if ($null -ne $StartInfo.PSObject.Properties['ArgumentList']) {
+        foreach ($argument in $Arguments) {
+            $StartInfo.ArgumentList.Add($argument)
+        }
+        return
+    }
+    $StartInfo.Arguments = (($Arguments | ForEach-Object {
+        ConvertTo-WindowsProcessArgument -Value $_
+    }) -join ' ')
+}
+
+function Invoke-JoinedNativeProcess {
+    param(
+        [Parameter(Mandatory = $true)][string]$FileName,
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [Parameter(Mandatory = $true)][string]$WorkingDirectory,
+        [Parameter(Mandatory = $true)][ref]$Started
+    )
+
+    $Started.Value = $false
+    $startInfo = [Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $FileName
+    $startInfo.WorkingDirectory = $WorkingDirectory
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    Set-ExactProcessArguments -StartInfo $startInfo -Arguments $Arguments
+    $process = [Diagnostics.Process]::new()
+    $process.StartInfo = $startInfo
+    $joined = $false
+    try {
+        if (-not $process.Start()) {
+            throw 'The protected native broker process was not created.'
+        }
+        $Started.Value = $true
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+        while (-not $joined) {
+            try {
+                $process.WaitForExit()
+                $joined = $true
+            }
+            catch {
+                # Never unwind while the exact mutating child may remain alive.
+                Start-Sleep -Milliseconds 250
+            }
+        }
+        $stdout = $stdoutTask.GetAwaiter().GetResult()
+        $stderr = $stderrTask.GetAwaiter().GetResult()
+        $combined = @($stdout, $stderr) -join [Environment]::NewLine
+        return [pscustomobject]@{
+            ExitCode = $process.ExitCode
+            Output = @($combined -split '\r?\n' | Where-Object { $_.Length -ne 0 })
+        }
+    }
+    finally {
+        if ($Started.Value -and -not $joined) {
+            while (-not $joined) {
+                try {
+                    $process.WaitForExit()
+                    $joined = $true
+                }
+                catch {
+                    Start-Sleep -Milliseconds 250
+                }
+            }
+        }
+        $process.Dispose()
+    }
+}
+
 Assert-ExactDirectoryEntries $root @(
     'viiper.exe', 'ViiperUdeCtl.exe', 'ViiperUdeMediaProbe.exe', 'ViiperUdeInputProbe.exe',
     'ViiperUdeLiveProbes.manifest.json', 'ViiperUdeTest.cer',
@@ -68,11 +320,25 @@ Assert-ExactDirectoryEntries $signedPackage @(
     'ViiperUde.inf', 'ViiperUde.sys', 'ViiperUde.pdb', 'ViiperUde.cat'
 )
 
-$lock = Get-Content -LiteralPath $lockPath -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
-$source = $ExpectedSourceRevision.ToLowerInvariant()
+$lockBytes = [IO.File]::ReadAllBytes($lockPath)
+$lockAlgorithm = [Security.Cryptography.SHA256]::Create()
+try {
+    $actualPackageLockSha256 = ([BitConverter]::ToString(
+        $lockAlgorithm.ComputeHash($lockBytes))).Replace('-', '').ToLowerInvariant()
+}
+finally {
+    $lockAlgorithm.Dispose()
+}
+if ($actualPackageLockSha256 -cne $expectedPackageLockSha256) {
+    throw 'The local test package lock does not match the out-of-band workflow digest.'
+}
+$strictUtf8 = [Text.UTF8Encoding]::new($false, $true)
+$lock = $strictUtf8.GetString($lockBytes) | ConvertFrom-Json -ErrorAction Stop
 if ([int]$lock.schema -ne 1 -or [string]$lock.sourceRevision -cne $source -or
     [string]$lock.driverBuildIdentity -notmatch '^[0-9a-f]{64}$' -or
-    [string]$lock.testSignerCertificateSha256 -notmatch '^[0-9a-f]{64}$') {
+    [string]$lock.testSignerCertificateSha256 -notmatch '^[0-9a-f]{64}$' -or
+    [string]$lock.installerScriptSha256 -notmatch '^[0-9a-f]{64}$' -or
+    [string]$lock.installerScriptSha256 -cne $actualInstallerScriptSha256) {
     throw 'The local test package lock does not match the requested source or schema.'
 }
 
@@ -89,12 +355,14 @@ if ($entries.Count -ne $expectedPaths.Count) {
     throw 'The local test package lock has an incomplete or extra file list.'
 }
 $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+$lockByPath = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::Ordinal)
 foreach ($entry in $entries) {
     $relative = [string]$entry.path
     if ($expectedPaths -cnotcontains $relative -or -not $seen.Add($relative) -or
         [long]$entry.length -le 0 -or [string]$entry.sha256 -notmatch '^[0-9a-f]{64}$') {
         throw "The local test package lock contains an invalid entry '$relative'."
     }
+    $lockByPath.Add($relative, $entry)
     $path = Join-Path $root $relative.Replace('/', [IO.Path]::DirectorySeparatorChar)
     $item = Get-Item -LiteralPath $path -Force -ErrorAction Stop
     if ($item.PSIsContainer -or
@@ -121,6 +389,56 @@ if ($certificateSha256 -cne [string]$lock.testSignerCertificateSha256) {
 
 $expectedCertificateBytes = [Convert]::ToBase64String($certificate.RawData)
 $addedStores = [Collections.Generic.List[string]]::new()
+function Remove-NewLocalTestTrust {
+    $removalErrors = [Collections.Generic.List[Exception]]::new()
+    foreach ($storeName in $addedStores) {
+        $store = [Security.Cryptography.X509Certificates.X509Store]::new(
+            $storeName, [Security.Cryptography.X509Certificates.StoreLocation]::LocalMachine)
+        try {
+            $store.Open([Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
+            @($store.Certificates | Where-Object {
+                [Convert]::ToBase64String($_.RawData) -ceq $expectedCertificateBytes
+            }) | ForEach-Object { $store.Remove($_) }
+        }
+        catch {
+            $removalErrors.Add($_.Exception)
+        }
+        finally {
+            $store.Close()
+        }
+    }
+    if ($removalErrors.Count -ne 0) {
+        throw [AggregateException]::new(
+            'Failed to remove one or more local-test trust anchors after a settled failure.',
+            [Exception[]]$removalErrors.ToArray())
+    }
+}
+
+function Test-SettledLocalTestFailure {
+    param([Parameter(Mandatory = $true)][object[]]$Lines)
+
+    $pattern = '(?m)^result=error operation=install changed=(?<changed>[01]) ' +
+        'rebootRequired=(?<reboot>[01]) rollback=(?<rollback>not-needed|succeeded|failed) ' +
+        'exitCode=(?<exit>[0-9]+)(?: .*)?\r?$'
+    $matches = [regex]::Matches(($Lines | Out-String), $pattern)
+    if ($matches.Count -ne 1) {
+        return $false
+    }
+    $match = $matches[0]
+    return ($match.Groups['changed'].Value -ceq '0' -and
+            $match.Groups['reboot'].Value -ceq '0' -and
+            $match.Groups['rollback'].Value -ceq 'not-needed' -and
+            $match.Groups['exit'].Value -in @('1', '4')) -or
+        ($match.Groups['changed'].Value -ceq '1' -and
+            $match.Groups['reboot'].Value -ceq '0' -and
+            $match.Groups['rollback'].Value -ceq 'succeeded' -and
+            $match.Groups['exit'].Value -ceq '1')
+}
+
+$trustCommitted = $false
+$retainTrustOnFailure = $false
+$stageDirectory = $null
+$programDataRoot = $null
 try {
     foreach ($storeName in @('Root', 'TrustedPublisher')) {
         $store = [Security.Cryptography.X509Certificates.X509Store]::new(
@@ -140,61 +458,117 @@ try {
         }
     }
 
-    & (Join-Path $PSScriptRoot 'Test-ViiperUdeSignedPackage.ps1') `
-        -PackageDirectory $signedPackage `
-        -SubmissionManifestPath $manifestPath `
-        -ExpectedSourceRevision $source `
-        -ValidationMode LocalTest `
-        -LocalTestCertificatePath $certificatePath
+    foreach ($name in @('ViiperUde.inf', 'ViiperUde.sys', 'ViiperUde.cat')) {
+        $runtime = Join-Path $driverDirectory $name
+        $evidence = Join-Path $signedPackage $name
+        if ((Get-FileHash -LiteralPath $runtime -Algorithm SHA256).Hash -cne
+            (Get-FileHash -LiteralPath $evidence -Algorithm SHA256).Hash) {
+            throw "Runtime driver file '$name' differs from its validated evidence copy."
+        }
+    }
+
+    $manifestHash = [string]($lockByPath['submission-manifest.json'].sha256)
+    $infHash = [string]($lockByPath['driver/ViiperUde.inf'].sha256)
+    $sysHash = [string]($lockByPath['driver/ViiperUde.sys'].sha256)
+    $catHash = [string]($lockByPath['driver/ViiperUde.cat'].sha256)
+    $brokerEntry = $lockByPath['viiper.exe']
+    $brokerHash = [string]$brokerEntry.sha256
+    $helperHash = [string]($lockByPath['ViiperUdeCtl.exe'].sha256)
+
+    $programDataRoot = (Resolve-Path -LiteralPath $env:ProgramData -ErrorAction Stop).Path
+    $programDataItem = Get-Item -LiteralPath $programDataRoot -Force -ErrorAction Stop
+    if (-not $programDataItem.PSIsContainer -or
+        ($programDataItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "ProgramData is not a safe staging parent: '$programDataRoot'."
+    }
+    $stageDirectory = Join-Path $programDataRoot (
+        'VIIPER.LocalTestStage.' + [Guid]::NewGuid().ToString('N'))
+    Initialize-ProtectedStagingDirectory -Path $stageDirectory
+    $brokerPath = Copy-ExactBrokerToProtectedStage `
+        -SourcePath $packageBrokerPath -DestinationDirectory $stageDirectory `
+        -ExpectedLength ([long]$brokerEntry.length) -ExpectedSHA256 $brokerHash
+
+    $output = @()
+    $exitCode = $null
+    $launchError = $null
+    $processStarted = $false
+    $brokerArguments = @(
+        'native-package-install',
+        '--package-directory', $driverDirectory,
+        '--submission-manifest', $manifestPath,
+        '--source-revision', $source,
+        '--driver-helper', $helperPath,
+        '--expected-broker-sha256', $brokerHash,
+        '--expected-helper-sha256', $helperHash,
+        '--expected-manifest-sha256', $manifestHash,
+        '--expected-inf-sha256', $infHash,
+        '--expected-sys-sha256', $sysHash,
+        '--expected-cat-sha256', $catHash,
+        '--target-user-sid', $TargetUserSID,
+        '--driver-validation-mode', 'local-test'
+    )
+    try {
+        $processResult = Invoke-JoinedNativeProcess `
+            -FileName $brokerPath -Arguments $brokerArguments `
+            -WorkingDirectory $stageDirectory -Started ([ref]$processStarted)
+        $retainTrustOnFailure = $processStarted
+        $exitCode = [int]$processResult.ExitCode
+        $output = @($processResult.Output)
+    }
+    catch {
+        $retainTrustOnFailure = $processStarted
+        $launchError = $_
+    }
+    $output | ForEach-Object { Write-Host $_ }
+    if ($null -ne $exitCode) {
+        if ($exitCode -in @(0, 3010)) {
+            $trustCommitted = $true
+        }
+        elseif (Test-SettledLocalTestFailure -Lines $output) {
+            $retainTrustOnFailure = $false
+        }
+    }
+    Remove-ProtectedStagingDirectory `
+        -Path $stageDirectory -ProgramDataRoot $programDataRoot
+    $stageDirectory = $null
+    if ($null -ne $launchError) {
+        throw $launchError
+    }
+    if ($exitCode -notin @(0, 3010)) {
+        throw "Local VIIPER driver transaction failed with exit code $exitCode."
+    }
+    if ($exitCode -eq 3010) {
+        Write-Warning 'The attempted native transaction was safely rolled back and requires a reboot. Restart, rerun this identical install command, and proceed to live validation only after it returns exit 0.'
+        exit 3010
+    }
 }
 catch {
-    foreach ($storeName in $addedStores) {
-        $store = [Security.Cryptography.X509Certificates.X509Store]::new(
-            $storeName, [Security.Cryptography.X509Certificates.StoreLocation]::LocalMachine)
+    $failure = $_
+    $cleanupFailure = $null
+    if ($null -ne $stageDirectory -and $null -ne $programDataRoot) {
         try {
-            $store.Open([Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
-            @($store.Certificates | Where-Object {
-                [Convert]::ToBase64String($_.RawData) -ceq $expectedCertificateBytes
-            }) | ForEach-Object { $store.Remove($_) }
+            Remove-ProtectedStagingDirectory `
+                -Path $stageDirectory -ProgramDataRoot $programDataRoot
+            $stageDirectory = $null
         }
-        finally {
-            $store.Close()
+        catch {
+            $cleanupFailure = $_
         }
     }
-    throw
-}
-
-foreach ($name in @('ViiperUde.inf', 'ViiperUde.sys', 'ViiperUde.cat')) {
-    $runtime = Join-Path $driverDirectory $name
-    $evidence = Join-Path $signedPackage $name
-    if ((Get-FileHash -LiteralPath $runtime -Algorithm SHA256).Hash -cne
-        (Get-FileHash -LiteralPath $evidence -Algorithm SHA256).Hash) {
-        throw "Runtime driver file '$name' differs from its validated evidence copy."
+    if (-not $trustCommitted -and -not $retainTrustOnFailure) {
+        Remove-NewLocalTestTrust
     }
-}
-
-$manifestHash = (Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
-$infHash = (Get-FileHash -LiteralPath (Join-Path $driverDirectory 'ViiperUde.inf') -Algorithm SHA256).Hash.ToLowerInvariant()
-$sysHash = (Get-FileHash -LiteralPath (Join-Path $driverDirectory 'ViiperUde.sys') -Algorithm SHA256).Hash.ToLowerInvariant()
-$catHash = (Get-FileHash -LiteralPath (Join-Path $driverDirectory 'ViiperUde.cat') -Algorithm SHA256).Hash.ToLowerInvariant()
-$brokerHash = (Get-FileHash -LiteralPath $brokerPath -Algorithm SHA256).Hash.ToLowerInvariant()
-$helperHash = (Get-FileHash -LiteralPath $helperPath -Algorithm SHA256).Hash.ToLowerInvariant()
-$output = @(& $brokerPath native-package-install `
-    --package-directory $driverDirectory --submission-manifest $manifestPath `
-    --source-revision $source --driver-helper $helperPath `
-    --expected-broker-sha256 $brokerHash --expected-helper-sha256 $helperHash `
-    --expected-manifest-sha256 $manifestHash --expected-inf-sha256 $infHash `
-    --expected-sys-sha256 $sysHash --expected-cat-sha256 $catHash `
-    --target-user-sid $TargetUserSID --driver-validation-mode local-test 2>&1)
-$exitCode = $LASTEXITCODE
-$output | ForEach-Object { Write-Host $_ }
-if ($exitCode -notin @(0, 3010)) {
-    throw "Local VIIPER driver transaction failed with exit code $exitCode."
-}
-if ($exitCode -eq 3010) {
-    Write-Warning 'The verified driver transaction requires a reboot. Restart before running live validation.'
-    exit 3010
+    if ($null -ne $cleanupFailure) {
+        throw [AggregateException]::new(
+            'Local VIIPER installation failed and protected staging cleanup also failed.',
+            [Exception[]]@($failure.Exception, $cleanupFailure.Exception))
+    }
+    throw $failure
 }
 
 Write-Host 'The exact local test-signed VIIPER UdeCx driver and native broker are installed, authenticated, and ready.'
 Write-Host 'Next: enable Driver Verifier for ViiperUde.sys, reboot, then run Invoke-ViiperUdeLiveValidation.ps1 in LocalTest mode.'
+}
+finally {
+    $installerScriptStream.Dispose()
+}

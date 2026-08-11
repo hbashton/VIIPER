@@ -48,9 +48,11 @@ func TestLocalTestPackageUsesFullTransactionalNativeBackend(t *testing.T) {
 		"signingRoute = 'LocalTest'",
 		"releaseEligible = $false",
 		"testSignerCertificateSha256",
+		"installerScriptSha256",
 		"-ValidationMode LocalTest",
 		"-RequireLocalTestToolchainValidation",
 		"local-test-package.lock.json",
+		"Local test package lock SHA-256: $lockSha256",
 	} {
 		if !strings.Contains(composer, required) {
 			t.Fatalf("local-test composer omitted %q", required)
@@ -60,20 +62,44 @@ func TestLocalTestPackageUsesFullTransactionalNativeBackend(t *testing.T) {
 	installer := read("native", "udecx", "tools", "Install-ViiperUdeLocalTest.ps1")
 	for _, required := range []string{
 		"[string]$TargetUserSID",
-		"& $brokerPath native-package-install",
-		"--expected-broker-sha256 $brokerHash",
-		"--expected-helper-sha256 $helperHash",
-		"--target-user-sid $TargetUserSID",
-		"--driver-validation-mode local-test",
+		"[string]$ExpectedPackageLockSHA256",
+		"$installerScriptStream",
+		"$lock.installerScriptSha256 -cne $actualInstallerScriptSha256",
+		"$lockAlgorithm.ComputeHash($lockBytes)",
+		"out-of-band workflow digest",
+		"O:BAG:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)",
+		"[IO.Directory]::CreateDirectory($Path, $expectedSecurity)",
+		"Copy-ExactBrokerToProtectedStage",
+		"[IO.FileShare]::Read",
+		"[IO.FileOptions]::WriteThrough",
+		"$lockByPath['viiper.exe']",
+		"Remove-ProtectedStagingDirectory",
+		"Invoke-JoinedNativeProcess",
+		"if (-not $process.Start())",
+		"$Started.Value = $true",
+		"$process.WaitForExit()",
+		"$retainTrustOnFailure = $processStarted",
+		"'--expected-broker-sha256', $brokerHash",
+		"'--expected-helper-sha256', $helperHash",
+		"'--target-user-sid', $TargetUserSID",
+		"'--driver-validation-mode', 'local-test'",
 		"-AcknowledgeDisposableTestMachine",
 		"testsigning\\s+Yes",
+		"Restart, rerun this identical install command",
 	} {
 		if !strings.Contains(installer, required) {
 			t.Fatalf("local-test installer omitted %q", required)
 		}
 	}
-	if strings.Contains(installer, "& $helperPath install") {
-		t.Fatal("local-test installation bypasses the full broker/package transaction")
+	for _, forbidden := range []string{
+		"& $helperPath install",
+		"Test-ViiperUdeSignedPackage.ps1",
+		"git.exe",
+		"status --porcelain",
+	} {
+		if strings.Contains(installer, forbidden) {
+			t.Fatalf("local-test elevated path retained unsafe dependency %q", forbidden)
+		}
 	}
 
 	packageCommand := read("internal", "cmd", "native_package.go")

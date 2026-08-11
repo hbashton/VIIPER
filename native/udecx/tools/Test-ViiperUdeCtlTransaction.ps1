@@ -49,6 +49,11 @@ $requiredContracts = [ordered]@{
     'local test manifest separation' = '"signingRoute"[\s\S]{0,6000}"LocalTest"'
     'non-release local test enforcement' = 'else if \(localTest\)[\s\S]{0,900}\*releaseValue'
     'local test signer digest shape' = 'testSignerCertificateSha256Value->size\(\) == 64'
+    'local test native signer verification' = 'VerifyLocalTestPackageSigner\('
+    'local test exact signer certificate digest' =
+        'actualCertificateSha256 != expectedCertificateSha256'
+    'local test INF and SYS catalog membership' =
+        'bool VerifyLocalTestPackageSigner\([\s\S]{0,220}Error\* error\) \{[\s\S]{0,1800}VerifyDriverCatalogMember\(catalogPath, infPath[\s\S]{0,180}infPath\.parent_path\(\) / kDriverFileName'
     'staged broker hash binding' = '--broker-sha256'
     'protected package token binding' = '--broker-token-sha256'
     'nested package broker commit' = 'native-package-broker-commit'
@@ -207,8 +212,8 @@ if ([regex]::Matches($source, '\bRemoveAllExactDevices\(').Count -ne 2) {
     throw 'All-device removal is allowed only for explicit forward uninstall, never rollback.'
 }
 
-if ([regex]::Matches($source, 'VerifyDriverCatalogMember\(catalogPath').Count -ne 2) {
-    throw 'Production validation must bind both the exact INF and SYS to the exact adjacent catalog.'
+if ([regex]::Matches($source, 'VerifyDriverCatalogMember\(catalogPath').Count -ne 4) {
+    throw 'Production and LocalTest validation must each bind the exact INF and SYS to the exact adjacent catalog.'
 }
 
 $forceInfUses = [regex]::Matches($source, '\bDIIRFLAG_FORCE_INF\b').Count

@@ -157,16 +157,23 @@ $lockFiles = @(
         }
     }
 )
+$installerScriptPath = (Resolve-Path -LiteralPath (
+    Join-Path $PSScriptRoot 'Install-ViiperUdeLocalTest.ps1') -ErrorAction Stop).Path
+$installerScriptSha256 = (Get-FileHash -LiteralPath $installerScriptPath `
+    -Algorithm SHA256).Hash.ToLowerInvariant()
 $lock = [ordered]@{
     schema = 1
     sourceRevision = $source
     driverPackageVersion = $driverVersion
     driverBuildIdentity = $buildIdentity
     testSignerCertificateSha256 = $certificateSha256
+    installerScriptSha256 = $installerScriptSha256
     files = $lockFiles
 }
-[IO.File]::WriteAllText((Join-Path $output 'local-test-package.lock.json'),
+$lockPath = Join-Path $output 'local-test-package.lock.json'
+[IO.File]::WriteAllText($lockPath,
     ($lock | ConvertTo-Json -Depth 5), [Text.UTF8Encoding]::new($false))
+$lockSha256 = (Get-FileHash -LiteralPath $lockPath -Algorithm SHA256).Hash.ToLowerInvariant()
 
 & (Join-Path $PSScriptRoot 'Test-ViiperUdeSignedPackage.ps1') `
     -PackageDirectory $signedDirectory `
@@ -180,3 +187,4 @@ Write-Host "Created compact source-bound local test package at '$output'."
 Write-Host "Source: $source"
 Write-Host "Driver: $driverVersion / ABI 1.9 / $buildIdentity"
 Write-Host "Test signer certificate SHA-256: $certificateSha256"
+Write-Host "Local test package lock SHA-256: $lockSha256"

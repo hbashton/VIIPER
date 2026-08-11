@@ -142,12 +142,18 @@ key/value result line including `rebootRequired` and rollback status.
 
 For an exact branch build on a disposable local-test machine, download the
 `ViiperUde-x64-local-test-<source SHA>` artifact from a manually dispatched
-native workflow, then run from the matching clean checkout:
+native workflow. Copy the `Local test package lock SHA-256` value from that
+exact workflow log as the out-of-band artifact binding, then run from the
+matching source checkout. The installer holds its own script file deny-write
+and deny-delete and requires its SHA-256 to match that authenticated lock; it
+does not execute Git hooks or another repository PowerShell script while
+elevated:
 
 ```powershell
 .\native\udecx\tools\Install-ViiperUdeLocalTest.ps1 `
   -PackageRoot C:\ViiperUdeLocalTest `
   -ExpectedSourceRevision 0123456789abcdef0123456789abcdef01234567 `
+  -ExpectedPackageLockSHA256 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef `
   -TargetUserSID S-1-5-21-111111111-222222222-333333333-1001 `
   -AcknowledgeDisposableTestMachine
 ```
@@ -157,8 +163,10 @@ the exact WDK test signature sealed into the artifact lock, and Windows must
 trust that certificate while `TESTSIGNING` is active. It does not change the
 production Microsoft HLK/WHCP gate.
 
-After installation (and any requested restart), the same artifact supplies the
-source-bound evidence and probes for the real UdeCx test:
+Exit `3010` means the attempted native transaction was safely rolled back:
+reboot, rerun the identical installer command, and do not start live validation
+until that retry returns exit `0`. After verified installation, the same
+artifact supplies the source-bound evidence and probes for the real UdeCx test:
 
 ```powershell
 .\native\udecx\tools\Invoke-ViiperUdeLiveValidation.ps1 `

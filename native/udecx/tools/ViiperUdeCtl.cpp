@@ -958,6 +958,11 @@ bool FileLength(const std::filesystem::path& path, uint64_t* length, Error* erro
     return true;
 }
 
+bool VerifyLocalTestPackageSigner(
+    const std::filesystem::path& infPath,
+    std::string_view expectedCertificateSha256,
+    Error* error);
+
 bool ValidateManifest(
     const std::string& rawManifest,
     const std::string& expectedRevision,
@@ -1039,6 +1044,12 @@ bool ValidateManifest(
         if (*releaseValue || *routeValue != "LocalTest" || !signerDigestValid) {
             return SetError(error, L"manifest-release-route", ERROR_INVALID_DATA,
                 L"local test installation requires its explicit non-release LocalTest manifest and signer digest");
+        }
+        if (!VerifyLocalTestPackageSigner(
+                packageDirectory / L"ViiperUde.inf",
+                *testSignerCertificateSha256Value,
+                error)) {
+            return false;
         }
     } else if (*releaseValue || *routeValue != "ControlledTestAttestation") {
         return SetError(error, L"manifest-release-route", ERROR_INVALID_DATA,
@@ -1365,7 +1376,93 @@ bool VerifyDriverCatalogMember(
     releasePolicy();
     if (status != ERROR_SUCCESS) {
         return SetError(error, L"catalog-member-policy", static_cast<DWORD>(status),
-            L"package file is not a valid member of the exact Microsoft driver catalog");
+            L"package file is not a valid member of the exact trusted driver catalog");
+    }
+    return true;
+}
+
+bool VerifyLocalTestPackageSigner(
+    const std::filesystem::path& infPath,
+    std::string_view expectedCertificateSha256,
+    Error* error) {
+    SP_INF_SIGNER_INFO_W signer{};
+    signer.cbSize = sizeof(signer);
+    if (!SetupVerifyInfFileW(infPath.c_str(), nullptr, &signer)) {
+        return SetLastErrorDetail(error, L"inf-local-test-signature");
+    }
+    if (signer.CatalogFile[0] == L'\0' || signer.DigitalSigner[0] == L'\0') {
+        return SetError(error, L"inf-local-test-signature", ERROR_INVALID_DATA,
+            L"local test INF did not report a catalog and signer");
+    }
+    const std::filesystem::path reportedCatalogPath = signer.CatalogFile;
+    if (_wcsicmp(reportedCatalogPath.filename().c_str(), kCatalogName) != 0) {
+        return SetError(error, L"inf-local-test-signature", ERROR_INVALID_DATA,
+            L"local test INF did not report the exact VIIPER catalog");
+    }
+    const std::filesystem::path catalogPath = infPath.parent_path() / kCatalogName;
+    if (!VerifyDriverCatalogMember(catalogPath, infPath, error) ||
+        !VerifyDriverCatalogMember(catalogPath,
+            infPath.parent_path() / kDriverFileName, error)) {
+        return false;
+    }
+
+    DWORD encoding = 0;
+    HCERTSTORE store = nullptr;
+    HCRYPTMSG message = nullptr;
+    if (!CryptQueryObject(CERT_QUERY_OBJECT_FILE, catalogPath.c_str(),
+            CERT_QUERY_CONTENT_FLAG_PKCS7_SIGNED | CERT_QUERY_CONTENT_FLAG_PKCS7_SIGNED_EMBED,
+            CERT_QUERY_FORMAT_FLAG_BINARY, 0, &encoding, nullptr, nullptr,
+            &store, &message, nullptr)) {
+        return SetLastErrorDetail(error, L"local-test-catalog-signature-open");
+    }
+    const auto closeCatalog = [&]() {
+        if (message != nullptr) {
+            CryptMsgClose(message);
+        }
+        if (store != nullptr) {
+            CertCloseStore(store, 0);
+        }
+    };
+    DWORD signerSize = 0;
+    if (!CryptMsgGetParam(message, CMSG_SIGNER_INFO_PARAM, 0, nullptr, &signerSize) ||
+        signerSize < sizeof(CMSG_SIGNER_INFO)) {
+        const DWORD code = GetLastError();
+        closeCatalog();
+        return SetError(error, L"local-test-catalog-signer-info", code);
+    }
+    std::vector<BYTE> signerBytes(signerSize);
+    if (!CryptMsgGetParam(message, CMSG_SIGNER_INFO_PARAM, 0,
+            signerBytes.data(), &signerSize)) {
+        const DWORD code = GetLastError();
+        closeCatalog();
+        return SetError(error, L"local-test-catalog-signer-info", code);
+    }
+    const auto* signerInfo = reinterpret_cast<const CMSG_SIGNER_INFO*>(signerBytes.data());
+    CERT_INFO certificateIdentity{};
+    certificateIdentity.Issuer = signerInfo->Issuer;
+    certificateIdentity.SerialNumber = signerInfo->SerialNumber;
+    PCCERT_CONTEXT certificate = CertFindCertificateInStore(store, encoding, 0,
+        CERT_FIND_SUBJECT_CERT, &certificateIdentity, nullptr);
+    if (certificate == nullptr) {
+        const DWORD code = GetLastError();
+        closeCatalog();
+        return SetError(error, L"local-test-catalog-signer-certificate", code);
+    }
+    std::string actualCertificateSha256;
+    const std::string_view encodedCertificate(
+        reinterpret_cast<const char*>(certificate->pbCertEncoded),
+        certificate->cbCertEncoded);
+    const bool hashed = Sha256Data(
+        encodedCertificate, &actualCertificateSha256, error);
+    CertFreeCertificateContext(certificate);
+    closeCatalog();
+    if (!hashed) {
+        return false;
+    }
+    if (actualCertificateSha256 != expectedCertificateSha256) {
+        return SetError(error, L"local-test-catalog-signer-certificate",
+            ERROR_CRC,
+            L"local test catalog signer does not match the source-bound manifest digest");
     }
     return true;
 }
@@ -4797,7 +4894,7 @@ Outcome SelfTest() {
             "0123456789abcdef0123456789abcdef01234567",
             &buildIdentity, &outcome.error) ||
         buildIdentity !=
-            "ef471e2e53b7c110cbadd3c15d17b10d26ce4cefe2bef7a11e72c2aca657cc68") {
+            "335a8840a585df17ecc7bafa05fed2dc1b43c376a7b39245b6ee3185e50219d2") {
         if (outcome.error.code == ERROR_SUCCESS) {
             SetError(&outcome.error, L"self-test-build-identity", ERROR_INVALID_DATA);
         }
