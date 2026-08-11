@@ -10,7 +10,7 @@ permissions:
 jobs:
     calculate-version:
         name: Calculate Dev Version
-        runs-on: ubuntu-latest
+        runs-on: ubuntu-24.04
         outputs:
             version: ${{ steps.version.outputs.version }}
         steps:
@@ -58,7 +58,7 @@ jobs:
     create-pre-release:
         name: Create Pre-Release
         needs: [build, generate-changelog, client-libraries]
-        runs-on: ubuntu-latest
+        runs-on: ubuntu-24.04
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/main')
         steps:
             - name: Checkout code

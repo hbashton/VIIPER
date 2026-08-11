@@ -62,6 +62,10 @@ mode. That mode rejects the attestation EKU and requires a release-eligible
 - Returned packages contain only the canonical INF, SYS, PDB, and CAT in one
   directory. The unchanged INF/PDB must match the submission manifest, and
   SignTool must prove INF/SYS membership in the returned Microsoft catalog.
+- PDB is certification evidence, not a runtime dependency. The public native
+  archive contains exactly the release `viiper.exe` broker,
+  `ViiperUdeCtl.exe`, INF, SYS, CAT, and the validated submission manifest.
+  Release composition rejects every missing or additional file.
 - Controlled-test and production signatures are separate validation modes;
   an attestation EKU can never satisfy the production release gate.
 - Test certificates, test-signing state, or disabled Secure Boot are never a
@@ -73,12 +77,40 @@ mode. That mode rejects the attestation EKU and requires a release-eligible
 
 ## Current release gate
 
-The branch currently proves compilation, static analysis, ABI/lifecycle tests,
-fuzzing, race tests, deterministic package structure, and payload hashing. A
-native driver is not production-ready until the HLK/WHCP dashboard-signed
-package also passes Driver Verifier, the complete HLK matrix, repeated
-install/update/rollback, process crash, sleep/resume, and multi-controller
-media soak on a disposable test machine.
+Feature branches, `main`, release tags, and the public release workflow all run
+the native compile, static-analysis, ABI/lifecycle, fuzz, race, stamped-INF,
+package-transaction, helper rollback/update/removal, and deterministic package
+checks. Driver package source changes must strictly increase the four-part
+`DriverVer` without regressing its date; a release also compares against the
+previous SemVer tag. The `viiper uninstall` command does not yet invoke the
+helper's exact root-devnode/Driver Store removal transaction, so the live
+uninstall release criterion remains open even though that helper primitive is
+source-checked and self-tested.
+
+Production driver acceptance is separate and manual because Microsoft signing
+is external. The intake workflow must run from the exact current `main` commit,
+downloads one artifact by immutable run ID, artifact ID, and SHA-256 digest,
+and validates the Microsoft-returned INF/SYS/PDB/CAT package in literal
+`Production` mode. It rejects test signatures and the attestation EKU, verifies
+catalog membership, validates the actual returned stamped INF against the
+reviewed project, and publishes one source-named accepted artifact.
+
+A tag release must point to the current `main` tip and cannot publish without a
+successful production-intake run at that same commit. It downloads only that
+accepted artifact plus the current release broker and source-built helper. A
+mandatory Windows job signs both broker architectures and the helper with the
+configured production Authenticode certificate, requires a trusted timestamp,
+the exact certificate SHA-256 fingerprint, and Code Signing EKU, then validates
+the exact six-file runtime bundle before and after archiving. Publication
+consumes only those signed outputs, discards the certification PDB, and
+allowlists every public release asset before checksumming and attesting it. The
+test-signed CI artifact is never a release input.
+
+These automation gates do not manufacture certification evidence. A native
+driver is not production-ready until the external HLK/WHCP dashboard-signed
+package also passes Driver Verifier, the complete HLK matrix, repeated live
+install/update/rollback/uninstall, process crash, sleep/resume, and
+multi-controller soak on a disposable test machine.
 
 The first repeatable signed-driver gate is
 `native/udecx/tools/Invoke-ViiperUdeLiveValidation.ps1`. It validates the
@@ -122,6 +154,12 @@ the HLK/DevFund matrix.
 - [Driver code-signing requirements](https://learn.microsoft.com/windows-hardware/drivers/dashboard/code-signing-reqs)
 - [Attestation-sign Windows drivers](https://learn.microsoft.com/windows-hardware/drivers/dashboard/code-signing-attestation)
 - [Driver-signing options and best practices](https://learn.microsoft.com/windows-hardware/drivers/dashboard/driver-signing-offerings)
+- [Components of a driver package](https://learn.microsoft.com/windows-hardware/drivers/install/components-of-a-driver-package)
+- [SignTool command-line reference](https://learn.microsoft.com/windows-hardware/drivers/devtest/signtool)
+- [Windows Hardware Lab Kit](https://learn.microsoft.com/windows-hardware/test/hlk/)
+- [Add driver and supplemental content to an HLK package](https://learn.microsoft.com/windows-hardware/test/hlk/user/add-driver-and-supplemental-content-to-your-package)
+- [INF DriverVer directive](https://learn.microsoft.com/windows-hardware/drivers/install/inf-driverver-directive)
+- [InfVerif `/h`](https://learn.microsoft.com/windows-hardware/drivers/devtest/infverif_h)
 - [Driver Verifier](https://learn.microsoft.com/windows-hardware/drivers/devtest/driver-verifier)
 - [Driver Verifier command syntax](https://learn.microsoft.com/windows-hardware/drivers/devtest/verifier-command-line)
 - [PnPUtil command syntax](https://learn.microsoft.com/windows-hardware/drivers/devtest/pnputil-command-syntax)

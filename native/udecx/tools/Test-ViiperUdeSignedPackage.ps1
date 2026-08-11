@@ -82,7 +82,11 @@ if (-not (Get-Item -LiteralPath $root.Path).PSIsContainer) {
 }
 
 $expectedNames = @('ViiperUde.inf', 'ViiperUde.sys', 'ViiperUde.pdb', 'ViiperUde.cat')
-$allFiles = @(Get-ChildItem -LiteralPath $root.Path -Recurse -File)
+$allEntries = @(Get-ChildItem -LiteralPath $root.Path -Force)
+if (@($allEntries | Where-Object PSIsContainer).Count -ne 0) {
+    throw 'The signed package files must be direct children of the package directory; subdirectories are forbidden.'
+}
+$allFiles = @($allEntries | Where-Object { -not $_.PSIsContainer })
 if ($allFiles.Count -ne $expectedNames.Count) {
     throw "The signed package must contain exactly $($expectedNames.Count) files; found $($allFiles.Count)."
 }
@@ -92,11 +96,13 @@ foreach ($name in $expectedNames) {
     if ($matches.Count -ne 1) {
         throw "The signed package must contain exactly one case-exact '$name'; found $($matches.Count)."
     }
+    if ($matches[0].Length -le 0) {
+        throw "The signed package file '$name' is empty."
+    }
     $files[$name] = $matches[0].FullName
 }
-$packageParents = @($allFiles.DirectoryName | Sort-Object -Unique)
-if ($packageParents.Count -ne 1) {
-    throw 'The signed package files must share one canonical package directory.'
+if (@($allFiles | Where-Object { $_.DirectoryName -cne $root.Path }).Count -ne 0) {
+    throw 'All signed package files must reside directly in the canonical package directory.'
 }
 
 $manifestFile = Resolve-Path -LiteralPath $SubmissionManifestPath -ErrorAction Stop
@@ -123,6 +129,9 @@ foreach ($entry in $manifestFiles) {
     $name = [string]$entry.name
     if ($expectedNames -cnotcontains $name -or $manifestByName.ContainsKey($name)) {
         throw "The submission manifest contains an unexpected or duplicate file '$name'."
+    }
+    if ([long]$entry.length -le 0 -or [string]$entry.sha256 -cnotmatch '^[0-9A-Fa-f]{64}$') {
+        throw "The submission manifest contains invalid metadata for '$name'."
     }
     $manifestByName[$name] = $entry
 }

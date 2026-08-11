@@ -21,7 +21,7 @@ env:
 jobs:
     test:
         name: Test
-        runs-on: ubuntu-latest
+        runs-on: ubuntu-24.04
         steps:
             - name: Checkout code
               uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -38,6 +38,8 @@ jobs:
 
             - name: Setup just
               uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3
+              with:
+                  just-version: "1.58.0"
 
             - name: Show Go version
               run: go version
@@ -96,10 +98,10 @@ jobs:
             fail-fast: false
             matrix:
                 target:
-                    - { goos: linux, goarch: amd64, ext: "", runner: ubuntu-latest }
-                    - { goos: linux, goarch: arm64, ext: "", runner: ubuntu-latest }
-                    - { goos: windows, goarch: amd64, ext: ".exe", runner: windows-latest }
-                    - { goos: windows, goarch: arm64, ext: ".exe", runner: windows-latest }
+                    - { goos: linux, goarch: amd64, ext: "", runner: ubuntu-24.04 }
+                    - { goos: linux, goarch: arm64, ext: "", runner: ubuntu-24.04 }
+                    - { goos: windows, goarch: amd64, ext: ".exe", runner: windows-2025 }
+                    - { goos: windows, goarch: arm64, ext: ".exe", runner: windows-2025 }
         steps:
             - name: Checkout code
               uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -121,6 +123,8 @@ jobs:
 
             - name: Setup just
               uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3
+              with:
+                  just-version: "1.58.0"
 
             - name: Install goversioninfo
               shell: pwsh
@@ -176,7 +180,7 @@ jobs:
 
     libviiper-linux:
         name: Build libVIIPER (linux/amd64)
-        runs-on: ubuntu-latest
+        runs-on: ubuntu-24.04
         needs: test
         steps:
             - name: Checkout code
@@ -194,6 +198,8 @@ jobs:
 
             - name: Setup just
               uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3
+              with:
+                  just-version: "1.58.0"
 
             - name: Build
               run: |
@@ -212,7 +218,7 @@ jobs:
 
     libviiper-windows:
         name: Build libVIIPER (windows/amd64)
-        runs-on: windows-latest
+        runs-on: windows-2025
         needs: test
         steps:
             - name: Checkout code
@@ -230,6 +236,8 @@ jobs:
 
             - name: Setup just
               uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3
+              with:
+                  just-version: "1.58.0"
 
             - name: Install build tools
               shell: pwsh

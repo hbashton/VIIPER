@@ -2,10 +2,12 @@ name: Native UdeCx bus
 
 on:
   push:
-    branches: [main, feature/native-udecx-bus]
+    branches: [main, "feature/**"]
+    tags: ["v*.*.*"]
     paths:
       - "go.mod"
       - "go.sum"
+      - "justfile"
       - "native/udecx/**"
       - "internal/transport/udecx/**"
       - "internal/server/usb/**"
@@ -28,6 +30,7 @@ on:
     paths:
       - "go.mod"
       - "go.sum"
+      - "justfile"
       - "native/udecx/**"
       - "internal/transport/udecx/**"
       - "internal/server/usb/**"
@@ -50,6 +53,11 @@ on:
     inputs:
       upload_artifacts:
         description: Upload the test-signed native package for controlled testing.
+        required: false
+        type: boolean
+        default: false
+      upload_release_helper:
+        description: Upload only the source-built runtime helper for an HLK/WHCP release composition.
         required: false
         type: boolean
         default: false
@@ -76,6 +84,8 @@ jobs:
     runs-on: windows-2025
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
@@ -88,6 +98,14 @@ jobs:
           $actual = (go env GOVERSION).TrimStart('g', 'o')
           if ($actual -cne $expected) { throw "Expected Go $expected; runner selected $actual." }
           go mod verify
+      - name: Gate native DriverVer and package-content monotonicity
+        shell: pwsh
+        env:
+          BASE_REVISION: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: >-
+          ./native/udecx/tools/Test-ViiperUdeVersionMonotonicity.ps1
+          -BaseRevision $env:BASE_REVISION
+          -HeadRevision $env:GITHUB_SHA
       - name: Test complete VIIPER tree
         run: go test ./...
       - name: Stress native Windows client cancellation, close, pump failure, and reconnect
@@ -105,7 +123,7 @@ jobs:
         run: go test -run=^$ -fuzz=FuzzProtocolDecoders -fuzztime=20s ./internal/transport/udecx
 
   race:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
@@ -136,6 +154,7 @@ jobs:
       - uses: microsoft/setup-msbuild@6fb02220983dee41ce7ae257b6f4d8f9bf5ed4ce # v2
         with:
           msbuild-architecture: x64
+          vs-version: "[18.0,19.0)"
       - uses: NuGet/setup-nuget@d105a947828025cd7a980103c35ba2bfae586d0f # v2
         with:
           nuget-version: "6.11.1"
@@ -170,7 +189,7 @@ jobs:
       - name: Enforce WHQL-aligned and Universal INF rules
         shell: pwsh
         run: |
-          $inf = (Resolve-Path ./native/udecx/x64/Release/ViiperUde.inf).Path
+          $inf = (Resolve-Path ./native/udecx/x64/Release/ViiperUde/ViiperUde.inf).Path
           foreach ($mode in @('/h', '/u')) {
             & infverif.exe $mode $inf
             if ($LASTEXITCODE -ne 0) {
@@ -182,12 +201,12 @@ jobs:
         run: >-
           ./native/udecx/tools/Test-ViiperUdeTargetCompatibility.ps1
           -ProjectPath ./native/udecx/driver/ViiperUde.vcxproj
-          -InfPath ./native/udecx/x64/Release/ViiperUde.inf
+          -InfPath ./native/udecx/x64/Release/ViiperUde/ViiperUde.inf
           -RequireStampedInf
       - name: Build transactional root-devnode and live-media helpers
         shell: pwsh
         run: |
-          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -version '[18.0,19.0)' -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
           if (-not $vs) { throw "Visual C++ toolchain was not found" }
           $devCmd = Join-Path $vs "Common7\Tools\VsDevCmd.bat"
           $source = (Resolve-Path "native\udecx\tools\ViiperUdeCtl.cpp").Path
@@ -197,8 +216,8 @@ jobs:
           $command = "`"$devCmd`" -arch=x64 -host_arch=x64 && cl.exe /nologo /std:c++20 /EHsc /W4 /WX /O2 /MT /DUNICODE /D_UNICODE `"$source`" /Fe:`"$output`" /link Setupapi.lib Newdev.lib Cfgmgr32.lib Advapi32.lib"
           cmd.exe /d /s /c $command
           if ($LASTEXITCODE -ne 0 -or -not (Test-Path $output)) { throw "ViiperUdeCtl build failed" }
-          & $output status
-          if ($LASTEXITCODE -ne 0) { throw "ViiperUdeCtl status smoke test failed" }
+          & $output self-test
+          if ($LASTEXITCODE -ne 0) { throw "ViiperUdeCtl self-test failed" }
           $mediaSource = (Resolve-Path "native\udecx\tools\ViiperUdeMediaProbe.cpp").Path
           $mediaOutput = Join-Path $outputDir "ViiperUdeMediaProbe.exe"
           $mediaCommand = "`"$devCmd`" -arch=x64 -host_arch=x64 && cl.exe /nologo /std:c++20 /EHsc /W4 /WX /O2 /MT /D_WIN32_WINNT=0x0A00 `"$mediaSource`" /Fe:`"$mediaOutput`" /link Ole32.lib Ksuser.lib"
@@ -217,6 +236,14 @@ jobs:
           & $inputOutput snapshot $inputSnapshot
           if ($LASTEXITCODE -ne 0 -or -not (Test-Path $inputSnapshot)) { throw "ViiperUdeInputProbe HID snapshot smoke test failed" }
           Remove-Item -LiteralPath $inputSnapshot -Force
+      - name: Upload source-bound native runtime helper
+        if: ${{ inputs.upload_release_helper == true }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ViiperUdeCtl-windows-amd64-${{ github.sha }}
+          path: native/udecx/x64/Release/ViiperUdeCtl.exe
+          if-no-files-found: error
+          retention-days: 30
       - name: Validate testing-only Hardware Dev Center CAB structure
         shell: pwsh
         run: |

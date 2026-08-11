@@ -18,7 +18,7 @@ const (
 	// shipped with this service. Runtime negotiation proves the installed
 	// driver speaks the exact ABI below; package installation additionally
 	// verifies this release version and its signed catalog.
-	DriverPackageVersion = "0.1.0.0"
+	DriverPackageVersion = "0.1.0.1"
 
 	HeaderSize            = 16
 	NegotiateRequestSize  = 32

@@ -2,19 +2,9 @@ name: Native package transaction
 
 on:
   push:
-    paths:
-      - "internal/cmd/native_package*"
-      - "internal/cmd/native_service_install_windows*"
-      - "native/udecx/tools/ViiperUdeCtl.cpp"
-      - "native/udecx/tools/Test-ViiperUdeCtlTransaction.ps1"
-      - ".github/workflows/native-package-transaction.yml"
+    branches: [main, "feature/**"]
+    tags: ["v*.*.*"]
   pull_request:
-    paths:
-      - "internal/cmd/native_package*"
-      - "internal/cmd/native_service_install_windows*"
-      - "native/udecx/tools/ViiperUdeCtl.cpp"
-      - "native/udecx/tools/Test-ViiperUdeCtlTransaction.ps1"
-      - ".github/workflows/native-package-transaction.yml"
   workflow_call:
   workflow_dispatch:
 
@@ -27,7 +17,7 @@ env:
 
 jobs:
   fail-closed-simulation:
-    runs-on: windows-latest
+    runs-on: windows-2025-vs2026
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -51,7 +41,7 @@ jobs:
       - name: Compile and self-test package helper
         shell: pwsh
         run: |
-          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -version '[18.0,19.0)' -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
           if (-not $vs) { throw "Visual C++ toolchain was not found" }
           $devCmd = Join-Path $vs "Common7\Tools\VsDevCmd.bat"
           $source = (Resolve-Path "native\udecx\tools\ViiperUdeCtl.cpp").Path
