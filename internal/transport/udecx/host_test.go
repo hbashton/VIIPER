@@ -177,6 +177,23 @@ func (*noopProcessor) Process(context.Context, usb.Device, Operation) (Completio
 func (*noopProcessor) Lifecycle(context.Context, usb.Device, Operation) error { return nil }
 func (*noopProcessor) Reset(usb.Device, DeviceIdentity)                       {}
 
+type usbdFailureProcessor struct {
+	err error
+}
+
+func (p *usbdFailureProcessor) Process(context.Context, usb.Device, Operation) (Completion, error) {
+	return Completion{}, p.err
+}
+func (*usbdFailureProcessor) Lifecycle(context.Context, usb.Device, Operation) error { return nil }
+func (*usbdFailureProcessor) Reset(usb.Device, DeviceIdentity)                       {}
+
+type testUSBDCompletionError struct {
+	status uint32
+}
+
+func (e testUSBDCompletionError) Error() string                { return "USB protocol failure" }
+func (e testUSBDCompletionError) USBDCompletionStatus() uint32 { return e.status }
+
 type deviceGateProcessor struct {
 	blockedDevice uint64
 	started       chan struct{}
@@ -2597,6 +2614,55 @@ func TestHostRejectsStaleOperationGeneration(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("stale generation was accepted")
+	}
+}
+
+func TestHostCompletesTypedUSBDFailureWithoutCollapsingToNTStatus(t *testing.T) {
+	driver := newFakeHostDriver()
+	processor := &usbdFailureProcessor{err: testUSBDCompletionError{
+		status: USBDStatusBadStartFrame,
+	}}
+	host, err := NewHost(driver, processor, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := host.Register(context.Background(), 109, hostTestDevice())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- host.Serve(ctx) }()
+
+	driver.operations <- Operation{
+		Token: 1, DeviceID: identity.DeviceID, Generation: identity.Generation,
+		EndpointAddress: 0x02, EndpointSequence: 1, Kind: OperationTransfer,
+		IsoPackets: []IsoPacket{{Offset: 0, Length: 64}, {Offset: 64, Length: 64}},
+	}
+	select {
+	case completion := <-driver.completions:
+		if completion.Status != 0 || completion.USBDStatus != USBDStatusBadStartFrame {
+			t.Fatalf("typed USBD completion=%+v want NT success and BAD_START_FRAME", completion)
+		}
+		if len(completion.IsoPackets) != 2 ||
+			completion.IsoPackets[0].Offset != 0 ||
+			completion.IsoPackets[1].Offset != 64 ||
+			completion.IsoPackets[0].Length != 0 ||
+			uint32(completion.IsoPackets[0].Status) != USBDStatusBadStartFrame {
+			t.Fatalf("typed USBD ISO packet table=%+v", completion.IsoPackets)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("typed USBD failure was not completed")
+	}
+
+	cancel()
+	select {
+	case err = <-done:
+		if err != nil {
+			t.Fatalf("host returned error after clean cancellation: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("host did not stop after cancellation")
 	}
 }
 

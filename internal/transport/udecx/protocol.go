@@ -44,6 +44,9 @@ const (
 	// TransferFlagStartIsoASAP is the wire value of
 	// USBD_START_ISO_TRANSFER_ASAP from usb.h.
 	TransferFlagStartIsoASAP uint32 = 0x00000004
+	// USBDStatusBadStartFrame is the wire value of
+	// USBD_STATUS_BAD_START_FRAME from the Microsoft WDK usb.h contract.
+	USBDStatusBadStartFrame uint32 = 0xC0000A00
 
 	MicrosoftOS10StringIndex      = 0x00EE
 	MicrosoftOS10StringLength     = 18

@@ -1287,19 +1287,44 @@ ViiperReserveIsoStartFrame(
 {
     LONG64 observed;
     ULONG currentFrame;
+    LONG requestedDelta;
     ULONG startFrame;
     ULONG nextFrame;
     ULONG span;
 
     span = ViiperIsoFrameSpan(EndpointContext, PacketCount);
+    currentFrame = (ULONG)(KeQueryInterruptTimePrecise(NULL) / 10000ULL);
     if ((TransferFlags & USBD_START_ISO_TRANSFER_ASAP) == 0) {
-        InterlockedExchange64(
-            &EndpointContext->NextIsoStartFrame,
-            (LONG64)(ULONGLONG)(RequestedStartFrame + span));
-        return RequestedStartFrame;
+        // An explicit URB is valid only in the future 1024-frame window. Do
+        // not let a rejected request advance the shared endpoint tail: doing
+        // so makes the next valid ASAP URB inherit a silent hole.
+        requestedDelta = (LONG)(RequestedStartFrame - currentFrame);
+        if (requestedDelta <= 0 ||
+            requestedDelta >= USBD_ISO_START_FRAME_RANGE) {
+            return RequestedStartFrame;
+        }
+        for (;;) {
+            observed = InterlockedCompareExchange64(
+                &EndpointContext->NextIsoStartFrame, 0, 0);
+            startFrame = (ULONG)observed;
+            if (observed != 0 &&
+                (LONG)(startFrame - currentFrame) > 0 &&
+                (LONG)(RequestedStartFrame - startFrame) < 0) {
+                // This explicit window overlaps a reservation already
+                // published for the same endpoint. Leave the tail unchanged;
+                // user mode will return USBD_STATUS_BAD_START_FRAME.
+                return RequestedStartFrame;
+            }
+            nextFrame = RequestedStartFrame + span;
+            if (InterlockedCompareExchange64(
+                    &EndpointContext->NextIsoStartFrame,
+                    (LONG64)(ULONGLONG)nextFrame,
+                    observed) == observed) {
+                return RequestedStartFrame;
+            }
+        }
     }
 
-    currentFrame = (ULONG)(KeQueryInterruptTimePrecise(NULL) / 10000ULL);
     for (;;) {
         observed = InterlockedCompareExchange64(
             &EndpointContext->NextIsoStartFrame, 0, 0);

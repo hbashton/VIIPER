@@ -1157,7 +1157,7 @@ func (h *Host) process(ctx context.Context, entry *registeredDevice, op Operatio
 		return nil
 	}
 	if err != nil {
-		completion = failureCompletion(op)
+		completion = processorErrorCompletion(op, err)
 	}
 	if h.operationCancelled(op.Token) {
 		h.finishOperation(op.Token)
@@ -1340,4 +1340,32 @@ func failureCompletion(op Operation) Completion {
 		Token: op.Token, DeviceID: op.DeviceID, Generation: op.Generation,
 		Status: statusUnsuccessful,
 	}
+}
+
+type usbdCompletionStatusError interface {
+	error
+	USBDCompletionStatus() uint32
+}
+
+func processorErrorCompletion(op Operation, err error) Completion {
+	var usbdError usbdCompletionStatusError
+	if errors.As(err, &usbdError) {
+		if status := usbdError.USBDCompletionStatus(); status != 0 {
+			// UdeCx consumes USBD protocol failures through UdecxUrbComplete,
+			// which requires a successful NTSTATUS envelope. A generic
+			// processor failure still uses the NTSTATUS failure path below. ISO
+			// completions must retain the submitted packet table even when no
+			// bytes were serviced; the kernel validates those offsets before it
+			// can deliver the protocol status to UdeCx.
+			packets := make([]IsoPacket, len(op.IsoPackets))
+			for index, packet := range op.IsoPackets {
+				packets[index] = IsoPacket{Offset: packet.Offset, Status: int32(status)}
+			}
+			return Completion{
+				Token: op.Token, DeviceID: op.DeviceID, Generation: op.Generation,
+				USBDStatus: status, IsoPackets: packets,
+			}
+		}
+	}
+	return failureCompletion(op)
 }

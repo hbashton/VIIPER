@@ -3,6 +3,7 @@ package usb
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -585,9 +586,21 @@ func TestNativeIsoExplicitFrameRangeHandlesWrap(t *testing.T) {
 	if _, _, err := processor.reserveIsoServiceWindow(
 		key, 100+uint32(usbdIsoStartFrameRange), 0, time.Millisecond); err == nil {
 		t.Fatal("out-of-range explicit frame was accepted")
+	} else {
+		var statusError interface{ USBDCompletionStatus() uint32 }
+		if !errors.As(err, &statusError) ||
+			statusError.USBDCompletionStatus() != udecx.USBDStatusBadStartFrame {
+			t.Fatalf("out-of-range explicit error=%v does not report BAD_START_FRAME", err)
+		}
 	}
 	if _, _, err := processor.reserveIsoServiceWindow(key, 99, 0, time.Millisecond); err == nil {
 		t.Fatal("past explicit frame was accepted")
+	} else {
+		var statusError interface{ USBDCompletionStatus() uint32 }
+		if !errors.As(err, &statusError) ||
+			statusError.USBDCompletionStatus() != udecx.USBDStatusBadStartFrame {
+			t.Fatalf("past explicit error=%v does not report BAD_START_FRAME", err)
+		}
 	}
 }
 

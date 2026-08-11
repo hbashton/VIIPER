@@ -54,6 +54,24 @@ const (
 	usbdIsoStartFrameRange = int64(1024)
 )
 
+type nativeUSBDCompletionError struct {
+	status uint32
+	err    error
+}
+
+func (e *nativeUSBDCompletionError) Error() string { return e.err.Error() }
+func (e *nativeUSBDCompletionError) Unwrap() error { return e.err }
+func (e *nativeUSBDCompletionError) USBDCompletionStatus() uint32 {
+	return e.status
+}
+
+func nativeBadStartFrameError(format string, args ...any) error {
+	return &nativeUSBDCompletionError{
+		status: udecx.USBDStatusBadStartFrame,
+		err:    fmt.Errorf(format, args...),
+	}
+}
+
 // NativeProcessor adapts the native UdeCx broker to the same control and
 // transfer engine used by USB/IP. Transport-specific clocks live here; device
 // state, feedback, HID, audio, and descriptor behavior remain in usb.Device.
@@ -677,7 +695,7 @@ func (p *NativeProcessor) reserveIsoServiceWindow(
 	delta := int64(int32(startFrame - sample.frame))
 	explicit := transferFlags&udecx.TransferFlagStartIsoASAP == 0
 	if explicit && (delta <= 0 || delta >= usbdIsoStartFrameRange) {
-		return time.Time{}, time.Time{}, fmt.Errorf(
+		return time.Time{}, time.Time{}, nativeBadStartFrameError(
 			"native explicit ISO start frame %d is outside the future frame range from %d",
 			startFrame, sample.frame)
 	}
@@ -696,7 +714,7 @@ func (p *NativeProcessor) reserveIsoServiceWindow(
 	defer p.mu.Unlock()
 	if previousEnd := p.next[key]; previousEnd.After(plannedStart) {
 		if explicit {
-			return time.Time{}, time.Time{}, fmt.Errorf(
+			return time.Time{}, time.Time{}, nativeBadStartFrameError(
 				"native explicit ISO start frame %d overlaps the previous endpoint window",
 				startFrame)
 		}

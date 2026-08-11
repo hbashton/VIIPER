@@ -93,3 +93,64 @@ func TestNativeDriverIsoFrameSpanPreservesPlayStationCadence(t *testing.T) {
 		})
 	}
 }
+
+func TestNativeDriverRejectedExplicitIsoReservationDoesNotAdvanceTail(t *testing.T) {
+	source := nativeDriverBrokerSource(t)
+	start := strings.Index(source, "ViiperReserveIsoStartFrame(")
+	if start < 0 {
+		t.Fatal("native ISO reservation helper is missing")
+	}
+	end := strings.Index(source[start:], "ViiperCopyTransferBuffer(")
+	if end < 0 {
+		t.Fatal("native ISO reservation helper boundary is missing")
+	}
+	reservation := source[start : start+end]
+	for _, required := range []string{
+		"requestedDelta <= 0",
+		"requestedDelta >= USBD_ISO_START_FRAME_RANGE",
+		"(LONG)(RequestedStartFrame - startFrame) < 0",
+		"InterlockedCompareExchange64(",
+	} {
+		if !strings.Contains(reservation, required) {
+			t.Fatalf("explicit ISO reservation is missing %q", required)
+		}
+	}
+	if strings.Contains(reservation, "InterlockedExchange64(") {
+		t.Fatal("explicit ISO reservation can still overwrite the endpoint tail unconditionally")
+	}
+
+	reserve := func(tail, current, requested, span uint32, asap bool) (uint32, uint32) {
+		if !asap {
+			delta := int32(requested - current)
+			if delta <= 0 || delta >= 1024 {
+				return requested, tail
+			}
+			if tail != 0 && int32(tail-current) > 0 && int32(requested-tail) < 0 {
+				return requested, tail
+			}
+			return requested, requested + span
+		}
+		startFrame := tail
+		if tail == 0 || int32(startFrame-current) <= 0 {
+			startFrame = current + 1
+		}
+		return startFrame, startFrame + span
+	}
+
+	const current = uint32(90)
+	const previousTail = uint32(132)
+	startFrame, tail := reserve(previousTail, current, 110, 32, false)
+	if startFrame != 110 || tail != previousTail {
+		t.Fatalf("overlapping explicit reservation start=%d tail=%d want start=110 tail=%d",
+			startFrame, tail, previousTail)
+	}
+	startFrame, tail = reserve(tail, current, 0, 32, true)
+	if startFrame != previousTail || tail != 164 {
+		t.Fatalf("ASAP after rejected explicit start=%d tail=%d want start=132 tail=164",
+			startFrame, tail)
+	}
+	_, tail = reserve(previousTail, current, current+1024, 32, false)
+	if tail != previousTail {
+		t.Fatalf("out-of-range explicit reservation advanced tail to %d", tail)
+	}
+}
