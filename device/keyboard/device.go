@@ -9,7 +9,6 @@ import (
 	"github.com/Alia5/VIIPER/device"
 	"github.com/Alia5/VIIPER/usb"
 	"github.com/Alia5/VIIPER/usb/hid"
-	"github.com/Alia5/VIIPER/usbip"
 )
 
 // Keyboard implements the Device interface for a full HID keyboard with LED support.
@@ -86,7 +85,7 @@ func (k *Keyboard) UpdateInputState(state InputState) {
 
 // HandleTransfer implements interrupt IN/OUT for Keyboard.
 func (k *Keyboard) HandleTransfer(ctx context.Context, ep uint32, dir uint32, out []byte) []byte {
-	if dir == usbip.DirIn {
+	if dir == usb.DirectionIn {
 		switch ep {
 		case 1: // 0x81 - keyboard input reports
 			select {
@@ -99,7 +98,7 @@ func (k *Keyboard) HandleTransfer(ctx context.Context, ep uint32, dir uint32, ou
 			return nil
 		}
 	}
-	if dir == usbip.DirOut && ep == 1 {
+	if dir == usb.DirectionOut && ep == 1 {
 		// 0x01 - LED state from host
 		if len(out) >= 1 {
 			ledState := ledStateFromMask(out[0])

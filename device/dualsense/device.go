@@ -16,7 +16,6 @@ import (
 	"github.com/Alia5/VIIPER/device"
 	"github.com/Alia5/VIIPER/device/internal/microphonebuffer"
 	"github.com/Alia5/VIIPER/usb"
-	"github.com/Alia5/VIIPER/usbip"
 )
 
 const (
@@ -471,10 +470,10 @@ func (d *DualSense) resetMicrophoneAudioLocked() {
 }
 
 func (d *DualSense) HandleTransfer(ctx context.Context, ep uint32, dir uint32, out []byte) []byte {
-	// USB/IP carries the endpoint number separately from transfer direction,
-	// so an IN descriptor address such as 0x82 arrives here as endpoint 2.
+	// The transport-neutral device contract carries the endpoint number
+	// separately from direction, so 0x82 arrives here as endpoint 2 plus IN.
 	epNumber := ep & 0x0F
-	if dir == usbip.DirIn {
+	if dir == usb.DirectionIn {
 		switch epNumber {
 		case EndpointIn & 0x0F:
 			select {
@@ -500,12 +499,12 @@ func (d *DualSense) HandleTransfer(ctx context.Context, ep uint32, dir uint32, o
 		}
 	}
 
-	if dir == usbip.DirOut && epNumber == EndpointOut&0x0F {
+	if dir == usb.DirectionOut && epNumber == EndpointOut&0x0F {
 		if d.handleOutputReport(out) {
 			return nil
 		}
 	}
-	if dir == usbip.DirOut && epNumber == EndpointHapticsAudioOut&0x0F {
+	if dir == usb.DirectionOut && epNumber == EndpointHapticsAudioOut&0x0F {
 		d.handleHapticsAudioOut(out)
 		return nil
 	}

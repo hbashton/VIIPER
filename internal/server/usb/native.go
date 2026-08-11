@@ -9,7 +9,6 @@ import (
 
 	"github.com/Alia5/VIIPER/internal/transport/udecx"
 	usbdevice "github.com/Alia5/VIIPER/usb"
-	"github.com/Alia5/VIIPER/usbip"
 )
 
 type nativeLaneKey struct {
@@ -393,10 +392,10 @@ func resolveNativeIsoEndpoint(dev usbdevice.Device, op udecx.Operation) (nativeI
 			"native ISO operation has invalid endpoint signature %+v", signature)
 	}
 	direction := uint8(0)
-	usbDirection := uint32(usbip.DirOut)
+	usbDirection := usbdevice.DirectionOut
 	if signature.address&0x80 != 0 {
 		direction = 1
-		usbDirection = usbip.DirIn
+		usbDirection = usbdevice.DirectionIn
 	}
 	flagDirection := uint8(0)
 	if op.TransferFlags&udecx.TransferFlagDirectionIn != 0 {
@@ -444,22 +443,22 @@ func (p *NativeProcessor) Process(ctx context.Context, dev usbdevice.Device, op 
 		if err != nil {
 			return udecx.Completion{}, err
 		}
-		if endpoint.direction == usbip.DirIn {
+		if endpoint.direction == usbdevice.DirectionIn {
 			return p.processIsoIn(ctx, dev, op, endpoint)
 		}
 		return p.processIsoOut(ctx, dev, op, endpoint)
 	}
 	ep := uint32(op.EndpointAddress & 0x0f)
-	dir := uint32(usbip.DirOut)
+	dir := usbdevice.DirectionOut
 	if op.Direction != 0 {
-		dir = usbip.DirIn
+		dir = usbdevice.DirectionIn
 	}
 	key := nativeLaneKeyFromOperation(op)
 
 	switch {
 	case op.Kind == udecx.OperationControl:
 		return p.processControl(ctx, dev, op, ep, dir)
-	case dir == usbip.DirIn:
+	case dir == usbdevice.DirectionIn:
 		return p.processInterruptIn(ctx, dev, op, ep, dir, key)
 	default:
 		p.server.processSubmit(ctx, dev, ep, dir, nil, op.Payload)
@@ -486,7 +485,7 @@ func (p *NativeProcessor) processControl(ctx context.Context, dev usbdevice.Devi
 	if err := ctx.Err(); err != nil {
 		return udecx.Completion{}, err
 	}
-	if dir == usbip.DirOut {
+	if dir == usbdevice.DirectionOut {
 		return successCompletion(op, op.TransferLength, nil, nil), nil
 	}
 	if uint32(len(response)) > op.TransferLength {

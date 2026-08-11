@@ -2,11 +2,20 @@ package usb
 
 import "context"
 
+// Transfer directions belong to the USB device contract, not to any concrete
+// transport. Keep these values aligned with the USB host convention used by
+// both the legacy USB/IP adapter and the native UdeCx broker.
+const (
+	DirectionOut uint32 = 0
+	DirectionIn  uint32 = 1
+)
+
 // Device is the minimal interface a device must implement.
 // It only handles non-EP0 (interrupt/bulk) transfers.
 type Device interface {
 	// HandleTransfer processes a non-EP0 transfer (interrupt/bulk).
-	// ep is the endpoint number (without direction). dir is usbip.DirIn or usbip.DirOut.
+	// ep is the endpoint number (without direction). dir is DirectionIn or
+	// DirectionOut.
 	// For IN transfers the implementation should block until data is available or ctx is
 	// cancelled, then return the payload. For OUT transfers, consume 'out' and return nil.
 	HandleTransfer(ctx context.Context, ep uint32, dir uint32, out []byte) []byte

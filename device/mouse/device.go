@@ -9,7 +9,6 @@ import (
 	"github.com/Alia5/VIIPER/device"
 	"github.com/Alia5/VIIPER/usb"
 	"github.com/Alia5/VIIPER/usb/hid"
-	"github.com/Alia5/VIIPER/usbip"
 )
 
 // Mouse implements the minimal Device interface for a 5-button HID mouse
@@ -50,7 +49,7 @@ func (m *Mouse) UpdateInputState(state InputState) {
 }
 
 func (m *Mouse) HandleTransfer(ctx context.Context, ep uint32, dir uint32, out []byte) []byte {
-	if dir == usbip.DirIn {
+	if dir == usb.DirectionIn {
 		switch ep {
 		case 1: // 0x81 - main input reports
 			select {

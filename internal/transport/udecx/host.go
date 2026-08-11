@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/Alia5/VIIPER/usb"
-	"github.com/Alia5/VIIPER/usbip"
 )
 
 const (
@@ -534,7 +533,7 @@ func (h *Host) runInputPublisher(ctx context.Context, entry *registeredDevice, p
 			payload = reportBuffer[:written]
 		} else {
 			payload = entry.device.HandleTransfer(
-				ctx, uint32(publisher.endpoint&0x0f), usbip.DirIn, nil)
+				ctx, uint32(publisher.endpoint&0x0f), usb.DirectionIn, nil)
 		}
 		if ctx.Err() != nil {
 			return

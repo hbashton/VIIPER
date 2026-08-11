@@ -10,7 +10,6 @@ import (
 
 	"github.com/Alia5/VIIPER/device"
 	"github.com/Alia5/VIIPER/usb"
-	"github.com/Alia5/VIIPER/usbip"
 )
 
 type Xbox360 struct {
@@ -87,7 +86,7 @@ func (x *Xbox360) UpdateInputState(state InputState) {
 
 // HandleTransfer implements interrupt IN/OUT for Xbox360.
 func (x *Xbox360) HandleTransfer(ctx context.Context, ep uint32, dir uint32, out []byte) []byte {
-	if dir == usbip.DirIn {
+	if dir == usb.DirectionIn {
 		switch ep {
 		case 1: // 0x81 - main input reports
 			select {
@@ -110,7 +109,7 @@ func (x *Xbox360) HandleTransfer(ctx context.Context, ep uint32, dir uint32, out
 			return nil
 		}
 	}
-	if dir == usbip.DirOut && ep == 1 {
+	if dir == usb.DirectionOut && ep == 1 {
 		// Host->Device output reports used by the wired Xbox 360 controller include
 		// an 8-byte rumble packet: [0]=ReportID(0x00), [1]=Len(0x08), [2]=Reserved/Status(0x00),
 		// [3]=Left (low-frequency/large) motor 0-255, [4]=Right (high-frequency/small) motor 0-255,
@@ -197,8 +196,8 @@ func MakeDescriptor() usb.Descriptor {
 				},
 				Endpoints: []usb.EndpointDescriptor{
 					// Full-speed interrupt bInterval=1 advertises a 1 ms maximum
-					// input service cadence. The USB/IP scheduler still presents only
-					// the newest feeder state, so idle pads do not create a busy loop.
+					// input service cadence. Transport schedulers present only the newest
+					// feeder state, so idle pads do not create a user-mode busy loop.
 					{BEndpointAddress: 0x81, BMAttributes: 0x03, WMaxPacketSize: 0x0020, BInterval: 0x01},
 					{BEndpointAddress: 0x01, BMAttributes: 0x03, WMaxPacketSize: 0x0020, BInterval: 0x08},
 				},

@@ -11,7 +11,6 @@ import (
 
 	"github.com/Alia5/VIIPER/device"
 	"github.com/Alia5/VIIPER/usb"
-	"github.com/Alia5/VIIPER/usbip"
 )
 
 type NS2Pro struct {
@@ -131,7 +130,7 @@ func (d *NS2Pro) SetMetaState(meta MetaState) {
 
 func (d *NS2Pro) HandleTransfer(ctx context.Context, ep uint32, dir uint32, out []byte) []byte {
 	switch {
-	case dir == usbip.DirIn && ep == 1:
+	case dir == usb.DirectionIn && ep == 1:
 		for {
 			select {
 			case <-ctx.Done():
@@ -145,7 +144,7 @@ func (d *NS2Pro) HandleTransfer(ctx context.Context, ep uint32, dir uint32, out 
 				}
 			}
 		}
-	case dir == usbip.DirIn && ep == 2:
+	case dir == usb.DirectionIn && ep == 2:
 		for {
 			if resp := d.popBulkIn(); resp != nil {
 				return resp
@@ -156,9 +155,9 @@ func (d *NS2Pro) HandleTransfer(ctx context.Context, ep uint32, dir uint32, out 
 			case <-d.bulkCh:
 			}
 		}
-	case dir == usbip.DirOut && ep == 1:
+	case dir == usb.DirectionOut && ep == 1:
 		d.handleOutputReport(out)
-	case dir == usbip.DirOut && ep == 2:
+	case dir == usb.DirectionOut && ep == 2:
 		d.handleBulkOut(out)
 	}
 	return nil

@@ -15,7 +15,6 @@ import (
 	"github.com/Alia5/VIIPER/device"
 	"github.com/Alia5/VIIPER/device/internal/microphonebuffer"
 	"github.com/Alia5/VIIPER/usb"
-	"github.com/Alia5/VIIPER/usbip"
 )
 
 const (
@@ -318,7 +317,7 @@ func (d *DualShock4) resetSpeakerPresentation(update func()) {
 
 func (d *DualShock4) HandleTransfer(ctx context.Context, ep uint32, dir uint32, out []byte) []byte {
 	epNumber := ep & 0x0F
-	if dir == usbip.DirIn {
+	if dir == usb.DirectionIn {
 		switch epNumber {
 		case 4:
 			select {
@@ -344,7 +343,7 @@ func (d *DualShock4) HandleTransfer(ctx context.Context, ep uint32, dir uint32, 
 		}
 	}
 
-	if dir == usbip.DirOut && epNumber == EndpointOut&0x0F {
+	if dir == usb.DirectionOut && epNumber == EndpointOut&0x0F {
 		if len(out) >= 11 && out[0] == ReportIDOutput {
 			feedback := parseOutputReport(out)
 			d.outputPublishMu.RLock()
@@ -359,10 +358,10 @@ func (d *DualShock4) HandleTransfer(ctx context.Context, ep uint32, dir uint32, 
 			d.outputPublishMu.RUnlock()
 		}
 	}
-	if dir == usbip.DirOut && epNumber == EndpointAudioOut&0x0F {
+	if dir == usb.DirectionOut && epNumber == EndpointAudioOut&0x0F {
 		d.mtx.Lock()
 		if d.speakerInterfaceActive && d.speakerFunc != nil && len(out) > 0 {
-			// The USB/IP receive buffer is owned by the transfer handler. Give the
+			// The transport receive buffer is owned by the transfer handler. Give the
 			// device-stream writer an immutable copy; its owned enqueue path then
 			// forwards this same allocation without making a second copy.
 			pcm := append([]byte(nil), out...)
