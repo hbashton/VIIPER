@@ -23,8 +23,19 @@ func TestLocalTestPackageUsesFullTransactionalNativeBackend(t *testing.T) {
 		"workflow_dispatch:",
 		"New-ViiperUdeLocalTestPackage.ps1",
 		"[Security.Cryptography.X509Certificates.X509Store]::new(",
-		"$store.Add($certificate)",
-		"$store.Remove($exactMatch[0])",
+		"ViiperNativeCertificateStore",
+		"CertAddEncodedCertificateToStore(",
+		"CertFindCertificateInStore(",
+		"CertDeleteCertificateFromStore(found)",
+		"CERT_STORE_ADD_NEW",
+		"$addedTrust += $storeName",
+		"CERT_SYSTEM_STORE_LOCAL_MACHINE",
+		"[Security.Cryptography.X509Certificates.StoreName]::Root",
+		"[Security.Cryptography.X509Certificates.StoreName]::TrustedPublisher",
+		"[Security.Cryptography.X509Certificates.StoreLocation]::LocalMachine",
+		"foreach ($storeName in $addedTrust)",
+		"$cleanupErrors.Add(",
+		"$certificate.Dispose()",
 		"-BrokerPath native/udecx/x64/Release/viiper.exe",
 		"ViiperUde-x64-local-test-${{ github.sha }}",
 		"path: native/udecx/x64/Release/ViiperUdeLocalTest/**",
@@ -38,6 +49,12 @@ func TestLocalTestPackageUsesFullTransactionalNativeBackend(t *testing.T) {
 		"native/udecx/x64/Release/**",
 		"native/udecx/driver/x64/Release/**",
 		"native/udecx/package/x64/Release/**",
+		"$store.Add($certificate)",
+		"$store.Remove($exactMatch[0])",
+		"certutil.exe",
+		"Invoke-BoundedCertUtil",
+		"CERT_SYSTEM_STORE_CURRENT_USER",
+		"[Security.Cryptography.X509Certificates.StoreLocation]::CurrentUser",
 	} {
 		if strings.Contains(workflow, forbidden) {
 			t.Fatalf("local-test workflow uploads broad build tree %q", forbidden)
@@ -135,10 +152,15 @@ func TestLocalTestValidationCannotWeakenProduction(t *testing.T) {
 		"Invoke-BoundedValidationTool",
 		"Get-BoundedAuthenticodeSignature",
 		"'-NoProfile', '-NonInteractive', '-EncodedCommand'",
-		"$process.WaitForExit($TimeoutMilliseconds)",
-		"$process.StandardOutput.ReadToEndAsync()",
-		"$process.StandardError.ReadToEndAsync()",
-		"$process.Kill()",
+		"CREATE_SUSPENDED | CREATE_NO_WINDOW",
+		"JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE",
+		"new AnonymousPipeServerStream(",
+		"QueryInformationJobObject(",
+		"AssignProcessToJobObject(job, process.hProcess)",
+		"ResumeThread(process.hThread)",
+		"TerminateJobObject(job, 1)",
+		"WaitForJobEmpty(job, remaining)",
+		"Task.WaitAll(outputTasks, 10000)",
 		"$ValidationMode -eq 'LocalTest'",
 		"testSignerCertificateSha256",
 		"Production validation requires a release-eligible HLK/WHCP",
@@ -150,6 +172,11 @@ func TestLocalTestValidationCannotWeakenProduction(t *testing.T) {
 		if !strings.Contains(contract, required) {
 			t.Fatalf("signature route separation omitted %q", required)
 		}
+	}
+	assign := strings.Index(contract, "AssignProcessToJobObject(job, process.hProcess)")
+	resume := strings.Index(contract, "ResumeThread(process.hThread)")
+	if assign < 0 || resume < 0 || assign > resume {
+		t.Fatal("validation child is not assigned to its private job while still suspended")
 	}
 	for _, forbidden := range []string{
 		"& $signTool.Source verify",

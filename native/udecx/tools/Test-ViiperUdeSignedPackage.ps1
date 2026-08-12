@@ -21,6 +21,393 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+Write-Host 'Initializing native bounded validation runner.'
+if (-not ('ViiperUdeBoundedProcessRunner' -as [type])) {
+    Add-Type -Language CSharp -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Diagnostics;
+using System.IO;
+using System.IO.Pipes;
+using System.Runtime.InteropServices;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
+
+public sealed class ViiperUdeBoundedProcessResult
+{
+    public int ExitCode;
+    public string StandardOutput;
+    public string StandardError;
+}
+
+public static class ViiperUdeBoundedProcessRunner
+{
+    private const uint CREATE_SUSPENDED = 0x00000004;
+    private const uint CREATE_NO_WINDOW = 0x08000000;
+    private const uint STARTF_USESTDHANDLES = 0x00000100;
+    private const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000;
+    private const int JobObjectBasicAccountingInformation = 1;
+    private const int JobObjectExtendedLimitInformation = 9;
+    private const uint WAIT_OBJECT_0 = 0;
+    private const uint WAIT_TIMEOUT = 258;
+    private const uint INFINITE = 0xffffffff;
+    private static readonly IntPtr InvalidHandleValue = new IntPtr(-1);
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct STARTUPINFO
+    {
+        public int cb;
+        public string lpReserved;
+        public string lpDesktop;
+        public string lpTitle;
+        public uint dwX;
+        public uint dwY;
+        public uint dwXSize;
+        public uint dwYSize;
+        public uint dwXCountChars;
+        public uint dwYCountChars;
+        public uint dwFillAttribute;
+        public uint dwFlags;
+        public ushort wShowWindow;
+        public ushort cbReserved2;
+        public IntPtr lpReserved2;
+        public IntPtr hStdInput;
+        public IntPtr hStdOutput;
+        public IntPtr hStdError;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PROCESS_INFORMATION
+    {
+        public IntPtr hProcess;
+        public IntPtr hThread;
+        public uint dwProcessId;
+        public uint dwThreadId;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct JOBOBJECT_BASIC_LIMIT_INFORMATION
+    {
+        public long PerProcessUserTimeLimit;
+        public long PerJobUserTimeLimit;
+        public uint LimitFlags;
+        public UIntPtr MinimumWorkingSetSize;
+        public UIntPtr MaximumWorkingSetSize;
+        public uint ActiveProcessLimit;
+        public UIntPtr Affinity;
+        public uint PriorityClass;
+        public uint SchedulingClass;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct IO_COUNTERS
+    {
+        public ulong ReadOperationCount;
+        public ulong WriteOperationCount;
+        public ulong OtherOperationCount;
+        public ulong ReadTransferCount;
+        public ulong WriteTransferCount;
+        public ulong OtherTransferCount;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct JOBOBJECT_EXTENDED_LIMIT_INFORMATION
+    {
+        public JOBOBJECT_BASIC_LIMIT_INFORMATION BasicLimitInformation;
+        public IO_COUNTERS IoInfo;
+        public UIntPtr ProcessMemoryLimit;
+        public UIntPtr JobMemoryLimit;
+        public UIntPtr PeakProcessMemoryUsed;
+        public UIntPtr PeakJobMemoryUsed;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct JOBOBJECT_BASIC_ACCOUNTING_INFORMATION
+    {
+        public long TotalUserTime;
+        public long TotalKernelTime;
+        public long ThisPeriodTotalUserTime;
+        public long ThisPeriodTotalKernelTime;
+        public uint TotalPageFaultCount;
+        public uint TotalProcesses;
+        public uint ActiveProcesses;
+        public uint TotalTerminatedProcesses;
+    }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr CreateJobObject(IntPtr attributes, string name);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool SetInformationJobObject(
+        IntPtr job, int informationClass, IntPtr information, uint informationLength);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool QueryInformationJobObject(
+        IntPtr job, int informationClass, out JOBOBJECT_BASIC_ACCOUNTING_INFORMATION information,
+        uint informationLength, IntPtr returnLength);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool TerminateJobObject(IntPtr job, uint exitCode);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool CreateProcess(
+        string applicationName, StringBuilder commandLine, IntPtr processAttributes,
+        IntPtr threadAttributes, bool inheritHandles, uint creationFlags, IntPtr environment,
+        string currentDirectory, ref STARTUPINFO startupInfo,
+        out PROCESS_INFORMATION processInformation);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint ResumeThread(IntPtr thread);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetExitCodeProcess(IntPtr process, out uint exitCode);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool TerminateProcess(IntPtr process, uint exitCode);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(IntPtr handle);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr GetStdHandle(int standardHandle);
+
+    private static void ThrowLastError(string operation)
+    {
+        throw new Win32Exception(Marshal.GetLastWin32Error(), operation);
+    }
+
+    private static void ConfigureJob(IntPtr job)
+    {
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits =
+            new JOBOBJECT_EXTENDED_LIMIT_INFORMATION();
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        int size = Marshal.SizeOf(typeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION));
+        IntPtr buffer = Marshal.AllocHGlobal(size);
+        try
+        {
+            Marshal.StructureToPtr(limits, buffer, false);
+            if (!SetInformationJobObject(
+                    job, JobObjectExtendedLimitInformation, buffer, (uint)size))
+            {
+                ThrowLastError("SetInformationJobObject");
+            }
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(buffer);
+        }
+    }
+
+    private static uint RemainingMilliseconds(Stopwatch clock, int timeoutMilliseconds)
+    {
+        long remaining = timeoutMilliseconds - clock.ElapsedMilliseconds;
+        if (remaining <= 0)
+        {
+            return 0;
+        }
+        return remaining > int.MaxValue ? (uint)int.MaxValue : (uint)remaining;
+    }
+
+    private static bool WaitForJobEmpty(IntPtr job, uint timeoutMilliseconds)
+    {
+        Stopwatch clock = Stopwatch.StartNew();
+        int size = Marshal.SizeOf(typeof(JOBOBJECT_BASIC_ACCOUNTING_INFORMATION));
+        for (;;)
+        {
+            JOBOBJECT_BASIC_ACCOUNTING_INFORMATION accounting;
+            if (!QueryInformationJobObject(
+                    job, JobObjectBasicAccountingInformation, out accounting,
+                    (uint)size, IntPtr.Zero))
+            {
+                ThrowLastError("QueryInformationJobObject");
+            }
+            if (accounting.ActiveProcesses == 0)
+            {
+                return true;
+            }
+            if (clock.ElapsedMilliseconds >= timeoutMilliseconds)
+            {
+                return false;
+            }
+            Thread.Sleep(10);
+        }
+    }
+
+    public static ViiperUdeBoundedProcessResult Run(
+        string applicationName, string commandLine, int timeoutMilliseconds)
+    {
+        if (timeoutMilliseconds <= 0)
+        {
+            throw new ArgumentOutOfRangeException("timeoutMilliseconds");
+        }
+
+        IntPtr job = IntPtr.Zero;
+        PROCESS_INFORMATION process = new PROCESS_INFORMATION();
+        bool processCreated = false;
+        bool processAssigned = false;
+        bool jobDrained = false;
+        AnonymousPipeServerStream stdoutPipe = null;
+        AnonymousPipeServerStream stderrPipe = null;
+        StreamReader stdoutReader = null;
+        StreamReader stderrReader = null;
+        Task<string> stdoutTask = null;
+        Task<string> stderrTask = null;
+        Stopwatch clock = Stopwatch.StartNew();
+        try
+        {
+            job = CreateJobObject(IntPtr.Zero, null);
+            if (job == IntPtr.Zero)
+            {
+                ThrowLastError("CreateJobObject");
+            }
+            ConfigureJob(job);
+
+            stdoutPipe = new AnonymousPipeServerStream(
+                PipeDirection.In, HandleInheritability.Inheritable);
+            stderrPipe = new AnonymousPipeServerStream(
+                PipeDirection.In, HandleInheritability.Inheritable);
+            STARTUPINFO startup = new STARTUPINFO();
+            startup.cb = Marshal.SizeOf(typeof(STARTUPINFO));
+            startup.dwFlags = STARTF_USESTDHANDLES;
+            startup.hStdInput = GetStdHandle(-10);
+            startup.hStdOutput = stdoutPipe.ClientSafePipeHandle.DangerousGetHandle();
+            startup.hStdError = stderrPipe.ClientSafePipeHandle.DangerousGetHandle();
+
+            if (!CreateProcess(
+                    applicationName, new StringBuilder(commandLine), IntPtr.Zero, IntPtr.Zero,
+                    true, CREATE_SUSPENDED | CREATE_NO_WINDOW, IntPtr.Zero, null,
+                    ref startup, out process))
+            {
+                ThrowLastError("CreateProcess");
+            }
+            processCreated = true;
+            stdoutPipe.DisposeLocalCopyOfClientHandle();
+            stderrPipe.DisposeLocalCopyOfClientHandle();
+            stdoutReader = new StreamReader(stdoutPipe, Encoding.UTF8, true, 4096, true);
+            stderrReader = new StreamReader(stderrPipe, Encoding.UTF8, true, 4096, true);
+            stdoutTask = stdoutReader.ReadToEndAsync();
+            stderrTask = stderrReader.ReadToEndAsync();
+
+            if (!AssignProcessToJobObject(job, process.hProcess))
+            {
+                ThrowLastError("AssignProcessToJobObject");
+            }
+            processAssigned = true;
+            if (ResumeThread(process.hThread) == UInt32.MaxValue)
+            {
+                ThrowLastError("ResumeThread");
+            }
+
+            uint remaining = RemainingMilliseconds(clock, timeoutMilliseconds);
+            uint wait = WaitForSingleObject(process.hProcess, remaining);
+            if (wait == WAIT_TIMEOUT)
+            {
+                throw new TimeoutException("validation process exceeded its deadline");
+            }
+            if (wait != WAIT_OBJECT_0)
+            {
+                ThrowLastError("WaitForSingleObject(process)");
+            }
+
+            remaining = RemainingMilliseconds(clock, timeoutMilliseconds);
+            if (!WaitForJobEmpty(job, remaining))
+            {
+                throw new TimeoutException("validation process tree exceeded its deadline");
+            }
+            jobDrained = true;
+
+            Task[] outputTasks = new Task[] { stdoutTask, stderrTask };
+            if (!Task.WaitAll(outputTasks, 10000))
+            {
+                throw new TimeoutException("validation output did not drain within 10000 ms");
+            }
+            uint exitCode;
+            if (!GetExitCodeProcess(process.hProcess, out exitCode))
+            {
+                ThrowLastError("GetExitCodeProcess");
+            }
+            return new ViiperUdeBoundedProcessResult
+            {
+                ExitCode = unchecked((int)exitCode),
+                StandardOutput = stdoutTask.GetAwaiter().GetResult(),
+                StandardError = stderrTask.GetAwaiter().GetResult()
+            };
+        }
+        catch (Exception failure)
+        {
+            string cleanupFailure = null;
+            try
+            {
+                if (processAssigned && !jobDrained)
+                {
+                    if (!TerminateJobObject(job, 1))
+                    {
+                        ThrowLastError("TerminateJobObject");
+                    }
+                    if (!WaitForJobEmpty(job, 10000))
+                    {
+                        throw new TimeoutException(
+                            "terminated validation job did not drain within 10000 ms");
+                    }
+                    jobDrained = true;
+                }
+                else if (processCreated && !processAssigned)
+                {
+                    if (!TerminateProcess(process.hProcess, 1))
+                    {
+                        ThrowLastError("TerminateProcess");
+                    }
+                    if (WaitForSingleObject(process.hProcess, 10000) != WAIT_OBJECT_0)
+                    {
+                        throw new TimeoutException(
+                            "unassigned suspended validation process did not terminate within 10000 ms");
+                    }
+                }
+            }
+            catch (Exception cleanup)
+            {
+                cleanupFailure = cleanup.Message;
+            }
+            if (cleanupFailure != null)
+            {
+                throw new InvalidOperationException(
+                    failure.Message + "; validation process cleanup failed: " + cleanupFailure,
+                    failure);
+            }
+            throw;
+        }
+        finally
+        {
+            if (process.hThread != IntPtr.Zero && process.hThread != InvalidHandleValue)
+            {
+                CloseHandle(process.hThread);
+            }
+            if (process.hProcess != IntPtr.Zero && process.hProcess != InvalidHandleValue)
+            {
+                CloseHandle(process.hProcess);
+            }
+            if (job != IntPtr.Zero && job != InvalidHandleValue)
+            {
+                CloseHandle(job);
+            }
+            if (stdoutReader != null) stdoutReader.Dispose();
+            if (stderrReader != null) stderrReader.Dispose();
+            if (stdoutPipe != null) stdoutPipe.Dispose();
+            if (stderrPipe != null) stderrPipe.Dispose();
+        }
+    }
+}
+'@
+}
+Write-Host 'Initialized native bounded validation runner.'
+
 function ConvertTo-WindowsCommandLineArgument {
     param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Value)
 
@@ -59,46 +446,31 @@ function Invoke-BoundedValidationTool {
         [switch]$SuppressOutput
     )
 
-    $startInfo = [Diagnostics.ProcessStartInfo]::new()
-    $startInfo.FileName = $FilePath
-    $startInfo.Arguments = (($Arguments | ForEach-Object {
-                ConvertTo-WindowsCommandLineArgument -Value $_
-            }) -join ' ')
-    $startInfo.UseShellExecute = $false
-    $startInfo.CreateNoWindow = $true
-    $startInfo.RedirectStandardOutput = $true
-    $startInfo.RedirectStandardError = $true
-
-    $process = [Diagnostics.Process]::new()
-    $process.StartInfo = $startInfo
+    $commandLine = ConvertTo-WindowsCommandLineArgument -Value $FilePath
+    if ($Arguments.Count -gt 0) {
+        $commandLine += ' ' + (($Arguments | ForEach-Object {
+                    ConvertTo-WindowsCommandLineArgument -Value $_
+                }) -join ' ')
+    }
     try {
-        if (-not $process.Start()) {
-            throw "$Operation did not start."
+        Write-Host "Starting bounded validation: $Operation"
+        $result = [ViiperUdeBoundedProcessRunner]::Run(
+            $FilePath, $commandLine, $TimeoutMilliseconds)
+        Write-Host "Completed bounded validation: $Operation"
+        if (-not $SuppressOutput -and $result.StandardOutput) {
+            Write-Host $result.StandardOutput.TrimEnd()
         }
-        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
-        $stderrTask = $process.StandardError.ReadToEndAsync()
-        if (-not $process.WaitForExit($TimeoutMilliseconds)) {
-            try {
-                $process.Kill()
-                $process.WaitForExit()
-            }
-            catch {
-                throw "$Operation exceeded $TimeoutMilliseconds ms and could not be joined: $($_.Exception.Message)"
-            }
-            throw "$Operation exceeded $TimeoutMilliseconds ms and was terminated before package mutation."
+        if (-not $SuppressOutput -and $result.StandardError) {
+            Write-Host $result.StandardError.TrimEnd()
         }
-        $stdout = $stdoutTask.GetAwaiter().GetResult()
-        $stderr = $stderrTask.GetAwaiter().GetResult()
-        if (-not $SuppressOutput -and $stdout) { Write-Host $stdout.TrimEnd() }
-        if (-not $SuppressOutput -and $stderr) { Write-Host $stderr.TrimEnd() }
         return [pscustomobject]@{
-            ExitCode = $process.ExitCode
-            StandardOutput = $stdout
-            StandardError = $stderr
+            ExitCode = $result.ExitCode
+            StandardOutput = $result.StandardOutput
+            StandardError = $result.StandardError
         }
     }
-    finally {
-        $process.Dispose()
+    catch {
+        throw "$Operation failed closed: $($_.Exception.Message)"
     }
 }
 
