@@ -4,6 +4,7 @@ package cmd
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
@@ -2182,11 +2183,12 @@ func readNativeCredentialReadOnly(userSID string) ([]byte, error) {
 
 func writeNativeCredentialAtomically(path string, contents []byte, userSID string) error {
 	directory := filepath.Dir(path)
-	temporary, err := os.CreateTemp(directory, ".viiper-key-*.tmp")
+	temporary, temporaryPath, err := createProtectedNativeCredentialStagingFile(
+		directory, userSID,
+	)
 	if err != nil {
 		return fmt.Errorf("create credential staging file: %w", err)
 	}
-	temporaryPath := temporary.Name()
 	cleanupTemporary := true
 	defer func() {
 		temporary.Close() //nolint:errcheck
@@ -2194,9 +2196,6 @@ func writeNativeCredentialAtomically(path string, contents []byte, userSID strin
 			os.Remove(temporaryPath) //nolint:errcheck
 		}
 	}()
-	if err := applyNativeACLToHandle(windows.Handle(temporary.Fd()), nativeCredentialFileSDDL(userSID)); err != nil {
-		return fmt.Errorf("protect credential staging file: %w", err)
-	}
 	if _, err := temporary.Write(contents); err != nil {
 		return fmt.Errorf("write credential staging file: %w", err)
 	}
@@ -2211,6 +2210,75 @@ func writeNativeCredentialAtomically(path string, contents []byte, userSID strin
 	}
 	cleanupTemporary = false
 	return nil
+}
+
+func createProtectedNativeCredentialStagingFile(
+	directory, userSID string,
+) (*os.File, string, error) {
+	sddl := nativeCredentialFileSDDL(userSID)
+	security, err := nativeSecurityAttributes(sddl)
+	if err != nil {
+		return nil, "", fmt.Errorf("build credential staging security descriptor: %w", err)
+	}
+	for attempt := 0; attempt < 8; attempt++ {
+		var suffix [16]byte
+		if _, err := io.ReadFull(rand.Reader, suffix[:]); err != nil {
+			return nil, "", fmt.Errorf("generate credential staging name: %w", err)
+		}
+		path := filepath.Join(directory,
+			".viiper-key-"+hex.EncodeToString(suffix[:])+".tmp")
+		pointer, err := windows.UTF16PtrFromString(path)
+		if err != nil {
+			return nil, "", err
+		}
+		handle, err := windows.CreateFile(
+			pointer,
+			windows.GENERIC_READ|windows.GENERIC_WRITE|windows.READ_CONTROL,
+			0,
+			security,
+			windows.CREATE_NEW,
+			windows.FILE_ATTRIBUTE_NORMAL|windows.FILE_FLAG_OPEN_REPARSE_POINT|
+				windows.FILE_FLAG_WRITE_THROUGH,
+			0,
+		)
+		if err != nil {
+			if errors.Is(err, windows.ERROR_FILE_EXISTS) ||
+				errors.Is(err, windows.ERROR_ALREADY_EXISTS) {
+				continue
+			}
+			return nil, "", err
+		}
+		fail := func(failErr error) (*os.File, string, error) {
+			windows.CloseHandle(handle) //nolint:errcheck
+			_ = os.Remove(path)
+			return nil, "", failErr
+		}
+		attribute := nativeFileAttributeTagInfo{}
+		if err := windows.GetFileInformationByHandleEx(
+			handle,
+			windows.FileAttributeTagInfo,
+			(*byte)(unsafe.Pointer(&attribute)),
+			uint32(unsafe.Sizeof(attribute)),
+		); err != nil {
+			return fail(fmt.Errorf("inspect credential staging file: %w", err))
+		}
+		if attribute.FileAttributes&(windows.FILE_ATTRIBUTE_DIRECTORY|
+			windows.FILE_ATTRIBUTE_REPARSE_POINT) != 0 {
+			return fail(errors.New("credential staging path is not a regular file"))
+		}
+		if err := requireSingleNativeFileLink(handle); err != nil {
+			return fail(fmt.Errorf("reject hard-linked credential staging file: %w", err))
+		}
+		if err := validateNativeSecurityDescriptor(handle, sddl); err != nil {
+			return fail(fmt.Errorf("validate credential staging file security: %w", err))
+		}
+		file := os.NewFile(uintptr(handle), path)
+		if file == nil {
+			return fail(errors.New("wrap credential staging file handle"))
+		}
+		return file, path, nil
+	}
+	return nil, "", errors.New("credential staging name collisions exceeded retry budget")
 }
 
 func replaceFileAtomically(source, destination string) error {

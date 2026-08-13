@@ -26,6 +26,53 @@ import (
 	"golang.org/x/sys/windows/svc/mgr"
 )
 
+func TestNativeCredentialStagingIsProtectedAtCreation(t *testing.T) {
+	requireNativeMutexAdministrator(t)
+	user, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		t.Fatalf("query test user: %v", err)
+	}
+	userSID, err := validateNativeInstallingUserSID(user.User.Sid.String())
+	if err != nil {
+		t.Fatalf("validate test user: %v", err)
+	}
+	directory := t.TempDir()
+	path := filepath.Join(directory, "credential.key")
+	contents := []byte("native-credential-contract")
+	if err := writeNativeCredentialAtomically(path, contents, userSID); err != nil {
+		t.Fatalf("write protected credential: %v", err)
+	}
+	actual, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read protected credential: %v", err)
+	}
+	if !slices.Equal(actual, contents) {
+		t.Fatalf("credential contents = %q, want %q", actual, contents)
+	}
+	handle, err := openNativePathWithoutReparse(
+		path, windows.GENERIC_READ|windows.READ_CONTROL, false,
+	)
+	if err != nil {
+		t.Fatalf("open protected credential: %v", err)
+	}
+	defer windows.CloseHandle(handle) //nolint:errcheck
+	if err := requireSingleNativeFileLink(handle); err != nil {
+		t.Fatalf("credential link identity: %v", err)
+	}
+	if err := validateNativeSecurityDescriptor(
+		handle, nativeCredentialFileSDDL(userSID),
+	); err != nil {
+		t.Fatalf("credential security: %v", err)
+	}
+	leftovers, err := filepath.Glob(filepath.Join(directory, ".viiper-key-*.tmp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(leftovers) != 0 {
+		t.Fatalf("credential staging residue: %v", leftovers)
+	}
+}
+
 func TestNativeBrokerServiceConfigurationIsExplicitAndEscaped(t *testing.T) {
 	executable := `C:\Program Files\VIIPER\viiper.exe`
 	credential := `C:\ProgramData\VIIPER\viiper key.txt`

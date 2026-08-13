@@ -117,6 +117,31 @@ func TestNativePackageProductionSourceContract(t *testing.T) {
 			t.Errorf("%s lost the retained process-handle join", name)
 		}
 	}
+	credentialStart := strings.Index(serviceSource,
+		"func createProtectedNativeCredentialStagingFile(")
+	credentialEnd := strings.Index(serviceSource,
+		"func replaceFileAtomically(")
+	if credentialStart < 0 || credentialEnd <= credentialStart {
+		t.Fatal("protected native credential staging implementation is missing or malformed")
+	}
+	credentialStaging := serviceSource[credentialStart:credentialEnd]
+	for _, fragment := range []string{
+		"nativeSecurityAttributes(sddl)",
+		"windows.CREATE_NEW",
+		"windows.FILE_FLAG_OPEN_REPARSE_POINT",
+		"windows.FILE_FLAG_WRITE_THROUGH",
+		"requireSingleNativeFileLink(handle)",
+		"validateNativeSecurityDescriptor(handle, sddl)",
+	} {
+		if !strings.Contains(credentialStaging, fragment) {
+			t.Errorf("native credential staging lost %q", fragment)
+		}
+	}
+	if strings.Contains(serviceSource, `os.CreateTemp(directory, ".viiper-key-*.tmp")`) ||
+		strings.Contains(serviceSource,
+			"applyNativeACLToHandle(windows.Handle(temporary.Fd())") {
+		t.Fatal("native credential staging is created with a weak ACL before post-creation repair")
+	}
 	if strings.Contains(uninstallWindowsSource,
 		"scheduleNativePackageUninstallFileAtReboot(file.path)") {
 		t.Error("native uninstall schedules a reusable canonical broker path for reboot deletion")
