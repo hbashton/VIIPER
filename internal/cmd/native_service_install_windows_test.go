@@ -1253,20 +1253,178 @@ func TestCredentialDirectorySecurityRejectsPrecreatedOwnerOrDACL(t *testing.T) {
 		t.Fatal(err)
 	}
 	identical, _ := windows.SecurityDescriptorFromString(nativeCredentialDirectorySDDL(userSID))
-	if err := nativeSecurityDescriptorsEqual(identical, expected); err != nil {
+	if err := nativeSecurityDescriptorsEqual(identical, expected, nativeFileAccessMapping); err != nil {
 		t.Fatalf("exact protected descriptor rejected: %v", err)
 	}
 	wrongOwner, _ := windows.SecurityDescriptorFromString(
 		"O:SYD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;GRGX;;;" + userSID + ")",
 	)
-	if err := nativeSecurityDescriptorsEqual(wrongOwner, expected); err == nil {
+	if err := nativeSecurityDescriptorsEqual(wrongOwner, expected, nativeFileAccessMapping); err == nil {
 		t.Fatal("accepted user-precreated credential directory with wrong owner")
 	}
 	unprotected, _ := windows.SecurityDescriptorFromString(
 		"O:BAD:(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;GRGX;;;" + userSID + ")",
 	)
-	if err := nativeSecurityDescriptorsEqual(unprotected, expected); err == nil {
+	if err := nativeSecurityDescriptorsEqual(unprotected, expected, nativeFileAccessMapping); err == nil {
 		t.Fatal("accepted credential directory without protected canonical DACL")
+	}
+}
+
+func TestNativeFileSecurityComparisonAcceptsWindowsMaterializedGenericRights(t *testing.T) {
+	expected, err := windows.SecurityDescriptorFromString(nativeBrokerDirectorySDDL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actual, err := windows.SecurityDescriptorFromString(
+		"O:BAG:S-1-5-21-1-2-3-1001D:P" +
+			"(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := nativeSecurityDescriptorsEqual(actual, expected, nativeFileAccessMapping); err != nil {
+		t.Fatalf("rejected exact Windows-materialized file DACL: %v", err)
+	}
+}
+
+func TestNativeFileSecurityComparisonRoundTripsThroughObjectManager(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "protected")
+	user, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ownerSID := user.User.Sid.String()
+	if ownerSID == "" {
+		t.Fatal("current process token returned an empty owner SID")
+	}
+	roundTripSDDL := strings.Replace(nativeBrokerDirectorySDDL, "O:BA", "O:"+ownerSID, 1)
+	security, err := nativeSecurityAttributes(roundTripSDDL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pointer, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := windows.CreateDirectory(pointer, security); err != nil {
+		t.Fatal(err)
+	}
+	handle, err := openNativePathWithoutReparse(
+		path, windows.FILE_READ_ATTRIBUTES|windows.READ_CONTROL, true,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer windows.CloseHandle(handle) //nolint:errcheck
+	if err := validateNativeSecurityDescriptor(handle, roundTripSDDL); err != nil {
+		actual, queryErr := windows.GetSecurityInfo(
+			handle, windows.SE_FILE_OBJECT,
+			windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION,
+		)
+		if queryErr != nil {
+			t.Fatalf("round-trip rejected (%v), then query failed: %v", err, queryErr)
+		}
+		t.Fatalf("round-trip rejected: %v (actual=%s)", err, actual.String())
+	}
+}
+
+func TestNativeSecurityComparisonRejectsWidenedOrNonAllowDACLs(t *testing.T) {
+	expected, err := windows.SecurityDescriptorFromString(nativeBrokerDirectorySDDL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, sddl := range map[string]string{
+		"widened":  "O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;BU)",
+		"narrowed": "O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;GR;;;BU)",
+		"wrong_sid": "O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)" +
+			"(A;OICI;GRGX;;;WD)",
+		"wrong_flags": "O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)" +
+			"(A;OI;GRGX;;;BU)",
+		"inherited": "O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)" +
+			"(A;OICIID;GRGX;;;BU)",
+		"reordered": "O:BAD:P(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)" +
+			"(A;OICI;GRGX;;;BU)",
+		"extra": "O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)" +
+			"(A;OICI;GRGX;;;BU)(A;OICI;GR;;;WD)",
+		"deny": "O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(D;OICI;GW;;;BU)" +
+			"(A;OICI;GRGX;;;BU)",
+	} {
+		t.Run(name, func(t *testing.T) {
+			actual, parseErr := windows.SecurityDescriptorFromString(sddl)
+			if parseErr != nil {
+				t.Fatal(parseErr)
+			}
+			if err := nativeSecurityDescriptorsEqual(
+				actual, expected, nativeFileAccessMapping,
+			); err == nil {
+				t.Fatal("accepted a non-exact protected DACL")
+			}
+		})
+	}
+}
+
+func TestNativeSecurityComparisonRejectsMissingNullOrDefaultedDACL(t *testing.T) {
+	expected, err := windows.SecurityDescriptorFromString(nativeBrokerDirectorySDDL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner, _, err := expected.Owner()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dacl, _, err := expected.DACL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, build := range map[string]func(*windows.SECURITY_DESCRIPTOR) error{
+		"missing": func(descriptor *windows.SECURITY_DESCRIPTOR) error {
+			return descriptor.SetDACL(nil, false, false)
+		},
+		"null": func(descriptor *windows.SECURITY_DESCRIPTOR) error {
+			return descriptor.SetDACL(nil, true, false)
+		},
+		"defaulted": func(descriptor *windows.SECURITY_DESCRIPTOR) error {
+			return descriptor.SetDACL(dacl, true, true)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			actual, newErr := windows.NewSecurityDescriptor()
+			if newErr != nil {
+				t.Fatal(newErr)
+			}
+			if err := actual.SetOwner(owner, false); err != nil {
+				t.Fatal(err)
+			}
+			if err := build(actual); err != nil {
+				t.Fatal(err)
+			}
+			if err := actual.SetControl(
+				windows.SE_DACL_PROTECTED, windows.SE_DACL_PROTECTED,
+			); err != nil {
+				t.Fatal(err)
+			}
+			if err := nativeSecurityDescriptorsEqual(
+				actual, expected, nativeFileAccessMapping,
+			); err == nil {
+				t.Fatal("accepted missing, NULL, or defaulted DACL")
+			}
+		})
+	}
+}
+
+func TestNativeServiceSecurityComparisonMapsGenericAll(t *testing.T) {
+	expected, err := windows.SecurityDescriptorFromString(nativeBrokerServiceSDDL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actual, err := windows.SecurityDescriptorFromString(
+		"O:BAG:S-1-5-21-1-2-3-1001D:P(A;;0xf01ff;;;SY)(A;;0xf01ff;;;BA)",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := nativeSecurityDescriptorsEqual(actual, expected, nativeServiceAccessMapping); err != nil {
+		t.Fatalf("rejected exact Windows-materialized service DACL: %v", err)
 	}
 }
 

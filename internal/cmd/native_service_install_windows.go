@@ -47,6 +47,36 @@ const (
 	nativeBrokerServiceSDDL          = "O:BAD:P(A;;GA;;;SY)(A;;GA;;;BA)"
 	nativeBrokerDirectorySDDL        = "O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;GRGX;;;BU)"
 	nativeBrokerExecutableSDDL       = "O:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;GRGX;;;BU)"
+	nativeFileAllAccess              = windows.STANDARD_RIGHTS_REQUIRED | windows.SYNCHRONIZE | 0x1ff
+	nativeServiceGenericRead         = windows.STANDARD_RIGHTS_READ | windows.SERVICE_QUERY_CONFIG |
+		windows.SERVICE_QUERY_STATUS | windows.SERVICE_INTERROGATE | windows.SERVICE_ENUMERATE_DEPENDENTS
+	nativeServiceGenericWrite   = windows.STANDARD_RIGHTS_WRITE | windows.SERVICE_CHANGE_CONFIG
+	nativeServiceGenericExecute = windows.STANDARD_RIGHTS_EXECUTE | windows.SERVICE_START |
+		windows.SERVICE_STOP | windows.SERVICE_PAUSE_CONTINUE | windows.SERVICE_USER_DEFINED_CONTROL
+)
+
+type nativeGenericAccessMapping struct {
+	read    windows.ACCESS_MASK
+	write   windows.ACCESS_MASK
+	execute windows.ACCESS_MASK
+	all     windows.ACCESS_MASK
+}
+
+type nativeAccessAllowedACE struct {
+	flags uint8
+	mask  windows.ACCESS_MASK
+	sid   string
+}
+
+var (
+	nativeFileAccessMapping = nativeGenericAccessMapping{
+		read: windows.FILE_GENERIC_READ, write: windows.FILE_GENERIC_WRITE,
+		execute: windows.FILE_GENERIC_EXECUTE, all: nativeFileAllAccess,
+	}
+	nativeServiceAccessMapping = nativeGenericAccessMapping{
+		read: nativeServiceGenericRead, write: nativeServiceGenericWrite,
+		execute: nativeServiceGenericExecute, all: windows.SERVICE_ALL_ACCESS,
+	}
 )
 
 var nativeServiceRecoveryActions = []mgr.RecoveryAction{
@@ -1610,7 +1640,9 @@ func compareNativeSecurityDescriptorStrings(actual, expected string) error {
 	if err != nil {
 		return fmt.Errorf("parse expected security descriptor: %w", err)
 	}
-	return nativeSecurityDescriptorsEqual(actualDescriptor, expectedDescriptor)
+	return nativeSecurityDescriptorsEqual(
+		actualDescriptor, expectedDescriptor, nativeServiceAccessMapping,
+	)
 }
 
 func requireSingleNativeFileLink(handle windows.Handle) error {
@@ -1920,19 +1952,87 @@ func validateNativeSecurityDescriptor(handle windows.Handle, expectedSDDL string
 	if err != nil {
 		return err
 	}
-	return nativeSecurityDescriptorsEqual(actual, expected)
+	return nativeSecurityDescriptorsEqual(actual, expected, nativeFileAccessMapping)
 }
 
-func nativeSecurityDescriptorsEqual(actual, expected *windows.SECURITY_DESCRIPTOR) error {
-	actualOwner, _, err := actual.Owner()
+func normalizeNativeAccessMask(
+	mask windows.ACCESS_MASK,
+	mapping nativeGenericAccessMapping,
+) windows.ACCESS_MASK {
+	generic := mask & (windows.GENERIC_READ | windows.GENERIC_WRITE |
+		windows.GENERIC_EXECUTE | windows.GENERIC_ALL)
+	mask &^= windows.GENERIC_READ | windows.GENERIC_WRITE |
+		windows.GENERIC_EXECUTE | windows.GENERIC_ALL
+	if generic&windows.GENERIC_READ != 0 {
+		mask |= mapping.read
+	}
+	if generic&windows.GENERIC_WRITE != 0 {
+		mask |= mapping.write
+	}
+	if generic&windows.GENERIC_EXECUTE != 0 {
+		mask |= mapping.execute
+	}
+	if generic&windows.GENERIC_ALL != 0 {
+		mask |= mapping.all
+	}
+	return mask
+}
+
+func nativeAccessAllowedACEs(
+	dacl *windows.ACL,
+	mapping nativeGenericAccessMapping,
+) ([]nativeAccessAllowedACE, error) {
+	if dacl == nil {
+		return nil, errors.New("security descriptor has no DACL")
+	}
+	entries := make([]nativeAccessAllowedACE, 0, dacl.AceCount)
+	for index := uint32(0); index < uint32(dacl.AceCount); index++ {
+		var ace *windows.ACCESS_ALLOWED_ACE
+		if err := windows.GetAce(dacl, index, &ace); err != nil {
+			return nil, fmt.Errorf("read DACL ACE %d: %w", index, err)
+		}
+		if ace == nil || ace.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE {
+			return nil, fmt.Errorf("DACL ACE %d is not an explicit access-allowed ACE", index)
+		}
+		sidOffset := unsafe.Offsetof(ace.SidStart)
+		aceSize := uintptr(ace.Header.AceSize)
+		if aceSize < sidOffset+8 {
+			return nil, fmt.Errorf("DACL ACE %d is truncated", index)
+		}
+		remaining := aceSize - sidOffset
+		sid := (*windows.SID)(unsafe.Pointer(&ace.SidStart))
+		subAuthorityCount := *(*uint8)(unsafe.Add(unsafe.Pointer(sid), 1))
+		sidLength := uintptr(8 + 4*uint32(subAuthorityCount))
+		if sidLength > remaining || !sid.IsValid() || uintptr(sid.Len()) != sidLength {
+			return nil, fmt.Errorf("DACL ACE %d contains an invalid SID", index)
+		}
+		sidString := sid.String()
+		if sidString == "" {
+			return nil, fmt.Errorf("DACL ACE %d SID could not be serialized", index)
+		}
+		entries = append(entries, nativeAccessAllowedACE{
+			flags: ace.Header.AceFlags,
+			mask:  normalizeNativeAccessMask(ace.Mask, mapping),
+			sid:   sidString,
+		})
+	}
+	return entries, nil
+}
+
+func nativeSecurityDescriptorsEqual(
+	actual, expected *windows.SECURITY_DESCRIPTOR,
+	mapping nativeGenericAccessMapping,
+) error {
+	actualOwner, actualOwnerDefaulted, err := actual.Owner()
 	if err != nil {
 		return err
 	}
-	expectedOwner, _, err := expected.Owner()
+	expectedOwner, expectedOwnerDefaulted, err := expected.Owner()
 	if err != nil {
 		return err
 	}
-	if actualOwner == nil || expectedOwner == nil || !actualOwner.Equals(expectedOwner) {
+	if actualOwner == nil || expectedOwner == nil ||
+		actualOwnerDefaulted != expectedOwnerDefaulted || !actualOwner.Equals(expectedOwner) {
 		return errors.New("security descriptor owner is not the trusted installer owner")
 	}
 	actualDACL, actualDefaulted, err := actual.DACL()
@@ -1943,11 +2043,19 @@ func nativeSecurityDescriptorsEqual(actual, expected *windows.SECURITY_DESCRIPTO
 	if err != nil {
 		return err
 	}
-	actualSDDL := actual.String()
-	expectedCanonicalSDDL := expected.String()
-	if actualDACL == nil || expectedDACL == nil || actualDefaulted != expectedDefaulted ||
-		actualSDDL == "" || expectedCanonicalSDDL == "" || actualSDDL != expectedCanonicalSDDL {
-		return errors.New("security descriptor DACL is not the canonical protected DACL")
+	if actualDACL == nil || expectedDACL == nil || actualDefaulted != expectedDefaulted {
+		return errors.New("security descriptor DACL metadata does not match")
+	}
+	actualEntries, err := nativeAccessAllowedACEs(actualDACL, mapping)
+	if err != nil {
+		return fmt.Errorf("inspect actual security descriptor DACL: %w", err)
+	}
+	expectedEntries, err := nativeAccessAllowedACEs(expectedDACL, mapping)
+	if err != nil {
+		return fmt.Errorf("inspect expected security descriptor DACL: %w", err)
+	}
+	if !slices.Equal(actualEntries, expectedEntries) {
+		return errors.New("security descriptor DACL access rules do not match")
 	}
 	actualControl, _, err := actual.Control()
 	if err != nil {
