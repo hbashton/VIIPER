@@ -1112,8 +1112,8 @@ bool GetInfField(
         return SetLastErrorDetail(error, L"inf-contract-line");
     }
     DWORD required = 0;
-    SetupGetStringFieldW(&context, field, nullptr, 0, &required);
-    if (required == 0 || GetLastError() != ERROR_INSUFFICIENT_BUFFER) {
+    if (!SetupGetStringFieldW(&context, field, nullptr, 0, &required) ||
+        required == 0) {
         return SetLastErrorDetail(error, L"inf-contract-field");
     }
     std::vector<wchar_t> buffer(required);

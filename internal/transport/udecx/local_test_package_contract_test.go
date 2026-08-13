@@ -75,6 +75,10 @@ func TestLocalTestPackageUsesFullTransactionalNativeBackend(t *testing.T) {
 		"-RequireLocalTestToolchainValidation",
 		"local-test-package.lock.json",
 		"Local test package lock SHA-256: $lockSha256",
+		"$broker native-package-install --help",
+		"$expectedBrokerFlags",
+		"$helper verify (Join-Path $driverDirectory 'ViiperUde.inf')",
+		"result=success operation=verify changed=0 rebootRequired=0 rollback=not-needed exitCode=0",
 	} {
 		if !strings.Contains(composer, required) {
 			t.Fatalf("local-test composer omitted %q", required)
@@ -101,8 +105,12 @@ func TestLocalTestPackageUsesFullTransactionalNativeBackend(t *testing.T) {
 		"$Started.Value = $true",
 		"$process.WaitForExit()",
 		"$retainTrustOnFailure = $processStarted",
-		"'--expected-broker-sha256', $brokerHash",
-		"'--expected-helper-sha256', $helperHash",
+		"'--expected-broker-sha-256', $brokerHash",
+		"'--expected-helper-sha-256', $helperHash",
+		"'--expected-manifest-sha-256', $manifestHash",
+		"'--expected-inf-sha-256', $infHash",
+		"'--expected-sys-sha-256', $sysHash",
+		"'--expected-cat-sha-256', $catHash",
 		"'--target-user-sid', $TargetUserSID",
 		"'--driver-validation-mode', 'local-test'",
 		"-AcknowledgeDisposableTestMachine",
@@ -118,6 +126,12 @@ func TestLocalTestPackageUsesFullTransactionalNativeBackend(t *testing.T) {
 		"Test-ViiperUdeSignedPackage.ps1",
 		"git.exe",
 		"status --porcelain",
+		"'--expected-broker-sha256'",
+		"'--expected-helper-sha256'",
+		"'--expected-manifest-sha256'",
+		"'--expected-inf-sha256'",
+		"'--expected-sys-sha256'",
+		"'--expected-cat-sha256'",
 	} {
 		if strings.Contains(installer, forbidden) {
 			t.Fatalf("local-test elevated path retained unsafe dependency %q", forbidden)
@@ -126,6 +140,7 @@ func TestLocalTestPackageUsesFullTransactionalNativeBackend(t *testing.T) {
 
 	packageCommand := read("internal", "cmd", "native_package.go")
 	packageWindows := read("internal", "cmd", "native_package_windows.go")
+	helperSource := read("native", "udecx", "tools", "ViiperUdeCtl.cpp")
 	for _, required := range []string{
 		`default:"production" enum:"production,local-test"`,
 		`r.driverValidationMode != "production" && r.driverValidationMode != "local-test"`,
@@ -137,6 +152,14 @@ func TestLocalTestPackageUsesFullTransactionalNativeBackend(t *testing.T) {
 	if !strings.Contains(packageWindows,
 		`"--validation-mode", t.request.driverValidationMode`) {
 		t.Fatal("native package transaction does not pass the validated signature route to its retained helper")
+	}
+	if !strings.Contains(helperSource,
+		`if (!SetupGetStringFieldW(&context, field, nullptr, 0, &required) ||`) {
+		t.Fatal("native helper does not honor SetupGetStringFieldW's successful size-query contract")
+	}
+	if strings.Contains(helperSource,
+		`GetLastError() != ERROR_INSUFFICIENT_BUFFER`) {
+		t.Fatal("native helper still treats a successful SetupGetStringFieldW size query as failure")
 	}
 }
 

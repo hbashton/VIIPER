@@ -180,6 +180,51 @@ $lockSha256 = (Get-FileHash -LiteralPath $lockPath -Algorithm SHA256).Hash.ToLow
     -LocalTestCertificatePath $certificatePath `
     -RequireLocalTestToolchainValidation
 
+# Bind the locked installer arguments to the compiled Kong command surface.
+$brokerHelpOutput = @(& $broker native-package-install --help 2>&1)
+$brokerHelpExitCode = $LASTEXITCODE
+$brokerHelpText = $brokerHelpOutput -join [Environment]::NewLine
+$expectedBrokerFlags = @(
+    '--expected-broker-sha-256', '--expected-helper-sha-256',
+    '--expected-manifest-sha-256', '--expected-inf-sha-256',
+    '--expected-sys-sha-256', '--expected-cat-sha-256'
+)
+if ($brokerHelpExitCode -ne 0 -or
+    @($expectedBrokerFlags | Where-Object {
+        $brokerHelpText -notmatch [regex]::Escape($_)
+    }).Count -ne 0) {
+    throw "Compiled local-test broker command contract is incompatible with the locked installer.`n$brokerHelpText"
+}
+
+# Exercise the compiled helper's exact read-only SetupAPI/INF contract before
+# publishing an installer artifact. Static source checks cannot prove the
+# Windows API's two-call buffer-sizing behavior.
+$manifestSha256 = (Get-FileHash -LiteralPath $manifestPath `
+    -Algorithm SHA256).Hash.ToLowerInvariant()
+$infSha256 = (Get-FileHash -LiteralPath (Join-Path $driverDirectory 'ViiperUde.inf') `
+    -Algorithm SHA256).Hash.ToLowerInvariant()
+$sysSha256 = (Get-FileHash -LiteralPath (Join-Path $driverDirectory 'ViiperUde.sys') `
+    -Algorithm SHA256).Hash.ToLowerInvariant()
+$catSha256 = (Get-FileHash -LiteralPath (Join-Path $driverDirectory 'ViiperUde.cat') `
+    -Algorithm SHA256).Hash.ToLowerInvariant()
+$deadline = [DateTimeOffset]::UtcNow.AddMinutes(4).ToUnixTimeMilliseconds().ToString()
+$helperVerifyOutput = @(& $helper verify (Join-Path $driverDirectory 'ViiperUde.inf') `
+    --manifest $manifestPath `
+    --manifest-sha256 $manifestSha256 `
+    --source-revision $source `
+    --validation-mode local-test `
+    --expected-inf-sha256 $infSha256 `
+    --expected-sys-sha256 $sysSha256 `
+    --expected-cat-sha256 $catSha256 `
+    --transaction-deadline-unix-ms $deadline 2>&1)
+$helperVerifyExitCode = $LASTEXITCODE
+$helperVerifyText = $helperVerifyOutput -join [Environment]::NewLine
+if ($helperVerifyExitCode -ne 0 -or
+    @([regex]::Matches($helperVerifyText,
+        '(?m)^result=success operation=verify changed=0 rebootRequired=0 rollback=not-needed exitCode=0\r?$')).Count -ne 1) {
+    throw "Compiled local-test helper verification failed (exit $helperVerifyExitCode).`n$helperVerifyText"
+}
+
 Write-Host "Created compact source-bound local test package at '$output'."
 Write-Host "Source: $source"
 Write-Host "Driver: $driverVersion / ABI 1.10 / $buildIdentity"

@@ -498,12 +498,12 @@ try {
         '--submission-manifest', $manifestPath,
         '--source-revision', $source,
         '--driver-helper', $helperPath,
-        '--expected-broker-sha256', $brokerHash,
-        '--expected-helper-sha256', $helperHash,
-        '--expected-manifest-sha256', $manifestHash,
-        '--expected-inf-sha256', $infHash,
-        '--expected-sys-sha256', $sysHash,
-        '--expected-cat-sha256', $catHash,
+        '--expected-broker-sha-256', $brokerHash,
+        '--expected-helper-sha-256', $helperHash,
+        '--expected-manifest-sha-256', $manifestHash,
+        '--expected-inf-sha-256', $infHash,
+        '--expected-sys-sha-256', $sysHash,
+        '--expected-cat-sha-256', $catHash,
         '--target-user-sid', $TargetUserSID,
         '--driver-validation-mode', 'local-test'
     )
