@@ -1378,7 +1378,13 @@ bool VerifyDriverCatalogMember(
     trust.pCatalog = &catalog;
     trust.dwStateAction = WTD_STATEACTION_VERIFY;
     trust.dwProvFlags = WTD_CACHE_ONLY_URL_RETRIEVAL;
-    GUID action = DRIVER_ACTION_VERIFY;
+    // This operation proves that the exact member hash is present in the
+    // supplied, Authenticode-trusted catalog. Microsoft documents
+    // DRIVER_ACTION_VERIFY as the WHQL-specific add-on policy; using it here
+    // incorrectly rejects a valid test-signed package before deployment.
+    // Production hardware-publisher policy is enforced separately by
+    // VerifyMicrosoftHardwareInfSigner.
+    GUID action = WINTRUST_ACTION_GENERIC_VERIFY_V2;
     const LONG status = WinVerifyTrust(reinterpret_cast<HWND>(INVALID_HANDLE_VALUE), &action, &trust);
     trust.dwStateAction = WTD_STATEACTION_CLOSE;
     WinVerifyTrust(reinterpret_cast<HWND>(INVALID_HANDLE_VALUE), &action, &trust);

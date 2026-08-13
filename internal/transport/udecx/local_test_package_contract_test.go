@@ -170,6 +170,14 @@ func TestLocalTestPackageUsesFullTransactionalNativeBackend(t *testing.T) {
 		"ERROR_AUTHENTICODE_TRUST_NOT_ESTABLISHED") {
 		t.Fatal("native helper accepts an Authenticode publisher that is not in TrustedPublisher")
 	}
+	if !strings.Contains(helperSource,
+		"GUID action = WINTRUST_ACTION_GENERIC_VERIFY_V2;") {
+		t.Fatal("native helper does not use Authenticode policy for exact catalog-member verification")
+	}
+	if strings.Contains(helperSource,
+		"GUID action = DRIVER_ACTION_VERIFY;") {
+		t.Fatal("native helper incorrectly uses the WHQL-only policy for test catalog membership")
+	}
 }
 
 func TestLocalTestValidationCannotWeakenProduction(t *testing.T) {
