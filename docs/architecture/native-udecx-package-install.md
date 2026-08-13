@@ -62,7 +62,12 @@ of the source-provenance evidence without becoming a user-machine dependency.
    devnode and call `DiInstallDevice`; they never replace same-version Driver
    Store content. An absent or newer candidate uses `DiInstallDriverW` under the
    monotonic version policy. Same-version INF/SYS/CAT conflicts and implicit
-   downgrades fail before mutation.
+   downgrades fail before mutation. A newer package never updates a live root
+   bus in place: the helper removes only the captured exact owned devnode,
+   proves its child topology absent, stages the candidate, recreates the same
+   root instance ID, and binds the exact published candidate with
+   `DiInstallDevice`. The captured snapshot remains authoritative until broker
+   commit and recreates the prior identity/package on any failure.
 4. After the exact binding is verified, the helper launches the immutable
    package broker's hidden `native-package-broker-commit` command while still
    holding the driver mutex and snapshot. That command reopens the token,
@@ -212,15 +217,18 @@ registration cleanup is treated as VIIPER ownership authority.
   rollback continues. This is the documented [overlapped DeviceIoControl](https://learn.microsoft.com/windows/win32/api/ioapiset/nf-ioapiset-deviceiocontrol)
   and [CancelIoEx](https://learn.microsoft.com/windows/win32/fileio/cancelioex-func)
   lifetime rule.
-- SetupAPI rollback preserves the captured root device instance ID. Per
+- SetupAPI upgrade and rollback preserve the captured root device instance ID.
+  A newer package follows the same devnode-before-package lifecycle used for
+  exact removal so Windows does not treat the operation as an in-place update
+  of a loaded kernel bus. Per
   [`SetupDiCreateDeviceInfoW`](https://learn.microsoft.com/windows/win32/api/setupapi/nf-setupapi-setupdicreatedeviceinfow),
   forward creation passes the VIIPER-owned `VIIPERUDE` device name with
   `DICD_GENERATE_ID` and verifies the returned `ROOT\VIIPERUDE\####` identity.
-  Rollback omits `DICD_GENERATE_ID`, making `DeviceName` the complete captured
-  instance ID. It accepts only that namespace or the exact legacy
+  Upgrade recreation and rollback omit `DICD_GENERATE_ID`, making `DeviceName`
+  the complete captured instance ID. They accept only that namespace or the exact legacy
   `ROOT\USB\####` form produced when older builds incorrectly passed the USB
-  class name, after the existing service/package ownership proof. It then
-  verifies the restored identity, topology, and signed package hashes rather
+  class name, after the existing service/package ownership proof. The helper
+  then verifies the restored identity, topology, and signed package hashes rather
   than deleting every matching devnode and manufacturing a replacement.
 - ViGEmBus's root-enumerated bus architecture is used only as the lifecycle
   reference: the bus owns its exact child identities and separates user-mode
@@ -239,13 +247,16 @@ scheduler migration cannot strand either global lock.
 
 ## Restart boundary
 
-If Windows reports that driver activation requires a restart, the helper does
-not start the broker or remove legacy ownership. It rolls the attempted driver
-transaction back, the outer transaction restores the prior executable/service,
-and preserves Windows `ERROR_SUCCESS_REBOOT_REQUIRED` (3010) through the Go
-bootstrapper for the signed installer. After restart, the installer
-retries the complete preflight and transaction from the beginning. No
-cross-reboot journal is trusted as executable authority.
+The normal newer-package path removes the captured exact root devnode before
+staging and recreates its identity afterward; this avoids an in-place update of
+the loaded bus and should commit without a restart. If Windows still reports
+that either removal, package staging, or exact binding requires a restart, the
+helper does not start the broker or remove legacy ownership. It rolls the
+attempted driver transaction back, the outer transaction restores the prior
+executable/service, and preserves Windows `ERROR_SUCCESS_REBOOT_REQUIRED`
+(3010) through the Go bootstrapper for the signed installer. After restart, the
+installer retries the complete preflight and transaction from the beginning.
+No cross-reboot journal is trusted as executable authority.
 
 For removal, 3010 means the helper accepted the exact devnode/package removal
 but Windows needs a restart to finish it. The service and exact managed

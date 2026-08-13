@@ -2353,51 +2353,80 @@ bool IsOwnedGeneratedRootInstanceId(const std::wstring& instanceId) {
         IsGeneratedRootInstanceIdForDeviceName(instanceId, kLegacyRootDeviceName);
 }
 
+enum class ExactRootRegistrationMode {
+    Upgrade,
+    Rollback,
+};
+
 bool RegisterRootDeviceExact(
     const GUID& classGuid,
     const std::wstring& instanceId,
     uint64_t transactionDeadlineUnixMs,
+    ExactRootRegistrationMode mode,
+    bool* mutationStarted,
+    bool* registrationSucceeded,
     DeviceInfoSet* set,
     SP_DEVINFO_DATA* data,
     Error* error) {
+    if (registrationSucceeded != nullptr) {
+        *registrationSucceeded = false;
+    }
+    const bool rollback = mode == ExactRootRegistrationMode::Rollback;
     if (!IsOwnedGeneratedRootInstanceId(instanceId)) {
-        return SetError(error, L"rollback-instance-id", ERROR_INVALID_DATA,
+        return SetError(error, rollback ? L"rollback-instance-id" : L"upgrade-instance-id",
+            ERROR_INVALID_DATA,
             L"captured root devnode identity is outside the VIIPER or legacy generated root namespace");
     }
     *set = DeviceInfoSet(SetupDiCreateDeviceInfoList(&classGuid, nullptr));
     if (!*set) {
-        return SetLastErrorDetail(error, L"rollback-create-device-info-list");
+        return SetLastErrorDetail(error, rollback
+            ? L"rollback-create-device-info-list" : L"upgrade-create-device-info-list");
     }
     *data = SP_DEVINFO_DATA{};
     data->cbSize = sizeof(*data);
     // With DICD_GENERATE_ID absent, SetupAPI treats DeviceName as the complete
-    // device instance ID. Rollback must never substitute a fresh ROOT instance.
+    // device instance ID. Upgrade and rollback must never substitute a fresh
+    // ROOT instance.
     if (!SetupDiCreateDeviceInfoW(set->get(), instanceId.c_str(), &classGuid,
             nullptr, nullptr, 0, data)) {
-        return SetLastErrorDetail(error, L"rollback-create-exact-root-devnode");
+        return SetLastErrorDetail(error, rollback
+            ? L"rollback-create-exact-root-devnode" : L"upgrade-create-exact-root-devnode");
     }
     const size_t idCharacters = std::size(kHardwareId) + 1;
     std::vector<wchar_t> identifiers(idCharacters, L'\0');
     std::copy(std::begin(kHardwareId), std::end(kHardwareId), identifiers.begin());
     if (transactionDeadlineUnixMs != 0 &&
         !CheckTransactionDeadline(transactionDeadlineUnixMs,
-            L"rollback-deadline-before-root-properties", error)) {
+            rollback ? L"rollback-deadline-before-root-properties"
+                     : L"upgrade-deadline-before-root-properties", error)) {
         return false;
     }
     MarkTransactionMutationStarted();
+    if (mutationStarted != nullptr) {
+        *mutationStarted = true;
+    }
     if (!SetupDiSetDeviceRegistryPropertyW(set->get(), data, SPDRP_HARDWAREID,
             reinterpret_cast<const BYTE*>(identifiers.data()),
             static_cast<DWORD>(identifiers.size() * sizeof(wchar_t)))) {
-        return SetLastErrorDetail(error, L"rollback-set-root-hardware-id");
+        return SetLastErrorDetail(error, rollback
+            ? L"rollback-set-root-hardware-id" : L"upgrade-set-root-hardware-id");
     }
     if (transactionDeadlineUnixMs != 0 &&
         !CheckTransactionDeadline(transactionDeadlineUnixMs,
-            L"rollback-deadline-before-root-registration", error)) {
+            rollback ? L"rollback-deadline-before-root-registration"
+                     : L"upgrade-deadline-before-root-registration", error)) {
         return false;
     }
     MarkTransactionMutationStarted();
+    if (mutationStarted != nullptr) {
+        *mutationStarted = true;
+    }
     if (!SetupDiCallClassInstaller(DIF_REGISTERDEVICE, set->get(), data)) {
-        return SetLastErrorDetail(error, L"rollback-register-exact-root-devnode");
+        return SetLastErrorDetail(error, rollback
+            ? L"rollback-register-exact-root-devnode" : L"upgrade-register-exact-root-devnode");
+    }
+    if (registrationSucceeded != nullptr) {
+        *registrationSucceeded = true;
     }
     return true;
 }
@@ -2707,7 +2736,8 @@ bool RestorePriorBinding(
             return SetLastErrorDetail(error, L"rollback-inf-class");
         }
         if (!RegisterRootDeviceExact(classGuid, expected.instanceId,
-                transactionDeadlineUnixMs,
+                transactionDeadlineUnixMs, ExactRootRegistrationMode::Rollback,
+                nullptr, nullptr,
                 &target, &targetData, error)) {
             return false;
         }
@@ -3511,67 +3541,121 @@ Outcome Install(const InstallOptions& options) {
     const bool driverMutation =
         disposition == CandidateDisposition::InstallRequired || topologyRepair;
     bool driverMutationStarted = false;
-    if (disposition == CandidateDisposition::InstallRequired) {
-        if (!CheckTransactionDeadline(options,
-                L"transaction-deadline-before-driver-install", &outcome.error)) {
-            outcome.exitCode = ExitCode::PreflightRejected;
-            return outcome;
-        }
-        driverMutationStarted = true;
-        outcome.changed = true;
-        BOOL installReboot = FALSE;
-        const DWORD installFlags = downgrade ? DIIRFLAG_FORCE_INF : 0;
-        MarkTransactionMutationStarted();
-        if (!DiInstallDriverW(nullptr, candidate.infPath.c_str(), installFlags, &installReboot)) {
-            const DWORD installCode = GetLastError();
-            const Error installError{installCode, L"install-driver-package", FormatError(installCode)};
-            Error rollbackError;
-            bool rollbackReboot = false;
-            if (RollbackInstall(prior, &rollbackReboot, &rollbackError)) {
-                outcome.rollback = L"succeeded";
-                outcome.rebootRequired = rollbackReboot;
-                outcome.error = installError;
-                return outcome;
-            }
-            outcome.rollback = L"failed";
-            outcome.rebootRequired = rollbackReboot;
-            outcome.error = std::move(rollbackError);
-            outcome.exitCode = ExitCode::RollbackFailed;
-            return outcome;
-        }
-        outcome.rebootRequired = installReboot != FALSE;
-        if (!FindPublishedCandidate(candidate, &publishedCandidate, &outcome.error)) {
-            // Exact Driver Store inventory recorded the failure.
-        } else if (options.production && !VerifyMicrosoftHardwareInfSigner(
-                       publishedCandidate.infPath, &outcome.error)) {
-            // The staged package must retain its exact production HLK/WHCP policy.
-        }
-    }
-
     DeviceInfoSet created;
     SP_DEVINFO_DATA createdData{};
     createdData.cbSize = sizeof(createdData);
     bool createdHere = false;
     bool registrationSucceeded = false;
-    if (outcome.error.code == ERROR_SUCCESS && driverMutation && prior.devices.empty()) {
-        GUID classGuid{};
-        wchar_t className[MAX_CLASS_NAME_LEN]{};
-        if (!SetupDiGetINFClassW(candidate.infPath.c_str(), &classGuid, className, MAX_CLASS_NAME_LEN, nullptr)) {
-            SetLastErrorDetail(&outcome.error, L"candidate-inf-class");
-        } else {
-            const bool registeredAndVerified = RegisterRootDevice(
-                classGuid, options.transactionDeadlineUnixMs,
+    GUID candidateClassGuid{};
+    wchar_t candidateClassName[MAX_CLASS_NAME_LEN]{};
+    const bool needsRootRegistration =
+        disposition == CandidateDisposition::InstallRequired ||
+        (topologyRepair && prior.devices.empty());
+    if (needsRootRegistration &&
+        !SetupDiGetINFClassW(candidate.infPath.c_str(), &candidateClassGuid,
+            candidateClassName, MAX_CLASS_NAME_LEN, nullptr)) {
+        SetLastErrorDetail(&outcome.error, L"candidate-inf-class");
+        outcome.exitCode = ExitCode::PreflightRejected;
+        return outcome;
+    }
+
+    if (disposition == CandidateDisposition::InstallRequired) {
+        // Updating a running root bus in place makes DiInstallDriverW report a
+        // reboot even though this helper immediately restores the old package.
+        // Remove only the exact captured VIIPER-owned devnode first, prove its
+        // topology is gone, then stage and bind the candidate to the same root
+        // identity. Snapshot rollback recreates the old exact identity/package
+        // if any later step fails.
+        if (!prior.devices.empty()) {
+            DeviceInfoSet replaced = OpenRootDevices();
+            std::vector<std::pair<SP_DEVINFO_DATA, DeviceState>> replacements;
+            if (!replaced) {
+                SetLastErrorDetail(&outcome.error, L"upgrade-open-root-devices");
+            } else if (!FindExactDevices(replaced.get(), &replacements, &outcome.error)) {
+                // Exact enumeration recorded the failure.
+            } else if (replacements.size() != 1 ||
+                _wcsicmp(replacements[0].second.instanceId.c_str(),
+                    prior.devices[0].instanceId.c_str()) != 0 ||
+                _wcsicmp(replacements[0].second.publishedInf.c_str(),
+                    prior.devices[0].publishedInf.c_str()) != 0 ||
+                !(replacements[0].second.version == prior.devices[0].version)) {
+                SetError(&outcome.error, L"upgrade-root-identity", ERROR_REVISION_MISMATCH,
+                    L"captured root devnode identity or package binding changed before replacement");
+            } else {
+                bool removalReboot = false;
+                if (RemoveDevice(replaced.get(), replacements[0].first,
+                        options.transactionDeadlineUnixMs,
+                        L"upgrade-deadline-before-device-removal",
+                        &driverMutationStarted, &removalReboot, &outcome.error)) {
+                    outcome.rebootRequired = removalReboot;
+                    if (removalReboot) {
+                        SetError(&outcome.error, L"upgrade-device-removal-reboot-boundary",
+                            ERROR_SUCCESS_REBOOT_REQUIRED,
+                            L"the exact prior root bus could not be removed synchronously; the captured binding will be restored before restart");
+                    } else {
+                        Snapshot afterRemoval;
+                        if (!CaptureSnapshot(&afterRemoval, &outcome.error)) {
+                            // Exact inventory recorded the failure.
+                        } else if (!afterRemoval.devices.empty()) {
+                            SetError(&outcome.error, L"upgrade-device-removal-verification",
+                                ERROR_DEVICE_IN_USE,
+                                L"the exact prior root bus remained present after synchronous removal");
+                        }
+                    }
+                }
+                outcome.changed = outcome.changed || driverMutationStarted;
+            }
+        }
+
+        if (outcome.error.code == ERROR_SUCCESS &&
+            CheckTransactionDeadline(options,
+                L"transaction-deadline-before-driver-install", &outcome.error)) {
+            BOOL installReboot = FALSE;
+            const DWORD installFlags = downgrade ? DIIRFLAG_FORCE_INF : 0;
+            MarkTransactionMutationStarted();
+            driverMutationStarted = true;
+            outcome.changed = true;
+            if (!DiInstallDriverW(nullptr, candidate.infPath.c_str(), installFlags, &installReboot)) {
+                SetLastErrorDetail(&outcome.error, L"install-driver-package");
+            } else {
+                outcome.rebootRequired = outcome.rebootRequired || installReboot != FALSE;
+                if (installReboot) {
+                    SetError(&outcome.error, L"driver-package-reboot-boundary",
+                        ERROR_SUCCESS_REBOOT_REQUIRED,
+                        L"Windows could not stage the candidate driver package without a restart; the captured binding will be restored first");
+                } else if (!FindPublishedCandidate(candidate, &publishedCandidate, &outcome.error)) {
+                    // Exact Driver Store inventory recorded the failure.
+                } else if (options.production && !VerifyMicrosoftHardwareInfSigner(
+                               publishedCandidate.infPath, &outcome.error)) {
+                    // The staged package must retain its exact production HLK/WHCP policy.
+                }
+            }
+        }
+    }
+
+    if (outcome.error.code == ERROR_SUCCESS && driverMutation &&
+        (prior.devices.empty() || disposition == CandidateDisposition::InstallRequired)) {
+        bool registeredAndVerified = false;
+        if (prior.devices.empty()) {
+            registeredAndVerified = RegisterRootDevice(
+                candidateClassGuid, options.transactionDeadlineUnixMs,
                 &driverMutationStarted, &registrationSucceeded,
                 &created, &createdData, &outcome.error);
-            createdHere = registrationSucceeded;
-            if (registeredAndVerified) {
-                InstallPreinstalledDriverOnDevice(
-                    created.get(), &createdData, publishedCandidate,
-                    options.transactionDeadlineUnixMs, &driverMutationStarted,
-                    &outcome.rebootRequired, &outcome.error);
-            }
-            outcome.changed = outcome.changed || driverMutationStarted;
+        } else {
+            registeredAndVerified = RegisterRootDeviceExact(
+                candidateClassGuid, prior.devices[0].instanceId,
+                options.transactionDeadlineUnixMs, ExactRootRegistrationMode::Upgrade,
+                &driverMutationStarted, &registrationSucceeded,
+                &created, &createdData, &outcome.error);
         }
+        createdHere = registrationSucceeded;
+        if (registeredAndVerified) {
+            InstallPreinstalledDriverOnDevice(
+                created.get(), &createdData, publishedCandidate,
+                options.transactionDeadlineUnixMs, &driverMutationStarted,
+                &outcome.rebootRequired, &outcome.error);
+        }
+        outcome.changed = outcome.changed || driverMutationStarted;
     }
 
     if (outcome.error.code == ERROR_SUCCESS && topologyRepair && !prior.devices.empty()) {
@@ -3626,6 +3710,8 @@ Outcome Install(const InstallOptions& options) {
             outcome.rollback = L"succeeded";
             outcome.rebootRequired = rollbackReboot;
             outcome.error = installError;
+            outcome.exitCode = installError.code == ERROR_SUCCESS_REBOOT_REQUIRED
+                ? ExitCode::RebootRequired : ExitCode::Failure;
             return outcome;
         }
         outcome.rollback = L"failed";
@@ -5021,7 +5107,7 @@ Outcome SelfTest() {
             "0123456789abcdef0123456789abcdef01234567",
             &buildIdentity, &outcome.error) ||
         buildIdentity !=
-            "180003f7b141c8015c29e7b3dcb6d252601ca6e82e6cc43b4480db31e167a660") {
+            "55c5864bc1a8e3eff1eeac65935119f7aa821bfc76533ed3060a7d7131814a2e") {
         if (outcome.error.code == ERROR_SUCCESS) {
             SetError(&outcome.error, L"self-test-build-identity", ERROR_INVALID_DATA);
         }

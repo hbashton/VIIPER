@@ -199,6 +199,22 @@ func TestNativePackageProductionSourceContract(t *testing.T) {
 		!strings.Contains(helperSource, "DiInstallDevice(") {
 		t.Error("driver helper lost exact preinstalled-driver selection and DiInstallDevice binding")
 	}
+	upgradeRemove := strings.Index(helperSource, `L"upgrade-deadline-before-device-removal"`)
+	upgradeAbsent := strings.Index(helperSource, "CaptureSnapshot(&afterRemoval")
+	upgradeStage := strings.Index(helperSource, "DiInstallDriverW(nullptr, candidate.infPath.c_str()")
+	upgradeIdentity := strings.Index(helperSource, "ExactRootRegistrationMode::Upgrade")
+	upgradeBind := -1
+	if upgradeIdentity >= 0 {
+		if relative := strings.Index(helperSource[upgradeIdentity:],
+			"InstallPreinstalledDriverOnDevice("); relative >= 0 {
+			upgradeBind = upgradeIdentity + relative
+		}
+	}
+	if upgradeRemove < 0 || upgradeAbsent <= upgradeRemove ||
+		upgradeStage <= upgradeAbsent || upgradeIdentity <= upgradeStage ||
+		upgradeBind <= upgradeIdentity {
+		t.Error("driver upgrade no longer removes and proves the captured root absent before staging, exact-identity recreation, and binding")
+	}
 	if strings.Contains(windowsSource, `strings.Contains(text, "result=success operation=install")`) {
 		t.Error("native package install must parse one exact helper outcome instead of accepting a success substring")
 	}

@@ -129,6 +129,9 @@ $requiredContracts = [ordered]@{
     'rollback root registration deadline' = 'rollback-deadline-before-root-registration'
     'exact rollback devnode identity' = 'RegisterRootDeviceExact\('
     'rollback identity verification' = 'rollback-identity-verification'
+    'upgrade devnode removal boundary' = 'upgrade-deadline-before-device-removal'
+    'upgrade devnode absence verification' = 'upgrade-device-removal-verification'
+    'exact upgrade devnode identity' = 'ExactRootRegistrationMode::Upgrade'
     'structured reboot exit' = 'ERROR_SUCCESS_REBOOT_REQUIRED'
     'guarded downgrade' = '--allow-controlled-downgrade'
 }
@@ -155,7 +158,11 @@ $orderedMutationContracts = [ordered]@{
     'first-time root creation uses the owned device name' =
         'SetupDiCreateDeviceInfoW\([\s\S]{0,120}kRootDeviceName[\s\S]{0,120}DICD_GENERATE_ID'
     'registered devnode cleanup state survives post-registration validation' =
-        'registeredAndVerified[\s\S]{0,300}createdHere = registrationSucceeded;[\s\S]{0,120}if \(registeredAndVerified\)'
+        'bool registeredAndVerified = false;[\s\S]{0,1200}createdHere = registrationSucceeded;[\s\S]{0,160}if \(registeredAndVerified\)'
+    'upgrade removes and proves the captured devnode absent before staging' =
+        'upgrade-deadline-before-device-removal[\s\S]{0,800}CaptureSnapshot\(&afterRemoval[\s\S]{0,1800}DiInstallDriverW\('
+    'upgrade restores exact identity before exact package binding' =
+        'DiInstallDriverW\([\s\S]{0,2200}prior\.devices\[0\]\.instanceId[\s\S]{0,300}ExactRootRegistrationMode::Upgrade[\s\S]{0,700}InstallPreinstalledDriverOnDevice\('
     'recovery journal is published and preservation armed before mutation' =
         'BuildRemoveRecoveryRecord\([\s\S]{0,300}WriteProtectedRecoveryRecord\([\s\S]{0,240}ArmPreservation\([\s\S]{0,700}RemoveAllExactDevices\('
     'failed remove rollback preserves published evidence before return' =
