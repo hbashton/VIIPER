@@ -225,6 +225,27 @@ if ($helperVerifyExitCode -ne 0 -or
     throw "Compiled local-test helper verification failed (exit $helperVerifyExitCode).`n$helperVerifyText"
 }
 
+# Run the exact elevated installer validation and protected-staging path under
+# inbox Windows PowerShell 5.1 before publishing it. This route never imports
+# trust, launches the broker, or changes driver/device/service state.
+$windowsPowerShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+$preflightSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$preflightOutput = @(& $windowsPowerShell -NoProfile -ExecutionPolicy Bypass `
+    -File $installerScriptPath `
+    -PackageRoot $output `
+    -ExpectedSourceRevision $source `
+    -ExpectedPackageLockSHA256 $lockSha256 `
+    -TargetUserSID $preflightSid `
+    -AcknowledgeDisposableTestMachine `
+    -PreflightOnly 2>&1)
+$preflightExitCode = $LASTEXITCODE
+$preflightText = $preflightOutput -join [Environment]::NewLine
+if ($preflightExitCode -ne 0 -or
+    @([regex]::Matches($preflightText,
+        '(?m)^result=success operation=local-test-preflight changed=0 rebootRequired=0 rollback=not-needed exitCode=0\r?$')).Count -ne 1) {
+    throw "Windows PowerShell 5.1 local-test installer preflight failed (exit $preflightExitCode).`n$preflightText"
+}
+
 Write-Host "Created compact source-bound local test package at '$output'."
 Write-Host "Source: $source"
 Write-Host "Driver: $driverVersion / ABI 1.10 / $buildIdentity"

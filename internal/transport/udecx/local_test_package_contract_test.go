@@ -93,6 +93,8 @@ func TestLocalTestPackageUsesFullTransactionalNativeBackend(t *testing.T) {
 		"$lock.installerScriptSha256 -cne $actualInstallerScriptSha256",
 		"$lockAlgorithm.ComputeHash($lockBytes)",
 		"@(Compare-Object -ReferenceObject $wanted -DifferenceObject $actual -CaseSensitive).Count",
+		"$expectedSecurity.GetSecurityDescriptorBinaryForm()",
+		"$actualSecurity.GetSecurityDescriptorBinaryForm()",
 		"out-of-band workflow digest",
 		"O:BAG:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)",
 		"[IO.Directory]::CreateDirectory($Path, $expectedSecurity)",
@@ -117,9 +119,20 @@ func TestLocalTestPackageUsesFullTransactionalNativeBackend(t *testing.T) {
 		"-AcknowledgeDisposableTestMachine",
 		"testsigning\\s+Yes",
 		"Restart, rerun this identical install command",
+		"[switch]$PreflightOnly",
+		"operation=local-test-preflight",
 	} {
 		if !strings.Contains(installer, required) {
 			t.Fatalf("local-test installer omitted %q", required)
+		}
+	}
+	for _, required := range []string{
+		"System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+		"-PreflightOnly",
+		"Windows PowerShell 5.1 local-test installer preflight failed",
+	} {
+		if !strings.Contains(composer, required) {
+			t.Fatalf("local-test composer omitted Windows PowerShell preflight contract %q", required)
 		}
 	}
 	for _, forbidden := range []string{

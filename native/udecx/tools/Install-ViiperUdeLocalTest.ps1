@@ -10,7 +10,8 @@ param(
     [Parameter(Mandatory = $true)]
     [ValidatePattern('^S-1-5-21-(?:[0-9]+-){3}[0-9]+$')]
     [string]$TargetUserSID,
-    [switch]$AcknowledgeDisposableTestMachine
+    [switch]$AcknowledgeDisposableTestMachine,
+    [switch]$PreflightOnly
 )
 
 Set-StrictMode -Version Latest
@@ -45,10 +46,12 @@ $principal = [Security.Principal.WindowsPrincipal]::new($identity)
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     throw 'Local VIIPER driver installation requires an elevated PowerShell session.'
 }
-$bcdeditPath = Join-Path ([Environment]::SystemDirectory) 'bcdedit.exe'
-$bcdOutput = (& $bcdeditPath /enum '{current}' 2>&1 | Out-String)
-if ($LASTEXITCODE -ne 0 -or $bcdOutput -notmatch '(?im)^\s*testsigning\s+Yes\s*$') {
-    throw "The current boot entry does not report 'testsigning Yes'. Enable TESTSIGNING and reboot before installation.`n$bcdOutput"
+if (-not $PreflightOnly) {
+    $bcdeditPath = Join-Path ([Environment]::SystemDirectory) 'bcdedit.exe'
+    $bcdOutput = (& $bcdeditPath /enum '{current}' 2>&1 | Out-String)
+    if ($LASTEXITCODE -ne 0 -or $bcdOutput -notmatch '(?im)^\s*testsigning\s+Yes\s*$') {
+        throw "The current boot entry does not report 'testsigning Yes'. Enable TESTSIGNING and reboot before installation.`n$bcdOutput"
+    }
 }
 
 $root = (Resolve-Path -LiteralPath $PackageRoot -ErrorAction Stop).Path
@@ -96,10 +99,8 @@ function Initialize-ProtectedStagingDirectory {
     }
     $actualSecurity = $directory.GetAccessControl(
         [Security.AccessControl.AccessControlSections]::All)
-    $expectedBinary = [byte[]]::new($expectedSecurity.BinaryLength)
-    $actualBinary = [byte[]]::new($actualSecurity.BinaryLength)
-    $expectedSecurity.GetSecurityDescriptorBinaryForm($expectedBinary, 0)
-    $actualSecurity.GetSecurityDescriptorBinaryForm($actualBinary, 0)
+    $expectedBinary = $expectedSecurity.GetSecurityDescriptorBinaryForm()
+    $actualBinary = $actualSecurity.GetSecurityDescriptorBinaryForm()
     if ([Convert]::ToBase64String($actualBinary) -cne
         [Convert]::ToBase64String($expectedBinary)) {
         throw "Local-test staging directory ACL verification failed for '$Path'."
@@ -385,6 +386,33 @@ finally {
 }
 if ($certificateSha256 -cne [string]$lock.testSignerCertificateSha256) {
     throw 'The local test certificate does not match the source-bound package lock.'
+}
+
+if ($PreflightOnly) {
+    $brokerEntry = $lockByPath['viiper.exe']
+    $brokerHash = [string]$brokerEntry.sha256
+    $preflightProgramDataRoot = (Resolve-Path -LiteralPath $env:ProgramData -ErrorAction Stop).Path
+    $programDataItem = Get-Item -LiteralPath $preflightProgramDataRoot -Force -ErrorAction Stop
+    if (-not $programDataItem.PSIsContainer -or
+        ($programDataItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "ProgramData is not a safe staging parent: '$preflightProgramDataRoot'."
+    }
+    $preflightStage = Join-Path $preflightProgramDataRoot (
+        'VIIPER.LocalTestStage.' + [Guid]::NewGuid().ToString('N'))
+    try {
+        Initialize-ProtectedStagingDirectory -Path $preflightStage
+        [void](Copy-ExactBrokerToProtectedStage `
+            -SourcePath $packageBrokerPath -DestinationDirectory $preflightStage `
+            -ExpectedLength ([long]$brokerEntry.length) -ExpectedSHA256 $brokerHash)
+    }
+    finally {
+        if (Test-Path -LiteralPath $preflightStage) {
+            Remove-ProtectedStagingDirectory `
+                -Path $preflightStage -ProgramDataRoot $preflightProgramDataRoot
+        }
+    }
+    Write-Output 'result=success operation=local-test-preflight changed=0 rebootRequired=0 rollback=not-needed exitCode=0'
+    return
 }
 
 $expectedCertificateBytes = [Convert]::ToBase64String($certificate.RawData)
