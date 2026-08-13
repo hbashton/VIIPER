@@ -679,9 +679,12 @@ ViiperCreateVirtualDevice(
 
     UDECX_USB_DEVICE_PLUG_IN_OPTIONS_INIT(&plugOptions);
     if (speed == UdecxUsbSuperSpeed) {
-        plugOptions.Usb30PortNumber = slot + 1;
+        // UdeCx uses one controller-global namespace: USB 3 ports begin
+        // immediately after NumberOfUsb20Ports, not again at port one.
+        plugOptions.Usb30PortNumber =
+            (USHORT)(VIIPER_UDE_USB20_PORT_COUNT + slot + 1);
     } else {
-        plugOptions.Usb20PortNumber = slot + 1;
+        plugOptions.Usb20PortNumber = (USHORT)(slot + 1);
     }
     status = UdecxUsbDevicePlugIn(device, &plugOptions);
     if (!NT_SUCCESS(status)) {

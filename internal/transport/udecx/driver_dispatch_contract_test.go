@@ -29,6 +29,46 @@ func TestNativeDeviceInitializeDoesNotEnterResetProtocol(t *testing.T) {
 	}
 }
 
+func TestNativeSuperSpeedPortsUseControllerGlobalNumbering(t *testing.T) {
+	header := nativeContractSource(t, "native", "udecx", "driver", "ViiperUde.h")
+	controller := nativeContractSource(t, "native", "udecx", "driver", "Controller.c")
+	device := normalizedContract(nativeCFunction(t,
+		nativeContractSource(t, "native", "udecx", "driver", "Device.c"),
+		"ViiperCreateVirtualDevice"))
+
+	for _, required := range []string{
+		"#define VIIPER_UDE_USB20_PORT_COUNT VIIPER_UDE_MAX_DEVICES",
+		"#define VIIPER_UDE_USB30_PORT_COUNT VIIPER_UDE_MAX_DEVICES",
+	} {
+		if !strings.Contains(header, required) {
+			t.Fatalf("native controller topology lost %q", required)
+		}
+	}
+	for _, required := range []string{
+		"udeConfig.NumberOfUsb20Ports = (USHORT)VIIPER_UDE_USB20_PORT_COUNT;",
+		"udeConfig.NumberOfUsb30Ports = (USHORT)VIIPER_UDE_USB30_PORT_COUNT;",
+	} {
+		if !strings.Contains(controller, required) {
+			t.Fatalf("native controller creation lost %q", required)
+		}
+	}
+	requireContractOrder(t, device,
+		"if (speed == UdecxUsbSuperSpeed)",
+		"plugOptions.Usb30PortNumber = (USHORT)(VIIPER_UDE_USB20_PORT_COUNT + slot + 1);",
+		"else",
+		"plugOptions.Usb20PortNumber = (USHORT)(slot + 1);")
+
+	const usb20Ports = MaxDevices
+	for slot := 0; slot < MaxDevices; slot++ {
+		usb20Port := slot + 1
+		usb30Port := usb20Ports + slot + 1
+		if usb20Port < 1 || usb20Port > MaxDevices ||
+			usb30Port < MaxDevices+1 || usb30Port > 2*MaxDevices {
+			t.Fatalf("slot %d maps to USB2=%d USB3=%d", slot, usb20Port, usb30Port)
+		}
+	}
+}
+
 func TestNativeBrokerDispatchUsesIndependentCursorAndEndpointFIFO(t *testing.T) {
 	broker := nativeContractSource(t, "native", "udecx", "driver", "Broker.c")
 	device := nativeContractSource(t, "native", "udecx", "driver", "Device.c")

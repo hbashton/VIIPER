@@ -20,6 +20,11 @@ EXTERN_C const GUID GUID_DEVINTERFACE_VIIPER_UDE;
 #define VIIPER_UDE_MAX_INPUT_TRANSITIONS 256
 #define VIIPER_UDE_MAX_INPUT_TRANSITION_BYTES 65536
 #define VIIPER_UDE_MANAGEMENT_SLOT_FLAG 0x80000000UL
+// UdeCx numbers USB 3 ports after every USB 2 port on the controller. Keep
+// the topology constants shared by controller creation and child plug-in so
+// fixed slot-to-port identity cannot drift between those two boundaries.
+#define VIIPER_UDE_USB20_PORT_COUNT VIIPER_UDE_MAX_DEVICES
+#define VIIPER_UDE_USB30_PORT_COUNT VIIPER_UDE_MAX_DEVICES
 
 typedef enum VIIPER_UDE_PENDING_STATE {
     ViiperUdePendingEmpty = 0,

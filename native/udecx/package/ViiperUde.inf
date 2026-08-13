@@ -4,7 +4,7 @@ Class=USB
 ClassGuid={36FC9E60-C465-11CF-8056-444553540000}
 Provider=%ProviderName%
 CatalogFile=ViiperUde.cat
-DriverVer=08/13/2026,0.1.0.20
+DriverVer=08/13/2026,0.1.0.21
 PnpLockDown=1
 
 [DestinationDirs]

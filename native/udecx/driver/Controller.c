@@ -204,8 +204,8 @@ ViiperEvtDeviceAdd(
     }
 
     UDECX_WDF_DEVICE_CONFIG_INIT(&udeConfig, ViiperEvtQueryUsbCapability);
-    udeConfig.NumberOfUsb20Ports = (USHORT)VIIPER_UDE_MAX_DEVICES;
-    udeConfig.NumberOfUsb30Ports = (USHORT)VIIPER_UDE_MAX_DEVICES;
+    udeConfig.NumberOfUsb20Ports = (USHORT)VIIPER_UDE_USB20_PORT_COUNT;
+    udeConfig.NumberOfUsb30Ports = (USHORT)VIIPER_UDE_USB30_PORT_COUNT;
     status = UdecxWdfDeviceAddUsbDeviceEmulation(device, &udeConfig);
     if (!NT_SUCCESS(status)) {
         return status;
