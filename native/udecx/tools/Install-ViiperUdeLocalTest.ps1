@@ -438,28 +438,197 @@ if ($PreflightOnly) {
                 -Path $preflightStage -ProgramDataRoot $preflightProgramDataRoot
         }
     }
+}
+
+$certificateThumbprint = $certificate.Thumbprint
+$expectedCertificateBytes = [Convert]::ToBase64String($certificate.RawData)
+if (-not ('ViiperLocalTestCertificateStore' -as [type])) {
+    Add-Type -Language CSharp -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+
+public static class ViiperLocalTestCertificateStore
+{
+    private const int CERT_STORE_PROV_SYSTEM_W = 10;
+    private const uint CERT_SYSTEM_STORE_LOCAL_MACHINE = 0x00020000;
+    private const uint CERT_STORE_OPEN_EXISTING_FLAG = 0x00004000;
+    private const uint CERT_STORE_MAXIMUM_ALLOWED_FLAG = 0x00001000;
+    private const uint CERT_ENCODING = 0x00010001;
+    private const uint CERT_STORE_ADD_NEW = 1;
+    private const uint CERT_FIND_EXISTING = 0x000d0000;
+    private const int CRYPT_E_NOT_FOUND = unchecked((int)0x80092004);
+
+    [DllImport("crypt32.dll", CharSet = CharSet.Unicode, SetLastError = true,
+        ExactSpelling = true)]
+    private static extern IntPtr CertOpenStore(
+        IntPtr provider, uint encoding, IntPtr cryptProvider,
+        uint flags, string storeName);
+
+    [DllImport("crypt32.dll", SetLastError = true)]
+    private static extern bool CertAddEncodedCertificateToStore(
+        IntPtr store, uint encoding, byte[] certificate, uint length,
+        uint disposition, out IntPtr context);
+
+    [DllImport("crypt32.dll", SetLastError = true)]
+    private static extern IntPtr CertCreateCertificateContext(
+        uint encoding, byte[] certificate, uint length);
+
+    [DllImport("crypt32.dll", SetLastError = true)]
+    private static extern IntPtr CertFindCertificateInStore(
+        IntPtr store, uint encoding, uint findFlags, uint findType,
+        IntPtr findParameter, IntPtr previousContext);
+
+    [DllImport("crypt32.dll", SetLastError = true)]
+    private static extern bool CertDeleteCertificateFromStore(IntPtr context);
+
+    [DllImport("crypt32.dll")]
+    private static extern bool CertFreeCertificateContext(IntPtr context);
+
+    [DllImport("crypt32.dll", SetLastError = true)]
+    private static extern bool CertCloseStore(IntPtr store, uint flags);
+
+    private static IntPtr Open(string storeName)
+    {
+        IntPtr store = CertOpenStore(
+            new IntPtr(CERT_STORE_PROV_SYSTEM_W), 0, IntPtr.Zero,
+            CERT_SYSTEM_STORE_LOCAL_MACHINE | CERT_STORE_OPEN_EXISTING_FLAG |
+                CERT_STORE_MAXIMUM_ALLOWED_FLAG,
+            storeName);
+        if (store == IntPtr.Zero)
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "CertOpenStore");
+        return store;
+    }
+
+    public static void Add(string storeName, byte[] certificate)
+    {
+        IntPtr store = Open(storeName);
+        IntPtr context = IntPtr.Zero;
+        try
+        {
+            if (!CertAddEncodedCertificateToStore(
+                    store, CERT_ENCODING, certificate, (uint)certificate.Length,
+                    CERT_STORE_ADD_NEW, out context))
+                throw new Win32Exception(
+                    Marshal.GetLastWin32Error(), "CertAddEncodedCertificateToStore");
+        }
+        finally
+        {
+            if (context != IntPtr.Zero) CertFreeCertificateContext(context);
+            CertCloseStore(store, 0);
+        }
+    }
+
+    public static bool Remove(string storeName, byte[] certificate)
+    {
+        IntPtr store = Open(storeName);
+        IntPtr search = IntPtr.Zero;
+        try
+        {
+            search = CertCreateCertificateContext(
+                CERT_ENCODING, certificate, (uint)certificate.Length);
+            if (search == IntPtr.Zero)
+                throw new Win32Exception(
+                    Marshal.GetLastWin32Error(), "CertCreateCertificateContext");
+            IntPtr found = CertFindCertificateInStore(
+                store, CERT_ENCODING, 0, CERT_FIND_EXISTING, search, IntPtr.Zero);
+            if (found == IntPtr.Zero)
+            {
+                int error = Marshal.GetLastWin32Error();
+                if (error == CRYPT_E_NOT_FOUND) return false;
+                throw new Win32Exception(error, "CertFindCertificateInStore");
+            }
+            if (!CertDeleteCertificateFromStore(found))
+                throw new Win32Exception(
+                    Marshal.GetLastWin32Error(), "CertDeleteCertificateFromStore");
+            return true;
+        }
+        finally
+        {
+            if (search != IntPtr.Zero) CertFreeCertificateContext(search);
+            CertCloseStore(store, 0);
+        }
+    }
+}
+'@
+}
+
+$certificateStoreOpenMethod = [ViiperLocalTestCertificateStore].GetMethod(
+    'CertOpenStore', [Reflection.BindingFlags]'NonPublic,Static')
+$certificateStoreOpenImport = $certificateStoreOpenMethod.GetCustomAttributes(
+    [Runtime.InteropServices.DllImportAttribute], $false)[0]
+if ($certificateStoreOpenImport.Value -cne 'crypt32.dll' -or
+    -not $certificateStoreOpenImport.ExactSpelling -or
+    $certificateStoreOpenImport.CharSet -ne [Runtime.InteropServices.CharSet]::Unicode) {
+    throw 'The local-test certificate-store interop does not bind the exact CertOpenStore entry point.'
+}
+
+if ($PreflightOnly) {
     Write-Output 'result=success operation=local-test-preflight changed=0 rebootRequired=0 rollback=not-needed exitCode=0'
     return
 }
 
-$expectedCertificateBytes = [Convert]::ToBase64String($certificate.RawData)
+function Get-ExactLocalTestTrustState {
+    param([Parameter(Mandatory = $true)][string]$StoreName)
+
+    $store = [Security.Cryptography.X509Certificates.X509Store]::new(
+        $StoreName, [Security.Cryptography.X509Certificates.StoreLocation]::LocalMachine)
+    $matches = $null
+    try {
+        # Reopening the store read-only makes every verification a persisted-state
+        # postcondition rather than an observation through the mutating handle.
+        $store.Open([Security.Cryptography.X509Certificates.OpenFlags]::ReadOnly)
+        $matches = $store.Certificates.Find(
+            [Security.Cryptography.X509Certificates.X509FindType]::FindByThumbprint,
+            $certificateThumbprint, $false)
+        $exactMatches = @($matches | Where-Object {
+            [Convert]::ToBase64String($_.RawData) -ceq $expectedCertificateBytes
+        })
+        if ($matches.Count -ne $exactMatches.Count -or $exactMatches.Count -gt 1) {
+            throw "Certificate collision in LocalMachine\$StoreName."
+        }
+        return [pscustomobject]@{ ExactCount = [int]$exactMatches.Count }
+    }
+    finally {
+        if ($null -ne $matches) {
+            foreach ($match in $matches) {
+                $match.Dispose()
+            }
+        }
+        $store.Close()
+    }
+}
+
 $addedStores = [Collections.Generic.List[string]]::new()
 function Remove-NewLocalTestTrust {
     $removalErrors = [Collections.Generic.List[Exception]]::new()
     foreach ($storeName in $addedStores) {
-        $store = [Security.Cryptography.X509Certificates.X509Store]::new(
-            $storeName, [Security.Cryptography.X509Certificates.StoreLocation]::LocalMachine)
+        $cleanupAction = 'inspect-cleanup'
         try {
-            $store.Open([Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
-            @($store.Certificates | Where-Object {
-                [Convert]::ToBase64String($_.RawData) -ceq $expectedCertificateBytes
-            }) | ForEach-Object { $store.Remove($_) }
+            $cleanupState = Get-ExactLocalTestTrustState -StoreName $storeName
+            $cleanupAction = 'remove'
+            if ($cleanupState.ExactCount -eq 1) {
+                $removed = [ViiperLocalTestCertificateStore]::Remove(
+                    $storeName, $certificate.RawData)
+                $removeResult = if ($removed) { 'removed' } else { 'already-absent' }
+            }
+            else {
+                $removeResult = 'already-absent'
+            }
+            Write-Host "local-test-trust store=$storeName action=remove result=$removeResult"
+
+            $cleanupAction = 'verify-cleanup'
+            $cleanupState = Get-ExactLocalTestTrustState -StoreName $storeName
+            if ($cleanupState.ExactCount -ne 0) {
+                throw "Exact local-test certificate remained in LocalMachine\$storeName."
+            }
+            Write-Host "local-test-trust store=$storeName action=verify-cleanup result=absent"
         }
         catch {
-            $removalErrors.Add($_.Exception)
-        }
-        finally {
-            $store.Close()
+            Write-Host "local-test-trust store=$storeName action=$cleanupAction result=error"
+            $removalErrors.Add([InvalidOperationException]::new(
+                "LocalMachine\$storeName trust cleanup failed during $cleanupAction.",
+                $_.Exception))
         }
     }
     if ($removalErrors.Count -ne 0) {
@@ -470,7 +639,10 @@ function Remove-NewLocalTestTrust {
 }
 
 function Test-SettledLocalTestFailure {
-    param([Parameter(Mandatory = $true)][object[]]$Lines)
+    param(
+        [Parameter(Mandatory = $true)][object[]]$Lines,
+        [Parameter(Mandatory = $true)][int]$ProcessExitCode
+    )
 
     $pattern = '(?m)^result=error operation=install changed=(?<changed>[01]) ' +
         'rebootRequired=(?<reboot>[01]) rollback=(?<rollback>not-needed|succeeded|failed) ' +
@@ -480,14 +652,19 @@ function Test-SettledLocalTestFailure {
         return $false
     }
     $match = $matches[0]
+    $proofExitCode = 0
+    if (-not [int]::TryParse($match.Groups['exit'].Value, [ref]$proofExitCode) -or
+        $proofExitCode -ne $ProcessExitCode) {
+        return $false
+    }
     return ($match.Groups['changed'].Value -ceq '0' -and
             $match.Groups['reboot'].Value -ceq '0' -and
             $match.Groups['rollback'].Value -ceq 'not-needed' -and
-            $match.Groups['exit'].Value -in @('1', '4')) -or
+            $proofExitCode -in @(1, 4)) -or
         ($match.Groups['changed'].Value -ceq '1' -and
             $match.Groups['reboot'].Value -ceq '0' -and
             $match.Groups['rollback'].Value -ceq 'succeeded' -and
-            $match.Groups['exit'].Value -ceq '1')
+            $proofExitCode -eq 1)
 }
 
 $trustCommitted = $false
@@ -496,20 +673,30 @@ $stageDirectory = $null
 $programDataRoot = $null
 try {
     foreach ($storeName in @('Root', 'TrustedPublisher')) {
-        $store = [Security.Cryptography.X509Certificates.X509Store]::new(
-            $storeName, [Security.Cryptography.X509Certificates.StoreLocation]::LocalMachine)
+        $trustAction = 'inspect-add'
         try {
-            $store.Open([Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
-            $present = @($store.Certificates | Where-Object {
-                [Convert]::ToBase64String($_.RawData) -ceq $expectedCertificateBytes
-            }).Count -ne 0
-            if (-not $present) {
-                $store.Add($certificate)
+            $trustState = Get-ExactLocalTestTrustState -StoreName $storeName
+            if ($trustState.ExactCount -eq 0) {
+                $trustAction = 'add'
+                [ViiperLocalTestCertificateStore]::Add(
+                    $storeName, $certificate.RawData)
                 $addedStores.Add($storeName)
+                Write-Host "local-test-trust store=$storeName action=add result=added"
+
+                $trustAction = 'verify-add'
+                $trustState = Get-ExactLocalTestTrustState -StoreName $storeName
+                if ($trustState.ExactCount -ne 1) {
+                    throw "Exact local-test certificate was not installed in LocalMachine\$storeName."
+                }
+                Write-Host "local-test-trust store=$storeName action=verify-add result=present"
+            }
+            else {
+                Write-Host "local-test-trust store=$storeName action=add result=preexisting"
             }
         }
-        finally {
-            $store.Close()
+        catch {
+            Write-Host "local-test-trust store=$storeName action=$trustAction result=error"
+            throw
         }
     }
 
@@ -579,7 +766,8 @@ try {
         if ($exitCode -in @(0, 3010)) {
             $trustCommitted = $true
         }
-        elseif (Test-SettledLocalTestFailure -Lines $output) {
+        elseif (Test-SettledLocalTestFailure `
+            -Lines $output -ProcessExitCode $exitCode) {
             $retainTrustOnFailure = $false
         }
     }

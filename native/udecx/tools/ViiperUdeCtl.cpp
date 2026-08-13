@@ -43,6 +43,7 @@
 #include <initializer_list>
 #include <iostream>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <memory>
 #include <optional>
@@ -103,6 +104,8 @@ constexpr uint64_t kBrokerRollbackCeilingMs = 3ULL * 60ULL * 1000ULL;
 constexpr uint64_t kDriverRollbackCeilingMs = 2ULL * 60ULL * 1000ULL;
 constexpr DWORD kCancelledIoDrainMs = 5000;
 constexpr size_t kMaximumBrokerProofBytes = 64U * 1024U;
+constexpr size_t kMaximumBrokerDiagnosticCharacters = 1024U;
+constexpr std::string_view kBrokerDiagnosticPrefix = "VIIPER: error: ";
 constexpr wchar_t kRollbackDirectorySecurity[] =
     L"O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)";
 constexpr wchar_t kRecoveryRecordSecurity[] =
@@ -151,6 +154,7 @@ struct Error {
     DWORD code = ERROR_SUCCESS;
     std::wstring phase;
     std::wstring message;
+    std::optional<DWORD> nestedExitCode;
     std::wstring recoveryRecord;
     bool recoveryRecordWritten = false;
     DWORD recoveryRecordError = ERROR_SUCCESS;
@@ -197,6 +201,7 @@ bool SetError(Error* error, const wchar_t* phase, DWORD code, std::wstring messa
         error->code = code;
         error->phase = phase;
         error->message = message.empty() ? FormatError(code) : std::move(message);
+        error->nestedExitCode.reset();
     }
     SetLastError(code);
     return false;
@@ -216,8 +221,11 @@ void EmitOutcome(const wchar_t* operation, const Outcome& outcome) {
            << L" exitCode=" << static_cast<int>(outcome.exitCode);
     if (!outcome.success) {
         stream << L" phase=" << std::quoted(outcome.error.phase)
-               << L" win32Error=" << outcome.error.code
-               << L" message=" << std::quoted(outcome.error.message);
+               << L" win32Error=" << outcome.error.code;
+        if (outcome.error.nestedExitCode) {
+            stream << L" nestedExitCode=" << *outcome.error.nestedExitCode;
+        }
+        stream << L" message=" << std::quoted(outcome.error.message);
         if (!outcome.error.recoveryRecord.empty()) {
             stream << L" recoveryRecord=" << std::quoted(outcome.error.recoveryRecord)
                    << L" recoveryRecordWritten="
@@ -3011,7 +3019,49 @@ struct BrokerCommitProof {
     std::string rollback;
     DWORD exitCode = ERROR_GEN_FAILURE;
     bool driverRollbackAuthorized = false;
+    std::wstring diagnostic;
 };
+
+bool IsUnsafeBrokerDiagnosticCharacter(wchar_t value) {
+    const uint32_t codePoint = static_cast<uint16_t>(value);
+    // The outer structured result is consumed by installers and logs. Preserve
+    // printable ASCII only; quotes and backslashes are escaped by std::quoted,
+    // while every control, direction mark, separator, and non-ASCII glyph is
+    // made visibly inert instead of being allowed to reshape that record.
+    return codePoint < 0x20U || codePoint > 0x7eU;
+}
+
+bool SanitizeBrokerDiagnostic(
+    std::string_view payload,
+    std::wstring* diagnostic) {
+    static_assert(kMaximumBrokerDiagnosticCharacters > 3U);
+    if (diagnostic == nullptr || payload.empty() ||
+        payload.size() > static_cast<size_t>(std::numeric_limits<int>::max())) {
+        return false;
+    }
+    const int payloadBytes = static_cast<int>(payload.size());
+    const int required = MultiByteToWideChar(
+        CP_UTF8, MB_ERR_INVALID_CHARS, payload.data(), payloadBytes, nullptr, 0);
+    if (required <= 0) {
+        return false;
+    }
+    std::wstring converted(static_cast<size_t>(required), L'\0');
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, payload.data(), payloadBytes,
+            converted.data(), required) != required) {
+        return false;
+    }
+    for (wchar_t& character : converted) {
+        if (IsUnsafeBrokerDiagnosticCharacter(character)) {
+            character = L'?';
+        }
+    }
+    if (converted.size() > kMaximumBrokerDiagnosticCharacters) {
+        converted.resize(kMaximumBrokerDiagnosticCharacters - 3U);
+        converted.append(L"...");
+    }
+    *diagnostic = std::move(converted);
+    return true;
+}
 
 bool ParseBrokerCommitProof(
     const std::string& output,
@@ -3039,6 +3089,9 @@ bool ParseBrokerCommitProof(
             false, true, "failed", 3, false},
     }};
     std::optional<BrokerCommitProof> parsed;
+    std::optional<std::wstring> diagnostic;
+    bool diagnosticSeen = false;
+    bool diagnosticRejected = false;
     size_t cursor = 0;
     while (cursor < output.size()) {
         const size_t newline = output.find('\n', cursor);
@@ -3070,6 +3123,22 @@ bool ParseBrokerCommitProof(
                 match->driverRollbackAuthorized,
             };
         }
+        if (line.starts_with(kBrokerDiagnosticPrefix)) {
+            if (!terminated || diagnosticSeen) {
+                diagnosticRejected = true;
+                diagnostic.reset();
+            } else {
+                std::wstring sanitized;
+                if (SanitizeBrokerDiagnostic(
+                        std::string_view(line).substr(kBrokerDiagnosticPrefix.size()),
+                        &sanitized)) {
+                    diagnostic = std::move(sanitized);
+                } else {
+                    diagnosticRejected = true;
+                }
+            }
+            diagnosticSeen = true;
+        }
         if (!terminated) {
             break;
         }
@@ -3079,8 +3148,30 @@ bool ParseBrokerCommitProof(
         return SetError(error, L"broker-proof", ERROR_INVALID_DATA,
             L"nested broker process exit and structured outcome are missing or inconsistent");
     }
+    // Diagnostics are never transaction authority. Ambiguous, malformed,
+    // unterminated, or success-adjacent text is discarded; only the exact
+    // canonical result above controls changed/rollback classification.
+    if (!parsed->success && !diagnosticRejected && diagnostic) {
+        parsed->diagnostic = std::move(*diagnostic);
+    }
     *proof = std::move(*parsed);
     return true;
+}
+
+bool SetBrokerCommitFailure(const BrokerCommitProof& proof, Error* error) {
+    std::wstring message = proof.driverRollbackAuthorized
+        ? L"nested broker transaction failed after proving a settled state"
+        : L"nested broker transaction failed with indeterminate service state";
+    if (!proof.diagnostic.empty()) {
+        message.append(L"; nested diagnostic: ");
+        message.append(proof.diagnostic);
+    }
+    const wchar_t* phase = proof.changed ? L"broker-health" : L"broker-preflight";
+    SetError(error, phase, ERROR_INSTALL_FAILURE, std::move(message));
+    if (error != nullptr) {
+        error->nestedExitCode = proof.exitCode;
+    }
+    return false;
 }
 
 bool DrainBrokerProofPipe(
@@ -3329,10 +3420,7 @@ bool RunBrokerInstall(
     *driverRollbackAuthorized = proof.driverRollbackAuthorized;
     *brokerChanged = proof.changed;
     if (!proof.success) {
-        return SetError(error, L"broker-health", exitCode,
-            proof.driverRollbackAuthorized
-                ? L"nested broker transaction failed after proving a settled state"
-                : L"nested broker transaction failed with indeterminate service state");
+        return SetBrokerCommitFailure(proof, error);
     }
     return true;
 }
@@ -4933,7 +5021,7 @@ Outcome SelfTest() {
             "0123456789abcdef0123456789abcdef01234567",
             &buildIdentity, &outcome.error) ||
         buildIdentity !=
-            "21bc6734ba20f9a22601b75d8a737edf304d65aac59cfa1c1e33550b7e3602f5") {
+            "e19b4fcd5a47dc55283e834e3718adc2965b822e192db0620666c835b6f276ab") {
         if (outcome.error.code == ERROR_SUCCESS) {
             SetError(&outcome.error, L"self-test-build-identity", ERROR_INVALID_DATA);
         }
@@ -5048,6 +5136,9 @@ Outcome SelfTest() {
     const std::string brokerSuccess =
         "result=success operation=native-package-broker-commit changed=0 "
         "rollback=not-needed exitCode=0\n";
+    const std::string brokerPreflightFailure =
+        "result=error operation=native-package-broker-commit changed=0 "
+        "rollback=not-needed exitCode=4\n";
     BrokerCommitProof brokerProof;
     Error brokerProofError;
     if (!ParseBrokerCommitProof(
@@ -5062,13 +5153,115 @@ Outcome SelfTest() {
     brokerProof = {};
     brokerProofError = {};
     if (!ParseBrokerCommitProof(
-            "result=error operation=native-package-broker-commit changed=0 "
-            "rollback=not-needed exitCode=4\n",
-            4, &brokerProof, &brokerProofError) ||
+            brokerPreflightFailure, 4, &brokerProof, &brokerProofError) ||
         brokerProof.success || brokerProof.changed ||
         !brokerProof.driverRollbackAuthorized) {
         SetError(&outcome.error, L"self-test-broker-proof", ERROR_INVALID_DATA,
             L"pre-mutation broker failure proof was rejected or misclassified");
+        return outcome;
+    }
+    brokerProof = {};
+    brokerProofError = {};
+    const std::wstring expectedBrokerDiagnostic =
+        L"outer native package transaction mutex is not held";
+    if (!ParseBrokerCommitProof(
+            brokerPreflightFailure + std::string(kBrokerDiagnosticPrefix) +
+                "outer native package transaction mutex is not held\n",
+            4, &brokerProof, &brokerProofError) ||
+        brokerProof.success || brokerProof.changed ||
+        !brokerProof.driverRollbackAuthorized ||
+        brokerProof.diagnostic != expectedBrokerDiagnostic) {
+        SetError(&outcome.error, L"self-test-broker-diagnostic", ERROR_INVALID_DATA,
+            L"exact nested broker error diagnostic was rejected or changed proof authority");
+        return outcome;
+    }
+    Error mappedBrokerError;
+    if (SetBrokerCommitFailure(brokerProof, &mappedBrokerError) ||
+        mappedBrokerError.code != ERROR_INSTALL_FAILURE ||
+        !mappedBrokerError.nestedExitCode || *mappedBrokerError.nestedExitCode != 4 ||
+        mappedBrokerError.phase != L"broker-preflight" ||
+        mappedBrokerError.message.find(expectedBrokerDiagnostic) == std::wstring::npos) {
+        SetError(&outcome.error, L"self-test-broker-diagnostic", ERROR_INVALID_DATA,
+            L"nested broker application exit was not separated from the outer Win32 failure");
+        return outcome;
+    }
+    brokerProof = {};
+    brokerProofError = {};
+    const std::string unsafeBrokerDiagnostic =
+        brokerPreflightFailure + std::string(kBrokerDiagnosticPrefix) +
+        "left\tmiddle\x01"
+        "right\x7f"
+        "\xe2\x80\xae"
+        "tail \"quoted\" \\ path\n";
+    if (!ParseBrokerCommitProof(
+            unsafeBrokerDiagnostic, 4, &brokerProof, &brokerProofError) ||
+        brokerProof.diagnostic != L"left?middle?right??tail \"quoted\" \\ path" ||
+        brokerProof.success || brokerProof.changed ||
+        !brokerProof.driverRollbackAuthorized) {
+        SetError(&outcome.error, L"self-test-broker-diagnostic", ERROR_INVALID_DATA,
+            L"nested broker diagnostic controls were not sanitized without changing proof authority");
+        return outcome;
+    }
+    brokerProof = {};
+    brokerProofError = {};
+    const std::string oversizedBrokerDiagnostic(
+        kMaximumBrokerDiagnosticCharacters + 32U, 'x');
+    if (!ParseBrokerCommitProof(
+            brokerPreflightFailure + std::string(kBrokerDiagnosticPrefix) +
+                oversizedBrokerDiagnostic + "\n",
+            4, &brokerProof, &brokerProofError) ||
+        brokerProof.diagnostic.size() != kMaximumBrokerDiagnosticCharacters ||
+        !brokerProof.diagnostic.ends_with(L"...") ||
+        brokerProof.success || brokerProof.changed ||
+        !brokerProof.driverRollbackAuthorized) {
+        SetError(&outcome.error, L"self-test-broker-diagnostic", ERROR_INVALID_DATA,
+            L"nested broker diagnostic was not deterministically capped");
+        return outcome;
+    }
+    brokerProof = {};
+    brokerProofError = {};
+    if (!ParseBrokerCommitProof(
+            brokerPreflightFailure + std::string(kBrokerDiagnosticPrefix) +
+                std::string("\xc3\x28", 2) + "\n",
+            4, &brokerProof, &brokerProofError) ||
+        !brokerProof.diagnostic.empty() || brokerProof.success || brokerProof.changed ||
+        !brokerProof.driverRollbackAuthorized) {
+        SetError(&outcome.error, L"self-test-broker-diagnostic", ERROR_INVALID_DATA,
+            L"malformed UTF-8 diagnostic changed canonical broker proof authority");
+        return outcome;
+    }
+    brokerProof = {};
+    brokerProofError = {};
+    if (!ParseBrokerCommitProof(
+            brokerPreflightFailure + std::string(kBrokerDiagnosticPrefix) + "first\n" +
+                std::string(kBrokerDiagnosticPrefix) + "second\n",
+            4, &brokerProof, &brokerProofError) ||
+        !brokerProof.diagnostic.empty() || brokerProof.success || brokerProof.changed ||
+        !brokerProof.driverRollbackAuthorized) {
+        SetError(&outcome.error, L"self-test-broker-diagnostic", ERROR_INVALID_DATA,
+            L"ambiguous diagnostics changed canonical broker proof authority");
+        return outcome;
+    }
+    brokerProof = {};
+    brokerProofError = {};
+    if (!ParseBrokerCommitProof(
+            brokerSuccess + std::string(kBrokerDiagnosticPrefix) + "contradiction\n",
+            ERROR_SUCCESS, &brokerProof, &brokerProofError) ||
+        !brokerProof.success || brokerProof.changed ||
+        brokerProof.driverRollbackAuthorized || !brokerProof.diagnostic.empty()) {
+        SetError(&outcome.error, L"self-test-broker-diagnostic", ERROR_INVALID_DATA,
+            L"diagnostic text overrode a canonical broker success proof");
+        return outcome;
+    }
+    brokerProof = {};
+    brokerProofError = {};
+    if (!ParseBrokerCommitProof(
+            brokerPreflightFailure + std::string(kBrokerDiagnosticPrefix) + "unterminated",
+            4, &brokerProof, &brokerProofError) ||
+        !brokerProof.diagnostic.empty() || brokerProof.success || brokerProof.changed ||
+        !brokerProof.driverRollbackAuthorized) {
+        SetError(&outcome.error, L"self-test-broker-diagnostic", ERROR_INVALID_DATA,
+            L"unterminated diagnostic changed canonical broker proof authority");
         return outcome;
     }
     brokerProof = {};

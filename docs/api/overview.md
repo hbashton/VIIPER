@@ -193,7 +193,7 @@ kept matched.
         "abiMajor": 1,
         "abiMinor": 10,
         "capabilities": 13,
-        "expectedDriverPackageVersion": "0.1.0.13",
+        "expectedDriverPackageVersion": "0.1.0.14",
         "loadedDriverBuildIdentity": "<64 lowercase hexadecimal characters returned by the loaded kernel>",
         "maxDevices": 32,
         "maxDescriptorBytes": 262144,

@@ -41,6 +41,10 @@ $requiredContracts = [ordered]@{
     'broker health transaction' = 'RunBrokerInstall\('
     'canonical broker proof parser' = 'ParseBrokerCommitProof\('
     'bounded broker proof channel' = 'kMaximumBrokerProofBytes'
+    'bounded sanitized broker diagnostic' = 'SanitizeBrokerDiagnostic\('
+    'separate nested application exit reporting' = 'nestedExitCode='
+    'broker failure Win32 mapping' = 'SetError\(error, phase, ERROR_INSTALL_FAILURE'
+    'ambiguous broker diagnostic rejection' = 'diagnosticRejected = true'
     'explicit inherited broker handles' = 'PROC_THREAD_ATTRIBUTE_HANDLE_LIST'
     'indeterminate broker wait retention' = 'GetExitCodeProcess\(processHandle\.get\(\), &observedExit\)'
     'production broker requirement' = 'broker-required'
@@ -182,6 +186,10 @@ if ($source -match 'TerminateProcess\(') {
 
 if ($source -match '--expected-(?:token|broker)-sha256') {
     throw 'ViiperUdeCtl retained obsolete nested Kong SHA-256 option spelling.'
+}
+
+if ($source -match 'SetError\(error,\s*L"broker-health",\s*exitCode') {
+    throw 'Nested broker application exits must not be mislabeled as Win32 errors.'
 }
 
 if ($source -match 'std::filesystem::copy_file') {

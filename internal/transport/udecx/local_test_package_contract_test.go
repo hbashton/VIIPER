@@ -2,7 +2,9 @@ package udecx
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -131,6 +133,26 @@ func TestLocalTestPackageUsesFullTransactionalNativeBackend(t *testing.T) {
 		"Restart, rerun this identical install command",
 		"[switch]$PreflightOnly",
 		"operation=local-test-preflight",
+		"ViiperLocalTestCertificateStore",
+		"CertAddEncodedCertificateToStore(",
+		"CertFindCertificateInStore(",
+		"CertDeleteCertificateFromStore(found)",
+		"CERT_STORE_ADD_NEW",
+		"CRYPT_E_NOT_FOUND",
+		"Get-ExactLocalTestTrustState",
+		"$addedStores.Add($storeName)",
+		"[Security.Cryptography.X509Certificates.OpenFlags]::ReadOnly",
+		"action=verify-add result=present",
+		"action=verify-cleanup result=absent",
+		"LocalMachine\\$storeName trust cleanup failed during $cleanupAction.",
+		"ExactSpelling = true",
+		"[Parameter(Mandatory = $true)][int]$ProcessExitCode",
+		"[int]::TryParse($match.Groups['exit'].Value, [ref]$proofExitCode)",
+		"$proofExitCode -ne $ProcessExitCode",
+		"-Lines $output -ProcessExitCode $exitCode",
+		"$certificateStoreOpenMethod = [ViiperLocalTestCertificateStore].GetMethod(",
+		"$certificateStoreOpenImport.ExactSpelling",
+		"does not bind the exact CertOpenStore entry point",
 	} {
 		if !strings.Contains(installer, required) {
 			t.Fatalf("local-test installer omitted %q", required)
@@ -158,10 +180,56 @@ func TestLocalTestPackageUsesFullTransactionalNativeBackend(t *testing.T) {
 		"'--expected-cat-sha256'",
 		"GetSecurityDescriptorBinaryForm",
 		"BinaryLength",
+		"$store.Add($certificate)",
+		"$store.Remove(",
 	} {
 		if strings.Contains(installer, forbidden) {
 			t.Fatalf("local-test elevated path retained unsafe dependency %q", forbidden)
 		}
+	}
+
+	cleanupStart := strings.Index(installer, "function Remove-NewLocalTestTrust")
+	cleanupEnd := strings.Index(installer, "function Test-SettledLocalTestFailure")
+	if cleanupStart < 0 || cleanupEnd <= cleanupStart {
+		t.Fatal("local-test installer trust cleanup function is missing or malformed")
+	}
+	cleanup := installer[cleanupStart:cleanupEnd]
+	remove := strings.Index(cleanup, "[ViiperLocalTestCertificateStore]::Remove(")
+	verify := strings.LastIndex(cleanup, "Get-ExactLocalTestTrustState -StoreName $storeName")
+	absence := strings.Index(cleanup, "if ($cleanupState.ExactCount -ne 0)")
+	if remove < 0 || verify <= remove || absence <= verify {
+		t.Fatal("local-test installer does not verify persisted exact-certificate absence after native removal")
+	}
+	if strings.Count(cleanup, "catch {") != 1 ||
+		strings.Index(cleanup, "$removalErrors.Add(") < strings.Index(cleanup, "catch {") {
+		t.Fatal("local-test installer does not independently aggregate per-store cleanup failures")
+	}
+	preflightStart := strings.Index(installer, "if ($PreflightOnly) {")
+	interopCompile := strings.Index(installer, "if (-not ('ViiperLocalTestCertificateStore' -as [type])) {")
+	interopVerify := strings.Index(installer, "$certificateStoreOpenMethod = [ViiperLocalTestCertificateStore].GetMethod(")
+	preflightSuccess := strings.Index(installer,
+		"Write-Output 'result=success operation=local-test-preflight changed=0 rebootRequired=0 rollback=not-needed exitCode=0'")
+	trustAddCall := strings.Index(installer, "[ViiperLocalTestCertificateStore]::Add(")
+	trustRemoveCall := strings.Index(installer, "[ViiperLocalTestCertificateStore]::Remove(")
+	if preflightStart < 0 || interopCompile <= preflightStart || interopVerify <= interopCompile ||
+		preflightSuccess <= interopVerify || trustAddCall <= preflightSuccess ||
+		trustRemoveCall <= preflightSuccess {
+		t.Fatal("local-test preflight can return success before compiling and inspecting the exact certificate-store interop")
+	}
+	if strings.Contains(installer[preflightStart:interopCompile], "return") {
+		t.Fatal("local-test preflight can return before compiling the exact certificate-store interop")
+	}
+	settledStart := strings.Index(installer, "function Test-SettledLocalTestFailure")
+	settledEnd := strings.Index(installer, "$trustCommitted = $false")
+	if settledStart < 0 || settledEnd <= settledStart {
+		t.Fatal("local-test installer settled-failure predicate is missing or malformed")
+	}
+	settled := installer[settledStart:settledEnd]
+	parseExit := strings.Index(settled, "[int]::TryParse($match.Groups['exit'].Value, [ref]$proofExitCode)")
+	bindExit := strings.Index(settled, "$proofExitCode -ne $ProcessExitCode")
+	classify := strings.Index(settled, "$match.Groups['changed'].Value -ceq '0'")
+	if parseExit < 0 || bindExit <= parseExit || classify <= bindExit {
+		t.Fatal("local-test installer classifies settled proof before binding it to the observed child exit")
 	}
 
 	packageCommand := read("internal", "cmd", "native_package.go")
@@ -221,6 +289,73 @@ func TestLocalTestPackageUsesFullTransactionalNativeBackend(t *testing.T) {
 	if strings.Contains(helperSource,
 		"GUID action = DRIVER_ACTION_VERIFY;") {
 		t.Fatal("native helper incorrectly uses the WHQL-only policy for test catalog membership")
+	}
+}
+
+func TestLocalTestSettledFailureRequiresObservedExitMatch(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows PowerShell contract")
+	}
+
+	root := filepath.Join("..", "..", "..")
+	installer, err := filepath.Abs(filepath.Join(
+		root, "native", "udecx", "tools", "Install-ViiperUdeLocalTest.ps1"))
+	if err != nil {
+		t.Fatalf("resolve local-test installer: %v", err)
+	}
+	powerShell := filepath.Join(
+		os.Getenv("SystemRoot"), "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+	if _, err := os.Stat(powerShell); err != nil {
+		t.Fatalf("locate Windows PowerShell: %v", err)
+	}
+
+	const behaviorContract = `
+$ErrorActionPreference = 'Stop'
+$source = Get-Content -LiteralPath $env:VIIPER_INSTALLER_CONTRACT_PATH -Raw
+$csharp = [regex]::Match(
+    $source, "(?s)Add-Type -Language CSharp -TypeDefinition @'\r?\n(?<source>.*?)\r?\n'@").Groups['source'].Value
+if ([string]::IsNullOrEmpty($csharp)) { throw 'Embedded certificate-store source was not found.' }
+Add-Type -Language CSharp -TypeDefinition $csharp
+$openStore = [ViiperLocalTestCertificateStore].GetMethod(
+    'CertOpenStore', [Reflection.BindingFlags]'NonPublic,Static')
+$import = $openStore.GetCustomAttributes(
+    [Runtime.InteropServices.DllImportAttribute], $false)[0]
+if ($import.Value -cne 'crypt32.dll' -or -not $import.ExactSpelling -or
+    $import.CharSet -ne [Runtime.InteropServices.CharSet]::Unicode) {
+    throw 'CertOpenStore P/Invoke metadata does not name the exact native entry point.'
+}
+$start = $source.IndexOf('function Test-SettledLocalTestFailure')
+$end = $source.IndexOf('$trustCommitted = $false', $start)
+if ($start -lt 0 -or $end -le $start) { throw 'Settled-failure predicate was not found.' }
+Invoke-Expression $source.Substring($start, $end - $start)
+$settled = @(
+    'result=error operation=install changed=1 rebootRequired=0 rollback=succeeded exitCode=1 phase="broker-health"'
+)
+if (-not (Test-SettledLocalTestFailure -Lines $settled -ProcessExitCode 1)) {
+    throw 'Matching settled proof was rejected.'
+}
+$retainTrustOnFailure = $true
+if (Test-SettledLocalTestFailure -Lines $settled -ProcessExitCode 4) {
+    $retainTrustOnFailure = $false
+}
+if (-not $retainTrustOnFailure) {
+    throw 'Mismatched proof exit incorrectly authorized trust removal.'
+}
+$preflight = @(
+    'result=error operation=install changed=0 rebootRequired=0 rollback=not-needed exitCode=4 phase="preflight"'
+)
+if (-not (Test-SettledLocalTestFailure -Lines $preflight -ProcessExitCode 4)) {
+    throw 'Matching settled preflight proof was rejected.'
+}
+if (Test-SettledLocalTestFailure -Lines $preflight -ProcessExitCode 1) {
+    throw 'Mismatched preflight proof was accepted.'
+}
+`
+	command := exec.Command(
+		powerShell, "-NoProfile", "-NonInteractive", "-Command", behaviorContract)
+	command.Env = append(os.Environ(), "VIIPER_INSTALLER_CONTRACT_PATH="+installer)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("settled-failure behavior contract failed: %v\n%s", err, output)
 	}
 }
 
