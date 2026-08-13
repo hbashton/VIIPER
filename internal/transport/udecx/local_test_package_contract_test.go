@@ -162,6 +162,14 @@ func TestLocalTestPackageUsesFullTransactionalNativeBackend(t *testing.T) {
 			"    if (required == 0 || GetLastError() != ERROR_INSUFFICIENT_BUFFER)") {
 		t.Fatal("native helper still treats a successful SetupGetStringFieldW size query as failure")
 	}
+	if strings.Count(helperSource,
+		"code != ERROR_AUTHENTICODE_TRUSTED_PUBLISHER") != 2 {
+		t.Fatal("native helper does not recognize SetupAPI's exact trusted-Authenticode success classification")
+	}
+	if strings.Contains(helperSource,
+		"ERROR_AUTHENTICODE_TRUST_NOT_ESTABLISHED") {
+		t.Fatal("native helper accepts an Authenticode publisher that is not in TrustedPublisher")
+	}
 }
 
 func TestLocalTestValidationCannotWeakenProduction(t *testing.T) {

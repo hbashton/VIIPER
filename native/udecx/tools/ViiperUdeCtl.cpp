@@ -1243,7 +1243,16 @@ bool VerifyInfSignature(
     SP_INF_SIGNER_INFO_W signer{};
     signer.cbSize = sizeof(signer);
     if (!SetupVerifyInfFileW(infPath.c_str(), nullptr, &signer)) {
-        return SetLastErrorDetail(error, L"inf-signature");
+        const DWORD code = GetLastError();
+        // SetupAPI reports a valid non-WHQL Authenticode package by returning
+        // FALSE with this classification. The local-test route has already
+        // installed the exact source-bound signer into TrustedPublisher; its
+        // manifest validation below still proves that exact certificate and
+        // the INF/SYS membership in the exact catalog. Production separately
+        // requires the Microsoft hardware publisher and never relies on this.
+        if (code != ERROR_AUTHENTICODE_TRUSTED_PUBLISHER) {
+            return SetError(error, L"inf-signature", code);
+        }
     }
     if (signer.CatalogFile[0] == L'\0' || signer.DigitalSigner[0] == L'\0') {
         return SetError(error, L"inf-signature", ERROR_INVALID_DATA,
@@ -1388,7 +1397,10 @@ bool VerifyLocalTestPackageSigner(
     SP_INF_SIGNER_INFO_W signer{};
     signer.cbSize = sizeof(signer);
     if (!SetupVerifyInfFileW(infPath.c_str(), nullptr, &signer)) {
-        return SetLastErrorDetail(error, L"inf-local-test-signature");
+        const DWORD code = GetLastError();
+        if (code != ERROR_AUTHENTICODE_TRUSTED_PUBLISHER) {
+            return SetError(error, L"inf-local-test-signature", code);
+        }
     }
     if (signer.CatalogFile[0] == L'\0' || signer.DigitalSigner[0] == L'\0') {
         return SetError(error, L"inf-local-test-signature", ERROR_INVALID_DATA,
