@@ -188,6 +188,8 @@ func TestNativePackageProductionSourceContract(t *testing.T) {
 		"LoadLibraryExW", "LOAD_LIBRARY_SEARCH_SYSTEM32", "GetProcAddress",
 		"ValidateExactPackageDirectory", "Sha256Handle(manifest.get()",
 		"RequestBrokerQuiescence", "SignalBrokerHandoff",
+		"requirePristineRuntime", "IOCTL_VIIPER_UDE_QUERY_STATS",
+		"upgrade-runtime-reboot-boundary",
 		"--broker-quiesce-request-handle", "--broker-quiesce-ready-handle",
 		"--broker-quiesce-abort-handle", "--broker-handoff-handle",
 	}
@@ -211,6 +213,9 @@ func TestNativePackageProductionSourceContract(t *testing.T) {
 		t.Error("driver helper lost exact preinstalled-driver selection and DiInstallDevice binding")
 	}
 	upgradeRemove := strings.Index(helperSource, `L"upgrade-deadline-before-device-removal"`)
+	upgradeQuiesce := strings.Index(helperSource, "RequestBrokerQuiescence(options")
+	upgradePristine := strings.Index(helperSource,
+		"options.transactionDeadlineUnixMs, nullptr, &outcome.error, true")
 	upgradeAbsent := strings.Index(helperSource, "CaptureSnapshot(&afterRemoval")
 	upgradeStage := strings.Index(helperSource, "DiInstallDriverW(nullptr, candidate.infPath.c_str()")
 	upgradeIdentity := strings.Index(helperSource, "ExactRootRegistrationMode::Upgrade")
@@ -221,10 +226,11 @@ func TestNativePackageProductionSourceContract(t *testing.T) {
 			upgradeBind = upgradeIdentity + relative
 		}
 	}
-	if upgradeRemove < 0 || upgradeAbsent <= upgradeRemove ||
+	if upgradeQuiesce < 0 || upgradePristine <= upgradeQuiesce ||
+		upgradeRemove <= upgradePristine || upgradeAbsent <= upgradeRemove ||
 		upgradeStage <= upgradeAbsent || upgradeIdentity <= upgradeStage ||
 		upgradeBind <= upgradeIdentity {
-		t.Error("driver upgrade no longer removes and proves the captured root absent before staging, exact-identity recreation, and binding")
+		t.Error("driver upgrade no longer quiesces the broker and proves a pristine runtime before removal, absence proof, staging, exact-identity recreation, and binding")
 	}
 	if strings.Contains(windowsSource, `strings.Contains(text, "result=success operation=install")`) {
 		t.Error("native package install must parse one exact helper outcome instead of accepting a success substring")

@@ -786,7 +786,7 @@ try {
         throw "Local VIIPER driver transaction failed with exit code $exitCode."
     }
     if ($exitCode -eq 3010) {
-        Write-Warning 'The attempted native transaction was safely rolled back and requires a reboot. Restart, rerun this identical install command, and proceed to live validation only after it returns exit 0.'
+        Write-Warning 'The native transaction stopped at a safe reboot boundary before mutation or after successful rollback. Restart, rerun this identical install command before creating another virtual device, and proceed to live validation only after it returns exit 0.'
         exit 3010
     }
 }

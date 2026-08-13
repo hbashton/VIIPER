@@ -2434,7 +2434,8 @@ bool RegisterRootDeviceExact(
 bool VerifyAbiHealth(
     uint64_t deadlineUnixMs,
     const std::string* expectedBuildIdentity,
-    Error* error) {
+    Error* error,
+    bool requirePristineRuntime = false) {
     DeviceInfoSet set(SetupDiGetClassDevsW(
         &kViiperInterfaceGuid, nullptr, nullptr, DIGCF_PRESENT | DIGCF_DEVICEINTERFACE));
     if (!set) {
@@ -2589,6 +2590,100 @@ bool VerifyAbiHealth(
             loadedBuildIdentity != *expectedBuildIdentity)) {
         return SetError(error, L"abi-negotiate", ERROR_REVISION_MISMATCH,
             L"loaded driver health response does not match the source-bound package identity");
+    }
+    if (requirePristineRuntime) {
+        VIIPER_UDE_STATS stats{};
+        DWORD statsReturned = 0;
+        WinHandle statsEvent(CreateEventW(nullptr, TRUE, FALSE, nullptr));
+        if (!statsEvent) {
+            return SetLastErrorDetail(error, L"upgrade-pristine-stats-event");
+        }
+        OVERLAPPED statsOverlapped{};
+        statsOverlapped.hEvent = statsEvent.get();
+        const BOOL statsCompleted = DeviceIoControl(
+            device.get(), IOCTL_VIIPER_UDE_QUERY_STATS,
+            nullptr, 0, &stats, sizeof(stats), &statsReturned, &statsOverlapped);
+        if (!statsCompleted && GetLastError() != ERROR_IO_PENDING) {
+            return SetLastErrorDetail(error, L"upgrade-pristine-stats");
+        }
+        if (!statsCompleted) {
+            const uint64_t now = CurrentUnixMilliseconds();
+            if (deadlineUnixMs <= now) {
+                const BOOL cancelled = CancelIoEx(device.get(), &statsOverlapped);
+                const DWORD cancelError = cancelled ? ERROR_SUCCESS : GetLastError();
+                const DWORD drain = WaitForSingleObject(statsEvent.get(), kCancelledIoDrainMs);
+                if ((!cancelled && cancelError != ERROR_NOT_FOUND) || drain != WAIT_OBJECT_0) {
+                    return SetError(error, L"upgrade-pristine-stats-drain",
+                        !cancelled && cancelError != ERROR_NOT_FOUND
+                            ? cancelError : ERROR_OPERATION_ABORTED,
+                        L"expired pristine-runtime query could not be cancelled and drained safely");
+                }
+                DWORD ignored = 0;
+                GetOverlappedResult(device.get(), &statsOverlapped, &ignored, FALSE);
+                return SetError(error, L"upgrade-pristine-stats-timeout", ERROR_TIMEOUT,
+                    L"pristine-runtime query exceeded the package transaction deadline");
+            }
+            const uint64_t remaining = deadlineUnixMs - now;
+            const DWORD waitMilliseconds = static_cast<DWORD>(
+                std::min<uint64_t>(remaining, static_cast<uint64_t>(MAXDWORD - 1)));
+            const DWORD wait = WaitForSingleObject(statsEvent.get(), waitMilliseconds);
+            if (wait == WAIT_TIMEOUT) {
+                const BOOL cancelled = CancelIoEx(device.get(), &statsOverlapped);
+                const DWORD cancelError = cancelled ? ERROR_SUCCESS : GetLastError();
+                const DWORD drain = WaitForSingleObject(statsEvent.get(), kCancelledIoDrainMs);
+                if (drain == WAIT_OBJECT_0) {
+                    DWORD ignored = 0;
+                    GetOverlappedResult(device.get(), &statsOverlapped, &ignored, FALSE);
+                }
+                if (!cancelled && cancelError != ERROR_NOT_FOUND) {
+                    return SetError(error, L"upgrade-pristine-stats-cancel", cancelError,
+                        L"timed-out pristine-runtime query could not be cancelled");
+                }
+                if (drain != WAIT_OBJECT_0) {
+                    return SetError(error, L"upgrade-pristine-stats-drain",
+                        ERROR_OPERATION_ABORTED,
+                        L"timed-out pristine-runtime query did not drain safely");
+                }
+                return SetError(error, L"upgrade-pristine-stats-timeout", ERROR_TIMEOUT,
+                    L"pristine-runtime query exceeded the package transaction deadline");
+            }
+            if (wait != WAIT_OBJECT_0) {
+                const DWORD waitError = GetLastError();
+                CancelIoEx(device.get(), &statsOverlapped);
+                const DWORD drain = WaitForSingleObject(statsEvent.get(), kCancelledIoDrainMs);
+                if (drain != WAIT_OBJECT_0) {
+                    return SetError(error, L"upgrade-pristine-stats-drain",
+                        ERROR_OPERATION_ABORTED,
+                        L"failed pristine-runtime wait could not be drained safely");
+                }
+                SetLastError(waitError);
+                return SetLastErrorDetail(error, L"upgrade-pristine-stats-wait");
+            }
+            if (!GetOverlappedResult(
+                    device.get(), &statsOverlapped, &statsReturned, FALSE)) {
+                return SetLastErrorDetail(error, L"upgrade-pristine-stats-result");
+            }
+        }
+        if (statsReturned != sizeof(stats) || stats.Header.Magic != VIIPER_UDE_MAGIC ||
+            stats.Header.Major != VIIPER_UDE_ABI_MAJOR ||
+            stats.Header.Minor != VIIPER_UDE_ABI_MINOR ||
+            stats.Header.Size != sizeof(stats) || stats.Header.Flags != 0) {
+            return SetError(error, L"upgrade-pristine-stats", ERROR_REVISION_MISMATCH,
+                L"loaded driver returned an invalid pristine-runtime statistics record");
+        }
+        if (stats.OperationsDequeued != 0 || stats.OperationsCompleted != 0 ||
+            stats.OperationsCancelled != 0 || stats.OperationsPurged != 0 ||
+            stats.LateCompletions != 0 || stats.InvalidMessages != 0 ||
+            stats.QueueExhaustions != 0 || stats.IsoPackets != 0 ||
+            stats.BytesToDevice != 0 || stats.BytesFromDevice != 0 ||
+            stats.NotificationEvents != 0 || stats.NotificationEventOverflows != 0 ||
+            stats.ActiveDevices != 0 || stats.PendingOperations != 0 ||
+            stats.WaitingDequeues != 0 || stats.CleanupRetries != 0 ||
+            stats.InputReportsSubmitted != 0 || stats.InputReportsCompleted != 0) {
+            return SetError(error, L"upgrade-runtime-reboot-boundary",
+                ERROR_SUCCESS_REBOOT_REQUIRED,
+                L"the loaded native bus has serviced virtual-device work since boot; restart Windows and rerun the identical package command before creating another virtual device");
+        }
     }
     return true;
 }
@@ -3627,7 +3722,24 @@ Outcome Install(const InstallOptions& options) {
         return outcome;
     }
 
-    if (disposition == CandidateDisposition::InstallRequired) {
+    // UdeCx child deletion is asynchronous. Older installed images could
+    // release their logical device slot before framework teardown settled,
+    // leaving DiUninstallDevice blocked indefinitely even though the broker
+    // reported an empty bus. Once the trusted broker is stopped, require a
+    // zero-lifetime-work runtime before replacing an existing root. A restart
+    // resets these counters and guarantees that no pre-upgrade child object
+    // can survive into root removal.
+    if (disposition == CandidateDisposition::InstallRequired &&
+        !prior.devices.empty() && outcome.error.code == ERROR_SUCCESS &&
+        !VerifyAbiHealth(
+            options.transactionDeadlineUnixMs, nullptr, &outcome.error, true)) {
+        if (outcome.error.code == ERROR_SUCCESS_REBOOT_REQUIRED) {
+            outcome.rebootRequired = true;
+        }
+    }
+
+    if (outcome.error.code == ERROR_SUCCESS &&
+        disposition == CandidateDisposition::InstallRequired) {
         // Updating a running root bus in place makes DiInstallDriverW report a
         // reboot even though this helper immediately restores the old package.
         // Remove only the exact captured VIIPER-owned devnode first, prove its
@@ -3789,7 +3901,9 @@ Outcome Install(const InstallOptions& options) {
         return outcome;
     }
     if (outcome.error.code != ERROR_SUCCESS) {
-        outcome.exitCode = ExitCode::PreflightRejected;
+        outcome.exitCode = outcome.rebootRequired &&
+                outcome.error.code == ERROR_SUCCESS_REBOOT_REQUIRED
+            ? ExitCode::RebootRequired : ExitCode::PreflightRejected;
         return outcome;
     }
 
@@ -5176,7 +5290,7 @@ Outcome SelfTest() {
             "0123456789abcdef0123456789abcdef01234567",
             &buildIdentity, &outcome.error) ||
         buildIdentity !=
-            "a4d8b6a8422c49eb4a8e68db0ed6f741f765a3990cdaf2c08752fedfa3e185fb") {
+            "6e25b6972fd774d00cc3c081dfe2244fa6ad24ddf1551012c0297c741da849b5") {
         if (outcome.error.code == ERROR_SUCCESS) {
             SetError(&outcome.error, L"self-test-build-identity", ERROR_INVALID_DATA);
         }

@@ -114,7 +114,10 @@ func parseNativePackageInstallProof(output string, processExitCode int) (nativeP
 			return nativePackageInstallProof{}, errors.New("driver helper emitted an invalid success install outcome")
 		}
 	case nativePackageRebootRequiredCode:
-		if proof.success || !proof.changed || !proof.rebootRequired || proof.rollback != "succeeded" {
+		settledBeforeMutation := !proof.changed && proof.rollback == "not-needed"
+		settledAfterRollback := proof.changed && proof.rollback == "succeeded"
+		if proof.success || !proof.rebootRequired ||
+			(!settledBeforeMutation && !settledAfterRollback) {
 			return nativePackageInstallProof{}, errors.New("driver helper emitted an invalid reboot-boundary install outcome")
 		}
 	case 4:

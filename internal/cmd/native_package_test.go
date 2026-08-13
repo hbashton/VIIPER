@@ -265,6 +265,10 @@ func TestNativePackageInstallProofFailsClosed(t *testing.T) {
 			output: `result=error operation=install changed=1 rebootRequired=1 rollback=succeeded exitCode=3010 phase="broker-reboot-boundary" win32Error=3010 message="restart required"` + "\n",
 		},
 		{
+			name: "pristine runtime reboot boundary", processExit: nativePackageRebootRequiredCode, wantReboot: true,
+			output: `result=error operation=install changed=0 rebootRequired=1 rollback=not-needed exitCode=3010 phase="upgrade-runtime-reboot-boundary" win32Error=3010 message="restart required"` + "\n",
+		},
+		{
 			name: "settled failure", processExit: 1,
 			output: "result=error operation=install changed=1 rebootRequired=0 rollback=succeeded exitCode=1\n",
 		},
@@ -291,6 +295,10 @@ func TestNativePackageInstallProofFailsClosed(t *testing.T) {
 		{
 			name: "unsafe reboot", processExit: nativePackageRebootRequiredCode, wantErr: true,
 			output: "result=error operation=install changed=1 rebootRequired=1 rollback=failed exitCode=3010\n",
+		},
+		{
+			name: "unsafe pre-mutation reboot rollback", processExit: nativePackageRebootRequiredCode, wantErr: true,
+			output: "result=error operation=install changed=0 rebootRequired=1 rollback=succeeded exitCode=3010\n",
 		},
 	}
 	for _, test := range cases {
