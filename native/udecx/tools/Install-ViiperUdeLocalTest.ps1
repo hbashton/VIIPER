@@ -97,13 +97,40 @@ function Initialize-ProtectedStagingDirectory {
     if (($directory.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
         throw "Local-test staging directory is a reparse point: '$Path'."
     }
+    $directory.SetAccessControl($expectedSecurity)
     $actualSecurity = $directory.GetAccessControl(
-        [Security.AccessControl.AccessControlSections]::All)
-    $expectedBinary = $expectedSecurity.GetSecurityDescriptorBinaryForm()
-    $actualBinary = $actualSecurity.GetSecurityDescriptorBinaryForm()
-    if ([Convert]::ToBase64String($actualBinary) -cne
-        [Convert]::ToBase64String($expectedBinary)) {
-        throw "Local-test staging directory ACL verification failed for '$Path'."
+        [Security.AccessControl.AccessControlSections]::Owner -bor
+        [Security.AccessControl.AccessControlSections]::Access)
+    if (-not $actualSecurity.AreAccessRulesProtected) {
+        throw "Local-test staging directory inherited an unsafe DACL for '$Path'."
+    }
+    $owner = $actualSecurity.GetOwner([Security.Principal.SecurityIdentifier])
+    if ($owner.Value -cne 'S-1-5-32-544') {
+        throw "Local-test staging directory has an unexpected owner for '$Path'."
+    }
+    $rules = @($actualSecurity.GetAccessRules(
+        $true, $true, [Security.Principal.SecurityIdentifier]))
+    if ($rules.Count -ne 2) {
+        throw "Local-test staging directory has an unexpected access-rule count for '$Path'."
+    }
+    $expectedInheritance =
+        [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
+        [Security.AccessControl.InheritanceFlags]::ObjectInherit
+    foreach ($expectedSID in @('S-1-5-18', 'S-1-5-32-544')) {
+        $matches = @($rules | Where-Object {
+            $_.IdentityReference.Value -ceq $expectedSID
+        })
+        if ($matches.Count -ne 1) {
+            throw "Local-test staging directory is missing an exact protected principal for '$Path'."
+        }
+        $rule = $matches[0]
+        if ($rule.IsInherited -or
+            $rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
+            $rule.FileSystemRights -ne [Security.AccessControl.FileSystemRights]::FullControl -or
+            $rule.InheritanceFlags -ne $expectedInheritance -or
+            $rule.PropagationFlags -ne [Security.AccessControl.PropagationFlags]::None) {
+            throw "Local-test staging directory has an unexpected access rule for '$Path'."
+        }
     }
 }
 

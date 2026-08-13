@@ -93,11 +93,17 @@ func TestLocalTestPackageUsesFullTransactionalNativeBackend(t *testing.T) {
 		"$lock.installerScriptSha256 -cne $actualInstallerScriptSha256",
 		"$lockAlgorithm.ComputeHash($lockBytes)",
 		"@(Compare-Object -ReferenceObject $wanted -DifferenceObject $actual -CaseSensitive).Count",
-		"$expectedSecurity.GetSecurityDescriptorBinaryForm()",
-		"$actualSecurity.GetSecurityDescriptorBinaryForm()",
 		"out-of-band workflow digest",
 		"O:BAG:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)",
 		"[IO.Directory]::CreateDirectory($Path, $expectedSecurity)",
+		"$directory.SetAccessControl($expectedSecurity)",
+		"$actualSecurity.AreAccessRulesProtected",
+		"$actualSecurity.GetOwner([Security.Principal.SecurityIdentifier])",
+		"$actualSecurity.GetAccessRules(",
+		"@('S-1-5-18', 'S-1-5-32-544')",
+		"[Security.AccessControl.FileSystemRights]::FullControl",
+		"[Security.AccessControl.InheritanceFlags]::ContainerInherit",
+		"[Security.AccessControl.InheritanceFlags]::ObjectInherit",
 		"Copy-ExactBrokerToProtectedStage",
 		"[IO.FileShare]::Read",
 		"[IO.FileOptions]::WriteThrough",
@@ -146,6 +152,8 @@ func TestLocalTestPackageUsesFullTransactionalNativeBackend(t *testing.T) {
 		"'--expected-inf-sha256'",
 		"'--expected-sys-sha256'",
 		"'--expected-cat-sha256'",
+		"GetSecurityDescriptorBinaryForm",
+		"BinaryLength",
 	} {
 		if strings.Contains(installer, forbidden) {
 			t.Fatalf("local-test elevated path retained unsafe dependency %q", forbidden)
