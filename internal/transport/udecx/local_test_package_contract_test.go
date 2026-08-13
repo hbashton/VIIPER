@@ -158,7 +158,8 @@ func TestLocalTestPackageUsesFullTransactionalNativeBackend(t *testing.T) {
 		t.Fatal("native helper does not honor SetupGetStringFieldW's successful size-query contract")
 	}
 	if strings.Contains(helperSource,
-		`GetLastError() != ERROR_INSUFFICIENT_BUFFER`) {
+		"SetupGetStringFieldW(&context, field, nullptr, 0, &required);\n"+
+			"    if (required == 0 || GetLastError() != ERROR_INSUFFICIENT_BUFFER)") {
 		t.Fatal("native helper still treats a successful SetupGetStringFieldW size query as failure")
 	}
 }
