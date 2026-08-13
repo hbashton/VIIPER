@@ -2291,6 +2291,14 @@ ViiperEvtEndpointsConfigure(
 
     switch (ConfigureParams->ConfigureType) {
     case UdecxEndpointsConfigureTypeDeviceInitialize:
+        // DeviceInitialize is UdeCx's endpoint-publication boundary, not a
+        // post-enumeration device reset. It can run more than once while the
+        // child is being initialized. Completing it synchronously avoids
+        // introducing a user-mode reset dependency before Windows can finish
+        // enumerating the child; endpoint START/PURGE and later configuration
+        // changes retain their existing state and media lifecycle handling.
+        WdfRequestComplete(Request, STATUS_SUCCESS);
+        return;
     case UdecxEndpointsConfigureTypeDeviceConfigurationChange:
         status = ViiperBeginAcknowledgedDeviceReset(Device, Request);
         break;

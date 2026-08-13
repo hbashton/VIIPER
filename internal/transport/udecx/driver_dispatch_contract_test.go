@@ -14,6 +14,21 @@ func TestNativeControllerNamesDeviceBeforeAssigningSecurity(t *testing.T) {
 		"status = WdfDeviceInitAssignSDDLString(DeviceInit, &sddl);")
 }
 
+func TestNativeDeviceInitializeDoesNotEnterResetProtocol(t *testing.T) {
+	device := normalizedContract(nativeCFunction(t,
+		nativeContractSource(t, "native", "udecx", "driver", "Device.c"),
+		"ViiperEvtEndpointsConfigure"))
+	requireContractOrder(t, device,
+		"case UdecxEndpointsConfigureTypeDeviceInitialize:",
+		"WdfRequestComplete(Request, STATUS_SUCCESS);",
+		"return;",
+		"case UdecxEndpointsConfigureTypeDeviceConfigurationChange:",
+		"status = ViiperBeginAcknowledgedDeviceReset(Device, Request);")
+	if strings.Count(device, "ViiperBeginAcknowledgedDeviceReset(Device, Request)") != 1 {
+		t.Fatal("initial endpoint publication can enter the post-enumeration reset protocol")
+	}
+}
+
 func TestNativeBrokerDispatchUsesIndependentCursorAndEndpointFIFO(t *testing.T) {
 	broker := nativeContractSource(t, "native", "udecx", "driver", "Broker.c")
 	device := nativeContractSource(t, "native", "udecx", "driver", "Device.c")
