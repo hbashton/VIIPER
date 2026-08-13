@@ -92,6 +92,7 @@ func TestLocalTestPackageUsesFullTransactionalNativeBackend(t *testing.T) {
 		"$installerScriptStream",
 		"$lock.installerScriptSha256 -cne $actualInstallerScriptSha256",
 		"$lockAlgorithm.ComputeHash($lockBytes)",
+		"@(Compare-Object -ReferenceObject $wanted -DifferenceObject $actual -CaseSensitive).Count",
 		"out-of-band workflow digest",
 		"O:BAG:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)",
 		"[IO.Directory]::CreateDirectory($Path, $expectedSecurity)",

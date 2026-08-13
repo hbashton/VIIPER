@@ -75,7 +75,7 @@ function Assert-ExactDirectoryEntries {
         ForEach-Object Name | Sort-Object -CaseSensitive)
     $wanted = @($Expected | Sort-Object -CaseSensitive)
     if ($actual.Count -ne $wanted.Count -or
-        (Compare-Object -ReferenceObject $wanted -DifferenceObject $actual -CaseSensitive).Count -ne 0) {
+        @(Compare-Object -ReferenceObject $wanted -DifferenceObject $actual -CaseSensitive).Count -ne 0) {
         throw "Local test package directory has missing, extra, or case-mismatched entries: '$Directory'."
     }
 }
