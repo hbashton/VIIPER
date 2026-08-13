@@ -63,6 +63,25 @@ func TestNativePackageProductionSourceContract(t *testing.T) {
 			t.Errorf("Windows package orchestrator lost %q", fragment)
 		}
 	}
+	stageStart := strings.Index(windowsSource,
+		"func (t *windowsNativePackageTransaction) stageCoordinationToken() error {")
+	stageEnd := strings.Index(windowsSource,
+		"func (t *windowsNativePackageTransaction) ensureManagedPackageDirectory() error {")
+	if stageStart < 0 || stageEnd <= stageStart {
+		t.Fatal("native package coordination-token implementation is missing or malformed")
+	}
+	stageToken := windowsSource[stageStart:stageEnd]
+	closeWriter := strings.Index(stageToken, "if err := windows.CloseHandle(handle); err != nil {")
+	reopenSealed := strings.Index(stageToken, "sealed, err := lockNativePackageInput(path)")
+	rehashSealed := strings.Index(stageToken, "sealedHash, err := hashNativePackageHandle(sealed)")
+	publishSealed := strings.Index(stageToken, "t.tokenHandle = sealed")
+	if closeWriter < 0 || reopenSealed <= closeWriter || rehashSealed <= reopenSealed ||
+		publishSealed <= rehashSealed {
+		t.Fatal("native package coordination token is published before its write handle is sealed and revalidated")
+	}
+	if strings.Contains(stageToken, "t.tokenHandle = handle") {
+		t.Fatal("native package transaction retains a write-capable token handle across nested broker startup")
+	}
 	requiredUninstallWindows := []string{
 		"acquireNamedNativePackageMutex(nativePackageMutexName",
 		"acquireNativeInstallMutex(budget)",

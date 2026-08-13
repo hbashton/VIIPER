@@ -647,7 +647,12 @@ function Test-SettledLocalTestFailure {
     $pattern = '(?m)^result=error operation=install changed=(?<changed>[01]) ' +
         'rebootRequired=(?<reboot>[01]) rollback=(?<rollback>not-needed|succeeded|failed) ' +
         'exitCode=(?<exit>[0-9]+)(?: .*)?\r?$'
-    $matches = [regex]::Matches(($Lines | Out-String), $pattern)
+    # Out-String formats through the host and wraps long native proof lines at
+    # the current console width. Preserve the already-delimited child output
+    # byte-for-line instead: diagnostics may make the canonical proof much
+    # wider than the host while the rollback fields remain authoritative.
+    $proofText = [string]::Join([Environment]::NewLine, [string[]]$Lines)
+    $matches = [regex]::Matches($proofText, $pattern)
     if ($matches.Count -ne 1) {
         return $false
     }

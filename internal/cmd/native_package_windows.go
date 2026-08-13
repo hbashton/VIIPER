@@ -920,31 +920,59 @@ func (t *windowsNativePackageTransaction) stageCoordinationToken() error {
 	if err != nil {
 		return fmt.Errorf("create protected package transaction token: %w", err)
 	}
-	fail := func(failErr error) error {
-		windows.CloseHandle(handle) //nolint:errcheck
+	fail := func(owned windows.Handle, failErr error) error {
+		if owned != 0 {
+			windows.CloseHandle(owned) //nolint:errcheck
+		}
 		_ = deleteNativePackageFile(path)
 		return failErr
 	}
 	var written uint32
 	if err := windows.WriteFile(handle, content, &written, nil); err != nil {
-		return fail(err)
+		return fail(handle, err)
 	}
 	if written != uint32(len(content)) {
-		return fail(io.ErrShortWrite)
+		return fail(handle, io.ErrShortWrite)
 	}
 	if err := windows.FlushFileBuffers(handle); err != nil {
-		return fail(err)
+		return fail(handle, err)
 	}
 	if err := validateNativeSecurityDescriptor(handle, nativePackageTokenSDDL); err != nil {
-		return fail(err)
+		return fail(handle, err)
 	}
 	if err := requireSingleNativeFileLink(handle); err != nil {
-		return fail(err)
+		return fail(handle, err)
 	}
 	sum := sha256.Sum256(content)
+	// Seal the token before another process opens it. Windows share checks are
+	// symmetric: a new read-only open that specifies FILE_SHARE_READ still
+	// conflicts with this handle's existing GENERIC_WRITE access. Close the
+	// write-capable handle, reopen through the ordinary immutable-input path,
+	// and revalidate the exact bytes before publishing the path to the helper.
+	// The protected parent and token DACL exclude the unelevated race boundary;
+	// the retained read handle then prevents replacement for the transaction.
+	if err := windows.CloseHandle(handle); err != nil {
+		return fail(handle, fmt.Errorf("seal protected package transaction token: %w", err))
+	}
+	handle = 0
+	sealed, err := lockNativePackageInput(path)
+	if err != nil {
+		return fail(0, fmt.Errorf("reopen sealed package transaction token: %w", err))
+	}
+	if err := validateNativeSecurityDescriptor(sealed, nativePackageTokenSDDL); err != nil {
+		return fail(sealed, fmt.Errorf("revalidate sealed package transaction token ACL: %w", err))
+	}
+	sealedHash, err := hashNativePackageHandle(sealed)
+	if err != nil {
+		return fail(sealed, fmt.Errorf("rehash sealed package transaction token: %w", err))
+	}
+	expectedHash := hex.EncodeToString(sum[:])
+	if !strings.EqualFold(sealedHash, expectedHash) {
+		return fail(sealed, errors.New("sealed package transaction token changed during publication"))
+	}
 	t.tokenPath = path
-	t.tokenSHA256 = hex.EncodeToString(sum[:])
-	t.tokenHandle = handle
+	t.tokenSHA256 = expectedHash
+	t.tokenHandle = sealed
 	return nil
 }
 

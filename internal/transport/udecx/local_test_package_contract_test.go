@@ -147,6 +147,7 @@ func TestLocalTestPackageUsesFullTransactionalNativeBackend(t *testing.T) {
 		"LocalMachine\\$storeName trust cleanup failed during $cleanupAction.",
 		"ExactSpelling = true",
 		"[Parameter(Mandatory = $true)][int]$ProcessExitCode",
+		"[string]::Join([Environment]::NewLine, [string[]]$Lines)",
 		"[int]::TryParse($match.Groups['exit'].Value, [ref]$proofExitCode)",
 		"$proofExitCode -ne $ProcessExitCode",
 		"-Lines $output -ProcessExitCode $exitCode",
@@ -225,10 +226,16 @@ func TestLocalTestPackageUsesFullTransactionalNativeBackend(t *testing.T) {
 		t.Fatal("local-test installer settled-failure predicate is missing or malformed")
 	}
 	settled := installer[settledStart:settledEnd]
+	if strings.Contains(settled, "$Lines | Out-String") {
+		t.Fatal("local-test installer formats and host-wraps native settled-failure proof before parsing")
+	}
+	joinLines := strings.Index(settled, "[string]::Join([Environment]::NewLine, [string[]]$Lines)")
+	parseProof := strings.Index(settled, "[regex]::Matches($proofText, $pattern)")
 	parseExit := strings.Index(settled, "[int]::TryParse($match.Groups['exit'].Value, [ref]$proofExitCode)")
 	bindExit := strings.Index(settled, "$proofExitCode -ne $ProcessExitCode")
 	classify := strings.Index(settled, "$match.Groups['changed'].Value -ceq '0'")
-	if parseExit < 0 || bindExit <= parseExit || classify <= bindExit {
+	if joinLines < 0 || parseProof <= joinLines || parseExit <= parseProof ||
+		bindExit <= parseExit || classify <= bindExit {
 		t.Fatal("local-test installer classifies settled proof before binding it to the observed child exit")
 	}
 
@@ -329,10 +336,37 @@ $end = $source.IndexOf('$trustCommitted = $false', $start)
 if ($start -lt 0 -or $end -le $start) { throw 'Settled-failure predicate was not found.' }
 Invoke-Expression $source.Substring($start, $end - $start)
 $settled = @(
-    'result=error operation=install changed=1 rebootRequired=0 rollback=succeeded exitCode=1 phase="broker-health"'
+    'VIIPER: error: install native driver and broker transaction: native driver helper failed with exit 1: exit status 1:',
+    ('result=error operation=install changed=1 rebootRequired=0 rollback=succeeded exitCode=1 ' +
+        'phase="broker-preflight" win32Error=1603 nestedExitCode=4 ' +
+        'message="nested broker transaction failed after proving a settled state; nested diagnostic: ' +
+        'lock package transaction token: The process cannot access the file because it is being used by another process."')
 )
+if ($settled[1].Length -le 120) {
+    throw 'Settled proof fixture does not exceed the live host width.'
+}
 if (-not (Test-SettledLocalTestFailure -Lines $settled -ProcessExitCode 1)) {
-    throw 'Matching settled proof was rejected.'
+    throw 'Matching long settled proof was rejected.'
+}
+$retainTrustOnFailure = $true
+if (Test-SettledLocalTestFailure -Lines $settled -ProcessExitCode 1) {
+    $retainTrustOnFailure = $false
+}
+if ($retainTrustOnFailure) {
+    throw 'Matching long settled proof did not authorize trust removal.'
+}
+$cleanupCalls = 0
+$trustCommitted = $false
+try {
+    throw 'simulated post-process transaction failure'
+}
+catch {
+    if (-not $trustCommitted -and -not $retainTrustOnFailure) {
+        $cleanupCalls++
+    }
+}
+if ($cleanupCalls -ne 1) {
+    throw 'Settled rollback did not enter the trust-cleanup branch exactly once.'
 }
 $retainTrustOnFailure = $true
 if (Test-SettledLocalTestFailure -Lines $settled -ProcessExitCode 4) {

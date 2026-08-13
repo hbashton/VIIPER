@@ -8,9 +8,39 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/mgr"
 )
+
+func TestNativePackageCoordinationTokenAllowsNestedImmutableRead(t *testing.T) {
+	requireNativeMutexAdministrator(t)
+	transaction := &windowsNativePackageTransaction{parent: t.TempDir()}
+	if err := transaction.stageCoordinationToken(); err != nil {
+		t.Fatalf("stage coordination token: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := transaction.releaseCoordinationToken(); err != nil {
+			t.Errorf("release coordination token: %v", err)
+		}
+	})
+
+	// This is the exact access/share combination used by the nested broker.
+	// It failed live while the outer transaction retained a write-capable
+	// handle, even though both opens requested FILE_SHARE_READ.
+	nested, err := lockNativePackageInput(transaction.tokenPath)
+	if err != nil {
+		t.Fatalf("nested immutable token open: %v", err)
+	}
+	defer windows.CloseHandle(nested) //nolint:errcheck
+	hash, err := hashNativePackageHandle(nested)
+	if err != nil {
+		t.Fatalf("hash nested token handle: %v", err)
+	}
+	if hash != transaction.tokenSHA256 {
+		t.Fatalf("nested token hash = %s, want %s", hash, transaction.tokenSHA256)
+	}
+}
 
 func TestNativePackageRuntimePayloadExcludesCertificationPDB(t *testing.T) {
 	want := []string{"ViiperUde.inf", "ViiperUde.sys", "ViiperUde.cat"}

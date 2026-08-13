@@ -108,8 +108,8 @@ jobs:
           ./.github/scripts/Test-WorkflowSecurity.ps1
           $identity = ./native/udecx/tools/Get-ViiperUdeBuildIdentity.ps1 `
             -SourceRevision 0123456789abcdef0123456789abcdef01234567 `
-            -DriverPackageVersion 0.1.0.14 -ABIMajor 1 -ABIMinor 10 -Capabilities 13
-          if ($identity -cne 'e19b4fcd5a47dc55283e834e3718adc2965b822e192db0620666c835b6f276ab') {
+            -DriverPackageVersion 0.1.0.15 -ABIMajor 1 -ABIMinor 10 -Capabilities 13
+          if ($identity -cne 'a66fecc8ea05bd3e0b6a9e208a80cf9da7762dafa99fb8ecc3d65d4dd79efe90') {
             throw "Native build-identity generator drifted: $identity"
           }
           $expected = ((Get-Content go.mod | Where-Object { $_ -match '^go\s+' } | Select-Object -First 1) -split '\s+')[1]
