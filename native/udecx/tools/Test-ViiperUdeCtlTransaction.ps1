@@ -57,6 +57,8 @@ $requiredContracts = [ordered]@{
     'staged broker hash binding' = '--broker-sha256'
     'protected package token binding' = '--broker-token-sha256'
     'nested package broker commit' = 'native-package-broker-commit'
+    'nested broker expected token hash option' = '--expected-token-sha-256'
+    'nested broker expected executable hash option' = '--expected-broker-sha-256'
     'cooperative package deadline' = '--transaction-deadline-unix-ms'
     'same-handle manifest binding' = 'Sha256Handle\(manifest\.get\(\)'
     'final exact package enumeration' = 'ValidateExactPackageDirectory\('
@@ -176,6 +178,10 @@ if ($source -match 'SUOI_FORCEDELETE') {
 
 if ($source -match 'TerminateProcess\(') {
     throw 'ViiperUdeCtl must never hard-terminate the mutating broker transaction.'
+}
+
+if ($source -match '--expected-(?:token|broker)-sha256') {
+    throw 'ViiperUdeCtl retained obsolete nested Kong SHA-256 option spelling.'
 }
 
 if ($source -match 'std::filesystem::copy_file') {

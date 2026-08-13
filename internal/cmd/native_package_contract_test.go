@@ -120,6 +120,8 @@ func TestNativePackageProductionSourceContract(t *testing.T) {
 		"--manifest-sha256", "manifest-installer-hash", "--broker-sha256",
 		"--expected-inf-sha256", "--expected-sys-sha256", "--expected-cat-sha256",
 		"--broker-token-sha256", "native-package-broker-commit",
+		"BuildBrokerCommitCommandLine(", "--expected-token-sha-256",
+		"--expected-broker-sha-256",
 		"ParseBrokerCommitProof", "driverRollbackAuthorized", "CreatePipe(",
 		"PROC_THREAD_ATTRIBUTE_HANDLE_LIST", "kMaximumBrokerProofBytes",
 		"RollbackInstall(prior", "broker-reboot-boundary",
@@ -137,6 +139,13 @@ func TestNativePackageProductionSourceContract(t *testing.T) {
 	for _, fragment := range requiredHelper {
 		if !strings.Contains(helperSource, fragment) {
 			t.Errorf("driver helper lost %q", fragment)
+		}
+	}
+	for _, obsolete := range []string{
+		"--expected-token-sha256", "--expected-broker-sha256",
+	} {
+		if strings.Contains(helperSource, obsolete) {
+			t.Errorf("driver helper retained obsolete nested broker option %q", obsolete)
 		}
 	}
 	if strings.Contains(helperSource, "UpdateDriverForPlugAndPlayDevicesW(") {

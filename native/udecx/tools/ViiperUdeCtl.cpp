@@ -2989,6 +2989,22 @@ std::wstring QuoteWindowsArgument(const std::wstring& value) {
     return quoted;
 }
 
+std::wstring BuildBrokerCommitCommandLine(const InstallOptions& options) {
+    return QuoteWindowsArgument(options.brokerExecutable.wstring()) +
+        L" native-package-broker-commit --token-file " +
+        QuoteWindowsArgument(options.brokerToken.wstring()) +
+        L" --expected-token-sha-256 " +
+        QuoteWindowsArgument(std::wstring(
+            options.brokerTokenSha256.begin(), options.brokerTokenSha256.end())) +
+        L" --expected-broker-sha-256 " +
+        QuoteWindowsArgument(std::wstring(
+            options.brokerSha256.begin(), options.brokerSha256.end())) +
+        L" --target-user-sid " +
+        QuoteWindowsArgument(options.targetUserSid) +
+        L" --transaction-deadline-unix-ms " +
+        QuoteWindowsArgument(std::to_wstring(options.transactionDeadlineUnixMs));
+}
+
 struct BrokerCommitProof {
     bool success = false;
     bool changed = false;
@@ -3156,19 +3172,7 @@ bool RunBrokerInstall(
             L"staged native broker does not match the installer-bound SHA-256");
     }
 
-    std::wstring commandLine = QuoteWindowsArgument(options.brokerExecutable.wstring()) +
-        L" native-package-broker-commit --token-file " +
-        QuoteWindowsArgument(options.brokerToken.wstring()) +
-        L" --expected-token-sha256 " +
-        QuoteWindowsArgument(std::wstring(
-            options.brokerTokenSha256.begin(), options.brokerTokenSha256.end())) +
-        L" --expected-broker-sha256 " +
-        QuoteWindowsArgument(std::wstring(
-            options.brokerSha256.begin(), options.brokerSha256.end())) +
-        L" --target-user-sid " +
-        QuoteWindowsArgument(options.targetUserSid) +
-        L" --transaction-deadline-unix-ms " +
-        QuoteWindowsArgument(std::to_wstring(options.transactionDeadlineUnixMs));
+    std::wstring commandLine = BuildBrokerCommitCommandLine(options);
     std::vector<wchar_t> mutableCommand(commandLine.begin(), commandLine.end());
     mutableCommand.push_back(L'\0');
     SECURITY_ATTRIBUTES inheritedSecurity{};
@@ -4813,6 +4817,21 @@ Outcome Status() {
 
 Outcome SelfTest() {
     Outcome outcome;
+    InstallOptions brokerCommandOptions;
+    brokerCommandOptions.brokerExecutable = LR"(C:\Program Files\VIIPER\viiper.exe)";
+    brokerCommandOptions.brokerToken = LR"(C:\ProgramData\VIIPER\package.token)";
+    brokerCommandOptions.brokerTokenSha256 = std::string(64, 'a');
+    brokerCommandOptions.brokerSha256 = std::string(64, 'b');
+    brokerCommandOptions.targetUserSid = L"S-1-5-21-1-2-3-1001";
+    brokerCommandOptions.transactionDeadlineUnixMs = 123456789;
+    const std::wstring brokerCommandLine =
+        BuildBrokerCommitCommandLine(brokerCommandOptions);
+    if (brokerCommandLine.find(L" --expected-token-sha-256 ") == std::wstring::npos ||
+        brokerCommandLine.find(L" --expected-broker-sha-256 ") == std::wstring::npos) {
+        SetError(&outcome.error, L"self-test-broker-command", ERROR_INVALID_DATA,
+            L"nested broker command does not match the compiled Kong CLI contract");
+        return outcome;
+    }
     Version one{};
     Version two{};
     if (!ParseVersion(L"1.2.3.4", &one) || !ParseVersion(L"1.2.4.0", &two) ||
@@ -4914,7 +4933,7 @@ Outcome SelfTest() {
             "0123456789abcdef0123456789abcdef01234567",
             &buildIdentity, &outcome.error) ||
         buildIdentity !=
-            "6b904c660e130661cc64b0174b96f3442b79ccf9d177ff42b74b45a48cef912b") {
+            "21bc6734ba20f9a22601b75d8a737edf304d65aac59cfa1c1e33550b7e3602f5") {
         if (outcome.error.code == ERROR_SUCCESS) {
             SetError(&outcome.error, L"self-test-build-identity", ERROR_INVALID_DATA);
         }

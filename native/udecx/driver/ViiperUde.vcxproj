@@ -13,8 +13,8 @@
     <ProjectName>ViiperUde</ProjectName>
     <MinimumVisualStudioVersion>17.0</MinimumVisualStudioVersion>
     <Platform Condition="'$(Platform)' == ''">x64</Platform>
-    <ViiperUdeDriverDate>08/12/2026</ViiperUdeDriverDate>
-    <ViiperUdeDriverVersion>0.1.0.12</ViiperUdeDriverVersion>
+    <ViiperUdeDriverDate>08/13/2026</ViiperUdeDriverDate>
+    <ViiperUdeDriverVersion>0.1.0.13</ViiperUdeDriverVersion>
     <ViiperUdeSourceRevision Condition="'$(ViiperUdeSourceRevision)' == ''">$(VIIPER_NATIVE_SOURCE_REVISION)</ViiperUdeSourceRevision>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />

@@ -147,7 +147,7 @@ foreach ($requiredNativeGate in @(
         'tags: ["v*.*.*"]',
         'VIIPER_NATIVE_SOURCE_REVISION: ${{ github.sha }}',
         'Get-ViiperUdeBuildIdentity.ps1',
-        '6b904c660e130661cc64b0174b96f3442b79ccf9d177ff42b74b45a48cef912b',
+        '21bc6734ba20f9a22601b75d8a737edf304d65aac59cfa1c1e33550b7e3602f5',
         'Test-ViiperUdeVersionMonotonicity.ps1',
         'x64/Release/ViiperUde/ViiperUde.inf',
         'inputs.upload_release_helper == true',

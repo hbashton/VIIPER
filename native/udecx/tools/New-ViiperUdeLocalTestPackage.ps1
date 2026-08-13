@@ -196,6 +196,25 @@ if ($brokerHelpExitCode -ne 0 -or
     throw "Compiled local-test broker command contract is incompatible with the locked installer.`n$brokerHelpText"
 }
 
+# The retained native helper launches this hidden broker command directly.
+# Exercise its generated Kong option names so source-bound test artifacts
+# cannot ship a helper/broker CLI mismatch that fails after driver mutation.
+$brokerCommitHelpOutput = @(& $broker native-package-broker-commit --help 2>&1)
+$brokerCommitHelpExitCode = $LASTEXITCODE
+$brokerCommitHelpText = $brokerCommitHelpOutput -join [Environment]::NewLine
+$expectedBrokerCommitFlags = @(
+    '--token-file', '--expected-token-sha-256',
+    '--expected-broker-sha-256', '--target-user-sid',
+    '--transaction-deadline-unix-ms'
+)
+if ($brokerCommitHelpExitCode -ne 0 -or
+    @($expectedBrokerCommitFlags | Where-Object {
+        $brokerCommitHelpText -notmatch [regex]::Escape($_)
+    }).Count -ne 0 -or
+    $brokerCommitHelpText -match '--expected-(?:token|broker)-sha256') {
+    throw "Compiled nested broker command contract is incompatible with the retained helper.`n$brokerCommitHelpText"
+}
+
 # Exercise the compiled helper's exact read-only SetupAPI/INF contract before
 # publishing an installer artifact. Static source checks cannot prove the
 # Windows API's two-call buffer-sizing behavior.

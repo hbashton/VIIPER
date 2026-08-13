@@ -77,6 +77,10 @@ func TestLocalTestPackageUsesFullTransactionalNativeBackend(t *testing.T) {
 		"Local test package lock SHA-256: $lockSha256",
 		"$broker native-package-install --help",
 		"$expectedBrokerFlags",
+		"$broker native-package-broker-commit --help",
+		"$expectedBrokerCommitFlags",
+		"'--expected-token-sha-256'",
+		"'--expected-broker-sha-256'",
 		"$helper verify (Join-Path $driverDirectory 'ViiperUde.inf')",
 		"result=success operation=verify changed=0 rebootRequired=0 rollback=not-needed exitCode=0",
 	} {
@@ -163,6 +167,24 @@ func TestLocalTestPackageUsesFullTransactionalNativeBackend(t *testing.T) {
 	packageCommand := read("internal", "cmd", "native_package.go")
 	packageWindows := read("internal", "cmd", "native_package_windows.go")
 	helperSource := read("native", "udecx", "tools", "ViiperUdeCtl.cpp")
+	for _, required := range []string{
+		"BuildBrokerCommitCommandLine(",
+		`L" --expected-token-sha-256 "`,
+		`L" --expected-broker-sha-256 "`,
+		`L"self-test-broker-command"`,
+	} {
+		if !strings.Contains(helperSource, required) {
+			t.Fatalf("native helper omitted nested broker command contract %q", required)
+		}
+	}
+	for _, obsolete := range []string{
+		`L" --expected-token-sha256 "`,
+		`L" --expected-broker-sha256 "`,
+	} {
+		if strings.Contains(helperSource, obsolete) {
+			t.Fatalf("native helper retained obsolete nested broker option %q", obsolete)
+		}
+	}
 	for _, required := range []string{
 		`default:"production" enum:"production,local-test"`,
 		`r.driverValidationMode != "production" && r.driverValidationMode != "local-test"`,
