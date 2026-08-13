@@ -97,7 +97,7 @@ function Test-LiveProbeManifest {
     $actualNames = @($properties | ForEach-Object { $_.Name } | Sort-Object)
     $expectedNames = @($expected.Keys | Sort-Object)
     if ($actualNames.Count -ne $expectedNames.Count -or
-        (Compare-Object -ReferenceObject $expectedNames -DifferenceObject $actualNames).Count -ne 0) {
+        @(Compare-Object -ReferenceObject $expectedNames -DifferenceObject $actualNames).Count -ne 0) {
         throw "The native live-probe manifest must contain exactly: $($expectedNames -join ', ')."
     }
 

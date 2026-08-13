@@ -33,6 +33,7 @@ func TestNativeLiveReleaseGateRequiresCompleteEvidence(t *testing.T) {
 		"Driver Verifier must target only ViiperUde.sys",
 		"Test-LiveProbeManifest",
 		"sourceRevision",
+		"@(Compare-Object -ReferenceObject $expectedNames -DifferenceObject $actualNames).Count",
 		"Get-FileHash -LiteralPath $path -Algorithm SHA256",
 		"-ProbeManifestPath is required whenever a source-bound live probe is used",
 		"[ValidateSet('LocalTest', 'ControlledTest', 'Production')]",
