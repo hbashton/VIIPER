@@ -125,22 +125,42 @@ func (j *nativePackageProcessJoin) complete(commandWaitErr error) error {
 }
 
 func waitNativePackageHelper(command *exec.Cmd) error {
-	return waitNativePackageHelperWith(
-		command,
-		retainNativePackageProcessJoin,
-		func() { time.Sleep(nativePackageProcessJoinRetry) },
-	)
+	return waitNativePackageHelperWith(command, retainNativePackageProcessJoin,
+		func() { time.Sleep(nativePackageProcessJoinRetry) })
 }
 
-func waitNativePackageHelperWith(
+// waitNativePackageHelperCoordinated retains the exact helper process while
+// the outer package transaction services its inherited quiescence/handoff
+// events. The callback must return only after the retained process is signaled
+// or after a coordination anomaly; complete still joins the exact child before
+// any package or service lock can unwind.
+func waitNativePackageHelperCoordinated(
 	command *exec.Cmd,
+	coordinate func(windows.Handle) error,
+) error {
+	join := retainNativePackageProcessJoinWithRetry(
+		command.Process, retainNativePackageProcessJoin,
+		func() { time.Sleep(nativePackageProcessJoinRetry) },
+	)
+	coordinationErr := coordinate(join.handle)
+	waitErr := join.complete(command.Wait())
+	if coordinationErr != nil {
+		return &nativePackageProcessWaitIndeterminateError{
+			cause: errors.Join(coordinationErr, waitErr),
+		}
+	}
+	return waitErr
+}
+
+func retainNativePackageProcessJoinWithRetry(
+	process *os.Process,
 	retain func(*os.Process) (*nativePackageProcessJoin, error),
 	retry func(),
-) error {
+) *nativePackageProcessJoin {
 	var join *nativePackageProcessJoin
 	for join == nil {
 		var err error
-		join, err = retain(command.Process)
+		join, err = retain(process)
 		if err == nil {
 			break
 		}
@@ -150,6 +170,15 @@ func waitNativePackageHelperWith(
 		// lock and immutable input handle remains held.
 		retry()
 	}
+	return join
+}
+
+func waitNativePackageHelperWith(
+	command *exec.Cmd,
+	retain func(*os.Process) (*nativePackageProcessJoin, error),
+	retry func(),
+) error {
+	join := retainNativePackageProcessJoinWithRetry(command.Process, retain, retry)
 	// A recovered pre-Wait duplication retry is not a transaction failure: the
 	// exact handle was retained before Cmd.Wait and supplies the required join.
 	return join.complete(command.Wait())

@@ -2868,6 +2868,10 @@ struct InstallOptions {
     std::string brokerTokenSha256;
     std::wstring targetUserSid;
     uint64_t transactionDeadlineUnixMs = 0;
+    HANDLE brokerQuiesceRequest = nullptr;
+    HANDLE brokerQuiesceReady = nullptr;
+    HANDLE brokerQuiesceAbort = nullptr;
+    HANDLE brokerHandoff = nullptr;
 };
 
 uint64_t CurrentUnixMilliseconds() {
@@ -2904,6 +2908,59 @@ bool ValidateTransactionDeadlineBudget(const InstallOptions& options, Error* err
         options.transactionDeadlineUnixMs - now > kMaximumTransactionDurationMs) {
         return SetError(error, L"transaction-deadline", ERROR_INVALID_PARAMETER,
             L"transaction deadline is expired or exceeds the four-minute package budget");
+    }
+    return true;
+}
+
+bool RequestBrokerQuiescence(const InstallOptions& options, Error* error) {
+    if (options.brokerQuiesceRequest == nullptr ||
+        options.brokerQuiesceReady == nullptr ||
+        options.brokerQuiesceAbort == nullptr) {
+        return SetError(error, L"broker-quiescence-handles", ERROR_INVALID_HANDLE,
+            L"driver mutation requires the inherited broker quiescence handshake");
+    }
+    if (!SetEvent(options.brokerQuiesceRequest)) {
+        return SetLastErrorDetail(error, L"broker-quiescence-request");
+    }
+    const std::array<HANDLE, 2> responses{
+        options.brokerQuiesceReady, options.brokerQuiesceAbort,
+    };
+    for (;;) {
+        const uint64_t now = CurrentUnixMilliseconds();
+        if (now >= options.transactionDeadlineUnixMs) {
+            return SetError(error, L"broker-quiescence-timeout", ERROR_TIMEOUT,
+                L"native broker did not prove quiescence before the package deadline");
+        }
+        const DWORD waitMilliseconds = static_cast<DWORD>(std::min<uint64_t>(
+            options.transactionDeadlineUnixMs - now,
+            std::numeric_limits<DWORD>::max() - 1ULL));
+        const DWORD wait = WaitForMultipleObjects(
+            static_cast<DWORD>(responses.size()), responses.data(), FALSE, waitMilliseconds);
+        if (wait == WAIT_OBJECT_0) {
+            return true;
+        }
+        if (wait == WAIT_OBJECT_0 + 1) {
+            return SetError(error, L"broker-quiescence-aborted", ERROR_OPERATION_ABORTED,
+                L"the outer package transaction could not safely quiesce the native broker service");
+        }
+        if (wait == WAIT_TIMEOUT) {
+            continue;
+        }
+        if (wait == WAIT_FAILED) {
+            return SetLastErrorDetail(error, L"broker-quiescence-wait");
+        }
+        return SetError(error, L"broker-quiescence-wait", ERROR_INVALID_HANDLE,
+            L"broker quiescence wait returned an unexpected event state");
+    }
+}
+
+bool SignalBrokerHandoff(const InstallOptions& options, Error* error) {
+    if (options.brokerHandoff == nullptr) {
+        return SetError(error, L"broker-handoff-handle", ERROR_INVALID_HANDLE,
+            L"authenticated broker commit requires the inherited service-lock handoff");
+    }
+    if (!SetEvent(options.brokerHandoff)) {
+        return SetLastErrorDetail(error, L"broker-handoff-signal");
     }
     return true;
 }
@@ -3559,6 +3616,17 @@ Outcome Install(const InstallOptions& options) {
         return outcome;
     }
 
+    // The service mutex remains owned by the outer package transaction. Ask it
+    // to stop only a trusted running broker after classification proves a
+    // driver mutation is necessary, then keep that mutex held across exact
+    // root replacement and binding verification. This prevents the broker from
+    // retaining a UdeCx handle that turns synchronous removal into a reboot.
+    if (driverMutation && !options.brokerExecutable.empty() &&
+        !RequestBrokerQuiescence(options, &outcome.error)) {
+        outcome.exitCode = ExitCode::PreflightRejected;
+        return outcome;
+    }
+
     if (disposition == CandidateDisposition::InstallRequired) {
         // Updating a running root bus in place makes DiInstallDriverW report a
         // reboot even though this helper immediately restores the old package.
@@ -3734,6 +3802,7 @@ Outcome Install(const InstallOptions& options) {
                 L"driver activation requires a restart; legacy ownership remains active and broker migration was not attempted");
         } else if (!CheckTransactionDeadline(
                 options, L"transaction-deadline-before-broker", &brokerError) ||
+            !SignalBrokerHandoff(options, &brokerError) ||
             !RunBrokerInstall(
                 options, &driverRollbackAuthorized, &brokerChanged, &brokerError)) {
             // The broker command includes authenticated health verification and
@@ -5419,6 +5488,47 @@ Outcome SelfTest() {
     return outcome;
 }
 
+bool ParseInheritedEventHandle(
+    const wchar_t* value,
+    const wchar_t* name,
+    HANDLE* handle,
+    Error* error) {
+    const std::wstring text = value == nullptr ? L"" : value;
+    if (text.empty() || text.size() > 20 ||
+        !std::all_of(text.begin(), text.end(), [](wchar_t character) {
+            return character >= L'0' && character <= L'9';
+        })) {
+        return SetError(error, L"arguments", ERROR_INVALID_PARAMETER,
+            std::wstring(name) + L" handle must contain only decimal digits");
+    }
+    const wchar_t* begin = text.data();
+    wchar_t* end = nullptr;
+    errno = 0;
+    const unsigned long long parsed = std::wcstoull(begin, &end, 10);
+    if (errno == ERANGE || end == begin || end != begin + text.size() || parsed == 0 ||
+        parsed > static_cast<unsigned long long>(std::numeric_limits<uintptr_t>::max())) {
+        return SetError(error, L"arguments", ERROR_INVALID_HANDLE,
+            std::wstring(name) + L" handle is outside the process handle range");
+    }
+    const HANDLE candidate = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(parsed));
+    if (candidate == INVALID_HANDLE_VALUE) {
+        return SetError(error, L"arguments", ERROR_INVALID_HANDLE,
+            std::wstring(name) + L" handle is invalid");
+    }
+    DWORD flags = 0;
+    if (!GetHandleInformation(candidate, &flags) || (flags & HANDLE_FLAG_INHERIT) == 0) {
+        return SetError(error, L"arguments", ERROR_INVALID_HANDLE,
+            std::wstring(name) + L" handle was not explicitly inherited");
+    }
+    const DWORD wait = WaitForSingleObject(candidate, 0);
+    if (wait != WAIT_TIMEOUT) {
+        return SetError(error, L"arguments", ERROR_INVALID_HANDLE,
+            std::wstring(name) + L" event must begin nonsignaled and waitable");
+    }
+    *handle = candidate;
+    return true;
+}
+
 bool ParseInstallOptions(int argc, wchar_t** argv, InstallOptions* options, Error* error) {
     if (argc < 8) {
         return SetError(error, L"arguments", ERROR_INVALID_PARAMETER);
@@ -5437,6 +5547,10 @@ bool ParseInstallOptions(int argc, wchar_t** argv, InstallOptions* options, Erro
     bool brokerTokenHashSeen = false;
     bool targetUserSeen = false;
     bool transactionDeadlineSeen = false;
+    bool brokerQuiesceRequestSeen = false;
+    bool brokerQuiesceReadySeen = false;
+    bool brokerQuiesceAbortSeen = false;
+    bool brokerHandoffSeen = false;
     for (int index = 3; index < argc; ++index) {
         const std::wstring argument = argv[index];
         if (_wcsicmp(argument.c_str(), L"--manifest") == 0 && index + 1 < argc && !manifestSeen) {
@@ -5594,6 +5708,34 @@ bool ParseInstallOptions(int argc, wchar_t** argv, InstallOptions* options, Erro
             }
             options->transactionDeadlineUnixMs = static_cast<uint64_t>(parsed);
             transactionDeadlineSeen = true;
+        } else if (_wcsicmp(argument.c_str(), L"--broker-quiesce-request-handle") == 0 &&
+            index + 1 < argc && !brokerQuiesceRequestSeen) {
+            if (!ParseInheritedEventHandle(argv[++index], L"broker quiesce request",
+                    &options->brokerQuiesceRequest, error)) {
+                return false;
+            }
+            brokerQuiesceRequestSeen = true;
+        } else if (_wcsicmp(argument.c_str(), L"--broker-quiesce-ready-handle") == 0 &&
+            index + 1 < argc && !brokerQuiesceReadySeen) {
+            if (!ParseInheritedEventHandle(argv[++index], L"broker quiesce ready",
+                    &options->brokerQuiesceReady, error)) {
+                return false;
+            }
+            brokerQuiesceReadySeen = true;
+        } else if (_wcsicmp(argument.c_str(), L"--broker-quiesce-abort-handle") == 0 &&
+            index + 1 < argc && !brokerQuiesceAbortSeen) {
+            if (!ParseInheritedEventHandle(argv[++index], L"broker quiesce abort",
+                    &options->brokerQuiesceAbort, error)) {
+                return false;
+            }
+            brokerQuiesceAbortSeen = true;
+        } else if (_wcsicmp(argument.c_str(), L"--broker-handoff-handle") == 0 &&
+            index + 1 < argc && !brokerHandoffSeen) {
+            if (!ParseInheritedEventHandle(argv[++index], L"broker handoff",
+                    &options->brokerHandoff, error)) {
+                return false;
+            }
+            brokerHandoffSeen = true;
         } else {
             return SetError(error, L"arguments", ERROR_INVALID_PARAMETER,
                 L"unknown, duplicate, or incomplete install option");
@@ -5603,9 +5745,23 @@ bool ParseInstallOptions(int argc, wchar_t** argv, InstallOptions* options, Erro
         !infHashSeen || !sysHashSeen || !catHashSeen ||
         !transactionDeadlineSeen ||
         brokerSeen != targetUserSeen || brokerSeen != brokerHashSeen ||
-        brokerSeen != brokerTokenSeen || brokerSeen != brokerTokenHashSeen) {
+        brokerSeen != brokerTokenSeen || brokerSeen != brokerTokenHashSeen ||
+        brokerSeen != brokerQuiesceRequestSeen || brokerSeen != brokerQuiesceReadySeen ||
+        brokerSeen != brokerQuiesceAbortSeen || brokerSeen != brokerHandoffSeen) {
         return SetError(error, L"arguments", ERROR_INVALID_PARAMETER,
-            L"manifest, its installer hash, source revision, validation mode, and exact INF/SYS/CAT hashes are required; broker executable, hashes, protected token, and target SID must be supplied together");
+            L"manifest, its installer hash, source revision, validation mode, and exact INF/SYS/CAT hashes are required; broker executable, hashes, protected token, target SID, and inherited quiescence/handoff events must be supplied together");
+    }
+    if (brokerSeen) {
+        const std::set<uintptr_t> coordinationHandles{
+            reinterpret_cast<uintptr_t>(options->brokerQuiesceRequest),
+            reinterpret_cast<uintptr_t>(options->brokerQuiesceReady),
+            reinterpret_cast<uintptr_t>(options->brokerQuiesceAbort),
+            reinterpret_cast<uintptr_t>(options->brokerHandoff),
+        };
+        if (coordinationHandles.size() != 4) {
+            return SetError(error, L"arguments", ERROR_INVALID_HANDLE,
+                L"broker quiescence and handoff require four distinct inherited events");
+        }
     }
     return true;
 }
@@ -5650,9 +5806,13 @@ void Usage() {
            L"--expected-cat-sha256 <64 hex> "
            L"--transaction-deadline-unix-ms <positive integer> "
            L"[--allow-controlled-downgrade <exact-installed-version>] "
-           L"--broker-executable <managed-viiper.exe> --broker-sha256 <64 hex> "
-           L"--broker-token <protected-token> --broker-token-sha256 <64 hex> "
-           L"--target-user-sid <SID>\n"
+            L"--broker-executable <managed-viiper.exe> --broker-sha256 <64 hex> "
+            L"--broker-token <protected-token> --broker-token-sha256 <64 hex> "
+            L"--target-user-sid <SID> "
+            L"--broker-quiesce-request-handle <inherited-handle> "
+            L"--broker-quiesce-ready-handle <inherited-handle> "
+            L"--broker-quiesce-abort-handle <inherited-handle> "
+            L"--broker-handoff-handle <inherited-handle>\n"
         << L"  ViiperUdeCtl.exe verify <ViiperUde.inf> --manifest <submission.json> --manifest-sha256 <64 hex> "
            L"--source-revision <40-or-64 hex> --validation-mode <production|controlled-test|local-test> "
            L"--expected-inf-sha256 <64 hex> --expected-sys-sha256 <64 hex> "

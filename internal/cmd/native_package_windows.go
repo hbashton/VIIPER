@@ -18,6 +18,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 	"unsafe"
 
@@ -47,6 +48,10 @@ type windowsNativePackageTransaction struct {
 	nestedMutationStarted        bool
 	nestedRollbackSucceeded      bool
 	nestedServiceRollbackSettled bool
+	driverQuiesceRequested       bool
+	driverBrokerHandoff          bool
+	driverHelperSettled          bool
+	driverCoordinationErr        error
 
 	programFiles string
 	destination  string
@@ -58,6 +63,12 @@ type windowsNativePackageTransaction struct {
 	service                nativeManagedService
 	serviceSnapshot        nativePackageServiceSnapshot
 	priorServiceExecutable string
+	priorExecutableSHA256  string
+	priorServiceConfig     mgr.Config
+	priorServiceDACL       string
+	priorServiceRecovery   []mgr.RecoveryAction
+	priorServiceReset      uint32
+	priorServiceNonCrash   bool
 	priorExecutableRelease func()
 	stoppedTrustedService  bool
 
@@ -338,10 +349,6 @@ func (t *windowsNativePackageTransaction) preflightNestedBrokerCommit() error {
 func (t *windowsNativePackageTransaction) InspectService(
 	ctx context.Context,
 ) (nativePackageServiceSnapshot, error) {
-	if !t.nestedBrokerCommit {
-		t.serviceSnapshot = nativePackageServiceSnapshot{disposition: nativePackageServiceAbsent}
-		return t.serviceSnapshot, nil
-	}
 	budget := nativePackageTransactionTimeout
 	if deadline, ok := ctx.Deadline(); ok {
 		budget = time.Until(deadline)
@@ -351,7 +358,7 @@ func (t *windowsNativePackageTransaction) InspectService(
 	}
 	release, err := acquireNativeInstallMutex(budget)
 	if err != nil {
-		return nativePackageServiceSnapshot{}, fmt.Errorf("lock nested native broker transaction: %w", err)
+		return nativePackageServiceSnapshot{}, fmt.Errorf("lock native broker service transaction: %w", err)
 	}
 	t.releaseServiceMutex = release
 	manager, err := mgr.Connect()
@@ -424,14 +431,35 @@ func (t *windowsNativePackageTransaction) InspectService(
 	if canonical {
 		releaseExecutable, lockErr := lockNativePriorServiceExecutable(priorExecutable)
 		if lockErr == nil {
-			disposition = nativePackageServiceTrusted
-			t.priorExecutableRelease = releaseExecutable
-		} else {
+			handle, openErr := lockNativePackageInput(priorExecutable)
+			if openErr == nil {
+				priorHash, hashErr := hashNativePackageHandle(handle)
+				closeErr := windows.CloseHandle(handle)
+				if hashErr == nil && closeErr == nil {
+					disposition = nativePackageServiceTrusted
+					t.priorExecutableRelease = releaseExecutable
+					t.priorExecutableSHA256 = priorHash
+				} else {
+					releaseExecutable()
+					lockErr = errors.Join(hashErr, closeErr)
+				}
+			} else {
+				releaseExecutable()
+				lockErr = openErr
+			}
+		}
+		if lockErr != nil {
 			// An exact service name/path with weak image ACLs is stale package
 			// ownership, not a trustworthy rollback source. It is removed and
 			// recreated; never "repair" its ACL while old handles may exist.
 			t.logger.Warn("Replacing weak exact-owned native broker service image",
 				"path", priorExecutable, "error", lockErr)
+		} else {
+			t.priorServiceConfig = config
+			t.priorServiceDACL = securityDescriptor
+			t.priorServiceRecovery = append([]mgr.RecoveryAction(nil), recovery...)
+			t.priorServiceReset = reset
+			t.priorServiceNonCrash = nonCrash
 		}
 	}
 	t.serviceSnapshot = nativePackageServiceSnapshot{
@@ -445,7 +473,7 @@ func (t *windowsNativePackageTransaction) finalizeServiceInspection(
 	ctx context.Context,
 	snapshot nativePackageServiceSnapshot,
 ) (nativePackageServiceSnapshot, error) {
-	if snapshot.disposition == nativePackageServiceTrusted && snapshot.wasRunning {
+	if t.nestedBrokerCommit && snapshot.disposition == nativePackageServiceTrusted && snapshot.wasRunning {
 		healthy, err := t.verifyExactBrokerHealth(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
@@ -601,8 +629,8 @@ func (t *windowsNativePackageTransaction) InstallDriverAndBroker(ctx context.Con
 			}
 		}
 	} else {
-		if t.releaseServiceMutex != nil {
-			return errors.New("outer native package transaction unexpectedly holds the service mutex")
+		if t.releaseServiceMutex == nil {
+			return errors.New("outer native package transaction does not hold the service mutex")
 		}
 		if err := t.runDriverHelper(ctx); err != nil {
 			return err
@@ -695,12 +723,24 @@ func (t *windowsNativePackageTransaction) Rollback(ctx context.Context) (resultE
 			"nested native broker service rollback is unsettled; retaining staged and prior broker images and leaving the service stopped for external reconciliation"))
 		return errors.Join(rollbackErrors...)
 	}
+	if !t.nestedBrokerCommit && t.stoppedTrustedService && !t.driverHelperSettled {
+		rollbackErrors = append(rollbackErrors, errors.New(
+			"driver-helper or handoff proof is unsettled; leaving the prior trusted broker stopped for external reconciliation"))
+		return errors.Join(rollbackErrors...)
+	}
+	if !t.nestedBrokerCommit && t.stoppedTrustedService {
+		if err := t.restoreQuiescedPriorService(ctx); err != nil {
+			rollbackErrors = append(rollbackErrors,
+				fmt.Errorf("restore quiesced prior broker during outer rollback: %w", err))
+		}
+	}
 	restored := true
 	if err := t.restoreBrokerExecutable(); err != nil {
 		restored = false
 		rollbackErrors = append(rollbackErrors, err)
 	}
-	if t.stoppedTrustedService && t.service != nil && t.serviceSnapshot.wasRunning {
+	if t.nestedBrokerCommit && t.stoppedTrustedService && t.service != nil &&
+		t.serviceSnapshot.wasRunning {
 		if !restored {
 			rollbackErrors = append(rollbackErrors,
 				errors.New("refusing to restart prior native broker because its image was not restored"))
@@ -822,6 +862,28 @@ func (t *windowsNativePackageTransaction) runDriverHelper(ctx context.Context) e
 	if proofErr != nil {
 		return fmt.Errorf("validate native driver helper proof: %w: %s", proofErr, text)
 	}
+	t.driverHelperSettled = proof.exitCode != 3
+	if proof.success && !t.driverBrokerHandoff {
+		t.driverHelperSettled = false
+		return errors.New("native driver helper reported success without the broker service handoff")
+	}
+	if !proof.success && t.stoppedTrustedService && t.driverHelperSettled {
+		rollbackCtx, cancel := context.WithTimeout(
+			context.WithoutCancel(ctx), nativePackageRollbackTimeout,
+		)
+		restoreErr := t.restoreQuiescedPriorService(rollbackCtx)
+		cancel()
+		if restoreErr != nil {
+			return fmt.Errorf("restore trusted native broker after settled helper failure: %w", restoreErr)
+		}
+	}
+	if proof.success {
+		// The authenticated nested broker commit now owns the service run state.
+		t.stoppedTrustedService = false
+	}
+	if t.driverCoordinationErr != nil {
+		return fmt.Errorf("coordinate native broker quiescence: %w", t.driverCoordinationErr)
+	}
 	if proof.exitCode == nativePackageRebootRequiredCode {
 		return &nativePackageRebootRequiredError{cause: fmt.Errorf("%w: %s", err, text)}
 	}
@@ -829,6 +891,312 @@ func (t *windowsNativePackageTransaction) runDriverHelper(ctx context.Context) e
 		return fmt.Errorf("native driver helper failed with exit %d: %w: %s",
 			proof.exitCode, err, text)
 	}
+	return nil
+}
+
+type nativePackageDriverCoordination struct {
+	quiesceRequest windows.Handle
+	quiesceReady   windows.Handle
+	quiesceAbort   windows.Handle
+	brokerHandoff  windows.Handle
+}
+
+func newNativePackageDriverCoordination() (*nativePackageDriverCoordination, error) {
+	attributes := &windows.SecurityAttributes{
+		Length:        uint32(unsafe.Sizeof(windows.SecurityAttributes{})),
+		InheritHandle: 1,
+	}
+	coordination := &nativePackageDriverCoordination{}
+	create := func(target *windows.Handle, name string) error {
+		handle, err := windows.CreateEvent(attributes, 1, 0, nil)
+		if err != nil {
+			return fmt.Errorf("create inherited %s event: %w", name, err)
+		}
+		if handle == 0 {
+			return fmt.Errorf("create inherited %s event returned a null handle", name)
+		}
+		*target = handle
+		return nil
+	}
+	if err := create(&coordination.quiesceRequest, "broker quiesce request"); err != nil {
+		coordination.close()
+		return nil, err
+	}
+	if err := create(&coordination.quiesceReady, "broker quiesce ready"); err != nil {
+		coordination.close()
+		return nil, err
+	}
+	if err := create(&coordination.quiesceAbort, "broker quiesce abort"); err != nil {
+		coordination.close()
+		return nil, err
+	}
+	if err := create(&coordination.brokerHandoff, "broker handoff"); err != nil {
+		coordination.close()
+		return nil, err
+	}
+	return coordination, nil
+}
+
+func (c *nativePackageDriverCoordination) close() {
+	if c == nil {
+		return
+	}
+	for _, handle := range []windows.Handle{
+		c.brokerHandoff, c.quiesceAbort, c.quiesceReady, c.quiesceRequest,
+	} {
+		if handle != 0 {
+			windows.CloseHandle(handle) //nolint:errcheck
+		}
+	}
+	c.quiesceRequest = 0
+	c.quiesceReady = 0
+	c.quiesceAbort = 0
+	c.brokerHandoff = 0
+}
+
+func (c *nativePackageDriverCoordination) inheritedHandles() []syscall.Handle {
+	return []syscall.Handle{
+		syscall.Handle(c.quiesceRequest), syscall.Handle(c.quiesceReady),
+		syscall.Handle(c.quiesceAbort), syscall.Handle(c.brokerHandoff),
+	}
+}
+
+func (c *nativePackageDriverCoordination) arguments() []string {
+	return []string{
+		"--broker-quiesce-request-handle", strconv.FormatUint(uint64(c.quiesceRequest), 10),
+		"--broker-quiesce-ready-handle", strconv.FormatUint(uint64(c.quiesceReady), 10),
+		"--broker-quiesce-abort-handle", strconv.FormatUint(uint64(c.quiesceAbort), 10),
+		"--broker-handoff-handle", strconv.FormatUint(uint64(c.brokerHandoff), 10),
+	}
+}
+
+func (t *windowsNativePackageTransaction) coordinateDriverHelper(
+	ctx context.Context,
+	process windows.Handle,
+	coordination *nativePackageDriverCoordination,
+) error {
+	requestPending := true
+	handoffPending := true
+	for {
+		handles := []windows.Handle{process}
+		requestIndex := -1
+		handoffIndex := -1
+		if requestPending {
+			requestIndex = len(handles)
+			handles = append(handles, coordination.quiesceRequest)
+		}
+		if handoffPending {
+			handoffIndex = len(handles)
+			handles = append(handles, coordination.brokerHandoff)
+		}
+		status, err := windows.WaitForMultipleObjects(handles, false, windows.INFINITE)
+		if err != nil {
+			windows.SetEvent(coordination.quiesceAbort) //nolint:errcheck
+			return fmt.Errorf("wait for driver-helper coordination event: %w", err)
+		}
+		index := int(status - windows.WAIT_OBJECT_0)
+		switch index {
+		case 0:
+			return nil
+		case requestIndex:
+			requestPending = false
+			t.driverQuiesceRequested = true
+			if quiesceErr := t.quiescePriorServiceForDriver(ctx); quiesceErr != nil {
+				t.driverCoordinationErr = quiesceErr
+				if signalErr := windows.SetEvent(coordination.quiesceAbort); signalErr != nil {
+					return errors.Join(quiesceErr,
+						fmt.Errorf("signal broker quiescence abort: %w", signalErr))
+				}
+				continue
+			}
+			if signalErr := windows.SetEvent(coordination.quiesceReady); signalErr != nil {
+				windows.SetEvent(coordination.quiesceAbort) //nolint:errcheck
+				return fmt.Errorf("signal broker quiescence readiness: %w", signalErr)
+			}
+		case handoffIndex:
+			handoffPending = false
+			if t.driverCoordinationErr != nil {
+				return errors.New("driver helper requested broker handoff after quiescence was aborted")
+			}
+			if handoffErr := t.releaseServiceForBrokerHandoff(); handoffErr != nil {
+				return handoffErr
+			}
+		default:
+			windows.SetEvent(coordination.quiesceAbort) //nolint:errcheck
+			return fmt.Errorf("unexpected driver-helper coordination wait status 0x%08x", status)
+		}
+	}
+}
+
+func (t *windowsNativePackageTransaction) quiescePriorServiceForDriver(ctx context.Context) error {
+	if t.releaseServiceMutex == nil {
+		return errors.New("broker quiescence requires the held service mutex")
+	}
+	switch t.serviceSnapshot.disposition {
+	case nativePackageServiceAbsent:
+		return nil
+	case nativePackageServiceWeakExactOwned:
+		return errors.New("refusing to quiesce a weak exact-owned broker service before driver mutation")
+	case nativePackageServiceTrusted:
+		if t.service == nil {
+			return errors.New("trusted broker service snapshot has no live SCM handle")
+		}
+		if !t.serviceSnapshot.wasRunning {
+			return nil
+		}
+		// STOP is the parent transaction's mutation. Arm restoration before the
+		// control request so StopPending/timeouts cannot strand the prior broker.
+		t.stoppedTrustedService = true
+		if err := stopNativeService(ctx, t.service, waitContext); err != nil {
+			return fmt.Errorf("quiesce trusted %s before root-bus mutation: %w",
+				NativeBrokerServiceName, err)
+		}
+		return nil
+	default:
+		return errors.New("broker quiescence received an unknown service disposition")
+	}
+}
+
+func (t *windowsNativePackageTransaction) releaseServiceForBrokerHandoff() error {
+	if t.releaseServiceMutex == nil {
+		return errors.New("broker handoff requires the held service mutex")
+	}
+	if t.priorExecutableRelease != nil {
+		t.priorExecutableRelease()
+		t.priorExecutableRelease = nil
+	}
+	if t.service != nil {
+		if err := t.service.Close(); err != nil {
+			return fmt.Errorf("close prior broker service handle before handoff: %w", err)
+		}
+		t.service = nil
+	}
+	if t.manager != nil {
+		if err := t.manager.Close(); err != nil {
+			return fmt.Errorf("close prior SCM handle before handoff: %w", err)
+		}
+		t.manager = nil
+	}
+	t.releaseServiceMutex()
+	t.releaseServiceMutex = nil
+	t.driverBrokerHandoff = true
+	return nil
+}
+
+func (t *windowsNativePackageTransaction) ensurePriorServiceForRestore(
+	ctx context.Context,
+) error {
+	if t.releaseServiceMutex == nil {
+		budget := nativePackageRollbackTimeout
+		if deadline, ok := ctx.Deadline(); ok {
+			budget = time.Until(deadline)
+			if budget <= 0 {
+				return context.DeadlineExceeded
+			}
+		}
+		release, err := acquireNativeInstallMutex(budget)
+		if err != nil {
+			return fmt.Errorf("reacquire native broker service mutex for rollback: %w", err)
+		}
+		t.releaseServiceMutex = release
+	}
+	if t.manager == nil {
+		manager, err := mgr.Connect()
+		if err != nil {
+			return fmt.Errorf("reconnect to SCM for broker rollback: %w", err)
+		}
+		t.manager = &windowsNativeSCM{manager: manager}
+	}
+	if t.service == nil {
+		service, err := t.manager.OpenService(NativeBrokerServiceName)
+		if err != nil {
+			return fmt.Errorf("reopen prior %s for rollback: %w", NativeBrokerServiceName, err)
+		}
+		t.service = service
+	}
+	return nil
+}
+
+func (t *windowsNativePackageTransaction) validatePriorServiceForRestart() error {
+	if t.serviceSnapshot.disposition != nativePackageServiceTrusted ||
+		t.priorServiceExecutable == "" || t.priorExecutableSHA256 == "" {
+		return errors.New("prior broker snapshot is not a trusted restart source")
+	}
+	config, err := t.service.Config()
+	if err != nil {
+		return fmt.Errorf("query prior broker config for restart: %w", err)
+	}
+	if !nativeServiceConfigsEqual(config, t.priorServiceConfig) {
+		return errors.New("prior broker config changed before rollback restart")
+	}
+	executable, err := nativeServiceExecutableFromCommandLine(config.BinaryPathName)
+	if err != nil || !strings.EqualFold(executable, t.priorServiceExecutable) {
+		return errors.New("prior broker executable changed before rollback restart")
+	}
+	dacl, err := t.service.SecurityDescriptor()
+	if err != nil {
+		return fmt.Errorf("query prior broker DACL for restart: %w", err)
+	}
+	if compareNativeSecurityDescriptorStrings(dacl, t.priorServiceDACL) != nil {
+		return errors.New("prior broker DACL changed before rollback restart")
+	}
+	recovery, err := t.service.RecoveryActions()
+	if err != nil {
+		return fmt.Errorf("query prior broker recovery actions for restart: %w", err)
+	}
+	reset, err := t.service.ResetPeriod()
+	if err != nil {
+		return fmt.Errorf("query prior broker recovery reset for restart: %w", err)
+	}
+	nonCrash, err := t.service.RecoveryActionsOnNonCrashFailures()
+	if err != nil {
+		return fmt.Errorf("query prior broker recovery mode for restart: %w", err)
+	}
+	if !slices.Equal(recovery, t.priorServiceRecovery) || reset != t.priorServiceReset ||
+		nonCrash != t.priorServiceNonCrash {
+		return errors.New("prior broker recovery policy changed before rollback restart")
+	}
+	if t.priorExecutableRelease == nil {
+		release, lockErr := lockNativePriorServiceExecutable(t.priorServiceExecutable)
+		if lockErr != nil {
+			return fmt.Errorf("relock protected prior broker executable: %w", lockErr)
+		}
+		t.priorExecutableRelease = release
+	}
+	handle, err := lockNativePackageInput(t.priorServiceExecutable)
+	if err != nil {
+		return fmt.Errorf("reopen protected prior broker executable: %w", err)
+	}
+	hash, hashErr := hashNativePackageHandle(handle)
+	closeErr := windows.CloseHandle(handle)
+	if hashErr != nil || closeErr != nil {
+		return fmt.Errorf("rehash protected prior broker executable: %w",
+			errors.Join(hashErr, closeErr))
+	}
+	if !strings.EqualFold(hash, t.priorExecutableSHA256) {
+		return fmt.Errorf("prior broker executable SHA-256=%s expected=%s",
+			hash, t.priorExecutableSHA256)
+	}
+	return nil
+}
+
+func (t *windowsNativePackageTransaction) restoreQuiescedPriorService(ctx context.Context) error {
+	if !t.stoppedTrustedService || !t.serviceSnapshot.wasRunning {
+		return nil
+	}
+	if err := t.ensurePriorServiceForRestore(ctx); err != nil {
+		return err
+	}
+	if err := t.validatePriorServiceForRestart(); err != nil {
+		return err
+	}
+	if err := reconcileNativePackageServiceRunning(ctx, t.service); err != nil {
+		return fmt.Errorf("restore prior trusted %s run state: %w", NativeBrokerServiceName, err)
+	}
+	if err := t.validatePriorServiceForRestart(); err != nil {
+		return fmt.Errorf("revalidate restarted prior broker: %w", err)
+	}
+	t.stoppedTrustedService = false
 	return nil
 }
 
@@ -853,10 +1221,19 @@ func (t *windowsNativePackageTransaction) executeDriverHelper(ctx context.Contex
 		"--broker-token-sha256", t.tokenSHA256,
 		"--target-user-sid", t.request.targetUserSID,
 	}
+	coordination, err := newNativePackageDriverCoordination()
+	if err != nil {
+		return "", err
+	}
+	defer coordination.close()
+	arguments = append(arguments, coordination.arguments()...)
 	// Do not use CommandContext: killing ViiperUdeCtl could interrupt its in-memory
 	// DriverStore rollback or the broker's deferred SCM/credential rollback.
 	command := exec.Command(t.request.driverHelper, arguments...)
 	command.Dir = filepath.Dir(t.request.driverHelper)
+	command.SysProcAttr = &syscall.SysProcAttr{
+		AdditionalInheritedHandles: coordination.inheritedHandles(),
+	}
 	var output bytes.Buffer
 	command.Stdout = &output
 	command.Stderr = &output
@@ -865,7 +1242,9 @@ func (t *windowsNativePackageTransaction) executeDriverHelper(ctx context.Contex
 	}
 	// The helper owns the driver snapshot and nested broker rollback. Its
 	// propagated absolute deadline is cooperative; never terminate it here.
-	err := waitNativePackageHelper(command)
+	err = waitNativePackageHelperCoordinated(command, func(process windows.Handle) error {
+		return t.coordinateDriverHelper(ctx, process, coordination)
+	})
 	text := strings.TrimSpace(output.String())
 	return text, err
 }

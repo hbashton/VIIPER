@@ -60,6 +60,13 @@ $requiredContracts = [ordered]@{
         'bool VerifyLocalTestPackageSigner\([\s\S]{0,220}Error\* error\) \{[\s\S]{0,1800}VerifyDriverCatalogMember\(catalogPath, infPath[\s\S]{0,180}infPath\.parent_path\(\) / kDriverFileName'
     'staged broker hash binding' = '--broker-sha256'
     'protected package token binding' = '--broker-token-sha256'
+    'inherited broker quiescence request' = '--broker-quiesce-request-handle'
+    'inherited broker quiescence readiness' = '--broker-quiesce-ready-handle'
+    'inherited broker quiescence abort' = '--broker-quiesce-abort-handle'
+    'inherited broker service handoff' = '--broker-handoff-handle'
+    'driver mutation broker quiescence' = 'RequestBrokerQuiescence\('
+    'verified binding broker handoff' = 'SignalBrokerHandoff\('
+    'inherited event handle validation' = 'ParseInheritedEventHandle\('
     'nested package broker commit' = 'native-package-broker-commit'
     'nested broker expected token hash option' = '--expected-token-sha-256'
     'nested broker expected executable hash option' = '--expected-broker-sha-256'
@@ -163,6 +170,10 @@ $orderedMutationContracts = [ordered]@{
         'upgrade-deadline-before-device-removal[\s\S]{0,800}CaptureSnapshot\(&afterRemoval[\s\S]{0,1800}DiInstallDriverW\('
     'upgrade restores exact identity before exact package binding' =
         'DiInstallDriverW\([\s\S]{0,2200}prior\.devices\[0\]\.instanceId[\s\S]{0,300}ExactRootRegistrationMode::Upgrade[\s\S]{0,700}InstallPreinstalledDriverOnDevice\('
+    'broker quiescence precedes all classified driver mutation' =
+        'if \(driverMutation && !options\.brokerExecutable\.empty\(\)[\s\S]{0,180}RequestBrokerQuiescence\([\s\S]{0,700}CandidateDisposition::InstallRequired'
+    'broker handoff follows exact binding verification and precedes nested commit' =
+        'VerifyInstalledBinding\([\s\S]{0,2200}SignalBrokerHandoff\([\s\S]{0,180}RunBrokerInstall\('
     'recovery journal is published and preservation armed before mutation' =
         'BuildRemoveRecoveryRecord\([\s\S]{0,300}WriteProtectedRecoveryRecord\([\s\S]{0,240}ArmPreservation\([\s\S]{0,700}RemoveAllExactDevices\('
     'failed remove rollback preserves published evidence before return' =

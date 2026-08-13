@@ -50,7 +50,10 @@ of the source-provenance evidence without becoming a user-machine dependency.
 ## Commit order
 
 1. Acquire the administrator-only machine package mutex and validate every
-   immutable input.
+   immutable input. Then acquire the broker-service mutex, inspect the exact
+   service/configuration/DACL/recovery/image/run-state, and retain a protected
+   hash snapshot of any trusted prior broker. This is the global
+   package-then-service lock order.
 2. Create and hold a random one-time token below `%ProgramFiles%\VIIPER` with
    an administrator/SYSTEM-only DACL, and pass its installer-bound SHA-256 to
    `ViiperUdeCtl install`. The helper independently reopens and verifies the
@@ -62,17 +65,27 @@ of the source-provenance evidence without becoming a user-machine dependency.
    devnode and call `DiInstallDevice`; they never replace same-version Driver
    Store content. An absent or newer candidate uses `DiInstallDriverW` under the
    monotonic version policy. Same-version INF/SYS/CAT conflicts and implicit
-   downgrades fail before mutation. A newer package never updates a live root
-   bus in place: the helper removes only the captured exact owned devnode,
+   downgrades fail before mutation. Only after classification proves a SetupAPI
+   mutation is required, the helper signals its inherited quiescence-request
+   event and waits for the outer transaction. The outer transaction stops only
+   a trusted formerly-running broker (or acknowledges an absent/already-stopped
+   trusted service) while retaining the broker-service mutex. Weak service
+   ownership aborts before driver mutation because it is not a safe rollback
+   source. A newer package never updates a live root bus in place: with the
+   trusted broker quiescent, the helper removes only the captured exact owned devnode,
    proves its child topology absent, stages the candidate, recreates the same
    root instance ID, and binds the exact published candidate with
    `DiInstallDevice`. The captured snapshot remains authoritative until broker
    commit and recreates the prior identity/package on any failure.
-4. After the exact binding is verified, the helper launches the immutable
-   package broker's hidden `native-package-broker-commit` command while still
-   holding the driver mutex and snapshot. That command reopens the token,
-   requires its exact DACL/hash/path, proves the separate outer process still
-   owns the package mutex, then acquires the broker-service mutex.
+4. After the exact binding is verified, the helper signals its inherited broker
+   handoff event. The outer transaction releases its protected prior-image and
+   SCM handles, then releases the broker-service mutex on the same pinned OS
+   thread. Only then does the helper launch the immutable package broker's
+   hidden `native-package-broker-commit` command while still holding the driver
+   mutex and snapshot. That command reopens the token, requires its exact
+   DACL/hash/path, proves the separate outer process still owns the package
+   mutex, then acquires the broker-service mutex. An exact driver no-op skips
+   service quiescence but uses the same handoff before broker health/repair.
 5. The nested command first checks for a true no-op: canonical protected
    service/image/credential state, no live legacy owner, stable service PID, and
    authenticated `ping` with `Ready=true`, ABI 1.10, the exact capability mask,
@@ -88,8 +101,13 @@ of the source-provenance evidence without becoming a user-machine dependency.
    fully settled child rollback authorizes the still-running helper to restore
    its captured driver packages/devnode. Crash, malformed/missing proof, exit 3,
    pipe/wait ambiguity, or an over-budget child leaves driver rollback
-   unauthorized and reports external reconciliation. USB/IP itself is never
-   directly removed by this transaction.
+   unauthorized and reports external reconciliation. If the outer transaction
+   stopped a trusted prior broker and the helper fails before handoff, it keeps
+   the service mutex and restores the exact snapshotted service/image/run-state
+   only after a settled driver proof. After handoff, it reacquires that mutex
+   and performs the same exact revalidation/restart only when the nested and
+   driver rollback proof is settled; indeterminate proof leaves the service
+   stopped. USB/IP itself is never directly removed by this transaction.
 
 The mutating broker process is never hard-terminated. The outer absolute
 four-minute deadline is passed through the helper into the nested broker, so it
@@ -104,11 +122,14 @@ checked immediately before and after each mutating boundary; no new phase may
 start after expiry, and no process is killed mid-rollback.
 
 Before calling Go's `Cmd.Wait`, the outer transaction duplicates the exact
-helper process handle with `SYNCHRONIZE`. It independently waits for that
-process object to become signaled before releasing the package mutex or any
-immutable input handle. A non-exit `Cmd.Wait` error is therefore still
+helper process handle with `SYNCHRONIZE`. It waits on that retained process
+object together with the two child-to-parent coordination events, and passes
+only four unnamed, explicitly inherited events to the exact helper process.
+The process signal has priority over stale event observations. The retained
+process must become signaled before the package mutex or any immutable input
+handle can unwind. A non-exit `Cmd.Wait` or event-wait error is therefore still
 indeterminate, but it can no longer let a live mutating helper escape the
-transaction scope.
+transaction scope or authorize an unsafe prior-service restart.
 
 ## Exact package removal
 
@@ -237,19 +258,24 @@ registration cleanup is treated as VIIPER ownership authority.
   treats its service or driver store as installer-owned.
 
 Every public native install, repair, or uninstall takes locks in the same
-machine-wide order: package mutex, then broker-service mutex. The nested helper
-callback does not reacquire the package mutex (which would deadlock); the
-protected one-time token and zero-time ownership check authorize that one
-service transaction. The token is removed on commit or rollback and is inert
-without a live outer mutex owner. Because Win32 mutexes are thread-owned, each
-Go acquisition pins its goroutine to that OS thread until the matching release;
+machine-wide order: package mutex, then broker-service mutex. During install,
+the outer transaction retains both across any required broker stop and driver
+replacement, then performs an explicit service-lock handoff to the nested
+broker commit while continuing to own the package mutex. The nested callback
+does not reacquire the package mutex (which would deadlock); the protected
+one-time token and zero-time ownership check authorize that one service
+transaction. The token is removed on commit or rollback and is inert without a
+live outer mutex owner. Because Win32 mutexes are thread-owned, each Go
+acquisition pins its goroutine to that OS thread until the matching release;
 scheduler migration cannot strand either global lock.
 
 ## Restart boundary
 
-The normal newer-package path removes the captured exact root devnode before
-staging and recreates its identity afterward; this avoids an in-place update of
-the loaded bus and should commit without a restart. If Windows still reports
+The normal newer-package path first quiesces the trusted native broker while
+holding the service mutex, then removes the captured exact root devnode before
+staging and recreates its identity afterward. This removes the broker's open
+UdeCx ownership from the PnP boundary, avoids an in-place update of the loaded
+bus, and should commit without a restart. If Windows still reports
 that either removal, package staging, or exact binding requires a restart, the
 helper does not start the broker or remove legacy ownership. It rolls the
 attempted driver transaction back, the outer transaction restores the prior

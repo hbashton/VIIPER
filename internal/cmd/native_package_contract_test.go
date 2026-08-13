@@ -55,6 +55,11 @@ func TestNativePackageProductionSourceContract(t *testing.T) {
 		"nativePackageMutexHeldByAnotherOwner",
 		"lockNativePackageDirectoryChain",
 		"--broker-token-sha256",
+		"--broker-quiesce-request-handle", "--broker-quiesce-ready-handle",
+		"--broker-quiesce-abort-handle", "--broker-handoff-handle",
+		"AdditionalInheritedHandles", "coordinateDriverHelper(ctx",
+		"quiescePriorServiceForDriver", "releaseServiceForBrokerHandoff",
+		"restoreQuiescedPriorService", "driverHelperSettled",
 		"nativePackageRebootRequiredError",
 		"parseNativePackageInstallProof(text, processExitCode)",
 	}
@@ -113,9 +118,12 @@ func TestNativePackageProductionSourceContract(t *testing.T) {
 		if strings.Contains(source, "command.Wait()") {
 			t.Errorf("%s bypasses the retained process-handle join", name)
 		}
-		if !strings.Contains(source, "waitNativePackageHelper(command)") {
-			t.Errorf("%s lost the retained process-handle join", name)
-		}
+	}
+	if !strings.Contains(windowsSource, "waitNativePackageHelperCoordinated(command") {
+		t.Error("package install lost the retained coordinated process-handle join")
+	}
+	if !strings.Contains(uninstallWindowsSource, "waitNativePackageHelper(command)") {
+		t.Error("package uninstall lost the retained process-handle join")
 	}
 	credentialStart := strings.Index(serviceSource,
 		"func createProtectedNativeCredentialStagingFile(")
@@ -179,6 +187,9 @@ func TestNativePackageProductionSourceContract(t *testing.T) {
 		"VerifyDriverCatalogMember(catalogPath, infPath",
 		"LoadLibraryExW", "LOAD_LIBRARY_SEARCH_SYSTEM32", "GetProcAddress",
 		"ValidateExactPackageDirectory", "Sha256Handle(manifest.get()",
+		"RequestBrokerQuiescence", "SignalBrokerHandoff",
+		"--broker-quiesce-request-handle", "--broker-quiesce-ready-handle",
+		"--broker-quiesce-abort-handle", "--broker-handoff-handle",
 	}
 	for _, fragment := range requiredHelper {
 		if !strings.Contains(helperSource, fragment) {

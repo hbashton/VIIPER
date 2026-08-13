@@ -4,14 +4,164 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"testing"
 	"time"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/mgr"
 )
+
+func TestNativePackageDriverCoordinationUsesDistinctInheritedEvents(t *testing.T) {
+	t.Parallel()
+	coordination, err := newNativePackageDriverCoordination()
+	if err != nil {
+		t.Fatalf("create driver coordination: %v", err)
+	}
+	defer coordination.close()
+	seen := map[windows.Handle]bool{}
+	for _, handle := range []windows.Handle{
+		coordination.quiesceRequest, coordination.quiesceReady,
+		coordination.quiesceAbort, coordination.brokerHandoff,
+	} {
+		if handle == 0 || seen[handle] {
+			t.Fatalf("coordination event handle=%d is null or duplicated", handle)
+		}
+		seen[handle] = true
+		status, err := windows.WaitForSingleObject(handle, 0)
+		if err != nil || status != uint32(windows.WAIT_TIMEOUT) {
+			t.Fatalf("coordination event %d initial wait=(0x%x, %v), want timeout",
+				handle, status, err)
+		}
+	}
+	if len(coordination.inheritedHandles()) != 4 || len(coordination.arguments()) != 8 {
+		t.Fatal("driver coordination did not publish exactly four inherited handle arguments")
+	}
+	if unsafe.Sizeof(windows.Handle(0)) != unsafe.Sizeof(uintptr(0)) {
+		t.Fatal("Windows handle width no longer matches the decimal handoff contract")
+	}
+}
+
+func TestNativePackageDriverCoordinationHoldsServiceMutexUntilBrokerHandoff(t *testing.T) {
+	t.Parallel()
+	coordination, err := newNativePackageDriverCoordination()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer coordination.close()
+	process, err := windows.CreateEvent(nil, 1, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer windows.CloseHandle(process) //nolint:errcheck
+
+	released := make(chan struct{})
+	transaction := &windowsNativePackageTransaction{
+		serviceSnapshot: nativePackageServiceSnapshot{disposition: nativePackageServiceAbsent},
+		releaseServiceMutex: func() {
+			close(released)
+		},
+	}
+	childDone := make(chan error, 1)
+	go func() {
+		if err := windows.SetEvent(coordination.quiesceRequest); err != nil {
+			childDone <- err
+			return
+		}
+		if status, err := windows.WaitForSingleObject(coordination.quiesceReady, 1000); err != nil || status != windows.WAIT_OBJECT_0 {
+			childDone <- errors.Join(err, errors.New("quiescence readiness was not signaled"))
+			return
+		}
+		select {
+		case <-released:
+			childDone <- errors.New("service mutex released before broker handoff")
+			return
+		default:
+		}
+		if err := windows.SetEvent(coordination.brokerHandoff); err != nil {
+			childDone <- err
+			return
+		}
+		select {
+		case <-released:
+		case <-time.After(time.Second):
+			childDone <- errors.New("service mutex remained held after broker handoff")
+			return
+		}
+		childDone <- windows.SetEvent(process)
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := transaction.coordinateDriverHelper(ctx, process, coordination); err != nil {
+		t.Fatalf("coordinate driver helper: %v", err)
+	}
+	if err := <-childDone; err != nil {
+		t.Fatal(err)
+	}
+	if !transaction.driverQuiesceRequested || !transaction.driverBrokerHandoff ||
+		transaction.releaseServiceMutex != nil {
+		t.Fatalf("coordination state request=%v handoff=%v release=%v",
+			transaction.driverQuiesceRequested, transaction.driverBrokerHandoff,
+			transaction.releaseServiceMutex != nil)
+	}
+}
+
+func TestNativePackageDriverQuiescenceStopsOnlyTrustedRunningService(t *testing.T) {
+	t.Parallel()
+	events := []string{}
+	service := &fakeNativeService{events: &events, status: svc.Status{State: svc.Running}}
+	transaction := &windowsNativePackageTransaction{
+		serviceSnapshot: nativePackageServiceSnapshot{
+			disposition: nativePackageServiceTrusted,
+			wasRunning:  true,
+		},
+		service:             service,
+		releaseServiceMutex: func() {},
+	}
+	if err := transaction.quiescePriorServiceForDriver(context.Background()); err != nil {
+		t.Fatalf("quiesce trusted service: %v", err)
+	}
+	if !transaction.stoppedTrustedService || service.status.State != svc.Stopped ||
+		!slices.Equal(events, []string{"service-stop"}) {
+		t.Fatalf("trusted service state stopped=%v status=%d events=%v",
+			transaction.stoppedTrustedService, service.status.State, events)
+	}
+
+	weak := &windowsNativePackageTransaction{
+		serviceSnapshot: nativePackageServiceSnapshot{
+			disposition: nativePackageServiceWeakExactOwned,
+			wasRunning:  true,
+		},
+		service:             service,
+		releaseServiceMutex: func() {},
+	}
+	if err := weak.quiescePriorServiceForDriver(context.Background()); err == nil {
+		t.Fatal("weak exact-owned service was quiesced as a trusted rollback source")
+	}
+}
+
+func TestNativePackageOuterRollbackLeavesServiceStoppedOnUnsettledDriverProof(t *testing.T) {
+	t.Parallel()
+	events := []string{}
+	service := &fakeNativeService{events: &events, status: svc.Status{State: svc.Stopped}}
+	transaction := &windowsNativePackageTransaction{
+		serviceSnapshot: nativePackageServiceSnapshot{
+			disposition: nativePackageServiceTrusted,
+			wasRunning:  true,
+		},
+		service:               service,
+		stoppedTrustedService: true,
+		driverHelperSettled:   false,
+	}
+	err := transaction.Rollback(context.Background())
+	if err == nil || service.startCalls != 0 || len(events) != 0 {
+		t.Fatalf("unsettled outer rollback error=%v startCalls=%d events=%v",
+			err, service.startCalls, events)
+	}
+}
 
 func TestNativePackageCoordinationTokenAllowsNestedImmutableRead(t *testing.T) {
 	requireNativeMutexAdministrator(t)
