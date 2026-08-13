@@ -83,21 +83,14 @@ function Assert-ExactDirectoryEntries {
     }
 }
 
-function Initialize-ProtectedStagingDirectory {
+function Assert-ProtectedStagingDirectory {
     param([Parameter(Mandatory = $true)][string]$Path)
 
-    if (Test-Path -LiteralPath $Path) {
-        throw "Refusing to reuse local-test staging directory '$Path'."
+    $directory = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    if (-not $directory.PSIsContainer -or
+        ($directory.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "Local-test staging directory is missing, not a directory, or a reparse point: '$Path'."
     }
-    $expectedSecurity = [Security.AccessControl.DirectorySecurity]::new()
-    $expectedSecurity.SetSecurityDescriptorSddlForm(
-        'O:BAG:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)',
-        [Security.AccessControl.AccessControlSections]::All)
-    $directory = [IO.Directory]::CreateDirectory($Path, $expectedSecurity)
-    if (($directory.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-        throw "Local-test staging directory is a reparse point: '$Path'."
-    }
-    $directory.SetAccessControl($expectedSecurity)
     $actualSecurity = $directory.GetAccessControl(
         [Security.AccessControl.AccessControlSections]::Owner -bor
         [Security.AccessControl.AccessControlSections]::Access)
@@ -132,6 +125,24 @@ function Initialize-ProtectedStagingDirectory {
             throw "Local-test staging directory has an unexpected access rule for '$Path'."
         }
     }
+}
+
+function Initialize-ProtectedStagingDirectory {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if (Test-Path -LiteralPath $Path) {
+        throw "Refusing to reuse local-test staging directory '$Path'."
+    }
+    $expectedSecurity = [Security.AccessControl.DirectorySecurity]::new()
+    $expectedSecurity.SetSecurityDescriptorSddlForm(
+        'O:BAG:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)',
+        [Security.AccessControl.AccessControlSections]::All)
+    $directory = [IO.Directory]::CreateDirectory($Path, $expectedSecurity)
+    if (($directory.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "Local-test staging directory is a reparse point: '$Path'."
+    }
+    $directory.SetAccessControl($expectedSecurity)
+    Assert-ProtectedStagingDirectory -Path $Path
 }
 
 function Copy-ExactBrokerToProtectedStage {
@@ -203,11 +214,7 @@ function Remove-ProtectedStagingDirectory {
         [IO.Path]::GetFileName($fullPath) -notmatch '^VIIPER\.LocalTestStage\.[0-9a-f]{32}$') {
         throw "Refusing unsafe local-test staging cleanup '$Path'."
     }
-    $directory = Get-Item -LiteralPath $fullPath -Force -ErrorAction Stop
-    if (-not $directory.PSIsContainer -or
-        ($directory.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-        throw "Refusing unsafe local-test staging cleanup '$Path'."
-    }
+    Assert-ProtectedStagingDirectory -Path $fullPath
     $children = @(Get-ChildItem -LiteralPath $fullPath -Force)
     if ($children.Count -gt 1 -or
         ($children.Count -eq 1 -and
@@ -219,6 +226,26 @@ function Remove-ProtectedStagingDirectory {
         [IO.File]::Delete($children[0].FullName)
     }
     [IO.Directory]::Delete($fullPath, $false)
+}
+
+function Remove-PreBootProtectedStagingDirectories {
+    param([Parameter(Mandatory = $true)][string]$ProgramDataRoot)
+
+    # A live sibling installer can own a same-boot staging directory before it
+    # acquires the nested package mutex. Only reclaim exact protected stages
+    # which predate this boot; Windows already terminated every possible owner.
+    $bootBoundaryUtc = [DateTime]::UtcNow.Subtract(
+        [TimeSpan]::FromMilliseconds([Environment]::TickCount64))
+    $candidates = @(Get-ChildItem -LiteralPath $ProgramDataRoot -Force -Directory |
+        Where-Object {
+            $_.Name -match '^VIIPER\.LocalTestStage\.[0-9a-f]{32}$' -and
+            $_.LastWriteTimeUtc -lt $bootBoundaryUtc
+        })
+    foreach ($candidate in $candidates) {
+        Remove-ProtectedStagingDirectory `
+            -Path $candidate.FullName -ProgramDataRoot $ProgramDataRoot
+        Write-Host "local-test-stage action=cleanup result=removed path=$($candidate.Name)"
+    }
 }
 
 function ConvertTo-WindowsProcessArgument {
@@ -728,6 +755,7 @@ try {
         ($programDataItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
         throw "ProgramData is not a safe staging parent: '$programDataRoot'."
     }
+    Remove-PreBootProtectedStagingDirectories -ProgramDataRoot $programDataRoot
     $stageDirectory = Join-Path $programDataRoot (
         'VIIPER.LocalTestStage.' + [Guid]::NewGuid().ToString('N'))
     Initialize-ProtectedStagingDirectory -Path $stageDirectory
