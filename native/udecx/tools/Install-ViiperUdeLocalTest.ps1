@@ -228,14 +228,45 @@ function Remove-ProtectedStagingDirectory {
     [IO.Directory]::Delete($fullPath, $false)
 }
 
+if (-not ('ViiperWindowsUptime' -as [type])) {
+    Add-Type -Language CSharp -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+
+public static class ViiperWindowsUptime
+{
+    [DllImport("kernel32.dll", ExactSpelling = true)]
+    public static extern ulong GetTickCount64();
+}
+'@
+}
+
+$uptimeMethod = [ViiperWindowsUptime].GetMethod(
+    'GetTickCount64', [Reflection.BindingFlags]'Public,Static')
+$uptimeImport = $uptimeMethod.GetCustomAttributes(
+    [Runtime.InteropServices.DllImportAttribute], $false)[0]
+if ($uptimeMethod.ReturnType -ne [uint64] -or
+    $uptimeImport.Value -cne 'kernel32.dll' -or
+    -not $uptimeImport.ExactSpelling) {
+    throw 'The local-test installer does not bind the exact Windows uptime API.'
+}
+
+function Get-WindowsBootBoundaryUtc {
+    # Windows PowerShell 5.1 runs on .NET Framework, whose Environment type
+    # does not expose TickCount64. Bind the native 64-bit uptime API directly
+    # so long-running systems cannot suffer Environment.TickCount wraparound.
+    $uptimeMilliseconds = [ViiperWindowsUptime]::GetTickCount64()
+    return [DateTime]::UtcNow.Subtract(
+        [TimeSpan]::FromMilliseconds([double]$uptimeMilliseconds))
+}
+
 function Remove-PreBootProtectedStagingDirectories {
     param([Parameter(Mandatory = $true)][string]$ProgramDataRoot)
 
     # A live sibling installer can own a same-boot staging directory before it
     # acquires the nested package mutex. Only reclaim exact protected stages
     # which predate this boot; Windows already terminated every possible owner.
-    $bootBoundaryUtc = [DateTime]::UtcNow.Subtract(
-        [TimeSpan]::FromMilliseconds([Environment]::TickCount64))
+    $bootBoundaryUtc = Get-WindowsBootBoundaryUtc
     $candidates = @(Get-ChildItem -LiteralPath $ProgramDataRoot -Force -Directory |
         Where-Object {
             $_.Name -match '^VIIPER\.LocalTestStage\.[0-9a-f]{32}$' -and
@@ -451,6 +482,41 @@ if ($PreflightOnly) {
         ($programDataItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
         throw "ProgramData is not a safe staging parent: '$preflightProgramDataRoot'."
     }
+    # Exercise both sides of the reboot-boundary cleanup under the exact
+    # inbox Windows PowerShell host used for installation. This regression
+    # path must execute before an artifact can be published.
+    $preflightOldStage = Join-Path $preflightProgramDataRoot (
+        'VIIPER.LocalTestStage.' + [Guid]::NewGuid().ToString('N'))
+    $preflightCurrentStage = Join-Path $preflightProgramDataRoot (
+        'VIIPER.LocalTestStage.' + [Guid]::NewGuid().ToString('N'))
+    try {
+        Initialize-ProtectedStagingDirectory -Path $preflightOldStage
+        Initialize-ProtectedStagingDirectory -Path $preflightCurrentStage
+        $preflightBootBoundaryUtc = Get-WindowsBootBoundaryUtc
+        [IO.Directory]::SetLastWriteTimeUtc(
+            $preflightOldStage, $preflightBootBoundaryUtc.AddSeconds(-1))
+        [IO.Directory]::SetLastWriteTimeUtc(
+            $preflightCurrentStage, $preflightBootBoundaryUtc.AddSeconds(1))
+        Remove-PreBootProtectedStagingDirectories `
+            -ProgramDataRoot $preflightProgramDataRoot
+        if (Test-Path -LiteralPath $preflightOldStage) {
+            throw 'Pre-boot protected staging cleanup did not remove its test directory.'
+        }
+        if (-not (Test-Path -LiteralPath $preflightCurrentStage)) {
+            throw 'Pre-boot protected staging cleanup removed a same-boot test directory.'
+        }
+    }
+    finally {
+        foreach ($preflightCleanupStage in @(
+                $preflightOldStage, $preflightCurrentStage)) {
+            if (Test-Path -LiteralPath $preflightCleanupStage) {
+                Remove-ProtectedStagingDirectory `
+                    -Path $preflightCleanupStage `
+                    -ProgramDataRoot $preflightProgramDataRoot
+            }
+        }
+    }
+
     $preflightStage = Join-Path $preflightProgramDataRoot (
         'VIIPER.LocalTestStage.' + [Guid]::NewGuid().ToString('N'))
     try {

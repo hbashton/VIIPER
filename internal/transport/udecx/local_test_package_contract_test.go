@@ -117,7 +117,9 @@ func TestLocalTestPackageUsesFullTransactionalNativeBackend(t *testing.T) {
 		"$lockByPath['viiper.exe']",
 		"Remove-ProtectedStagingDirectory",
 		"Remove-PreBootProtectedStagingDirectories",
-		"[Environment]::TickCount64",
+		"public static class ViiperWindowsUptime",
+		"public static extern ulong GetTickCount64();",
+		"Get-WindowsBootBoundaryUtc",
 		"$_.LastWriteTimeUtc -lt $bootBoundaryUtc",
 		"Invoke-JoinedNativeProcess",
 		"if (-not $process.Start())",
@@ -187,6 +189,8 @@ func TestLocalTestPackageUsesFullTransactionalNativeBackend(t *testing.T) {
 		"BinaryLength",
 		"$store.Add($certificate)",
 		"$store.Remove(",
+		"[Environment]::TickCount64",
+		"[Environment]::TickCount",
 	} {
 		if strings.Contains(installer, forbidden) {
 			t.Fatalf("local-test elevated path retained unsafe dependency %q", forbidden)
@@ -223,6 +227,16 @@ func TestLocalTestPackageUsesFullTransactionalNativeBackend(t *testing.T) {
 	}
 	if strings.Contains(installer[preflightStart:interopCompile], "return") {
 		t.Fatal("local-test preflight can return before compiling the exact certificate-store interop")
+	}
+	preflightCleanup := strings.Index(installer[preflightStart:preflightSuccess],
+		"Remove-PreBootProtectedStagingDirectories")
+	preflightOldAssertion := strings.Index(installer[preflightStart:preflightSuccess],
+		"Pre-boot protected staging cleanup did not remove its test directory.")
+	preflightCurrentAssertion := strings.Index(installer[preflightStart:preflightSuccess],
+		"Pre-boot protected staging cleanup removed a same-boot test directory.")
+	if preflightCleanup < 0 || preflightOldAssertion <= preflightCleanup ||
+		preflightCurrentAssertion <= preflightOldAssertion {
+		t.Fatal("local-test preflight does not execute both sides of pre-boot staging cleanup")
 	}
 	settledStart := strings.Index(installer, "function Test-SettledLocalTestFailure")
 	settledEnd := strings.Index(installer, "$trustCommitted = $false")
@@ -323,10 +337,12 @@ func TestLocalTestSettledFailureRequiresObservedExitMatch(t *testing.T) {
 	const behaviorContract = `
 $ErrorActionPreference = 'Stop'
 $source = Get-Content -LiteralPath $env:VIIPER_INSTALLER_CONTRACT_PATH -Raw
-$csharp = [regex]::Match(
-    $source, "(?s)Add-Type -Language CSharp -TypeDefinition @'\r?\n(?<source>.*?)\r?\n'@").Groups['source'].Value
-if ([string]::IsNullOrEmpty($csharp)) { throw 'Embedded certificate-store source was not found.' }
-Add-Type -Language CSharp -TypeDefinition $csharp
+$csharpBlocks = @([regex]::Matches(
+    $source, "(?s)Add-Type -Language CSharp -TypeDefinition @'\r?\n(?<source>.*?)\r?\n'@") |
+    ForEach-Object { $_.Groups['source'].Value } |
+    Where-Object { $_ -match 'public static class ViiperLocalTestCertificateStore' })
+if ($csharpBlocks.Count -ne 1) { throw 'Embedded certificate-store source was not found exactly once.' }
+Add-Type -Language CSharp -TypeDefinition $csharpBlocks[0]
 $openStore = [ViiperLocalTestCertificateStore].GetMethod(
     'CertOpenStore', [Reflection.BindingFlags]'NonPublic,Static')
 $import = $openStore.GetCustomAttributes(
@@ -335,6 +351,7 @@ if ($import.Value -cne 'crypt32.dll' -or -not $import.ExactSpelling -or
     $import.CharSet -ne [Runtime.InteropServices.CharSet]::Unicode) {
     throw 'CertOpenStore P/Invoke metadata does not name the exact native entry point.'
 }
+
 $start = $source.IndexOf('function Test-SettledLocalTestFailure')
 $end = $source.IndexOf('$trustCommitted = $false', $start)
 if ($start -lt 0 -or $end -le $start) { throw 'Settled-failure predicate was not found.' }
@@ -394,6 +411,58 @@ if (Test-SettledLocalTestFailure -Lines $preflight -ProcessExitCode 1) {
 	command.Env = append(os.Environ(), "VIIPER_INSTALLER_CONTRACT_PATH="+installer)
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("settled-failure behavior contract failed: %v\n%s", err, output)
+	}
+}
+
+func TestLocalTestBootBoundaryRunsOnWindowsPowerShell51(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows PowerShell contract")
+	}
+
+	root := filepath.Join("..", "..", "..")
+	installer, err := filepath.Abs(filepath.Join(
+		root, "native", "udecx", "tools", "Install-ViiperUdeLocalTest.ps1"))
+	if err != nil {
+		t.Fatalf("resolve local-test installer: %v", err)
+	}
+	powerShell := filepath.Join(
+		os.Getenv("SystemRoot"), "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+	if _, err := os.Stat(powerShell); err != nil {
+		t.Fatalf("locate Windows PowerShell: %v", err)
+	}
+
+	const behaviorContract = `
+$ErrorActionPreference = 'Stop'
+$source = Get-Content -LiteralPath $env:VIIPER_INSTALLER_CONTRACT_PATH -Raw
+$csharpBlocks = @([regex]::Matches(
+    $source, "(?s)Add-Type -Language CSharp -TypeDefinition @'\r?\n(?<source>.*?)\r?\n'@") |
+    ForEach-Object { $_.Groups['source'].Value } |
+    Where-Object { $_ -match 'public static class ViiperWindowsUptime' })
+if ($csharpBlocks.Count -ne 1) { throw 'Embedded Windows-uptime source was not found exactly once.' }
+Add-Type -Language CSharp -TypeDefinition $csharpBlocks[0]
+$start = $source.IndexOf('function Get-WindowsBootBoundaryUtc')
+$end = $source.IndexOf('function Remove-PreBootProtectedStagingDirectories', $start)
+if ($start -lt 0 -or $end -le $start) { throw 'Windows boot-boundary function was not found.' }
+Invoke-Expression $source.Substring($start, $end - $start)
+$before = [DateTime]::UtcNow
+$boundary = Get-WindowsBootBoundaryUtc
+$after = [DateTime]::UtcNow
+$uptime = [TimeSpan]::FromMilliseconds([double][ViiperWindowsUptime]::GetTickCount64())
+$lower = $before.Subtract($uptime).AddSeconds(-2)
+$upper = $after.Subtract($uptime).AddSeconds(2)
+if ($boundary.Kind -ne [DateTimeKind]::Utc -or
+    $boundary -lt $lower -or $boundary -gt $upper) {
+    throw "Windows boot boundary was outside the native uptime interval: $boundary"
+}
+if ($PSVersionTable.PSEdition -cne 'Desktop' -or $PSVersionTable.PSVersion.Major -ne 5) {
+    throw "Expected Windows PowerShell 5.1, got $($PSVersionTable.PSVersion)."
+}
+`
+	command := exec.Command(
+		powerShell, "-NoProfile", "-NonInteractive", "-Command", behaviorContract)
+	command.Env = append(os.Environ(), "VIIPER_INSTALLER_CONTRACT_PATH="+installer)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("Windows PowerShell boot-boundary contract failed: %v\n%s", err, output)
 	}
 }
 

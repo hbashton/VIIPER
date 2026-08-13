@@ -199,6 +199,25 @@ jobs:
             }
           }
           if ($failed) { throw "Native PowerShell parser gate failed" }
+      - name: Parse native PowerShell tooling with Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          if ($PSVersionTable.PSEdition -cne 'Desktop' -or
+              $PSVersionTable.PSVersion.Major -ne 5) {
+            throw "Expected Windows PowerShell 5.1, got $($PSVersionTable.PSVersion)."
+          }
+          $failed = $false
+          Get-ChildItem native/udecx/tools -File -Filter *.ps1 | ForEach-Object {
+            $tokens = $null
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              $_.FullName, [ref]$tokens, [ref]$errors)
+            if ($errors.Count -gt 0) {
+              $failed = $true
+              Write-Error "$($_.Name): $($errors -join [Environment]::NewLine)"
+            }
+          }
+          if ($failed) { throw "Windows PowerShell 5.1 parser gate failed" }
       - name: Expose WDK tools
         shell: pwsh
         run: |

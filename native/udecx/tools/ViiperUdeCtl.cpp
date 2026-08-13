@@ -5290,7 +5290,7 @@ Outcome SelfTest() {
             "0123456789abcdef0123456789abcdef01234567",
             &buildIdentity, &outcome.error) ||
         buildIdentity !=
-            "6e25b6972fd774d00cc3c081dfe2244fa6ad24ddf1551012c0297c741da849b5") {
+            "c7b19790ddcf7c99af33b0e503591af2927ddc874c7655894a8d5e64015f0bff") {
         if (outcome.error.code == ERROR_SUCCESS) {
             SetError(&outcome.error, L"self-test-build-identity", ERROR_INVALID_DATA);
         }
