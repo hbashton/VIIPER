@@ -13,7 +13,7 @@ func TestBuildIdentityCanonicalVectorAndValidation(t *testing.T) {
 	t.Parallel()
 
 	const revision = "0123456789abcdef0123456789abcdef01234567"
-	const wantHex = "2fb3b07ba3eff0dfe961a588129bbdd5f6982f6261edd2ddfd5ab57686599596"
+	const wantHex = "180003f7b141c8015c29e7b3dcb6d252601ca6e82e6cc43b4480db31e167a660"
 	identity, err := DeriveBuildIdentity(revision, DriverPackageVersion,
 		ABIMajor, ABIMinor, AdvertisedCapabilities)
 	if err != nil {
@@ -302,6 +302,35 @@ func TestParseOperationRejectsMalformedCanonicalTail(t *testing.T) {
 				t.Fatalf("ParseOperation error=%v want=%v", err, test.want)
 			}
 		})
+	}
+}
+
+func TestParseOperationAcceptsCanonicalEmptyTail(t *testing.T) {
+	raw := make([]byte, OperationSize)
+	header, err := NewHeader(OperationSize)
+	if err != nil {
+		t.Fatal(err)
+	}
+	putHeader(raw, header)
+	binary.LittleEndian.PutUint64(raw[16:24], 7)
+	binary.LittleEndian.PutUint64(raw[24:32], 9)
+	binary.LittleEndian.PutUint32(raw[32:36], 2)
+	binary.LittleEndian.PutUint32(raw[36:40], uint32(OperationEndpointStart))
+	binary.LittleEndian.PutUint32(raw[64:68], OperationSize)
+	binary.LittleEndian.PutUint32(raw[72:76], OperationSize)
+
+	op, err := ParseOperation(raw)
+	if err != nil {
+		t.Fatalf("ParseOperation canonical empty tail: %v", err)
+	}
+	if op.Token != 7 || op.DeviceID != 9 || op.Generation != 2 ||
+		op.Kind != OperationEndpointStart || len(op.IsoPackets) != 0 || len(op.Payload) != 0 {
+		t.Fatalf("unexpected empty-tail operation: %+v", op)
+	}
+
+	binary.LittleEndian.PutUint32(raw[72:76], 0)
+	if _, err = ParseOperation(raw); !errors.Is(err, ErrInvalidRange) {
+		t.Fatalf("ParseOperation zero ISO offset error=%v want=%v", err, ErrInvalidRange)
 	}
 }
 

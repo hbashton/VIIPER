@@ -733,7 +733,7 @@ func TestValidatePingRequiresExpectedLoadedDriverIdentity(t *testing.T) {
 		Server: "VIIPER", Version: "0.1.0", Transport: latency.TransportNativeUDE,
 		Ready: &ready,
 		NativeUDE: &viipertypes.NativeUDEInfo{
-			ABIMajor: 1, ExpectedDriverPackageVersion: "0.1.0.16",
+			ABIMajor: 1, ExpectedDriverPackageVersion: "0.1.0.17",
 			LoadedDriverBuildIdentity: expected,
 		},
 	}

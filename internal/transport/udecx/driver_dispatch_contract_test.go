@@ -343,6 +343,17 @@ func TestNativeBrokerFaultFencesAdmissionAndPublication(t *testing.T) {
 		"ViiperDispatchNotificationEvents(deviceContext->Controller);")
 }
 
+func TestNativeLifecycleNotificationsPublishCanonicalEmptyTail(t *testing.T) {
+	broker := nativeContractSource(t, "native", "udecx", "driver", "Broker.c")
+	dispatch := normalizedContract(nativeCFunction(t, broker, "ViiperDispatchNotificationEvents"))
+	requireContractOrder(t, dispatch,
+		"operation->Header.Size = sizeof(*operation);",
+		"operation->DeviceSequence = event.DeviceSequence;",
+		"operation->IsoPacketsOffset = sizeof(*operation);",
+		"operation->PayloadOffset = sizeof(*operation);",
+		"WdfRequestSetInformation(dequeueRequest, sizeof(*operation));")
+}
+
 func TestNativeManualDequeueCancellationRetiresAccounting(t *testing.T) {
 	controller := nativeContractSource(t, "native", "udecx", "driver", "Controller.c")
 	header := nativeContractSource(t, "native", "udecx", "driver", "ViiperUde.h")

@@ -178,7 +178,8 @@ artifact supplies the source-bound evidence and probes for the real UdeCx test:
   -MediaProbePath C:\ViiperUdeLocalTest\ViiperUdeMediaProbe.exe `
   -InputProbePath C:\ViiperUdeLocalTest\ViiperUdeInputProbe.exe `
   -ProbeManifestPath C:\ViiperUdeLocalTest\ViiperUdeLiveProbes.manifest.json `
-  -Iterations 10 -MediaDurationSeconds 30 -DisposableTestMachine
+  -Iterations 10 -MediaDurationSeconds 30 -DisposableTestMachine `
+  -ManageInstalledBrokerService
 ```
 
 Production uninstall is similarly owned by the signed installer. It calls

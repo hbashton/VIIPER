@@ -32,6 +32,8 @@ param(
 
     [switch]$DisposableTestMachine,
 
+    [switch]$ManageInstalledBrokerService,
+
     [ValidateRange(1, 300)]
     [int]$MediaDurationSeconds = 3,
 
@@ -143,6 +145,9 @@ if ($ReleaseGate) {
     if (-not $DisposableTestMachine) {
         [void]$releaseGateFailures.Add('-DisposableTestMachine is required')
     }
+    if (-not $ManageInstalledBrokerService) {
+        [void]$releaseGateFailures.Add('-ManageInstalledBrokerService is required')
+    }
     if ($Iterations -lt 3) {
         [void]$releaseGateFailures.Add('-Iterations must be at least 3')
     }
@@ -225,12 +230,31 @@ $devnodes = @(Get-CimInstance -ClassName Win32_PnPSignedDriver | Where-Object {
 if ($devnodes.Count -ne 1) {
     throw "Expected exactly one VIIPER UDE root devnode; found $($devnodes.Count)."
 }
-if (-not [bool]$devnodes[0].IsSigned -or [string]::IsNullOrWhiteSpace([string]$devnodes[0].Signer)) {
-    throw "The installed VIIPER UDE devnode is not backed by a signed driver (Signer='$($devnodes[0].Signer)')."
+if ([uint32]$ownedRootDevices[0].ConfigManagerErrorCode -ne 0) {
+    throw "The installed VIIPER UDE root devnode has PnP problem code '$($ownedRootDevices[0].ConfigManagerErrorCode)'."
 }
-if ($SignatureValidationMode -ne 'LocalTest' -and
-    [string]$devnodes[0].Signer -notmatch '(?i)Microsoft') {
-    throw "The installed VIIPER UDE devnode is not backed by a Microsoft-signed driver (Signer='$($devnodes[0].Signer)')."
+$infName = [string]$devnodes[0].InfName
+if ($infName -cnotmatch '^oem[0-9]+\.inf$') {
+    throw "The installed VIIPER UDE root devnode has an invalid OEM INF identity '$infName'."
+}
+$packageInfs = @(Get-ChildItem -LiteralPath $packageRoot -File -Filter 'ViiperUde.inf')
+if ($packageInfs.Count -ne 1) {
+    throw "Expected exactly one signed-package INF; found $($packageInfs.Count)."
+}
+$installedInf = Join-Path (Join-Path $env:SystemRoot 'INF') $infName
+$packageInfHash = (Get-FileHash -LiteralPath $packageInfs[0].FullName -Algorithm SHA256).Hash
+$installedInfHash = (Get-FileHash -LiteralPath $installedInf -Algorithm SHA256).Hash
+if ($packageInfHash -cne $installedInfHash) {
+    throw "The active VIIPER UDE devnode INF does not match the verified package (InfName='$infName')."
+}
+if ($SignatureValidationMode -ne 'LocalTest') {
+    if (-not [bool]$devnodes[0].IsSigned -or
+        [string]::IsNullOrWhiteSpace([string]$devnodes[0].Signer)) {
+        throw "The installed VIIPER UDE devnode is not backed by a signed driver (Signer='$($devnodes[0].Signer)')."
+    }
+    if ([string]$devnodes[0].Signer -notmatch '(?i)Microsoft') {
+        throw "The installed VIIPER UDE devnode is not backed by a Microsoft-signed driver (Signer='$($devnodes[0].Signer)')."
+    }
 }
 
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -349,7 +373,26 @@ $oldGoToolchain = [Environment]::GetEnvironmentVariable('GOTOOLCHAIN', 'Process'
 $oldGoOS = [Environment]::GetEnvironmentVariable('GOOS', 'Process')
 $oldGoArch = [Environment]::GetEnvironmentVariable('GOARCH', 'Process')
 $oldCgoEnabled = [Environment]::GetEnvironmentVariable('CGO_ENABLED', 'Process')
+$brokerService = Get-Service -Name 'VIIPERNativeBroker' -ErrorAction SilentlyContinue
+if ($ManageInstalledBrokerService) {
+    if ($null -eq $brokerService) {
+        throw '-ManageInstalledBrokerService requires the installed VIIPERNativeBroker service.'
+    }
+    if ($brokerService.Status -ne [ServiceProcess.ServiceControllerStatus]::Running) {
+        throw "The installed VIIPERNativeBroker service must be running before validation; got '$($brokerService.Status)'."
+    }
+}
+elseif ($null -ne $brokerService -and
+    $brokerService.Status -eq [ServiceProcess.ServiceControllerStatus]::Running) {
+    throw 'VIIPERNativeBroker currently owns the controller. Pass -ManageInstalledBrokerService for a controlled stop/test/restart boundary.'
+}
 try {
+    if ($ManageInstalledBrokerService) {
+        Stop-Service -Name $brokerService.Name -ErrorAction Stop
+        $brokerService.WaitForStatus(
+            [ServiceProcess.ServiceControllerStatus]::Stopped,
+            [TimeSpan]::FromSeconds(30))
+    }
     $env:VIIPER_UDE_LIVE = '1'
     $env:VIIPER_UDE_LIVE_ITERATIONS = [string]$Iterations
     if ($null -ne $resolvedMediaProbe) {
@@ -399,11 +442,19 @@ try {
         }
         $nativeIdentityLdflags = '-X github.com/Alia5/VIIPER/internal/transport/udecx.nativeSourceRevision=' +
             $ExpectedSourceRevision.ToLowerInvariant()
-        $goTestOutput = @(& $go.Source test -v -count=1 -timeout "${timeoutMinutes}m" `
-            -ldflags $nativeIdentityLdflags `
-            -run '^TestNativeUDELive(ProductionControllers|OwnerCrashRecovery|RootRestartRecovery)$' ./internal/server/usb
-        )
-        $goTestExitCode = $LASTEXITCODE
+        $savedErrorActionPreference = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            $goTestOutput = @(& $go.Source test -v -count=1 -timeout "${timeoutMinutes}m" `
+                -ldflags $nativeIdentityLdflags `
+                -run '^TestNativeUDELive(ProductionControllers|OwnerCrashRecovery|RootRestartRecovery)$' `
+                ./internal/server/usb 2>&1
+            )
+            $goTestExitCode = $LASTEXITCODE
+        }
+        finally {
+            $ErrorActionPreference = $savedErrorActionPreference
+        }
         $goTestOutput | ForEach-Object { Write-Host $_ }
         if ($goTestExitCode -ne 0) {
             throw "Native UDE live validation failed with exit code $goTestExitCode."
@@ -427,6 +478,15 @@ try {
     }
 }
 finally {
+    if ($ManageInstalledBrokerService) {
+        $brokerService.Refresh()
+        if ($brokerService.Status -ne [ServiceProcess.ServiceControllerStatus]::Running) {
+            Start-Service -Name $brokerService.Name -ErrorAction Stop
+            $brokerService.WaitForStatus(
+                [ServiceProcess.ServiceControllerStatus]::Running,
+                [TimeSpan]::FromSeconds(30))
+        }
+    }
     [Environment]::SetEnvironmentVariable('VIIPER_UDE_LIVE', $oldLive, 'Process')
     [Environment]::SetEnvironmentVariable('VIIPER_UDE_LIVE_ITERATIONS', $oldIterations, 'Process')
     [Environment]::SetEnvironmentVariable('VIIPER_UDE_LIVE_MEDIA_PROBE', $oldMediaProbe, 'Process')

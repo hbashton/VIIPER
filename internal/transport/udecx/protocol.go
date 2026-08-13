@@ -21,7 +21,7 @@ const (
 	// shipped with this service. Runtime negotiation proves the loaded driver
 	// carries this version in its source-bound build identity; package
 	// installation additionally verifies DriverVer and the signed catalog.
-	DriverPackageVersion = "0.1.0.16"
+	DriverPackageVersion = "0.1.0.17"
 	BuildIdentitySize    = sha256.Size
 
 	HeaderSize            = 16

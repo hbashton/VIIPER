@@ -208,6 +208,11 @@ ViiperDispatchNotificationEvents(
         operation->EndpointMaxPacketSize = event.EndpointMaxPacketSize;
         operation->EndpointSequence = event.EndpointSequence;
         operation->DeviceSequence = event.DeviceSequence;
+        // Lifecycle and cancel notifications have an empty canonical tail.
+        // Keep both offsets at the first byte after the fixed header so the
+        // same strict parser contract applies to notifications and URBs.
+        operation->IsoPacketsOffset = sizeof(*operation);
+        operation->PayloadOffset = sizeof(*operation);
         WdfRequestSetInformation(dequeueRequest, sizeof(*operation));
         InterlockedIncrement64(&controllerContext->NotificationEventsDelivered);
         WdfRequestComplete(dequeueRequest, STATUS_SUCCESS);
