@@ -140,6 +140,10 @@ func TestNativePerformanceTraceCapturesAttributableCriticalPath(t *testing.T) {
 	for _, required := range []string{
 		"[string]$ProbeManifestPath",
 		"ProbeManifestPath      = $ProbeManifestPath",
+		"[switch]$ManageInstalledBrokerService",
+		"$validationArguments.ManageInstalledBrokerService = $true",
+		"[int]$MediaDurationSeconds = 3",
+		"MediaDurationSeconds   = $MediaDurationSeconds",
 		"$profile = 'GeneralProfile.Verbose'",
 		"GeneralProfile\\.Verbose\\.Memory",
 		"@('DPC', 'Interrupt', 'WDFDPC', 'WDFInterrupt')",

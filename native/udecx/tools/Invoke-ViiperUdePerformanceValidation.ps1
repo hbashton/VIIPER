@@ -34,7 +34,12 @@ param(
 
     [switch]$RestartRootDevice,
 
-    [switch]$DisposableTestMachine
+    [switch]$DisposableTestMachine,
+
+    [switch]$ManageInstalledBrokerService,
+
+    [ValidateRange(1, 300)]
+    [int]$MediaDurationSeconds = 3
 )
 
 Set-StrictMode -Version Latest
@@ -118,6 +123,7 @@ $validationArguments = @{
     MediaProbePath         = $MediaProbePath
     InputProbePath         = $InputProbePath
     ProbeManifestPath      = $ProbeManifestPath
+    MediaDurationSeconds   = $MediaDurationSeconds
 }
 if ($RequireDriverVerifier) {
     $validationArguments.RequireDriverVerifier = $true
@@ -127,6 +133,9 @@ if ($RestartRootDevice) {
 }
 if ($DisposableTestMachine) {
     $validationArguments.DisposableTestMachine = $true
+}
+if ($ManageInstalledBrokerService) {
+    $validationArguments.ManageInstalledBrokerService = $true
 }
 
 try {
@@ -219,6 +228,8 @@ $evidence = [ordered]@{
     inputProbeSha256 = (Get-FileHash -LiteralPath $InputProbePath -Algorithm SHA256).Hash.ToLowerInvariant()
     signatureValidationMode = $SignatureValidationMode
     iterations = $Iterations
+    mediaDurationSeconds = $MediaDurationSeconds
+    managesInstalledBrokerService = [bool]$ManageInstalledBrokerService
     analysisRequired = $true
 }
 $evidenceJson = $evidence | ConvertTo-Json -Depth 4

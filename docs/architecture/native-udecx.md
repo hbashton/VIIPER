@@ -24,8 +24,9 @@ after transfer ordering, cancellation, teardown, and recovery are proven.
   evidence for manual-queue/cache ownership only, not for UDE completion IRQL.
 - Its controller contract also reports chained-MDL, high-speed, and SuperSpeed
   compatibility for a root controller with USB 2 and USB 3 ports. VIIPER
-  mirrors that capability set and explicitly forwards post-enumeration child
-  resets into the generation-owned lifecycle stream.
+  mirrors that capability set. UdeCx owns the mandatory post-enumeration child
+  reset; configuration replacement enters VIIPER's generation-owned lifecycle
+  stream after Windows has finished enumerating the child.
 - ViGEmBus provides the lifecycle north star: explicit protocol negotiation,
   handle-scoped ownership, bounded manual queues, cancel-safe requests,
   generation-aware target teardown, and synchronization per target rather than
@@ -456,7 +457,8 @@ a wedged provider cannot retain the installer mutex indefinitely.
   stale reset publication or successor gate change. Reset never calls
   purge-complete or waits for a later start callback, matching UdeCx's distinct
   reset and purge contracts.
-- Device reset closes direct input admission in the kernel callback and pauses
+- Device configuration replacement closes direct input admission in the
+  kernel callback and pauses
   every user-mode publisher before controller state is cleared. Every endpoint
   first passes the same reset-specific driver-owned-request/rundown proof; if
   purge or removal wins, the actual reset request fails without publishing a
@@ -466,9 +468,12 @@ a wedged provider cannot retain the installer mutex indefinitely.
   mode acknowledges them out of order. Admission and active publishers reopen
   only after a second exact-generation/object/epoch proof at acknowledgement,
   so no HID snapshot or late terminal callback can cross the reset boundary.
-  Post-enumeration reset, device initialization, and configuration replacement
-  share this one-child-at-a-time gate; concurrent reset transactions are
-  rejected instead of interleaving two controller resets.
+  Configuration replacement alone uses this one-child-at-a-time device gate;
+  concurrent reset transactions are rejected instead of interleaving two
+  controller resets. The mandatory post-enumeration reset stays entirely in
+  UdeCx, because an emulated descriptor has no backing physical reset to
+  coordinate and Windows cannot continue child enumeration while that reset is
+  waiting on user mode. Device initialization also completes synchronously.
 - The controller's default KMDF queue is parallel and completes interrupt-IN
   submissions directly. Mutation, broker, and lifecycle IOCTLs alone move to
   the serialized control queue. This removes a redundant KMDF forwarding and

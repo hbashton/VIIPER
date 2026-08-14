@@ -347,6 +347,11 @@ if (-not $deviceResetAdmissionMatch.Success -or
             'InterlockedCompareExchange\s*\(\s*&endpointContext->Resetting\s*,\s*TRUE\s*,\s*FALSE\s*\)[\s\S]*else[\s\S]*ResetDeviceEpoch[\s\S]*deviceContext->ResetEpoch') {
     throw 'Device reset must advance its private epoch only after admission, and endpoint reset must capture that epoch atomically.'
 }
+if ($deviceSource -match 'callbacks\.EvtUsbDeviceReset\s*=' -or
+        $deviceSource -match '(?m)^ViiperEvtUsbDeviceReset\s*\(' -or
+        $header -match 'EVT_UDECX_USB_DEVICE_POST_ENUMERATION_RESET') {
+    throw 'Post-enumeration reset must remain UdeCx-owned and must not wait on the user-mode lifecycle stream.'
+}
 $managementSlotPinMatch = [regex]::Match(
     $brokerSource,
     '(?ms)^ViiperQueueAcknowledgedLifecycleEvent\s*\([^)]*\)\s*\{(?<body>.*?)^\}')

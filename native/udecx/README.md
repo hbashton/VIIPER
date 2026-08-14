@@ -227,7 +227,8 @@ Microsoft-signed package with:
   -MediaDurationSeconds 30 `
   -MediaProbePath .\native\udecx\x64\Release\ViiperUdeMediaProbe.exe `
   -InputProbePath .\native\udecx\x64\Release\ViiperUdeInputProbe.exe `
-  -ProbeManifestPath .\native\udecx\x64\Release\ViiperUdeLiveProbes.manifest.json
+  -ProbeManifestPath .\native\udecx\x64\Release\ViiperUdeLiveProbes.manifest.json `
+  -ManageInstalledBrokerService
 ```
 
 The command refuses an unsigned package, a package/service hash mismatch, a

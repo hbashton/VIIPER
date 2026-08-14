@@ -29,6 +29,23 @@ func TestNativeDeviceInitializeDoesNotEnterResetProtocol(t *testing.T) {
 	}
 }
 
+func TestNativePostEnumerationResetDoesNotBlockEnumerationOnUserMode(t *testing.T) {
+	device := nativeContractSource(t, "native", "udecx", "driver", "Device.c")
+	header := nativeContractSource(t, "native", "udecx", "driver", "ViiperUde.h")
+	create := normalizedContract(nativeCFunction(t, device, "ViiperCreateVirtualDevice"))
+
+	if strings.Contains(create, "callbacks.EvtUsbDeviceReset") ||
+		strings.Contains(device, "ViiperEvtUsbDeviceReset") ||
+		strings.Contains(header, "EVT_UDECX_USB_DEVICE_POST_ENUMERATION_RESET") {
+		t.Fatal("post-enumeration reset can block child enumeration on a user-mode acknowledgement")
+	}
+	configure := normalizedContract(nativeCFunction(t, device, "ViiperEvtEndpointsConfigure"))
+	if !strings.Contains(configure,
+		"case UdecxEndpointsConfigureTypeDeviceConfigurationChange: status = ViiperBeginAcknowledgedDeviceReset(Device, Request);") {
+		t.Fatal("configuration replacement lost its acknowledged device-reset boundary")
+	}
+}
+
 func TestNativeSuperSpeedPortsUseControllerGlobalNumbering(t *testing.T) {
 	header := nativeContractSource(t, "native", "udecx", "driver", "ViiperUde.h")
 	controller := nativeContractSource(t, "native", "udecx", "driver", "Controller.c")
