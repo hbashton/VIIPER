@@ -106,7 +106,7 @@ $driverVersion = $versionNodes[0].InnerText.Trim()
 $source = $SourceRevision.ToLowerInvariant()
 $buildIdentity = & (Join-Path $PSScriptRoot 'Get-ViiperUdeBuildIdentity.ps1') `
     -SourceRevision $source -DriverPackageVersion $driverVersion `
-    -ABIMajor 1 -ABIMinor 10 -Capabilities 13
+    -ABIMajor 1 -ABIMinor 11 -Capabilities 29
 
 $manifest = [ordered]@{
     schema = 2
@@ -117,8 +117,8 @@ $manifest = [ordered]@{
     sourceRevision = $source
     driverPackageVersion = $driverVersion
     driverABIMajor = 1
-    driverABIMinor = 10
-    driverCapabilities = '0x0000000d'
+    driverABIMinor = 11
+    driverCapabilities = '0x0000001d'
     driverBuildIdentity = $buildIdentity
     testSignerCertificateSha256 = $certificateSha256
     files = @(

@@ -13,7 +13,7 @@ func TestBuildIdentityCanonicalVectorAndValidation(t *testing.T) {
 	t.Parallel()
 
 	const revision = "0123456789abcdef0123456789abcdef01234567"
-	const wantHex = "341c4a2187ae6e4944761851648ef5772005addf2994dbafd9743dc2fed91306"
+	const wantHex = "96ecacd1be08c28c77429c56c0b6a39e593c59cc60481746d7ec2b268545f1dd"
 	identity, err := DeriveBuildIdentity(revision, DriverPackageVersion,
 		ABIMajor, ABIMinor, AdvertisedCapabilities)
 	if err != nil {
@@ -525,6 +525,51 @@ func TestIdentityAndStatsLayout(t *testing.T) {
 	}
 }
 
+func TestParseLifecycleTracePreservesDebugState(t *testing.T) {
+	raw := make([]byte, LifecycleTraceSize)
+	h, _ := NewHeader(LifecycleTraceSize)
+	putHeader(raw, h)
+	binary.LittleEndian.PutUint64(raw[16:24], 23)
+	binary.LittleEndian.PutUint64(raw[24:32], 10_000_000)
+	binary.LittleEndian.PutUint32(raw[32:36], 1)
+	binary.LittleEndian.PutUint32(raw[36:40], LifecycleTraceRecordSize)
+	binary.LittleEndian.PutUint32(raw[40:44], LifecycleTraceCapacity)
+
+	record := raw[48 : 48+LifecycleTraceRecordSize]
+	binary.LittleEndian.PutUint64(record[0:8], 23)
+	binary.LittleEndian.PutUint64(record[8:16], 1_234_567)
+	binary.LittleEndian.PutUint64(record[16:24], 0xfffff80212345678)
+	binary.LittleEndian.PutUint64(record[24:32], 41)
+	binary.LittleEndian.PutUint64(record[32:40], 0xffff808000001000)
+	binary.LittleEndian.PutUint64(record[40:48], 0xffff808000002000)
+	binary.LittleEndian.PutUint32(record[48:52], 7)
+	binary.LittleEndian.PutUint32(record[52:56], 2225)
+	binary.LittleEndian.PutUint32(record[56:60], 0xc0000184)
+	binary.LittleEndian.PutUint32(record[60:64], 2)
+	binary.LittleEndian.PutUint32(record[64:68], 3)
+	binary.LittleEndian.PutUint32(record[68:72], 4)
+	binary.LittleEndian.PutUint16(record[72:74], TraceEndpointPurgeCompleteEnd)
+	binary.LittleEndian.PutUint16(record[74:76], 9)
+	record[76], record[77], record[78] = TraceSourceDevice, 0, 0x84
+
+	trace, err := ParseLifecycleTrace(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if trace.LatestSequence != 23 || trace.PerformanceFrequency != 10_000_000 || len(trace.Records) != 1 {
+		t.Fatalf("unexpected lifecycle trace header: %+v", trace)
+	}
+	got := trace.Records[0]
+	if got.PublishedSequence != 23 || got.TimestampQPC != 1_234_567 ||
+		got.Caller != 0xfffff80212345678 || got.DeviceID != 41 || got.Generation != 7 ||
+		got.Line != 2225 || uint32(got.Status) != 0xc0000184 || got.ActiveOperations != 2 ||
+		got.PendingOperations != 3 || got.QueueState != 4 ||
+		got.Event != TraceEndpointPurgeCompleteEnd || got.Processor != 9 ||
+		got.Source != TraceSourceDevice || got.IRQL != 0 || got.EndpointAddress != 0x84 {
+		t.Fatalf("unexpected lifecycle trace record: %+v", got)
+	}
+}
+
 func FuzzParseOperation(f *testing.F) {
 	f.Add([]byte{})
 	valid := make([]byte, OperationSize)
@@ -578,11 +623,18 @@ func FuzzProtocolDecoders(f *testing.F) {
 	h, _ = NewHeader(len(stats))
 	putHeader(stats, h)
 	f.Add(stats)
+	trace := make([]byte, LifecycleTraceSize)
+	h, _ = NewHeader(len(trace))
+	putHeader(trace, h)
+	binary.LittleEndian.PutUint32(trace[36:40], LifecycleTraceRecordSize)
+	binary.LittleEndian.PutUint32(trace[40:44], LifecycleTraceCapacity)
+	f.Add(trace)
 	f.Fuzz(func(t *testing.T, raw []byte) {
 		_, _ = ParseHeader(raw)
 		_, _ = ParseNegotiateResponse(raw)
 		_, _ = ParseStats(raw)
 		_, _ = ParseOperation(raw)
+		_, _ = ParseLifecycleTrace(raw)
 	})
 }
 

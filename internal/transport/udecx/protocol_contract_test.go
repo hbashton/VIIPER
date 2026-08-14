@@ -158,6 +158,38 @@ type contractStats struct {
 	InputReportsCompleted      uint64
 }
 
+type contractLifecycleTraceRecord struct {
+	PublishedSequence uint64
+	TimestampQpc      uint64
+	Caller            uint64
+	DeviceId          uint64
+	DeviceObject      uint64
+	EndpointObject    uint64
+	Generation        uint32
+	Line              uint32
+	Status            int32
+	ActiveOperations  int32
+	PendingOperations int32
+	QueueState        uint32
+	Event             uint16
+	Processor         uint16
+	Source            uint8
+	Irql              uint8
+	EndpointAddress   uint8
+	Reserved          uint8
+}
+
+type contractLifecycleTrace struct {
+	Header               contractHeader
+	LatestSequence       uint64
+	PerformanceFrequency uint64
+	RecordCount          uint32
+	RecordSize           uint32
+	Capacity             uint32
+	Reserved             uint32
+	Records              [LifecycleTraceCapacity]contractLifecycleTraceRecord
+}
+
 func nativeContractSource(t *testing.T, name ...string) string {
 	t.Helper()
 	parts := append([]string{"..", "..", ".."}, name...)
@@ -219,6 +251,8 @@ func TestNativeProtocolHeaderMatchesGoContract(t *testing.T) {
 		"VIIPER_UDE_CAP_STREAMS":                 uint64(CapabilityStreams),
 		"VIIPER_UDE_CAP_DEVICE_LIFECYCLE":        uint64(CapabilityDeviceLifecycle),
 		"VIIPER_UDE_CAP_INPUT_REPORTS":           uint64(CapabilityInputReports),
+		"VIIPER_UDE_CAP_LIFECYCLE_TRACE":         uint64(CapabilityLifecycleTrace),
+		"VIIPER_UDE_LIFECYCLE_TRACE_CAPACITY":    LifecycleTraceCapacity,
 	}
 	for name, want := range numbers {
 		if got := cDefineNumber(t, header, name); got != want {
@@ -227,17 +261,19 @@ func TestNativeProtocolHeaderMatchesGoContract(t *testing.T) {
 	}
 
 	types := map[string]reflect.Type{
-		"HEADER":             reflect.TypeOf(contractHeader{}),
-		"NEGOTIATE_REQUEST":  reflect.TypeOf(contractNegotiateRequest{}),
-		"NEGOTIATE_RESPONSE": reflect.TypeOf(contractNegotiateResponse{}),
-		"DESCRIPTOR_RECORD":  reflect.TypeOf(contractDescriptorRecord{}),
-		"CREATE_DEVICE":      reflect.TypeOf(contractCreateDevice{}),
-		"DEVICE_IDENTITY":    reflect.TypeOf(contractDeviceIdentity{}),
-		"ISO_PACKET":         reflect.TypeOf(contractISOPacket{}),
-		"OPERATION":          reflect.TypeOf(contractOperation{}),
-		"COMPLETION":         reflect.TypeOf(contractCompletion{}),
-		"INPUT_REPORT":       reflect.TypeOf(contractInputReport{}),
-		"STATS":              reflect.TypeOf(contractStats{}),
+		"HEADER":                 reflect.TypeOf(contractHeader{}),
+		"NEGOTIATE_REQUEST":      reflect.TypeOf(contractNegotiateRequest{}),
+		"NEGOTIATE_RESPONSE":     reflect.TypeOf(contractNegotiateResponse{}),
+		"DESCRIPTOR_RECORD":      reflect.TypeOf(contractDescriptorRecord{}),
+		"CREATE_DEVICE":          reflect.TypeOf(contractCreateDevice{}),
+		"DEVICE_IDENTITY":        reflect.TypeOf(contractDeviceIdentity{}),
+		"ISO_PACKET":             reflect.TypeOf(contractISOPacket{}),
+		"OPERATION":              reflect.TypeOf(contractOperation{}),
+		"COMPLETION":             reflect.TypeOf(contractCompletion{}),
+		"INPUT_REPORT":           reflect.TypeOf(contractInputReport{}),
+		"STATS":                  reflect.TypeOf(contractStats{}),
+		"LIFECYCLE_TRACE_RECORD": reflect.TypeOf(contractLifecycleTraceRecord{}),
+		"LIFECYCLE_TRACE":        reflect.TypeOf(contractLifecycleTrace{}),
 	}
 	wantSizes := map[string]uintptr{
 		"HEADER": HeaderSize, "NEGOTIATE_REQUEST": NegotiateRequestSize,
@@ -245,6 +281,8 @@ func TestNativeProtocolHeaderMatchesGoContract(t *testing.T) {
 		"CREATE_DEVICE": CreateDeviceSize, "DEVICE_IDENTITY": DeviceIdentitySize,
 		"ISO_PACKET": IsoPacketSize, "OPERATION": OperationSize, "COMPLETION": CompletionSize,
 		"INPUT_REPORT": InputReportSize, "STATS": StatsSize,
+		"LIFECYCLE_TRACE_RECORD": LifecycleTraceRecordSize,
+		"LIFECYCLE_TRACE":        LifecycleTraceSize,
 	}
 	sizePattern := regexp.MustCompile(`static_assert\(sizeof\(VIIPER_UDE_([A-Z_]+)\) == ([0-9]+),`)
 	seenSizes := make(map[string]bool)
@@ -323,7 +361,7 @@ func TestNativeProtocolHeaderMatchesGoContract(t *testing.T) {
 	if !strings.Contains(header, `#define VIIPER_UDE_DRIVER_PACKAGE_VERSION "`+DriverPackageVersion+`"`) {
 		t.Fatalf("C driver package version does not match Go %q", DriverPackageVersion)
 	}
-	advertised := regexp.MustCompile(`(?s)#define\s+VIIPER_UDE_ADVERTISED_CAPABILITIES\s+\\\s*\(VIIPER_UDE_CAP_ISOCHRONOUS\s*\|\s*VIIPER_UDE_CAP_DEVICE_LIFECYCLE\s*\|\s*\\?\s*VIIPER_UDE_CAP_INPUT_REPORTS\)`).MatchString(header)
+	advertised := regexp.MustCompile(`(?s)#define\s+VIIPER_UDE_ADVERTISED_CAPABILITIES\s+\\\s*\(VIIPER_UDE_CAP_ISOCHRONOUS\s*\|\s*VIIPER_UDE_CAP_DEVICE_LIFECYCLE\s*\|\s*\\?\s*VIIPER_UDE_CAP_INPUT_REPORTS\s*\|\s*VIIPER_UDE_CAP_LIFECYCLE_TRACE\)`).MatchString(header)
 	if !advertised {
 		t.Fatal("C advertised capability identity tuple does not match Go")
 	}
@@ -488,13 +526,14 @@ func verifyGUIDAndIOCTLContract(t *testing.T, header string) {
 		access string
 	}
 	specs := map[string]ioctlSpec{
-		"NEGOTIATE":           {"ioctlNegotiate", 0, "METHOD_BUFFERED", "FILE_READ_DATA | FILE_WRITE_DATA"},
-		"CREATE_DEVICE":       {"ioctlCreateDevice", 1, "METHOD_BUFFERED", "FILE_READ_DATA | FILE_WRITE_DATA"},
-		"DESTROY_DEVICE":      {"ioctlDestroyDevice", 2, "METHOD_BUFFERED", "FILE_READ_DATA | FILE_WRITE_DATA"},
-		"DEQUEUE_OPERATION":   {"ioctlDequeueOperation", 3, "METHOD_OUT_DIRECT", "FILE_READ_DATA | FILE_WRITE_DATA"},
-		"COMPLETE_OPERATION":  {"ioctlCompleteOperation", 4, "METHOD_IN_DIRECT", "FILE_READ_DATA | FILE_WRITE_DATA"},
-		"QUERY_STATS":         {"ioctlQueryStats", 5, "METHOD_BUFFERED", "FILE_READ_DATA"},
-		"SUBMIT_INPUT_REPORT": {"ioctlSubmitInputReport", 6, "METHOD_IN_DIRECT", "FILE_READ_DATA | FILE_WRITE_DATA"},
+		"NEGOTIATE":             {"ioctlNegotiate", 0, "METHOD_BUFFERED", "FILE_READ_DATA | FILE_WRITE_DATA"},
+		"CREATE_DEVICE":         {"ioctlCreateDevice", 1, "METHOD_BUFFERED", "FILE_READ_DATA | FILE_WRITE_DATA"},
+		"DESTROY_DEVICE":        {"ioctlDestroyDevice", 2, "METHOD_BUFFERED", "FILE_READ_DATA | FILE_WRITE_DATA"},
+		"DEQUEUE_OPERATION":     {"ioctlDequeueOperation", 3, "METHOD_OUT_DIRECT", "FILE_READ_DATA | FILE_WRITE_DATA"},
+		"COMPLETE_OPERATION":    {"ioctlCompleteOperation", 4, "METHOD_IN_DIRECT", "FILE_READ_DATA | FILE_WRITE_DATA"},
+		"QUERY_STATS":           {"ioctlQueryStats", 5, "METHOD_BUFFERED", "FILE_READ_DATA"},
+		"SUBMIT_INPUT_REPORT":   {"ioctlSubmitInputReport", 6, "METHOD_IN_DIRECT", "FILE_READ_DATA | FILE_WRITE_DATA"},
+		"QUERY_LIFECYCLE_TRACE": {"ioctlQueryLifecycleTrace", 7, "METHOD_BUFFERED", "FILE_READ_DATA"},
 	}
 	pattern := regexp.MustCompile(`(?m)^#define IOCTL_VIIPER_UDE_([A-Z_]+) CTL_CODE\(FILE_DEVICE_UNKNOWN, VIIPER_UDE_IOCTL_BASE \+ ([0-9]+), (METHOD_[A-Z_]+), ([^)]+)\)$`)
 	seen := make(map[string]bool)

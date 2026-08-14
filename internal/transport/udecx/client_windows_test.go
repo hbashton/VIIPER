@@ -156,6 +156,7 @@ func TestIOCTLCodesMatchPackedHeader(t *testing.T) {
 		"complete":  {ioctlCompleteOperation, 0x22e411},
 		"stats":     {ioctlQueryStats, 0x226414},
 		"input":     {ioctlSubmitInputReport, 0x22e419},
+		"trace":     {ioctlQueryLifecycleTrace, 0x22641c},
 	}
 	for name, pair := range wants {
 		if pair.got != pair.want {

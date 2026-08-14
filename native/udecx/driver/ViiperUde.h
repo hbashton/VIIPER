@@ -180,6 +180,9 @@ typedef struct VIIPER_UDE_CONTROLLER_CONTEXT {
     volatile LONG64 IsoPackets;
     volatile LONG64 BytesToDevice;
     volatile LONG64 BytesFromDevice;
+    volatile LONG64 LifecycleTraceSequence;
+    DECLSPEC_ALIGN(8) VIIPER_UDE_LIFECYCLE_TRACE_RECORD
+        LifecycleTrace[VIIPER_UDE_LIFECYCLE_TRACE_CAPACITY];
     // Sorted by DeviceId and protected by DeviceLock. The input producer uses
     // a shared binary lookup while lifecycle mutations retain exclusive access
     // to the physical UDE port table below.
@@ -398,6 +401,23 @@ VOID ViiperEndpointOperationStarted(_In_ UDECXUSBENDPOINT Endpoint);
 _IRQL_requires_max_(DISPATCH_LEVEL)
 VOID ViiperEndpointOperationCompleted(_In_ UDECXUSBENDPOINT Endpoint);
 VOID ViiperPurgeOwnerOperations(_In_ WDFDEVICE Controller, _In_ NTSTATUS Status);
+VOID ViiperTraceLifecycle(
+    _In_ WDFDEVICE Controller,
+    _In_ UCHAR Source,
+    _In_ USHORT Event,
+    _In_ ULONGLONG DeviceId,
+    _In_ ULONG Generation,
+    _In_opt_ UDECXUSBDEVICE Device,
+    _In_opt_ UDECXUSBENDPOINT Endpoint,
+    _In_ UCHAR EndpointAddress,
+    _In_ NTSTATUS Status,
+    _In_ LONG ActiveOperations,
+    _In_ ULONG QueueState,
+    _In_ ULONG Line);
+#define VIIPER_TRACE_LIFECYCLE(Controller, Source, Event, DeviceId, Generation, Device, Endpoint, EndpointAddress, Status, ActiveOperations, QueueState) \
+    ViiperTraceLifecycle((Controller), (Source), (Event), (DeviceId), (Generation), \
+        (Device), (Endpoint), (EndpointAddress), (Status), (ActiveOperations), \
+        (QueueState), __LINE__)
 NTSTATUS ViiperQueueEndpointLifecycleEvent(
     _In_ UDECXUSBENDPOINT Endpoint,
     _In_ VIIPER_UDE_OPERATION_KIND Kind);

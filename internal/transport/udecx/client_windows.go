@@ -38,6 +38,7 @@ const (
 	ioctlCompleteOperation                  = (fileDeviceUnknown << 16) | ((fileReadData | fileWriteData) << 14) | ((ioctlBase + 4) << 2) | methodInDirect
 	ioctlQueryStats                         = (fileDeviceUnknown << 16) | (fileReadData << 14) | ((ioctlBase + 5) << 2) | methodBuffered
 	ioctlSubmitInputReport                  = (fileDeviceUnknown << 16) | ((fileReadData | fileWriteData) << 14) | ((ioctlBase + 6) << 2) | methodInDirect
+	ioctlQueryLifecycleTrace                = (fileDeviceUnknown << 16) | (fileReadData << 14) | ((ioctlBase + 7) << 2) | methodBuffered
 	completionPortCloseKey          uintptr = ^uintptr(0)
 	fileSkipCompletionPortOnSuccess byte    = 0x1
 	requiredCapabilities                    = AdvertisedCapabilities
@@ -702,6 +703,18 @@ func (c *Client) QueryStats(ctx context.Context) (Stats, error) {
 		return Stats{}, ErrInvalidSize
 	}
 	return ParseStats(buffer)
+}
+
+func (c *Client) QueryLifecycleTrace(ctx context.Context) (LifecycleTrace, error) {
+	buffer := make([]byte, LifecycleTraceSize)
+	written, err := c.ioctl(ctx, ioctlQueryLifecycleTrace, nil, buffer)
+	if err != nil {
+		return LifecycleTrace{}, err
+	}
+	if written != LifecycleTraceSize {
+		return LifecycleTrace{}, ErrInvalidSize
+	}
+	return ParseLifecycleTrace(buffer)
 }
 
 func (c *Client) beginIO() (windows.Handle, error) {

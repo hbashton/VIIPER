@@ -16,25 +16,28 @@ import (
 const (
 	Magic    uint32 = 0x45445556
 	ABIMajor uint16 = 1
-	ABIMinor uint16 = 10
+	ABIMinor uint16 = 11
 	// DriverPackageVersion is the native driver package version built and
 	// shipped with this service. Runtime negotiation proves the loaded driver
 	// carries this version in its source-bound build identity; package
 	// installation additionally verifies DriverVer and the signed catalog.
-	DriverPackageVersion = "0.1.0.31"
+	DriverPackageVersion = "0.1.0.32"
 	BuildIdentitySize    = sha256.Size
 
-	HeaderSize            = 16
-	NegotiateRequestSize  = 32
-	NegotiateResponseSize = 88
-	DescriptorRecordSize  = 16
-	CreateDeviceSize      = 56
-	DeviceIdentitySize    = 32
-	IsoPacketSize         = 16
-	OperationSize         = 104
-	CompletionSize        = 72
-	InputReportSize       = 48
-	StatsSize             = 144
+	HeaderSize               = 16
+	NegotiateRequestSize     = 32
+	NegotiateResponseSize    = 88
+	DescriptorRecordSize     = 16
+	CreateDeviceSize         = 56
+	DeviceIdentitySize       = 32
+	IsoPacketSize            = 16
+	OperationSize            = 104
+	CompletionSize           = 72
+	InputReportSize          = 48
+	StatsSize                = 144
+	LifecycleTraceRecordSize = 80
+	LifecycleTraceSize       = 41008
+	LifecycleTraceCapacity   = 512
 
 	MaxDevices                  = 32
 	MaxDescriptorBytes          = 256 * 1024
@@ -78,9 +81,44 @@ const (
 	CapabilityStreams
 	CapabilityDeviceLifecycle
 	CapabilityInputReports
+	CapabilityLifecycleTrace
 )
 
-const AdvertisedCapabilities = CapabilityIsochronous | CapabilityDeviceLifecycle | CapabilityInputReports
+const AdvertisedCapabilities = CapabilityIsochronous | CapabilityDeviceLifecycle |
+	CapabilityInputReports | CapabilityLifecycleTrace
+
+const (
+	TraceSourceDevice uint8 = iota + 1
+	TraceSourceBroker
+	TraceSourceController
+)
+
+const (
+	TraceCreateBegin uint16 = iota + 1
+	TraceDeviceCreateReturned
+	TraceDeviceSlotClaimed
+	TracePlugInBegin
+	TracePlugInReturned
+	TraceRemoveClaimed
+	TraceManagementAbortBegin
+	TraceManagementAbortEnd
+	TracePlugOutBegin
+	TracePlugOutReturned
+	TraceEndpointPurgeBegin
+	TraceEndpointOperationsPurged
+	TraceEndpointQueuePurgeRequested
+	TraceEndpointQueuePurged
+	TraceEndpointDrainBegin
+	TraceEndpointDrainEnd
+	TraceEndpointPurgeCompleteBegin
+	TraceEndpointPurgeCompleteEnd
+	TraceEndpointCleanupBegin
+	TraceEndpointCleanupEnd
+	TraceDeviceCleanupBegin
+	TraceDeviceCleanupEnd
+	TraceControllerShutdownBegin
+	TraceControllerShutdownEnd
+)
 
 // nativeSourceRevision must be injected by the production build. Native
 // transport startup deliberately has no VCS/on-disk fallback: the broker and
@@ -592,6 +630,78 @@ func ParseStats(src []byte) (Stats, error) {
 		InputReportsSubmitted:      binary.LittleEndian.Uint64(src[128:136]),
 		InputReportsCompleted:      binary.LittleEndian.Uint64(src[136:144]),
 	}, nil
+}
+
+type LifecycleTraceRecord struct {
+	PublishedSequence uint64
+	TimestampQPC      uint64
+	Caller            uint64
+	DeviceID          uint64
+	DeviceObject      uint64
+	EndpointObject    uint64
+	Generation        uint32
+	Line              uint32
+	Status            int32
+	ActiveOperations  int32
+	PendingOperations int32
+	QueueState        uint32
+	Event             uint16
+	Processor         uint16
+	Source            uint8
+	IRQL              uint8
+	EndpointAddress   uint8
+}
+
+type LifecycleTrace struct {
+	LatestSequence       uint64
+	PerformanceFrequency uint64
+	Records              []LifecycleTraceRecord
+}
+
+func ParseLifecycleTrace(src []byte) (LifecycleTrace, error) {
+	h, err := ParseHeader(src)
+	if err != nil {
+		return LifecycleTrace{}, err
+	}
+	if h.Size != LifecycleTraceSize || len(src) != LifecycleTraceSize ||
+		binary.LittleEndian.Uint32(src[36:40]) != LifecycleTraceRecordSize ||
+		binary.LittleEndian.Uint32(src[40:44]) != LifecycleTraceCapacity ||
+		binary.LittleEndian.Uint32(src[44:48]) != 0 {
+		return LifecycleTrace{}, ErrInvalidSize
+	}
+	recordCount := binary.LittleEndian.Uint32(src[32:36])
+	if recordCount > LifecycleTraceCapacity {
+		return LifecycleTrace{}, ErrInvalidRange
+	}
+	trace := LifecycleTrace{
+		LatestSequence:       binary.LittleEndian.Uint64(src[16:24]),
+		PerformanceFrequency: binary.LittleEndian.Uint64(src[24:32]),
+		Records:              make([]LifecycleTraceRecord, 0, recordCount),
+	}
+	for index := uint32(0); index < recordCount; index++ {
+		offset := 48 + int(index)*LifecycleTraceRecordSize
+		record := src[offset : offset+LifecycleTraceRecordSize]
+		trace.Records = append(trace.Records, LifecycleTraceRecord{
+			PublishedSequence: binary.LittleEndian.Uint64(record[0:8]),
+			TimestampQPC:      binary.LittleEndian.Uint64(record[8:16]),
+			Caller:            binary.LittleEndian.Uint64(record[16:24]),
+			DeviceID:          binary.LittleEndian.Uint64(record[24:32]),
+			DeviceObject:      binary.LittleEndian.Uint64(record[32:40]),
+			EndpointObject:    binary.LittleEndian.Uint64(record[40:48]),
+			Generation:        binary.LittleEndian.Uint32(record[48:52]),
+			Line:              binary.LittleEndian.Uint32(record[52:56]),
+			Status:            int32(binary.LittleEndian.Uint32(record[56:60])),
+			ActiveOperations:  int32(binary.LittleEndian.Uint32(record[60:64])),
+			PendingOperations: int32(binary.LittleEndian.Uint32(record[64:68])),
+			QueueState:        binary.LittleEndian.Uint32(record[68:72]),
+			Event:             binary.LittleEndian.Uint16(record[72:74]),
+			Processor:         binary.LittleEndian.Uint16(record[74:76]),
+			Source:            record[76],
+			IRQL:              record[77],
+			EndpointAddress:   record[78],
+		})
+	}
+	return trace, nil
 }
 
 func (m Completion) wireLayout() (transferLength uint32, isoBytes int, total int, err error) {

@@ -244,6 +244,13 @@ jobs:
           -ProjectPath ./native/udecx/driver/ViiperUde.vcxproj
           -InfPath ./native/udecx/x64/Release/ViiperUde/ViiperUde.inf
           -RequireStampedInf
+      - name: Verify matching private line and type debug artifacts
+        shell: pwsh
+        run: >-
+          ./native/udecx/tools/Test-ViiperUdeDebugArtifacts.ps1
+          -SysPath ./native/udecx/x64/Release/ViiperUde.sys
+          -PdbPath ./native/udecx/x64/Release/ViiperUde.pdb
+          -MapPath ./native/udecx/x64/Release/ViiperUde.map
       - name: Build transactional root-devnode and live-media helpers
         shell: pwsh
         run: |

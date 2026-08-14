@@ -58,7 +58,7 @@ ViiperHandleNegotiate(
         input->ClientNonce == 0 || input->Reserved != 0 ||
         (input->RequestedCapabilities & ~(VIIPER_UDE_CAP_ISOCHRONOUS |
             VIIPER_UDE_CAP_STREAMS | VIIPER_UDE_CAP_DEVICE_LIFECYCLE |
-            VIIPER_UDE_CAP_INPUT_REPORTS)) != 0) {
+            VIIPER_UDE_CAP_INPUT_REPORTS | VIIPER_UDE_CAP_LIFECYCLE_TRACE)) != 0) {
         return STATUS_INVALID_PARAMETER;
     }
     if (input->Header.Major != VIIPER_UDE_ABI_MAJOR ||
@@ -167,6 +167,81 @@ ViiperHandleQueryStats(
     return STATUS_SUCCESS;
 }
 
+static
+NTSTATUS
+ViiperHandleQueryLifecycleTrace(
+    _In_ WDFQUEUE Queue,
+    _In_ WDFREQUEST Request
+    )
+{
+    NTSTATUS status;
+    VIIPER_UDE_LIFECYCLE_TRACE *output;
+    VIIPER_UDE_CONTROLLER_CONTEXT *context;
+    VIIPER_UDE_FILE_CONTEXT *fileContext;
+    WDFFILEOBJECT fileObject = WdfRequestGetFileObject(Request);
+    LARGE_INTEGER frequency;
+    ULONGLONG latestSequence;
+    ULONGLONG firstSequence;
+    ULONGLONG sequence;
+
+    if (fileObject == WDF_NO_HANDLE) {
+        return STATUS_INVALID_HANDLE;
+    }
+    fileContext = ViiperGetFileContext(fileObject);
+    if (InterlockedCompareExchange(&fileContext->Negotiated, 0, 0) == 0 ||
+        InterlockedCompareExchange(&fileContext->Closing, 0, 0) != 0) {
+        return STATUS_INVALID_DEVICE_STATE;
+    }
+    status = WdfRequestRetrieveOutputBuffer(
+        Request, sizeof(*output), (PVOID *)&output, NULL);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+
+    context = ViiperGetControllerContext(WdfIoQueueGetDevice(Queue));
+    RtlZeroMemory(output, sizeof(*output));
+    output->Header.Magic = VIIPER_UDE_MAGIC;
+    output->Header.Major = VIIPER_UDE_ABI_MAJOR;
+    output->Header.Minor = VIIPER_UDE_ABI_MINOR;
+    output->Header.Size = sizeof(*output);
+    output->RecordSize = sizeof(output->Records[0]);
+    output->Capacity = VIIPER_UDE_LIFECYCLE_TRACE_CAPACITY;
+    (VOID)KeQueryPerformanceCounter(&frequency);
+    output->PerformanceFrequency = (ULONGLONG)frequency.QuadPart;
+
+    latestSequence = (ULONGLONG)ViiperReadCounter(
+        &context->LifecycleTraceSequence);
+    output->LatestSequence = latestSequence;
+    firstSequence = latestSequence > VIIPER_UDE_LIFECYCLE_TRACE_CAPACITY
+        ? latestSequence - VIIPER_UDE_LIFECYCLE_TRACE_CAPACITY + 1
+        : 1;
+    for (sequence = firstSequence; sequence <= latestSequence; ++sequence) {
+        VIIPER_UDE_LIFECYCLE_TRACE_RECORD *source =
+            &context->LifecycleTrace[
+                (sequence - 1) % VIIPER_UDE_LIFECYCLE_TRACE_CAPACITY];
+        ULONGLONG publishedBefore = (ULONGLONG)InterlockedCompareExchange64(
+            (volatile LONG64 *)&source->PublishedSequence, 0, 0);
+        ULONGLONG publishedAfter;
+
+        if (publishedBefore != sequence) {
+            continue;
+        }
+        KeMemoryBarrier();
+        RtlCopyMemory(
+            &output->Records[output->RecordCount], source, sizeof(*source));
+        KeMemoryBarrier();
+        publishedAfter = (ULONGLONG)InterlockedCompareExchange64(
+            (volatile LONG64 *)&source->PublishedSequence, 0, 0);
+        if (publishedAfter == sequence &&
+            output->Records[output->RecordCount].PublishedSequence == sequence) {
+            ++output->RecordCount;
+        }
+    }
+
+    WdfRequestSetInformation(Request, sizeof(*output));
+    return STATUS_SUCCESS;
+}
+
 VOID
 ViiperEvtIoDeviceControlRoute(
     _In_ WDFQUEUE Queue,
@@ -232,6 +307,9 @@ ViiperEvtIoDeviceControl(
         break;
     case IOCTL_VIIPER_UDE_QUERY_STATS:
         status = ViiperHandleQueryStats(Queue, Request);
+        break;
+    case IOCTL_VIIPER_UDE_QUERY_LIFECYCLE_TRACE:
+        status = ViiperHandleQueryLifecycleTrace(Queue, Request);
         break;
     case IOCTL_VIIPER_UDE_CREATE_DEVICE:
         status = ViiperCreateVirtualDevice(Queue, Request);

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"sync"
 	"sync/atomic"
@@ -40,6 +41,10 @@ type Driver interface {
 	Dequeue(context.Context, []byte) (Operation, error)
 	Complete(context.Context, Completion) error
 	QueryStats(context.Context) (Stats, error)
+}
+
+type LifecycleTraceDriver interface {
+	QueryLifecycleTrace(context.Context) (LifecycleTrace, error)
 }
 
 // InputReportDriver is an optional, version-negotiated extension used only
@@ -374,6 +379,7 @@ func (h *Host) Unregister(ctx context.Context, identity DeviceIdentity) error {
 		}
 		return err
 	}
+	go h.observeLifecycleRemoval(identity)
 
 	h.mu.Lock()
 	if h.devices[identity.DeviceID] != entry {
@@ -419,6 +425,88 @@ func (h *Host) Unregister(ctx context.Context, identity DeviceIdentity) error {
 	h.mu.Unlock()
 	h.processor.Reset(entry.device, identity)
 	return nil
+}
+
+func (h *Host) observeLifecycleRemoval(identity DeviceIdentity) {
+	driver, ok := h.driver.(LifecycleTraceDriver)
+	if !ok {
+		return
+	}
+	seen := make(map[uint64]struct{}, LifecycleTraceCapacity)
+	for _, delay := range []time.Duration{0, 100 * time.Millisecond, 500 * time.Millisecond, 2 * time.Second, 5 * time.Second} {
+		if delay != 0 {
+			timer := time.NewTimer(delay)
+			<-timer.C
+		}
+		queryCtx, cancel := context.WithTimeout(context.Background(), completionTimeout)
+		trace, err := driver.QueryLifecycleTrace(queryCtx)
+		cancel()
+		if err != nil {
+			slog.Warn("native UDE lifecycle trace query failed",
+				"device_id", identity.DeviceID, "generation", identity.Generation,
+				"error", err)
+			return
+		}
+		for _, record := range trace.Records {
+			if record.DeviceID != identity.DeviceID || record.Generation != identity.Generation {
+				continue
+			}
+			if _, duplicate := seen[record.PublishedSequence]; duplicate {
+				continue
+			}
+			seen[record.PublishedSequence] = struct{}{}
+			slog.Info("native UDE lifecycle",
+				"sequence", record.PublishedSequence,
+				"qpc", record.TimestampQPC,
+				"qpc_frequency", trace.PerformanceFrequency,
+				"source", lifecycleTraceSourceName(record.Source),
+				"event", lifecycleTraceEventName(record.Event),
+				"line", record.Line,
+				"caller", fmt.Sprintf("%#x", record.Caller),
+				"cpu", record.Processor,
+				"irql", record.IRQL,
+				"device_id", record.DeviceID,
+				"generation", record.Generation,
+				"device_object", fmt.Sprintf("%#x", record.DeviceObject),
+				"endpoint_object", fmt.Sprintf("%#x", record.EndpointObject),
+				"endpoint", fmt.Sprintf("%#02x", record.EndpointAddress),
+				"status", fmt.Sprintf("%#08x", uint32(record.Status)),
+				"active_operations", record.ActiveOperations,
+				"pending_operations", record.PendingOperations,
+				"queue_state", fmt.Sprintf("%#08x", record.QueueState))
+		}
+	}
+}
+
+func lifecycleTraceSourceName(source uint8) string {
+	switch source {
+	case TraceSourceDevice:
+		return "Device.c"
+	case TraceSourceBroker:
+		return "Broker.c"
+	case TraceSourceController:
+		return "Controller.c"
+	default:
+		return fmt.Sprintf("source-%d", source)
+	}
+}
+
+func lifecycleTraceEventName(event uint16) string {
+	names := [...]string{
+		"", "create-begin", "device-create-returned", "device-slot-claimed",
+		"plug-in-begin", "plug-in-returned", "remove-claimed",
+		"management-abort-begin", "management-abort-end", "plug-out-begin",
+		"plug-out-returned", "endpoint-purge-begin", "endpoint-operations-purged",
+		"endpoint-queue-purge-requested", "endpoint-queue-purged",
+		"endpoint-drain-begin", "endpoint-drain-end",
+		"endpoint-purge-complete-begin", "endpoint-purge-complete-end",
+		"endpoint-cleanup-begin", "endpoint-cleanup-end", "device-cleanup-begin",
+		"device-cleanup-end", "controller-shutdown-begin", "controller-shutdown-end",
+	}
+	if int(event) < len(names) && names[event] != "" {
+		return names[event]
+	}
+	return fmt.Sprintf("event-%d", event)
 }
 
 func (h *Host) startInputPublisher(entry *registeredDevice, endpoint uint8) {

@@ -2759,6 +2759,13 @@ ViiperAbortDeviceManagementOperations(
     _In_ NTSTATUS Status
     )
 {
+    VIIPER_UDE_DEVICE_CONTEXT *deviceContext = ViiperGetDeviceContext(Device);
+
+    VIIPER_TRACE_LIFECYCLE(
+        Controller, VIIPER_UDE_TRACE_SOURCE_BROKER,
+        VIIPER_UDE_TRACE_MANAGEMENT_ABORT_BEGIN, deviceContext->DeviceId,
+        deviceContext->Generation, Device, WDF_NO_HANDLE, 0, Status,
+        deviceContext->PendingOperations, 0);
     // Device removal has already closed Purging and retired the DeviceLock
     // table entry. Complete every still-published management request while
     // the UDE handle is valid, then release the slot's exact device/endpoint
@@ -2766,6 +2773,11 @@ ViiperAbortDeviceManagementOperations(
     // helper also stably joins a slot already owned by a completing kernel
     // callback, including file cleanup racing the serialized control queue.
     ViiperAbortManagementOperationsMatching(Controller, Device, Status);
+    VIIPER_TRACE_LIFECYCLE(
+        Controller, VIIPER_UDE_TRACE_SOURCE_BROKER,
+        VIIPER_UDE_TRACE_MANAGEMENT_ABORT_END, deviceContext->DeviceId,
+        deviceContext->Generation, Device, WDF_NO_HANDLE, 0, Status,
+        deviceContext->PendingOperations, 0);
 }
 
 VOID
