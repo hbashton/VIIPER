@@ -316,12 +316,11 @@ ViiperEvtDeviceSelfManagedIoCleanup(
     NT_ASSERT(InterlockedCompareExchange(&context->ActiveOwnerAdmissions, 0, 0) == 0);
 
     ViiperPurgeOwnerOperations(Device, STATUS_DEVICE_REMOVED);
-    // KMDF purges non-power-managed queues before terminal self-managed
-    // cleanup. Prove each still-valid UdeCx endpoint queue is stopped and idle,
-    // and that its BrokerLock-owned rundown is zero, before consuming any UDE
-    // device handle. The shared device index held by this helper also prevents
-    // endpoint EvtCleanup from invalidating a queue during the observation.
-    ViiperQuiesceControllerEndpoints(Device);
+    // Close and join only operations already delivered into VIIPER. Queued host
+    // polls remain owned by the associated endpoint queues; PlugOutAndDelete
+    // causes UdeCx to issue PURGE, and that callback performs the required
+    // asynchronous WDF queue cancellation before acknowledging the extension.
+    ViiperDrainControllerEndpointOperations(Device);
     if (context->CompletionDpc != WDF_NO_HANDLE) {
         for (;;) {
             BOOLEAN stable;
@@ -339,9 +338,9 @@ ViiperEvtDeviceSelfManagedIoCleanup(
             // reusable DPC only after its intrusive request list is empty.
             ViiperDrainUrbCompletions(Device);
 
-            // Endpoint queue-idle proof precedes this observation, so no UdeCx
-            // callback can newly enter rundown. Recheck all controller-owned
-            // terminal state under BrokerLock to join the final DPC handoff.
+            // Endpoint driver-operation proof precedes this observation, so no
+            // callback can newly enter rundown after ShuttingDown. Recheck all
+            // controller-owned terminal state to join the final DPC handoff.
             WdfSpinLockAcquire(context->BrokerLock);
             stable = InterlockedCompareExchange(&context->PendingOperations, 0, 0) == 0 &&
                 InterlockedCompareExchange(&context->PendingCompletions, 0, 0) == 0 &&
@@ -368,7 +367,7 @@ ViiperEvtDeviceSelfManagedIoCleanup(
     // restart of this same controller object.
     ViiperRetireManagementTombstonesForOwner(Device, WDF_NO_HANDLE);
 
-    // Only after every associated endpoint queue and completion owner is
+    // Only after every VIIPER-owned endpoint operation and completion owner is
     // quiescent may UdecxUsbDevicePlugOutAndDelete consume the child handles.
     // Deletion remains asynchronous; never use a consumed device handle or wait
     // for child EvtCleanup on this PnP worker.

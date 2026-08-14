@@ -275,7 +275,6 @@ typedef struct VIIPER_UDE_ENDPOINT_CONTEXT {
     UDECXUSBDEVICE Device;
     WDFQUEUE Queue;
     WDFWAITLOCK InputLock;
-    WDFWORKITEM PurgeWorkItem;
     WDFWORKITEM ResetWorkItem;
     WDFREQUEST ResetRequest;
     KEVENT OperationsDrained;
@@ -334,7 +333,7 @@ EVT_WDF_IO_QUEUE_IO_INTERNAL_DEVICE_CONTROL ViiperEvtEndpointIoInternalControl;
 EVT_WDF_IO_QUEUE_IO_CANCELED_ON_QUEUE ViiperEvtUrbCanceledOnQueue;
 EVT_WDF_IO_QUEUE_STATE ViiperEvtFastInputQueueReady;
 EVT_WDF_IO_QUEUE_IO_CANCELED_ON_QUEUE ViiperEvtDequeueCanceledOnQueue;
-EVT_WDF_WORKITEM ViiperEvtEndpointPurgeWorkItem;
+EVT_WDF_IO_QUEUE_STATE ViiperEvtEndpointQueuePurged;
 EVT_WDF_WORKITEM ViiperEvtEndpointResetWorkItem;
 EVT_WDF_DPC ViiperEvtCompletionDpc;
 EVT_WDF_OBJECT_CONTEXT_CLEANUP ViiperEvtVirtualDeviceCleanup;
@@ -345,7 +344,7 @@ NTSTATUS ViiperInitializeBroker(_In_ WDFDEVICE Device);
 NTSTATUS ViiperCreateVirtualDevice(_In_ WDFQUEUE Queue, _In_ WDFREQUEST Request);
 NTSTATUS ViiperDestroyVirtualDevice(_In_ WDFQUEUE Queue, _In_ WDFREQUEST Request);
 BOOLEAN ViiperDestroyOwnedDevices(_In_ WDFDEVICE Controller, _In_ WDFFILEOBJECT OwnerFile);
-VOID ViiperQuiesceControllerEndpoints(_In_ WDFDEVICE Controller);
+VOID ViiperDrainControllerEndpointOperations(_In_ WDFDEVICE Controller);
 BOOLEAN ViiperQuiesceResetByIdentity(
     _In_ WDFDEVICE Controller,
     _In_ ULONGLONG DeviceId,

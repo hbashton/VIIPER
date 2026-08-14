@@ -5,17 +5,16 @@ import (
 	"testing"
 )
 
-func TestNativeEndpointQuiescenceUsesReadOnlyUdeCxQueueState(t *testing.T) {
+func TestNativeEndpointQuiescenceUsesUdeCxRequiredQueueLifecycle(t *testing.T) {
 	broker := nativeContractSource(t, "native", "udecx", "driver", "Broker.c")
 	controller := nativeContractSource(t, "native", "udecx", "driver", "Controller.c")
 	device := nativeContractSource(t, "native", "udecx", "driver", "Device.c")
 
-	// UdeCx exclusively owns the associated endpoint queue's START/PURGE
-	// state. VIIPER may observe that queue, but must never mutate it.
+	// UdeCx delegates PURGE/START handling for the associated queue to the
+	// client. Only the asynchronous purge and matching start transitions are
+	// allowed; stop, drain, and synchronous purge create competing ownership.
 	for _, mutation := range []string{
-		"WdfIoQueuePurge(",
 		"WdfIoQueuePurgeSynchronously(",
-		"WdfIoQueueStart(",
 		"WdfIoQueueStop(",
 		"WdfIoQueueStopSynchronously(",
 		"WdfIoQueueDrain(",
@@ -32,15 +31,13 @@ func TestNativeEndpointQuiescenceUsesReadOnlyUdeCxQueueState(t *testing.T) {
 	}
 
 	// A WDF callback can be delivered, then preempted before its first
-	// BrokerLock acquisition. Queue state closes that otherwise invisible
+	// BrokerLock acquisition. DriverNoRequests closes that otherwise invisible
 	// window; ActiveOperations joins the callback's terminal DPC afterward.
 	quiesce := normalizedContract(nativeCFunction(t, device, "ViiperWaitForEndpointQuiescence"))
 	requireContractOrder(t, quiesce,
 		"KeWaitForSingleObject( &endpointContext->OperationsDrained",
 		"WdfSpinLockAcquire(controllerContext->BrokerLock);",
 		"WdfIoQueueGetState(endpointContext->Queue, NULL, NULL);",
-		"WdfIoQueueAcceptRequests | WdfIoQueueDispatchRequests",
-		"WDF_IO_QUEUE_IDLE(queueState)",
 		"WdfIoQueueDriverNoRequests",
 		"endpointContext->ActiveOperations",
 		"WdfSpinLockRelease(controllerContext->BrokerLock);",
@@ -74,11 +71,22 @@ func TestNativeEndpointQuiescenceUsesReadOnlyUdeCxQueueState(t *testing.T) {
 		"deviceContext->Purging",
 		"pending->Request = Request;")
 
-	purgeWork := normalizedContract(nativeCFunction(t, device, "ViiperEvtEndpointPurgeWorkItem"))
-	requireContractOrder(t, purgeWork,
-		"ViiperWaitForEndpointQuiescence(endpoint, TRUE);",
+	purge := normalizedContract(nativeCFunction(t, device, "ViiperEvtEndpointPurge"))
+	requireContractOrder(t, purge,
+		"InterlockedExchange(&endpointContext->Purging, TRUE);",
+		"ViiperPurgeEndpointOperations(Endpoint, STATUS_DEVICE_NOT_READY);",
+		"WdfIoQueuePurge(endpointContext->Queue, ViiperEvtEndpointQueuePurged, Endpoint);")
+	purgeComplete := normalizedContract(nativeCFunction(t, device, "ViiperEvtEndpointQueuePurged"))
+	requireContractOrder(t, purgeComplete,
+		"KeWaitForSingleObject( &endpointContext->OperationsDrained",
+		"endpointContext->ActiveOperations",
 		"ViiperInvalidateEndpointInputReport(endpoint);",
 		"UdecxUsbEndpointPurgeComplete(endpoint);")
+	start := normalizedContract(nativeCFunction(t, device, "ViiperEvtEndpointStart"))
+	requireContractOrder(t, start,
+		"InterlockedExchange(&endpointContext->Purging, FALSE);",
+		"WdfIoQueueStart(endpointContext->Queue);",
+		"ViiperQueueEndpointLifecycleEvent(Endpoint, ViiperUdeOperationEndpointStart);")
 	resetWork := normalizedContract(nativeCFunction(t, device, "ViiperEvtEndpointResetWorkItem"))
 	requireContractOrder(t, resetWork,
 		"resetCurrent = ViiperQuiesceResetByIdentity(",
@@ -94,17 +102,17 @@ func TestNativeEndpointQuiescenceUsesReadOnlyUdeCxQueueState(t *testing.T) {
 		"ViiperInvalidateEndpointInputReport(endpoint);",
 		"ViiperQueueAcknowledgedEndpointLifecycleEvent(")
 
-	controllerQuiesce := normalizedContract(nativeCFunction(t, device, "ViiperQuiesceControllerEndpoints"))
+	controllerQuiesce := normalizedContract(nativeCFunction(t, device, "ViiperDrainControllerEndpointOperations"))
 	requireContractOrder(t, controllerQuiesce,
 		"ViiperAcquireDeviceLockShared(controllerContext);",
 		"deviceContext->Endpoints[endpointIndex]",
-		"ViiperWaitForEndpointQuiescence(endpoint, TRUE);",
+		"ViiperWaitForEndpointQuiescence(endpoint);",
 		"ViiperReleaseDeviceLockShared(controllerContext);")
 	cleanup := normalizedContract(nativeCFunction(t, controller, "ViiperEvtDeviceSelfManagedIoCleanup"))
 	requireContractOrder(t, cleanup,
 		"InterlockedExchange(&context->ShuttingDown, TRUE);",
 		"ViiperPurgeOwnerOperations(Device, STATUS_DEVICE_REMOVED);",
-		"ViiperQuiesceControllerEndpoints(Device);",
+		"ViiperDrainControllerEndpointOperations(Device);",
 		"ViiperDrainUrbCompletions(Device);",
 		"context->PendingOperations",
 		"context->PendingCompletions",
@@ -154,7 +162,7 @@ func TestNativeResetQuiescenceIsExactGenerationAndFailClosed(t *testing.T) {
 		"deviceContext->Endpoints[EndpointAddress]",
 		"endpoint == ExpectedEndpoint",
 		"endpointContext->Resetting",
-		"ViiperWaitForEndpointQuiescence(endpoint, FALSE);",
+		"ViiperWaitForEndpointQuiescence(endpoint);",
 		"endpointContext->Resetting",
 		"if (ReleaseGate)",
 		"InterlockedExchange(&endpointContext->Resetting, FALSE);",
@@ -581,16 +589,24 @@ func TestNativeDeliveredBeforeRundownInterleavings(t *testing.T) {
 		state.active--
 		state.driverOwned--
 	}
-	closeForPurgeOrShutdown := func(state *endpoint) {
+	closeForPurge := func(state *endpoint) {
 		state.open = false
 		state.queueAccepting = false
 		state.queueDispatching = false
-		state.queued = 0 // UdeCx cancels requests it had not delivered.
+		state.queued = 0 // WdfIoQueuePurge cancels requests it had not delivered.
 	}
-	terminallyQuiescent := func(state *endpoint) bool {
+	queuePurgeComplete := func(state *endpoint) bool {
 		stopped := !state.queueAccepting && !state.queueDispatching
 		queueIdle := state.queued == 0 && state.driverOwned == 0
 		return stopped && queueIdle && state.active == 0
+	}
+	closeForShutdown := func(state *endpoint) {
+		// The controller admission gate closes first. Queued host polls remain
+		// owned by UdeCx until PlugOutAndDelete requests endpoint PURGE.
+		state.open = false
+	}
+	driverQuiescent := func(state *endpoint) bool {
+		return state.driverOwned == 0 && state.active == 0
 	}
 	closeForReset := func(state *endpoint) {
 		state.open = false
@@ -602,32 +618,53 @@ func TestNativeDeliveredBeforeRundownInterleavings(t *testing.T) {
 		return state.driverOwned == 0 && state.active == 0
 	}
 
-	for _, lifecycle := range []string{"purge", "shutdown"} {
-		state := endpoint{
-			open:             true,
-			queueAccepting:   true,
-			queueDispatching: true,
-			queued:           1,
-		}
-		if !deliverByWDF(&state) {
-			t.Fatalf("%s: WDF did not deliver the pre-boundary callback", lifecycle)
-		}
-		// Preempt here: WDF owns the request but QueueUrb has not yet acquired
-		// BrokerLock or incremented ActiveOperations.
-		closeForPurgeOrShutdown(&state)
-		if terminallyQuiescent(&state) {
-			t.Fatalf("%s passed a WDF-delivered callback before rundown entry", lifecycle)
-		}
-		if resumeDeliveredCallback(&state) {
-			t.Fatalf("%s callback allocated/published after lifecycle closure", lifecycle)
-		}
-		if terminallyQuiescent(&state) {
-			t.Fatalf("%s passed the callback before terminal DPC completion", lifecycle)
-		}
-		runTerminalDPC(&state)
-		if !terminallyQuiescent(&state) || state.terminalDPCs != 1 {
-			t.Fatalf("%s failed stable stopped+idle+rundown proof: %+v", lifecycle, state)
-		}
+	purge := endpoint{
+		open:             true,
+		queueAccepting:   true,
+		queueDispatching: true,
+		queued:           2,
+	}
+	if !deliverByWDF(&purge) {
+		t.Fatal("purge: WDF did not deliver the pre-boundary callback")
+	}
+	closeForPurge(&purge)
+	if queuePurgeComplete(&purge) {
+		t.Fatal("purge passed a WDF-delivered callback before rundown entry")
+	}
+	if resumeDeliveredCallback(&purge) {
+		t.Fatal("purge callback allocated/published after lifecycle closure")
+	}
+	if queuePurgeComplete(&purge) {
+		t.Fatal("purge completed before the terminal DPC")
+	}
+	runTerminalDPC(&purge)
+	if !queuePurgeComplete(&purge) || purge.terminalDPCs != 1 {
+		t.Fatalf("purge failed asynchronous queue completion proof: %+v", purge)
+	}
+
+	shutdown := endpoint{
+		open:             true,
+		queueAccepting:   true,
+		queueDispatching: true,
+		queued:           2,
+	}
+	if !deliverByWDF(&shutdown) {
+		t.Fatal("shutdown: WDF did not deliver the pre-boundary callback")
+	}
+	closeForShutdown(&shutdown)
+	if driverQuiescent(&shutdown) {
+		t.Fatal("shutdown passed a WDF-delivered callback before rundown entry")
+	}
+	if resumeDeliveredCallback(&shutdown) {
+		t.Fatal("shutdown callback allocated/published after lifecycle closure")
+	}
+	runTerminalDPC(&shutdown)
+	if !driverQuiescent(&shutdown) || !shutdown.queueDispatching || shutdown.queued != 1 {
+		t.Fatalf("shutdown waited on class-extension-owned queued polls: %+v", shutdown)
+	}
+	closeForPurge(&shutdown) // UdeCx callback after child consumption.
+	if !queuePurgeComplete(&shutdown) {
+		t.Fatalf("post-consumption endpoint purge did not complete: %+v", shutdown)
 	}
 
 	reset := endpoint{

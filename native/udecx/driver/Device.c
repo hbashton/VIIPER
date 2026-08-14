@@ -1231,8 +1231,9 @@ ViiperEvtEndpointCleanup(
     ViiperAcquireDeviceLockExclusive(controllerContext);
     // Microsoft permits no ordinary object access after EvtCleanup is called,
     // even when a WDF reference postpones destruction. UdeCx therefore owns
-    // the lifetime ordering: EvtEndpointPurge closes BrokerLock admission, its
-    // work item drains ActiveOperations, and only then calls PurgeComplete.
+    // the lifetime ordering: EvtEndpointPurge closes BrokerLock admission and
+    // asynchronously purges the associated WDF queue. Its completion callback
+    // acknowledges UdeCx only after all queued and driver-owned requests end.
     // Endpoint creation failure has no published users. Cleanup must never be
     // used as a late wait for an operation which can still access this context.
     NT_ASSERT(InterlockedCompareExchange(
@@ -1305,14 +1306,6 @@ ViiperEvtEndpointAdd(
     endpointContext->Descriptor = descriptor;
     InitializeListHead(&endpointContext->AdmissionQueue);
     KeInitializeEvent(&endpointContext->OperationsDrained, NotificationEvent, TRUE);
-    WDF_WORKITEM_CONFIG_INIT(&workItemConfig, ViiperEvtEndpointPurgeWorkItem);
-    WDF_OBJECT_ATTRIBUTES_INIT(&attributes);
-    attributes.ParentObject = endpoint;
-    status = WdfWorkItemCreate(
-        &workItemConfig, &attributes, &endpointContext->PurgeWorkItem);
-    if (!NT_SUCCESS(status)) {
-        return status;
-    }
     WDF_WORKITEM_CONFIG_INIT(&workItemConfig, ViiperEvtEndpointResetWorkItem);
     WDF_OBJECT_ATTRIBUTES_INIT(&attributes);
     attributes.ParentObject = endpoint;
@@ -1855,8 +1848,7 @@ _IRQL_requires_(PASSIVE_LEVEL)
 static
 VOID
 ViiperWaitForEndpointQuiescence(
-    _In_ UDECXUSBENDPOINT Endpoint,
-    _In_ BOOLEAN RequireStopped
+    _In_ UDECXUSBENDPOINT Endpoint
     )
 {
     VIIPER_UDE_ENDPOINT_CONTEXT *endpointContext = ViiperGetEndpointContext(Endpoint);
@@ -1872,8 +1864,6 @@ ViiperWaitForEndpointQuiescence(
     for (;;) {
         WDF_IO_QUEUE_STATE queueState;
         BOOLEAN quiescent;
-        BOOLEAN queueQuiescent;
-        BOOLEAN stopped;
 
         (VOID)KeWaitForSingleObject(
             &endpointContext->OperationsDrained,
@@ -1882,30 +1872,16 @@ ViiperWaitForEndpointQuiescence(
             FALSE,
             NULL);
 
-        // UdeCx exclusively owns START/PURGE state for the associated queue.
-        // Observe, but never mutate, that state. WDF_IO_QUEUE_IDLE proves both
-        // that no request remains queued and that every request already
-        // delivered to a callback has completed or been cancelled. Combined
-        // with the BrokerLock-owned rundown count, this closes the interval in
-        // which a delivered callback was preempted before it could increment
-        // ActiveOperations.
+        // WdfIoQueueDriverNoRequests closes the interval in which a callback
+        // was delivered and then preempted before its first BrokerLock
+        // acquisition. The BrokerLock-owned rundown joins that callback's
+        // terminal DPC. Queued host polls are intentionally allowed here:
+        // reset keeps the queue active, and terminal shutdown lets UdeCx issue
+        // the corresponding endpoint-purge callback after child consumption.
         WdfSpinLockAcquire(controllerContext->BrokerLock);
         queueState = WdfIoQueueGetState(endpointContext->Queue, NULL, NULL);
-        stopped = (queueState &
-            (WdfIoQueueAcceptRequests | WdfIoQueueDispatchRequests)) == 0;
-        // PURGE/removal owns a stopped queue and therefore requires full idle:
-        // no queued request and no driver-owned request. Endpoint RESET is a
-        // distinct asynchronous UdeCx contract; the queue may remain ready
-        // with an unconsumed interrupt poll, but UdeCx cannot resume endpoint
-        // I/O until its reset Request is completed. For that case, prove only
-        // that no request is currently delivered to a driver callback. The
-        // Resetting gate remains closed through a second proof at owner ack.
-        queueQuiescent = RequireStopped
-            ? stopped && WDF_IO_QUEUE_IDLE(queueState)
-            : (queueState & WdfIoQueueDriverNoRequests) != 0;
-        quiescent = queueQuiescent &&
-            InterlockedCompareExchange(&endpointContext->ActiveOperations, 0, 0) == 0 &&
-            (!RequireStopped || stopped);
+        quiescent = (queueState & WdfIoQueueDriverNoRequests) != 0 &&
+            InterlockedCompareExchange(&endpointContext->ActiveOperations, 0, 0) == 0;
         WdfSpinLockRelease(controllerContext->BrokerLock);
         if (quiescent) {
             return;
@@ -1920,7 +1896,7 @@ ViiperWaitForEndpointQuiescence(
 }
 
 VOID
-ViiperQuiesceControllerEndpoints(
+ViiperDrainControllerEndpointOperations(
     _In_ WDFDEVICE Controller
     )
 {
@@ -1929,12 +1905,11 @@ ViiperQuiesceControllerEndpoints(
     ULONG deviceIndex;
 
     PAGED_CODE();
-    // On terminal removal KMDF purges non-power-managed queues before
-    // EvtDeviceSelfManagedIoCleanup. Hold the shared device index while
-    // observing every endpoint so EvtEndpointCleanup cannot invalidate a
-    // handle between lookup and the final queue/rundown proof. ShuttingDown is
-    // already set, so no direct-input or broker admission can reopen once the
-    // framework-owned queue is stopped and idle.
+    // Hold the shared device index while observing every endpoint so cleanup
+    // cannot invalidate a handle between lookup and the final driver-owned
+    // operation proof. ShuttingDown is already set, so no broker or direct
+    // input admission can reopen. UdeCx remains free to deliver its endpoint
+    // purge callbacks after PlugOutAndDelete consumes the child handles.
     ViiperAcquireDeviceLockShared(controllerContext);
     for (deviceIndex = 0; deviceIndex < VIIPER_UDE_MAX_DEVICES; ++deviceIndex) {
         UDECXUSBDEVICE device = controllerContext->Devices[deviceIndex];
@@ -1951,7 +1926,7 @@ ViiperQuiesceControllerEndpoints(
             UDECXUSBENDPOINT endpoint = deviceContext->Endpoints[endpointIndex];
 
             if (endpoint != WDF_NO_HANDLE) {
-                ViiperWaitForEndpointQuiescence(endpoint, TRUE);
+                ViiperWaitForEndpointQuiescence(endpoint);
             }
         }
     }
@@ -2020,7 +1995,7 @@ ViiperQuiesceResetByIdentity(
                 UDECXUSBENDPOINT endpoint = deviceContext->Endpoints[endpointIndex];
 
                 if (endpoint != WDF_NO_HANDLE) {
-                    ViiperWaitForEndpointQuiescence(endpoint, FALSE);
+                    ViiperWaitForEndpointQuiescence(endpoint);
                 }
             }
             // Revalidate the lifecycle gate after every queue/rundown proof.
@@ -2062,7 +2037,7 @@ ViiperQuiesceResetByIdentity(
                 if (!found) {
                     break;
                 }
-                ViiperWaitForEndpointQuiescence(endpoint, FALSE);
+                ViiperWaitForEndpointQuiescence(endpoint);
                 WdfSpinLockAcquire(controllerContext->BrokerLock);
                 found = InterlockedCompareExchange(&controllerContext->ShuttingDown, 0, 0) == 0 &&
                     InterlockedCompareExchange(&controllerContext->BrokerFaulted, FALSE, FALSE) == FALSE &&
@@ -2185,19 +2160,29 @@ ViiperEvtEndpointResetWorkItem(
 }
 
 VOID
-ViiperEvtEndpointPurgeWorkItem(
-    _In_ WDFWORKITEM WorkItem
+ViiperEvtEndpointQueuePurged(
+    _In_ WDFQUEUE Queue,
+    _In_ WDFCONTEXT Context
     )
 {
-    UDECXUSBENDPOINT endpoint = (UDECXUSBENDPOINT)WdfWorkItemGetParentObject(WorkItem);
+    UDECXUSBENDPOINT endpoint = (UDECXUSBENDPOINT)Context;
+    VIIPER_UDE_ENDPOINT_CONTEXT *endpointContext = ViiperGetEndpointContext(endpoint);
 
     PAGED_CODE();
-    // UdeCx requires every request forwarded out of the endpoint queue to be
-    // completed before PurgeComplete. The shared completion DPC releases both
-    // broker and direct-input ownership only after the terminal UdeCx call.
-    ViiperWaitForEndpointQuiescence(endpoint, TRUE);
-    // The admission barrier is closed and all pre-boundary publishers have
-    // drained, so no cached state can be republished after this clear.
+    UNREFERENCED_PARAMETER(Queue);
+    // WDF invokes this only after queued cancellation and every request it
+    // delivered to the endpoint driver has completed. Join direct-input work
+    // admitted from the controller queue before PURGE closed its BrokerLock
+    // gate, then clear cached state before acknowledging UdeCx. No queue-state
+    // polling is needed: this callback is the framework's purge-complete fence.
+    (VOID)KeWaitForSingleObject(
+        &endpointContext->OperationsDrained,
+        Executive,
+        KernelMode,
+        FALSE,
+        NULL);
+    NT_ASSERT(InterlockedCompareExchange(
+        &endpointContext->ActiveOperations, 0, 0) == 0);
     ViiperInvalidateEndpointInputReport(endpoint);
     UdecxUsbEndpointPurgeComplete(endpoint);
 }
@@ -2212,10 +2197,8 @@ ViiperEvtEndpointPurge(
     VIIPER_UDE_CONTROLLER_CONTEXT *controllerContext =
         ViiperGetControllerContext(deviceContext->Controller);
 
-    // Serialize the admission gate with both pending-slot allocation and the
-    // direct input fast path. This makes OperationsDrained a reliable purge
-    // barrier instead of allowing a transfer to start after the work item has
-    // already observed the event as signaled.
+    // Serialize the admission gate with pending-slot allocation and direct
+    // input before the queue begins cancellation.
     WdfSpinLockAcquire(controllerContext->BrokerLock);
     InterlockedExchange(&endpointContext->Purging, TRUE);
     WdfSpinLockRelease(controllerContext->BrokerLock);
@@ -2223,11 +2206,10 @@ ViiperEvtEndpointPurge(
     ViiperInvalidateEndpointInputReport(Endpoint);
     ViiperPurgeEndpointOperations(Endpoint, STATUS_DEVICE_NOT_READY);
     (VOID)ViiperQueueEndpointLifecycleEvent(Endpoint, ViiperUdeOperationEndpointPurge);
-    // UdeCx owns and has already stopped the associated queue before PURGE;
-    // client drivers must not change that queue's state. Only callbacks already
-    // forwarded to our broker/direct paths remain, and each is covered by the
-    // ActiveOperations fence before this passive work item may report complete.
-    WdfWorkItemEnqueue(endpointContext->PurgeWorkItem);
+    // UdeCx requires its client to stop dispatch, cancel queued requests, and
+    // acknowledge only after every driver-owned request has completed. The
+    // asynchronous queue callback is that framework-owned completion fence.
+    WdfIoQueuePurge(endpointContext->Queue, ViiperEvtEndpointQueuePurged, Endpoint);
 }
 
 VOID
@@ -2253,6 +2235,7 @@ ViiperEvtEndpointStart(
     }
     WdfSpinLockRelease(controllerContext->BrokerLock);
     if (InterlockedCompareExchange(&controllerContext->ShuttingDown, 0, 0) == 0) {
+        WdfIoQueueStart(endpointContext->Queue);
         (VOID)ViiperQueueEndpointLifecycleEvent(Endpoint, ViiperUdeOperationEndpointStart);
     }
 }

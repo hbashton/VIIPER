@@ -735,19 +735,16 @@ func TestNativeEndpointRundownPrecedesCleanupAndDPCMayRunImmediately(t *testing.
 		"InterlockedExchange(&endpointContext->Purging, TRUE);",
 		"WdfSpinLockRelease(controllerContext->BrokerLock);",
 		"ViiperPurgeEndpointOperations(Endpoint, STATUS_DEVICE_NOT_READY);",
-		"WdfWorkItemEnqueue(endpointContext->PurgeWorkItem);")
-	if strings.Contains(device, "WdfIoQueuePurge(") {
-		t.Fatal("UdeCx owns the associated endpoint queue; client code must not purge it")
-	}
+		"WdfIoQueuePurge(endpointContext->Queue, ViiperEvtEndpointQueuePurged, Endpoint);")
 	createQueue := normalizedContract(nativeCFunction(t, device, "ViiperCreateEndpointQueue"))
 	if !strings.Contains(createQueue,
-		"UdecxUsbEndpointSetWdfIoQueue(Endpoint, endpointContext->Queue);") ||
-		!strings.Contains(purge, "UdeCx owns and has already stopped the associated queue") {
-		t.Fatal("endpoint purge lost the UdeCx-owned associated-queue boundary")
+		"UdecxUsbEndpointSetWdfIoQueue(Endpoint, endpointContext->Queue);") {
+		t.Fatal("endpoint purge lost its explicitly associated WDF queue")
 	}
-	purgeWork := normalizedContract(nativeCFunction(t, device, "ViiperEvtEndpointPurgeWorkItem"))
-	requireContractOrder(t, purgeWork,
-		"ViiperWaitForEndpointQuiescence(endpoint, TRUE);",
+	purgeComplete := normalizedContract(nativeCFunction(t, device, "ViiperEvtEndpointQueuePurged"))
+	requireContractOrder(t, purgeComplete,
+		"KeWaitForSingleObject( &endpointContext->OperationsDrained",
+		"endpointContext->ActiveOperations",
 		"ViiperInvalidateEndpointInputReport(endpoint);",
 		"UdecxUsbEndpointPurgeComplete(endpoint);")
 	resetWork := normalizedContract(nativeCFunction(t, device, "ViiperEvtEndpointResetWorkItem"))
@@ -762,10 +759,8 @@ func TestNativeEndpointRundownPrecedesCleanupAndDPCMayRunImmediately(t *testing.
 		"WdfSpinLockAcquire(controllerContext->BrokerLock);",
 		"InterlockedExchange(&endpointContext->Purging, FALSE);",
 		"WdfSpinLockRelease(controllerContext->BrokerLock);",
+		"WdfIoQueueStart(endpointContext->Queue);",
 		"ViiperQueueEndpointLifecycleEvent(Endpoint, ViiperUdeOperationEndpointStart);")
-	if strings.Contains(device, "WdfIoQueueStart(") {
-		t.Fatal("UdeCx owns the associated endpoint queue; client code must not start it")
-	}
 
 	cleanup := normalizedContract(nativeCFunction(t, device, "ViiperEvtEndpointCleanup"))
 	requireContractOrder(t, cleanup,
