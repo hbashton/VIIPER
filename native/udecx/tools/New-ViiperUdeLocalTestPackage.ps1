@@ -267,6 +267,6 @@ if ($preflightExitCode -ne 0 -or
 
 Write-Host "Created compact source-bound local test package at '$output'."
 Write-Host "Source: $source"
-Write-Host "Driver: $driverVersion / ABI 1.10 / $buildIdentity"
+Write-Host "Driver: $driverVersion / ABI $($manifest.driverABIMajor).$($manifest.driverABIMinor) / $buildIdentity"
 Write-Host "Test signer certificate SHA-256: $certificateSha256"
 Write-Host "Local test package lock SHA-256: $lockSha256"
