@@ -3726,11 +3726,16 @@ Outcome Install(const InstallOptions& options) {
     // release their logical device slot before framework teardown settled,
     // leaving DiUninstallDevice blocked indefinitely even though the broker
     // reported an empty bus. Once the trusted broker is stopped, require a
-    // zero-lifetime-work runtime before replacing an existing root. A restart
-    // resets these counters and guarantees that no pre-upgrade child object
-    // can survive into root removal.
+    // zero-lifetime-work runtime before replacing a running root. A PnP-stopped
+    // exact owned root has no live UdeCx stack or ABI endpoint; its captured
+    // devnode/package identity is already the quiescence proof. Do not start an
+    // old driver solely to upgrade it. Removal, absence, and rollback checks
+    // below still guard the stopped-root transaction. For a running root, a
+    // restart resets these counters and guarantees that no pre-upgrade child
+    // object can survive into root removal.
     if (disposition == CandidateDisposition::InstallRequired &&
-        !prior.devices.empty() && outcome.error.code == ERROR_SUCCESS &&
+        !prior.devices.empty() && prior.devices[0].started &&
+        outcome.error.code == ERROR_SUCCESS &&
         !VerifyAbiHealth(
             options.transactionDeadlineUnixMs, nullptr, &outcome.error, true)) {
         if (outcome.error.code == ERROR_SUCCESS_REBOOT_REQUIRED) {
@@ -5290,7 +5295,7 @@ Outcome SelfTest() {
             "0123456789abcdef0123456789abcdef01234567",
             &buildIdentity, &outcome.error) ||
         buildIdentity !=
-            "c2fee12b34725595496b259e38b2985ba1fad35ed76606c19091fd5564366058") {
+            "b059e55ace1056eb432dc3601c43cdf8eb39c40ac89b997afe828218d3747aa2") {
         if (outcome.error.code == ERROR_SUCCESS) {
             SetError(&outcome.error, L"self-test-build-identity", ERROR_INVALID_DATA);
         }

@@ -35,6 +35,8 @@ $requiredContracts = [ordered]@{
     'ABI health negotiation' = 'IOCTL_VIIPER_UDE_NEGOTIATE'
     'pristine upgrade statistics' = 'IOCTL_VIIPER_UDE_QUERY_STATS'
     'pristine upgrade reboot boundary' = 'upgrade-runtime-reboot-boundary'
+    'stopped owned upgrade skips unavailable live ABI proof' =
+        'CandidateDisposition::InstallRequired &&\s*!prior\.devices\.empty\(\) && prior\.devices\[0\]\.started &&'
     'loaded-kernel build identity negotiation' = 'response\.BuildIdentity'
     'exact negotiated capability identity' = 'response\.Capabilities != VIIPER_UDE_ADVERTISED_CAPABILITIES'
     'source-bound manifest identity' = 'driverBuildIdentity'
@@ -173,7 +175,7 @@ $orderedMutationContracts = [ordered]@{
     'upgrade restores exact identity before exact package binding' =
         'DiInstallDriverW\([\s\S]{0,2200}prior\.devices\[0\]\.instanceId[\s\S]{0,300}ExactRootRegistrationMode::Upgrade[\s\S]{0,700}InstallPreinstalledDriverOnDevice\('
     'broker quiescence precedes all classified driver mutation' =
-        'if \(driverMutation && !options\.brokerExecutable\.empty\(\)[\s\S]{0,180}RequestBrokerQuiescence\([\s\S]{0,700}CandidateDisposition::InstallRequired'
+        'if \(driverMutation && !options\.brokerExecutable\.empty\(\)[\s\S]{0,180}RequestBrokerQuiescence\([\s\S]{0,1200}CandidateDisposition::InstallRequired'
     'broker quiescence and pristine proof precede upgrade root removal' =
         'RequestBrokerQuiescence\([\s\S]{0,5000}&outcome\.error, true[\s\S]{0,5000}upgrade-deadline-before-device-removal'
     'broker handoff follows exact binding verification and precedes nested commit' =

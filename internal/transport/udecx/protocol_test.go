@@ -13,7 +13,7 @@ func TestBuildIdentityCanonicalVectorAndValidation(t *testing.T) {
 	t.Parallel()
 
 	const revision = "0123456789abcdef0123456789abcdef01234567"
-	const wantHex = "c2fee12b34725595496b259e38b2985ba1fad35ed76606c19091fd5564366058"
+	const wantHex = "b059e55ace1056eb432dc3601c43cdf8eb39c40ac89b997afe828218d3747aa2"
 	identity, err := DeriveBuildIdentity(revision, DriverPackageVersion,
 		ABIMajor, ABIMinor, AdvertisedCapabilities)
 	if err != nil {

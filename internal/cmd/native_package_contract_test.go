@@ -214,6 +214,8 @@ func TestNativePackageProductionSourceContract(t *testing.T) {
 	}
 	upgradeRemove := strings.Index(helperSource, `L"upgrade-deadline-before-device-removal"`)
 	upgradeQuiesce := strings.Index(helperSource, "RequestBrokerQuiescence(options")
+	upgradeStartedGate := strings.Index(helperSource,
+		"!prior.devices.empty() && prior.devices[0].started &&")
 	upgradePristine := strings.Index(helperSource,
 		"options.transactionDeadlineUnixMs, nullptr, &outcome.error, true")
 	upgradeAbsent := strings.Index(helperSource, "CaptureSnapshot(&afterRemoval")
@@ -226,11 +228,12 @@ func TestNativePackageProductionSourceContract(t *testing.T) {
 			upgradeBind = upgradeIdentity + relative
 		}
 	}
-	if upgradeQuiesce < 0 || upgradePristine <= upgradeQuiesce ||
+	if upgradeQuiesce < 0 || upgradeStartedGate <= upgradeQuiesce ||
+		upgradePristine <= upgradeStartedGate ||
 		upgradeRemove <= upgradePristine || upgradeAbsent <= upgradeRemove ||
 		upgradeStage <= upgradeAbsent || upgradeIdentity <= upgradeStage ||
 		upgradeBind <= upgradeIdentity {
-		t.Error("driver upgrade no longer quiesces the broker and proves a pristine runtime before removal, absence proof, staging, exact-identity recreation, and binding")
+		t.Error("driver upgrade no longer treats a stopped exact root as quiesced while requiring pristine runtime proof for a running root before removal, absence proof, staging, exact-identity recreation, and binding")
 	}
 	if strings.Contains(windowsSource, `strings.Contains(text, "result=success operation=install")`) {
 		t.Error("native package install must parse one exact helper outcome instead of accepting a success substring")
