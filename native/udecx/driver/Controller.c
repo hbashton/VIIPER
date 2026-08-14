@@ -121,6 +121,7 @@ ViiperEvtDeviceAdd(
     WDF_OBJECT_ATTRIBUTES requestAttributes;
     WDF_FILEOBJECT_CONFIG fileConfig;
     UDECX_WDF_DEVICE_CONFIG udeConfig;
+    WDF_DEVICE_POWER_POLICY_IDLE_SETTINGS idleSettings;
     WDF_PNPPOWER_EVENT_CALLBACKS pnpCallbacks;
     VIIPER_UDE_CONTROLLER_CONTEXT *context;
     UNICODE_STRING sddl = RTL_CONSTANT_STRING(L"D:P(A;;GA;;;SY)(A;;GA;;;BA)");
@@ -177,6 +178,17 @@ ViiperEvtDeviceAdd(
     KeInitializeEvent(&context->CompletionOperationsDrained, NotificationEvent, TRUE);
     KeInitializeEvent(&context->OwnerAdmissionsDrained, NotificationEvent, TRUE);
     KeInitializeEvent(&context->FileCleanupsDrained, NotificationEvent, TRUE);
+
+    // UdeCx owns the controller's USB root-hub power policy. Establish the
+    // proven non-wakeable S0 idle contract before publishing emulation so a
+    // port connect cannot race an implicit hub-suspend transition. This is a
+    // cold controller-lifecycle setting; it adds no work to the input path.
+    WDF_DEVICE_POWER_POLICY_IDLE_SETTINGS_INIT(
+        &idleSettings, IdleCannotWakeFromS0);
+    status = WdfDeviceAssignS0IdleSettings(device, &idleSettings);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
 
     WDF_OBJECT_ATTRIBUTES_INIT(&attributes);
     attributes.ParentObject = device;

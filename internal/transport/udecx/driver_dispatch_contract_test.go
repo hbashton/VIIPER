@@ -69,6 +69,20 @@ func TestNativeSuperSpeedPortsUseControllerGlobalNumbering(t *testing.T) {
 	}
 }
 
+func TestNativeControllerEstablishesIdlePolicyBeforeUdeCxEmulation(t *testing.T) {
+	controller := normalizedContract(nativeCFunction(t,
+		nativeContractSource(t, "native", "udecx", "driver", "Controller.c"),
+		"ViiperEvtDeviceAdd"))
+	requireContractOrder(t, controller,
+		"status = WdfDeviceCreate(&DeviceInit, &attributes, &device);",
+		"WDF_DEVICE_POWER_POLICY_IDLE_SETTINGS_INIT( &idleSettings, IdleCannotWakeFromS0);",
+		"status = WdfDeviceAssignS0IdleSettings(device, &idleSettings);",
+		"status = UdecxWdfDeviceAddUsbDeviceEmulation(device, &udeConfig);")
+	if strings.Contains(controller, "Start-Sleep") || strings.Contains(controller, "WdfTimer") {
+		t.Fatal("controller enumeration policy must not hide lifecycle races with timing workarounds")
+	}
+}
+
 func TestNativeBrokerDispatchUsesIndependentCursorAndEndpointFIFO(t *testing.T) {
 	broker := nativeContractSource(t, "native", "udecx", "driver", "Broker.c")
 	device := nativeContractSource(t, "native", "udecx", "driver", "Device.c")
