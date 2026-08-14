@@ -52,7 +52,7 @@ $inputs = [ordered]@{
     'ViiperUde.inf' = Resolve-ExactInput $InfPath 'ViiperUde.inf'
     'ViiperUde.sys' = Resolve-ExactInput $SysPath 'ViiperUde.sys'
     'ViiperUde.pdb' = Resolve-ExactInput $PdbPath 'ViiperUde.pdb'
-    'ViiperUde.cat' = Resolve-ExactInput $CatalogPath 'ViiperUde.cat'
+    'ViiperUde.cat' = Resolve-ExactInput $CatalogPath 'viiperude.cat'
 }
 $helper = Resolve-ExactInput $HelperPath 'ViiperUdeCtl.exe'
 $broker = Resolve-ExactInput $BrokerPath 'viiper.exe'
