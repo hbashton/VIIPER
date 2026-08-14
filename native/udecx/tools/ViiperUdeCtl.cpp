@@ -1299,6 +1299,7 @@ bool LoadWinTrustFunction(
 bool VerifyDriverCatalogMember(
     const std::filesystem::path& catalogPath,
     const std::filesystem::path& memberPath,
+    bool allowUntrustedLocalTestRoot,
     Error* error) {
     WinHandle member(CreateFileW(memberPath.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
         OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
@@ -1397,7 +1398,9 @@ bool VerifyDriverCatalogMember(
     trust.dwStateAction = WTD_STATEACTION_CLOSE;
     WinVerifyTrust(reinterpret_cast<HWND>(INVALID_HANDLE_VALUE), &action, &trust);
     releasePolicy();
-    if (status != ERROR_SUCCESS) {
+    if (status != ERROR_SUCCESS &&
+        !(allowUntrustedLocalTestRoot &&
+            status == static_cast<LONG>(CERT_E_UNTRUSTEDROOT))) {
         return SetError(error, L"catalog-member-policy", static_cast<DWORD>(status),
             L"package file is not a valid member of the exact trusted driver catalog");
     }
@@ -1408,27 +1411,13 @@ bool VerifyLocalTestPackageSigner(
     const std::filesystem::path& infPath,
     std::string_view expectedCertificateSha256,
     Error* error) {
-    SP_INF_SIGNER_INFO_W signer{};
-    signer.cbSize = sizeof(signer);
-    if (!SetupVerifyInfFileW(infPath.c_str(), nullptr, &signer)) {
-        const DWORD code = GetLastError();
-        if (code != ERROR_AUTHENTICODE_TRUSTED_PUBLISHER) {
-            return SetError(error, L"inf-local-test-signature", code);
-        }
-    }
-    if (signer.CatalogFile[0] == L'\0' || signer.DigitalSigner[0] == L'\0') {
-        return SetError(error, L"inf-local-test-signature", ERROR_INVALID_DATA,
-            L"local test INF did not report a catalog and signer");
-    }
-    const std::filesystem::path reportedCatalogPath = signer.CatalogFile;
-    if (_wcsicmp(reportedCatalogPath.filename().c_str(), kCatalogName) != 0) {
-        return SetError(error, L"inf-local-test-signature", ERROR_INVALID_DATA,
-            L"local test INF did not report the exact VIIPER catalog");
-    }
+    // InspectInfContract already pins CatalogFile to kCatalogName. Verify the
+    // exact member hashes and signer directly so a clean packaging machine
+    // does not need to trust the disposable WDK certificate first.
     const std::filesystem::path catalogPath = infPath.parent_path() / kCatalogName;
-    if (!VerifyDriverCatalogMember(catalogPath, infPath, error) ||
+    if (!VerifyDriverCatalogMember(catalogPath, infPath, true, error) ||
         !VerifyDriverCatalogMember(catalogPath,
-            infPath.parent_path() / kDriverFileName, error)) {
+            infPath.parent_path() / kDriverFileName, true, error)) {
         return false;
     }
 
@@ -1520,9 +1509,9 @@ bool VerifyMicrosoftHardwareInfSigner(
     DWORD encoding = 0;
     HCERTSTORE store = nullptr;
     HCRYPTMSG message = nullptr;
-    if (!VerifyDriverCatalogMember(catalogPath, infPath, error) ||
+    if (!VerifyDriverCatalogMember(catalogPath, infPath, false, error) ||
         !VerifyDriverCatalogMember(catalogPath,
-            packageInfPath.parent_path() / kDriverFileName, error)) {
+            packageInfPath.parent_path() / kDriverFileName, false, error)) {
         return false;
     }
     if (!CryptQueryObject(CERT_QUERY_OBJECT_FILE, catalogPath.c_str(),
@@ -1604,6 +1593,7 @@ bool VerifyMicrosoftHardwareInfSigner(
 bool LoadOwnedPackage(
     const std::filesystem::path& rawPath,
     bool requireOwned,
+    bool allowUntrustedLocalTestRoot,
     PackageInfo* package,
     bool* owned,
     Error* error) {
@@ -1631,8 +1621,12 @@ bool LoadOwnedPackage(
         return true;
     }
     std::filesystem::path catalogPath;
-    if (!VerifyInfSignature(path, &catalogPath, error)) {
-        return false;
+    if (allowUntrustedLocalTestRoot) {
+        catalogPath = path.parent_path() / kCatalogName;
+    } else {
+        if (!VerifyInfSignature(path, &catalogPath, error)) {
+            return false;
+        }
     }
     std::filesystem::path packageInfPath = path;
     if (_wcsicmp(path.filename().c_str(), L"ViiperUde.inf") != 0 &&
@@ -1765,7 +1759,8 @@ bool EnumerateOwnedPackages(std::vector<PackageInfo>* packages, Error* error) {
         PackageInfo package;
         bool owned = false;
         Error packageError;
-        if (!LoadOwnedPackage(infDirectory / data.cFileName, false, &package, &owned, &packageError)) {
+        if (!LoadOwnedPackage(infDirectory / data.cFileName, false, false,
+                &package, &owned, &packageError)) {
             FindClose(rawFind);
             *error = std::move(packageError);
             return false;
@@ -2080,7 +2075,8 @@ bool CaptureSnapshot(Snapshot* snapshot, Error* error) {
         }
         bool owned = false;
         PackageInfo package;
-        if (!LoadOwnedPackage(infDirectory / device.publishedInf, true, &package, &owned, error)) {
+        if (!LoadOwnedPackage(infDirectory / device.publishedInf, true, false,
+                &package, &owned, error)) {
             return false;
         }
         package.publishedName = device.publishedInf;
@@ -2145,7 +2141,8 @@ bool RemoveAllExactDevices(
         }
         PackageInfo package;
         bool owned = false;
-        if (!LoadOwnedPackage(infDirectory / device.publishedInf, true, &package, &owned, error) || !owned) {
+        if (!LoadOwnedPackage(infDirectory / device.publishedInf, true, false,
+                &package, &owned, error) || !owned) {
             return false;
         }
     }
@@ -3090,7 +3087,8 @@ bool ValidateCandidateInputs(
         return false;
     }
     bool owned = false;
-    if (!LoadOwnedPackage(lockedInfPath, true, candidate, &owned, error) || !owned ||
+    if (!LoadOwnedPackage(lockedInfPath, true, options.localTest,
+            candidate, &owned, error) || !owned ||
         (options.production && !VerifyMicrosoftHardwareInfSigner(lockedInfPath, error))) {
         return false;
     }
@@ -4524,7 +4522,8 @@ bool BackupPackages(
         }
         PackageInfo verified;
         bool owned = false;
-        if (!LoadOwnedPackage(backupInf, true, &verified, &owned, error) || !owned) {
+        if (!LoadOwnedPackage(backupInf, true, false,
+                &verified, &owned, error) || !owned) {
             return false;
         }
         if (!(verified.version == packages[index].version) ||
