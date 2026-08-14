@@ -38,7 +38,13 @@ $requiredContracts = [ordered]@{
     'stopped owned upgrade skips unavailable live ABI proof' =
         'CandidateDisposition::InstallRequired &&\s*!prior\.devices\.empty\(\) && prior\.devices\[0\]\.started &&'
     'loaded-kernel build identity negotiation' = 'response\.BuildIdentity'
-    'exact negotiated capability identity' = 'response\.Capabilities != VIIPER_UDE_ADVERTISED_CAPABILITIES'
+    'exact negotiated capability identity' = 'response\.Capabilities != negotiatedCapabilities'
+    'known previous ABI negotiation' = 'kPreviousAbiMinor = 10'
+    'known previous ABI capabilities' = 'kPreviousAbiCapabilities'
+    'previous ABI pristine-upgrade boundary' = 'IsPreviousAbiRetryEligible\('
+    'previous ABI invalid-parameter retry only' =
+        'error\.code == ERROR_INVALID_PARAMETER[\s\S]{0,180}abi-negotiate-result'
+    'previous ABI stats header validation' = 'stats\.Header\.Minor != negotiatedMinor'
     'source-bound manifest identity' = 'driverBuildIdentity'
     'same-ABI stale-kernel rejection' = 'expectedBuildIdentity'
     'install rollback' = 'RollbackInstall\('

@@ -88,6 +88,10 @@ constexpr wchar_t kServiceName[] = L"ViiperUde";
 constexpr wchar_t kProviderName[] = L"VIIPER Project";
 constexpr wchar_t kCatalogName[] = L"ViiperUde.cat";
 constexpr wchar_t kDriverFileName[] = L"ViiperUde.sys";
+constexpr VIIPER_UDE_UINT16 kPreviousAbiMinor = 10;
+constexpr VIIPER_UDE_UINT32 kPreviousAbiCapabilities =
+    VIIPER_UDE_CAP_ISOCHRONOUS | VIIPER_UDE_CAP_DEVICE_LIFECYCLE |
+    VIIPER_UDE_CAP_INPUT_REPORTS;
 constexpr wchar_t kModelSection[] = L"Standard.NTamd64.10.0...17763";
 constexpr wchar_t kInstallSection[] = L"ViiperUde_Install";
 constexpr wchar_t kTransactionNamespace[] = L"VIIPER_UDE_DRIVER_TRANSACTION_NAMESPACE_V1";
@@ -2428,6 +2432,111 @@ bool RegisterRootDeviceExact(
     return true;
 }
 
+bool IssueAbiNegotiation(
+    HANDLE device,
+    uint64_t deadlineUnixMs,
+    VIIPER_UDE_UINT16 abiMinor,
+    VIIPER_UDE_UINT32 requestedCapabilities,
+    VIIPER_UDE_NEGOTIATE_RESPONSE* response,
+    VIIPER_UDE_UINT64* clientNonce,
+    DWORD* returnedBytes,
+    Error* error) {
+    if (response == nullptr || clientNonce == nullptr || returnedBytes == nullptr) {
+        return SetError(error, L"abi-negotiate-arguments", ERROR_INVALID_PARAMETER);
+    }
+    LARGE_INTEGER counter{};
+    QueryPerformanceCounter(&counter);
+    VIIPER_UDE_NEGOTIATE_REQUEST request{};
+    request.Header.Magic = VIIPER_UDE_MAGIC;
+    request.Header.Major = VIIPER_UDE_ABI_MAJOR;
+    request.Header.Minor = abiMinor;
+    request.Header.Size = sizeof(request);
+    request.ClientNonce = static_cast<VIIPER_UDE_UINT64>(counter.QuadPart) ^ GetTickCount64();
+    if (request.ClientNonce == 0) request.ClientNonce = 1;
+    request.RequestedCapabilities = requestedCapabilities;
+    *response = VIIPER_UDE_NEGOTIATE_RESPONSE{};
+    DWORD returned = 0;
+    WinHandle event(CreateEventW(nullptr, TRUE, FALSE, nullptr));
+    if (!event) {
+        return SetLastErrorDetail(error, L"abi-negotiate-event");
+    }
+    OVERLAPPED overlapped{};
+    overlapped.hEvent = event.get();
+    const BOOL completed = DeviceIoControl(device, IOCTL_VIIPER_UDE_NEGOTIATE,
+        &request, sizeof(request), response, sizeof(*response), &returned, &overlapped);
+    if (!completed && GetLastError() != ERROR_IO_PENDING) {
+        return SetLastErrorDetail(error, L"abi-negotiate");
+    }
+    if (!completed) {
+        const uint64_t now = CurrentUnixMilliseconds();
+        if (deadlineUnixMs <= now) {
+            const BOOL cancelled = CancelIoEx(device, &overlapped);
+            const DWORD cancelError = cancelled ? ERROR_SUCCESS : GetLastError();
+            const DWORD drain = WaitForSingleObject(event.get(), kCancelledIoDrainMs);
+            if ((!cancelled && cancelError != ERROR_NOT_FOUND) || drain != WAIT_OBJECT_0) {
+                return SetError(error, L"abi-negotiate-drain",
+                    !cancelled && cancelError != ERROR_NOT_FOUND
+                        ? cancelError : ERROR_OPERATION_ABORTED,
+                    L"expired native ABI negotiation could not be cancelled and drained safely");
+            }
+            DWORD ignored = 0;
+            GetOverlappedResult(device, &overlapped, &ignored, FALSE);
+            return SetError(error, L"abi-negotiate-timeout", ERROR_TIMEOUT,
+                L"native ABI negotiation exceeded the package transaction deadline");
+        }
+        const uint64_t remaining = deadlineUnixMs - now;
+        const DWORD waitMilliseconds = static_cast<DWORD>(
+            std::min<uint64_t>(remaining, static_cast<uint64_t>(MAXDWORD - 1)));
+        const DWORD wait = WaitForSingleObject(event.get(), waitMilliseconds);
+        if (wait == WAIT_TIMEOUT) {
+            const BOOL cancelled = CancelIoEx(device, &overlapped);
+            const DWORD cancelError = cancelled ? ERROR_SUCCESS : GetLastError();
+            const DWORD drain = WaitForSingleObject(event.get(), kCancelledIoDrainMs);
+            if (drain == WAIT_OBJECT_0) {
+                DWORD ignored = 0;
+                GetOverlappedResult(device, &overlapped, &ignored, FALSE);
+            }
+            if (!cancelled && cancelError != ERROR_NOT_FOUND) {
+                return SetError(error, L"abi-negotiate-cancel", cancelError,
+                    L"timed-out native ABI negotiation could not be cancelled");
+            }
+            if (drain != WAIT_OBJECT_0) {
+                return SetError(error, L"abi-negotiate-drain", ERROR_OPERATION_ABORTED,
+                    L"timed-out native ABI negotiation did not complete cancellation within the rollback ceiling");
+            }
+            return SetError(error, L"abi-negotiate-timeout", ERROR_TIMEOUT,
+                L"native ABI negotiation exceeded the package transaction deadline");
+        }
+        if (wait != WAIT_OBJECT_0) {
+            const DWORD waitError = GetLastError();
+            CancelIoEx(device, &overlapped);
+            const DWORD drain = WaitForSingleObject(event.get(), kCancelledIoDrainMs);
+            if (drain != WAIT_OBJECT_0) {
+                return SetError(error, L"abi-negotiate-drain", ERROR_OPERATION_ABORTED,
+                    L"failed native ABI wait could not be drained safely");
+            }
+            SetLastError(waitError);
+            return SetLastErrorDetail(error, L"abi-negotiate-wait");
+        }
+        if (!GetOverlappedResult(device, &overlapped, &returned, FALSE)) {
+            return SetLastErrorDetail(error, L"abi-negotiate-result");
+        }
+    }
+    *clientNonce = request.ClientNonce;
+    *returnedBytes = returned;
+    return true;
+}
+
+bool IsPreviousAbiRetryEligible(
+    bool requirePristineRuntime,
+    const std::string* expectedBuildIdentity,
+    const Error& error) {
+    return requirePristineRuntime && expectedBuildIdentity == nullptr &&
+        error.code == ERROR_INVALID_PARAMETER &&
+        (error.phase == L"abi-negotiate" ||
+            error.phase == L"abi-negotiate-result");
+}
+
 bool VerifyAbiHealth(
     uint64_t deadlineUnixMs,
     const std::string* expectedBuildIdentity,
@@ -2487,82 +2596,23 @@ bool VerifyAbiHealth(
         return SetLastErrorDetail(error, L"abi-interface-open",
             L"native broker interface is unavailable or still owned by another process");
     }
-    LARGE_INTEGER counter{};
-    QueryPerformanceCounter(&counter);
-    VIIPER_UDE_NEGOTIATE_REQUEST request{};
-    request.Header.Magic = VIIPER_UDE_MAGIC;
-    request.Header.Major = VIIPER_UDE_ABI_MAJOR;
-    request.Header.Minor = VIIPER_UDE_ABI_MINOR;
-    request.Header.Size = sizeof(request);
-    request.ClientNonce = static_cast<VIIPER_UDE_UINT64>(counter.QuadPart) ^ GetTickCount64();
-    if (request.ClientNonce == 0) request.ClientNonce = 1;
-    request.RequestedCapabilities = VIIPER_UDE_ADVERTISED_CAPABILITIES;
+    VIIPER_UDE_UINT16 negotiatedMinor = VIIPER_UDE_ABI_MINOR;
+    VIIPER_UDE_UINT32 negotiatedCapabilities = VIIPER_UDE_ADVERTISED_CAPABILITIES;
     VIIPER_UDE_NEGOTIATE_RESPONSE response{};
+    VIIPER_UDE_UINT64 clientNonce = 0;
     DWORD returned = 0;
-    WinHandle event(CreateEventW(nullptr, TRUE, FALSE, nullptr));
-    if (!event) {
-        return SetLastErrorDetail(error, L"abi-negotiate-event");
-    }
-    OVERLAPPED overlapped{};
-    overlapped.hEvent = event.get();
-    const BOOL completed = DeviceIoControl(device.get(), IOCTL_VIIPER_UDE_NEGOTIATE,
-        &request, sizeof(request), &response, sizeof(response), &returned, &overlapped);
-    if (!completed && GetLastError() != ERROR_IO_PENDING) {
-        return SetLastErrorDetail(error, L"abi-negotiate");
-    }
-    if (!completed) {
-        const uint64_t now = CurrentUnixMilliseconds();
-        if (deadlineUnixMs <= now) {
-            const BOOL cancelled = CancelIoEx(device.get(), &overlapped);
-            const DWORD cancelError = cancelled ? ERROR_SUCCESS : GetLastError();
-            const DWORD drain = WaitForSingleObject(event.get(), kCancelledIoDrainMs);
-            if ((!cancelled && cancelError != ERROR_NOT_FOUND) || drain != WAIT_OBJECT_0) {
-                return SetError(error, L"abi-negotiate-drain",
-                    !cancelled && cancelError != ERROR_NOT_FOUND
-                        ? cancelError : ERROR_OPERATION_ABORTED,
-                    L"expired native ABI negotiation could not be cancelled and drained safely");
-            }
-            DWORD ignored = 0;
-            GetOverlappedResult(device.get(), &overlapped, &ignored, FALSE);
-            return SetError(error, L"abi-negotiate-timeout", ERROR_TIMEOUT,
-                L"native ABI negotiation exceeded the package transaction deadline");
+    if (!IssueAbiNegotiation(device.get(), deadlineUnixMs, negotiatedMinor,
+            negotiatedCapabilities, &response, &clientNonce, &returned, error)) {
+        if (!IsPreviousAbiRetryEligible(
+                requirePristineRuntime, expectedBuildIdentity, *error)) {
+            return false;
         }
-        const uint64_t remaining = deadlineUnixMs - now;
-        const DWORD waitMilliseconds = static_cast<DWORD>(
-            std::min<uint64_t>(remaining, static_cast<uint64_t>(MAXDWORD - 1)));
-        const DWORD wait = WaitForSingleObject(event.get(), waitMilliseconds);
-        if (wait == WAIT_TIMEOUT) {
-            const BOOL cancelled = CancelIoEx(device.get(), &overlapped);
-            const DWORD cancelError = cancelled ? ERROR_SUCCESS : GetLastError();
-            const DWORD drain = WaitForSingleObject(event.get(), kCancelledIoDrainMs);
-            if (drain == WAIT_OBJECT_0) {
-                DWORD ignored = 0;
-                GetOverlappedResult(device.get(), &overlapped, &ignored, FALSE);
-            }
-            if (!cancelled && cancelError != ERROR_NOT_FOUND) {
-                return SetError(error, L"abi-negotiate-cancel", cancelError,
-                    L"timed-out native ABI negotiation could not be cancelled");
-            }
-            if (drain != WAIT_OBJECT_0) {
-                return SetError(error, L"abi-negotiate-drain", ERROR_OPERATION_ABORTED,
-                    L"timed-out native ABI negotiation did not complete cancellation within the rollback ceiling");
-            }
-            return SetError(error, L"abi-negotiate-timeout", ERROR_TIMEOUT,
-                L"native ABI negotiation exceeded the package transaction deadline");
-        }
-        if (wait != WAIT_OBJECT_0) {
-            const DWORD waitError = GetLastError();
-            CancelIoEx(device.get(), &overlapped);
-            const DWORD drain = WaitForSingleObject(event.get(), kCancelledIoDrainMs);
-            if (drain != WAIT_OBJECT_0) {
-                return SetError(error, L"abi-negotiate-drain", ERROR_OPERATION_ABORTED,
-                    L"failed native ABI wait could not be drained safely");
-            }
-            SetLastError(waitError);
-            return SetLastErrorDetail(error, L"abi-negotiate-wait");
-        }
-        if (!GetOverlappedResult(device.get(), &overlapped, &returned, FALSE)) {
-            return SetLastErrorDetail(error, L"abi-negotiate-result");
+        *error = Error{};
+        negotiatedMinor = kPreviousAbiMinor;
+        negotiatedCapabilities = kPreviousAbiCapabilities;
+        if (!IssueAbiNegotiation(device.get(), deadlineUnixMs, negotiatedMinor,
+                negotiatedCapabilities, &response, &clientNonce, &returned, error)) {
+            return false;
         }
     }
     std::string loadedBuildIdentity;
@@ -2574,10 +2624,10 @@ bool VerifyAbiHealth(
     }
     if (returned != sizeof(response) || response.Header.Magic != VIIPER_UDE_MAGIC ||
         response.Header.Major != VIIPER_UDE_ABI_MAJOR ||
-        response.Header.Minor != VIIPER_UDE_ABI_MINOR ||
+        response.Header.Minor != negotiatedMinor ||
         response.Header.Size != sizeof(response) || response.Header.Flags != 0 ||
-        response.ClientNonce != request.ClientNonce || response.DriverNonce == 0 ||
-        response.Capabilities != VIIPER_UDE_ADVERTISED_CAPABILITIES ||
+        response.ClientNonce != clientNonce || response.DriverNonce == 0 ||
+        response.Capabilities != negotiatedCapabilities ||
         response.MaxDevices != VIIPER_UDE_MAX_DEVICES ||
         response.MaxDescriptorBytes != VIIPER_UDE_MAX_DESCRIPTOR_BYTES ||
         response.MaxTransferBytes != VIIPER_UDE_MAX_TRANSFER_BYTES ||
@@ -2663,7 +2713,7 @@ bool VerifyAbiHealth(
         }
         if (statsReturned != sizeof(stats) || stats.Header.Magic != VIIPER_UDE_MAGIC ||
             stats.Header.Major != VIIPER_UDE_ABI_MAJOR ||
-            stats.Header.Minor != VIIPER_UDE_ABI_MINOR ||
+            stats.Header.Minor != negotiatedMinor ||
             stats.Header.Size != sizeof(stats) || stats.Header.Flags != 0) {
             return SetError(error, L"upgrade-pristine-stats", ERROR_REVISION_MISMATCH,
                 L"loaded driver returned an invalid pristine-runtime statistics record");
@@ -5298,6 +5348,22 @@ Outcome SelfTest() {
         if (outcome.error.code == ERROR_SUCCESS) {
             SetError(&outcome.error, L"self-test-build-identity", ERROR_INVALID_DATA);
         }
+        return outcome;
+    }
+    Error previousAbiError;
+    previousAbiError.code = ERROR_INVALID_PARAMETER;
+    previousAbiError.phase = L"abi-negotiate-result";
+    if (!IsPreviousAbiRetryEligible(true, nullptr, previousAbiError) ||
+        IsPreviousAbiRetryEligible(false, nullptr, previousAbiError) ||
+        IsPreviousAbiRetryEligible(true, &buildIdentity, previousAbiError)) {
+        SetError(&outcome.error, L"self-test-previous-abi-retry", ERROR_INVALID_DATA,
+            L"previous-ABI retry escaped the pristine upgrade-only boundary");
+        return outcome;
+    }
+    previousAbiError.phase = L"abi-negotiate-timeout";
+    if (IsPreviousAbiRetryEligible(true, nullptr, previousAbiError)) {
+        SetError(&outcome.error, L"self-test-previous-abi-retry", ERROR_INVALID_DATA,
+            L"previous-ABI retry accepted a non-version negotiation failure");
         return outcome;
     }
     JsonValue value;
