@@ -154,3 +154,28 @@ func TestNativeDriverRejectedExplicitIsoReservationDoesNotAdvanceTail(t *testing
 		t.Fatalf("out-of-range explicit reservation advanced tail to %d", tail)
 	}
 }
+
+func TestNativeDriverPreciseIsoClockSuppliesRequiredQpcOutput(t *testing.T) {
+	source := nativeDriverBrokerSource(t)
+	start := strings.Index(source, "ViiperReserveIsoStartFrame(")
+	if start < 0 {
+		t.Fatal("native ISO reservation helper is missing")
+	}
+	end := strings.Index(source[start:], "ViiperCopyTransferBuffer(")
+	if end < 0 {
+		t.Fatal("native ISO reservation helper boundary is missing")
+	}
+	reservation := source[start : start+end]
+
+	for _, required := range []string{
+		"ULONGLONG qpcTimestamp;",
+		"KeQueryInterruptTimePrecise(&qpcTimestamp)",
+	} {
+		if !strings.Contains(reservation, required) {
+			t.Fatalf("native precise ISO clock is missing %q", required)
+		}
+	}
+	if strings.Contains(reservation, "KeQueryInterruptTimePrecise(NULL)") {
+		t.Fatal("native precise ISO clock passes a null mandatory QPC output pointer")
+	}
+}

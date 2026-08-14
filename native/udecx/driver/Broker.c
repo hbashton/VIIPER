@@ -1400,6 +1400,7 @@ ViiperReserveIsoStartFrame(
     )
 {
     LONG64 observed;
+    ULONGLONG qpcTimestamp;
     ULONG currentFrame;
     LONG requestedDelta;
     ULONG startFrame;
@@ -1407,7 +1408,7 @@ ViiperReserveIsoStartFrame(
     ULONG span;
 
     span = ViiperIsoFrameSpan(EndpointContext, PacketCount);
-    currentFrame = (ULONG)(KeQueryInterruptTimePrecise(NULL) / 10000ULL);
+    currentFrame = (ULONG)(KeQueryInterruptTimePrecise(&qpcTimestamp) / 10000ULL);
     if ((TransferFlags & USBD_START_ISO_TRANSFER_ASAP) == 0) {
         // An explicit URB is valid only in the future 1024-frame window. Do
         // not let a rejected request advance the shared endpoint tail: doing
