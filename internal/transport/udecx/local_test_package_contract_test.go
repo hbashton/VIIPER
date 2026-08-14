@@ -300,8 +300,19 @@ func TestLocalTestPackageUsesFullTransactionalNativeBackend(t *testing.T) {
 		t.Fatal("native helper still treats a successful SetupGetStringFieldW size query as failure")
 	}
 	if strings.Count(helperSource,
-		"code != ERROR_AUTHENTICODE_TRUSTED_PUBLISHER") != 2 {
-		t.Fatal("native helper does not recognize SetupAPI's exact trusted-Authenticode success classification")
+		"code != ERROR_AUTHENTICODE_TRUSTED_PUBLISHER") != 1 {
+		t.Fatal("native helper does not retain SetupAPI's exact trusted-Authenticode classification for installed packages")
+	}
+	for _, required := range []string{
+		"bool allowUntrustedLocalTestRoot",
+		"allowUntrustedLocalTestRoot &&",
+		"status == static_cast<LONG>(CERT_E_UNTRUSTEDROOT)",
+		"VerifyDriverCatalogMember(catalogPath, infPath, true, error)",
+		"VerifyDriverCatalogMember(catalogPath, infPath, false, error)",
+	} {
+		if !strings.Contains(helperSource, required) {
+			t.Fatalf("native helper omitted scoped pre-trust catalog policy %q", required)
+		}
 	}
 	if strings.Contains(helperSource,
 		"ERROR_AUTHENTICODE_TRUST_NOT_ESTABLISHED") {
