@@ -71,6 +71,8 @@ type windowsNativePackageTransaction struct {
 	priorServiceNonCrash   bool
 	priorExecutableRelease func()
 	stoppedTrustedService  bool
+	weakServiceMutation    bool
+	weakServiceRemoved     bool
 
 	temporaryPath        string
 	backupPath           string
@@ -570,19 +572,8 @@ func (t *windowsNativePackageTransaction) Prepare(
 	// publish the canonical broker image. Any failure must prove rollback before
 	// the still-running helper may touch its captured driver snapshot again.
 	t.nestedMutationStarted = true
-	if t.service != nil && snapshot.disposition == nativePackageServiceWeakExactOwned {
-		if snapshot.wasRunning {
-			if err := stopNativeService(ctx, t.service, waitContext); err != nil {
-				return fmt.Errorf("stop weak exact-owned %s: %w", NativeBrokerServiceName, err)
-			}
-		}
-		if err := t.service.Delete(); err != nil &&
-			!errors.Is(err, windows.ERROR_SERVICE_MARKED_FOR_DELETE) {
-			return fmt.Errorf("delete weak exact-owned %s: %w", NativeBrokerServiceName, err)
-		}
-		t.service.Close() //nolint:errcheck
-		t.service = nil
-		if err := waitForNativePackageServiceDeletion(ctx, t.manager); err != nil {
+	if snapshot.disposition == nativePackageServiceWeakExactOwned {
+		if err := t.removeWeakExactOwnedService(ctx); err != nil {
 			return err
 		}
 	}
@@ -1036,7 +1027,11 @@ func (t *windowsNativePackageTransaction) quiescePriorServiceForDriver(ctx conte
 	case nativePackageServiceAbsent:
 		return nil
 	case nativePackageServiceWeakExactOwned:
-		return errors.New("refusing to quiesce a weak exact-owned broker service before driver mutation")
+		// A noncanonical exact-owned service is not rollback material. Remove it
+		// under the held service mutex before the helper mutates the root bus; the
+		// nested broker transaction will recreate the canonical service only after
+		// the driver has reached its protected handoff point.
+		return t.removeWeakExactOwnedService(ctx)
 	case nativePackageServiceTrusted:
 		if t.service == nil {
 			return errors.New("trusted broker service snapshot has no live SCM handle")
@@ -1055,6 +1050,47 @@ func (t *windowsNativePackageTransaction) quiescePriorServiceForDriver(ctx conte
 	default:
 		return errors.New("broker quiescence received an unknown service disposition")
 	}
+}
+
+func (t *windowsNativePackageTransaction) removeWeakExactOwnedService(ctx context.Context) error {
+	if t.releaseServiceMutex == nil {
+		return errors.New("weak broker removal requires the held service mutex")
+	}
+	if t.serviceSnapshot.disposition != nativePackageServiceWeakExactOwned {
+		return errors.New("weak broker removal received a non-weak service snapshot")
+	}
+	if t.weakServiceRemoved {
+		return nil
+	}
+	if t.service == nil {
+		return errors.New("weak exact-owned broker snapshot has no live SCM handle")
+	}
+	if t.manager == nil {
+		return errors.New("weak exact-owned broker snapshot has no live SCM manager")
+	}
+
+	// The snapshot is deliberately excluded from rollback trust. Arm the
+	// fail-closed state before the first STOP/DELETE mutation: a partial failure
+	// must never restart or restore an image/configuration that was not proven.
+	t.weakServiceMutation = true
+	if t.serviceSnapshot.wasRunning {
+		if err := stopNativeService(ctx, t.service, waitContext); err != nil {
+			return fmt.Errorf("stop weak exact-owned %s: %w", NativeBrokerServiceName, err)
+		}
+	}
+	if err := t.service.Delete(); err != nil &&
+		!errors.Is(err, windows.ERROR_SERVICE_MARKED_FOR_DELETE) {
+		return fmt.Errorf("delete weak exact-owned %s: %w", NativeBrokerServiceName, err)
+	}
+	if err := t.service.Close(); err != nil {
+		return fmt.Errorf("close weak exact-owned %s after deletion: %w", NativeBrokerServiceName, err)
+	}
+	t.service = nil
+	if err := waitForNativePackageServiceDeletion(ctx, t.manager); err != nil {
+		return err
+	}
+	t.weakServiceRemoved = true
+	return nil
 }
 
 func (t *windowsNativePackageTransaction) releaseServiceForBrokerHandoff() error {

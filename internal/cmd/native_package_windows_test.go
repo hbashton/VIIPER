@@ -109,7 +109,7 @@ func TestNativePackageDriverCoordinationHoldsServiceMutexUntilBrokerHandoff(t *t
 	}
 }
 
-func TestNativePackageDriverQuiescenceStopsOnlyTrustedRunningService(t *testing.T) {
+func TestNativePackageDriverQuiescenceStopsTrustedRunningService(t *testing.T) {
 	t.Parallel()
 	events := []string{}
 	service := &fakeNativeService{events: &events, status: svc.Status{State: svc.Running}}
@@ -130,16 +130,84 @@ func TestNativePackageDriverQuiescenceStopsOnlyTrustedRunningService(t *testing.
 			transaction.stoppedTrustedService, service.status.State, events)
 	}
 
+	if err := transaction.quiescePriorServiceForDriver(context.Background()); err != nil {
+		t.Fatalf("repeat trusted quiescence: %v", err)
+	}
+}
+
+func TestNativePackageDriverQuiescenceRemovesWeakExactOwnedService(t *testing.T) {
+	t.Parallel()
+	for _, running := range []bool{false, true} {
+		running := running
+		t.Run(map[bool]string{false: "stopped", true: "running"}[running], func(t *testing.T) {
+			t.Parallel()
+			events := []string{}
+			state := svc.Stopped
+			if running {
+				state = svc.Running
+			}
+			service := &fakeNativeService{events: &events, status: svc.Status{State: state}}
+			manager := newFakeNativeSCM(service, &events)
+			transaction := &windowsNativePackageTransaction{
+				serviceSnapshot: nativePackageServiceSnapshot{
+					disposition: nativePackageServiceWeakExactOwned,
+					wasRunning:  running,
+				},
+				service: service, manager: manager,
+				releaseServiceMutex: func() {},
+			}
+			if err := transaction.quiescePriorServiceForDriver(context.Background()); err != nil {
+				t.Fatalf("quiesce weak service: %v", err)
+			}
+			want := []string{"service-delete", "service-open"}
+			if running {
+				want = append([]string{"service-stop"}, want...)
+			}
+			if !transaction.weakServiceMutation || !transaction.weakServiceRemoved ||
+				transaction.service != nil || !service.deleted || !slices.Equal(events, want) {
+				t.Fatalf("weak service state mutation=%v removed=%v live=%v deleted=%v events=%v want=%v",
+					transaction.weakServiceMutation, transaction.weakServiceRemoved,
+					transaction.service != nil, service.deleted, events, want)
+			}
+			if err := transaction.quiescePriorServiceForDriver(context.Background()); err != nil {
+				t.Fatalf("repeat weak quiescence: %v", err)
+			}
+			if !slices.Equal(events, want) {
+				t.Fatalf("repeat weak quiescence mutated service again: events=%v want=%v", events, want)
+			}
+		})
+	}
+}
+
+func TestNativePackageDriverQuiescenceDoesNotRestoreWeakServiceOnDeleteFailure(t *testing.T) {
+	t.Parallel()
+	events := []string{}
+	service := &fakeNativeService{
+		events: &events, status: svc.Status{State: svc.Running}, failDelete: errors.New("delete failed"),
+	}
 	weak := &windowsNativePackageTransaction{
 		serviceSnapshot: nativePackageServiceSnapshot{
 			disposition: nativePackageServiceWeakExactOwned,
 			wasRunning:  true,
 		},
-		service:             service,
+		service: service, manager: newFakeNativeSCM(service, &events),
 		releaseServiceMutex: func() {},
 	}
 	if err := weak.quiescePriorServiceForDriver(context.Background()); err == nil {
-		t.Fatal("weak exact-owned service was quiesced as a trusted rollback source")
+		t.Fatal("weak service delete failure was accepted")
+	}
+	if !weak.weakServiceMutation || weak.weakServiceRemoved || service.status.State != svc.Stopped ||
+		service.deleted || !slices.Equal(events, []string{"service-stop", "service-delete"}) {
+		t.Fatalf("weak failure state mutation=%v removed=%v status=%d deleted=%v events=%v",
+			weak.weakServiceMutation, weak.weakServiceRemoved, service.status.State,
+			service.deleted, events)
+	}
+	if err := weak.Rollback(context.Background()); err != nil {
+		t.Fatalf("fail-closed weak rollback: %v", err)
+	}
+	if service.startCalls != 0 || service.status.State != svc.Stopped {
+		t.Fatalf("untrusted weak service was restarted: starts=%d status=%d",
+			service.startCalls, service.status.State)
 	}
 }
 

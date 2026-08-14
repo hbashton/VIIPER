@@ -59,6 +59,7 @@ func TestNativePackageProductionSourceContract(t *testing.T) {
 		"--broker-quiesce-abort-handle", "--broker-handoff-handle",
 		"AdditionalInheritedHandles", "coordinateDriverHelper(ctx",
 		"quiescePriorServiceForDriver", "releaseServiceForBrokerHandoff",
+		"removeWeakExactOwnedService",
 		"restoreQuiescedPriorService", "driverHelperSettled",
 		"nativePackageRebootRequiredError",
 		"parseNativePackageInstallProof(text, processExitCode)",
