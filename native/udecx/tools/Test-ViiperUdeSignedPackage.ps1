@@ -556,6 +556,38 @@ function Get-BoundedAuthenticodeSignature {
     }
 }
 
+function Test-ExpectedLocalTestTrustFailure {
+    param(
+        [Parameter(Mandatory = $true)]$Result,
+        [Parameter(Mandatory = $true)][string]$ExpectedCertificateThumbprint,
+        [Parameter(Mandatory = $true)][string]$TargetPath,
+        [string]$CatalogPath
+    )
+
+    if ($Result.ExitCode -ne 1 -or
+        $ExpectedCertificateThumbprint -cnotmatch '^[0-9A-F]{40}$') {
+        return $false
+    }
+    $evidence = ([string]$Result.StandardOutput) + "`n" +
+        ([string]$Result.StandardError)
+    $rootTrustError = '(?ims)^SignTool Error: A certificate chain processed, but terminated in a root\s*\r?\n\s*certificate which is not trusted by the trust provider\.\s*$'
+    if (@([regex]::Matches($evidence, $rootTrustError)).Count -ne 1 -or
+        @([regex]::Matches($evidence,
+            '(?im)^\s*SHA1 hash:\s*' + [regex]::Escape($ExpectedCertificateThumbprint) + '\s*$')).Count -ne 1 -or
+        @([regex]::Matches($evidence, '(?im)^Number of warnings:\s*0\s*$')).Count -ne 1 -or
+        @([regex]::Matches($evidence, '(?im)^Number of errors:\s*1\s*$')).Count -ne 1 -or
+        @([regex]::Matches($evidence,
+            '(?im)^Verifying:\s*' + [regex]::Escape($TargetPath) + '\s*$')).Count -ne 1) {
+        return $false
+    }
+    if (-not [string]::IsNullOrWhiteSpace($CatalogPath) -and
+        @([regex]::Matches($evidence,
+            '(?im)^File is signed in catalog:\s*' + [regex]::Escape($CatalogPath) + '\s*$')).Count -ne 1) {
+        return $false
+    }
+    return $true
+}
+
 function Assert-DriverSignature {
     param(
         [Parameter(Mandatory = $true)]
@@ -565,12 +597,16 @@ function Assert-DriverSignature {
         [ValidateSet('LocalTest', 'ControlledTest', 'Production')]
         [string]$Mode,
 
-        [string]$ExpectedLocalTestCertificateSha256
+        [string]$ExpectedLocalTestCertificateSha256,
+
+        [switch]$AllowUntrustedLocalTestRoot
     )
 
     $signature = Get-BoundedAuthenticodeSignature -Path $Path
     try {
-        if ($signature.Status -cne 'Valid') {
+        if ($signature.Status -cne 'Valid' -and
+            -not ($Mode -eq 'LocalTest' -and $AllowUntrustedLocalTestRoot -and
+                $signature.Status -ceq 'UnknownError')) {
             throw "'$Path' does not have a valid Authenticode signature (status '$($signature.Status)')."
         }
         if ($null -eq $signature.SignerCertificate) {
@@ -616,6 +652,7 @@ if (-not (Get-Item -LiteralPath $root.Path).PSIsContainer) {
 
 $localTestCertificate = $null
 $localTestCertificateSha256 = $null
+$localTestCertificateThumbprint = $null
 if ($ValidationMode -eq 'LocalTest') {
     if ([string]::IsNullOrWhiteSpace($LocalTestCertificatePath)) {
         throw '-LocalTestCertificatePath is required for LocalTest validation.'
@@ -629,6 +666,33 @@ if ($ValidationMode -eq 'LocalTest') {
     }
     $localTestCertificate = [Security.Cryptography.X509Certificates.X509Certificate2]::new($resolvedCertificate)
     $localTestCertificateSha256 = Get-CertificateSha256 -Certificate $localTestCertificate
+    $localTestCertificateThumbprint = $localTestCertificate.Thumbprint.ToUpperInvariant()
+    $chain = [Security.Cryptography.X509Certificates.X509Chain]::new()
+    try {
+        $chain.ChainPolicy.RevocationMode =
+            [Security.Cryptography.X509Certificates.X509RevocationMode]::NoCheck
+        $chain.ChainPolicy.VerificationFlags =
+            [Security.Cryptography.X509Certificates.X509VerificationFlags]::AllowUnknownCertificateAuthority
+        $chainValid = $chain.Build($localTestCertificate)
+        $chainStatuses = @($chain.ChainStatus)
+        $onlyExpectedTrustStatus = $chainStatuses.Count -eq 0 -or
+            ($chainStatuses.Count -eq 1 -and
+                $chainStatuses[0].Status -eq
+                    [Security.Cryptography.X509Certificates.X509ChainStatusFlags]::UntrustedRoot)
+        $ekuOids = Get-CertificateEkuOids -Certificate $localTestCertificate
+        if (-not $chainValid -or -not $onlyExpectedTrustStatus -or
+            $chain.ChainElements.Count -ne 1 -or
+            $localTestCertificate.Subject -cne $localTestCertificate.Issuer -or
+            $localTestCertificate.NotBefore -gt [DateTime]::Now -or
+            $localTestCertificate.NotAfter -lt [DateTime]::Now -or
+            -not $ekuOids.Contains('1.3.6.1.5.5.7.3.3') -or
+            $localTestCertificateThumbprint -cnotmatch '^[0-9A-F]{40}$') {
+            throw 'The local-test certificate is not a current, self-issued, code-signing certificate with a valid self-chain.'
+        }
+    }
+    finally {
+        $chain.Dispose()
+    }
 }
 elseif (-not [string]::IsNullOrWhiteSpace($LocalTestCertificatePath)) {
     throw '-LocalTestCertificatePath is valid only with -ValidationMode LocalTest.'
@@ -728,7 +792,8 @@ foreach ($name in @('ViiperUde.inf', 'ViiperUde.pdb')) {
 
 foreach ($name in @('ViiperUde.cat', 'ViiperUde.sys')) {
     Assert-DriverSignature -Path $files[$name] -Mode $ValidationMode `
-        -ExpectedLocalTestCertificateSha256 $localTestCertificateSha256
+        -ExpectedLocalTestCertificateSha256 $localTestCertificateSha256 `
+        -AllowUntrustedLocalTestRoot:$RequireLocalTestToolchainValidation
 }
 $requireExternalTools = $ValidationMode -ne 'LocalTest' -or $RequireLocalTestToolchainValidation
 if ($requireExternalTools) {
@@ -738,7 +803,11 @@ if ($requireExternalTools) {
         $exitCode = Invoke-BoundedValidationTool -FilePath $signTool.Source `
             -Arguments @('verify', $policy, '/v', $files[$name]) `
             -Operation "SignTool signature validation for '$name'"
-        if ($exitCode.ExitCode -ne 0) {
+        $expectedUntrustedRoot = $ValidationMode -eq 'LocalTest' -and
+            (Test-ExpectedLocalTestTrustFailure -Result $exitCode `
+                -ExpectedCertificateThumbprint $localTestCertificateThumbprint `
+                -TargetPath $files[$name])
+        if ($exitCode.ExitCode -ne 0 -and -not $expectedUntrustedRoot) {
             throw "Signature policy validation failed for '$name' with exit code $($exitCode.ExitCode)."
         }
     }
@@ -747,7 +816,11 @@ if ($requireExternalTools) {
         $exitCode = Invoke-BoundedValidationTool -FilePath $signTool.Source `
             -Arguments @('verify', $policy, '/v', '/c', $files['ViiperUde.cat'], $files[$name]) `
             -Operation "SignTool catalog membership validation for '$name'"
-        if ($exitCode.ExitCode -ne 0) {
+        $expectedUntrustedRoot = $ValidationMode -eq 'LocalTest' -and
+            (Test-ExpectedLocalTestTrustFailure -Result $exitCode `
+                -ExpectedCertificateThumbprint $localTestCertificateThumbprint `
+                -TargetPath $files[$name] -CatalogPath $files['ViiperUde.cat'])
+        if ($exitCode.ExitCode -ne 0 -and -not $expectedUntrustedRoot) {
             throw "'$name' is not a verified member of the exact catalog (exit code $($exitCode.ExitCode))."
         }
     }
