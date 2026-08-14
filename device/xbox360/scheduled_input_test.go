@@ -2,6 +2,7 @@ package xbox360
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 )
@@ -14,8 +15,18 @@ func TestScheduledInterruptInputPreservesXboxStateAndDeadlineReplay(t *testing.T
 	state := *NewInputState()
 	state.Buttons, state.LT, state.RX = 0x1234, 199, -4567
 	dev.UpdateInputState(state)
-	buffer := make([]byte, 20)
+	buffer := make([]byte, 32)
 	never := make(chan time.Time)
+	for index, want := range nativeDataInitializationReports {
+		written, transition, readErr := dev.ReadClassifiedScheduledInterruptInput(
+			context.Background(), never, 1, buffer)
+		if readErr != nil || !transition || written != len(want) {
+			t.Fatalf("initialization report %d=(%d, %v, %v)", index, written, transition, readErr)
+		}
+		if got := buffer[:written]; string(got) != string(want) {
+			t.Fatalf("initialization report %d=%x want=%x", index, got, want)
+		}
+	}
 	if written, readErr := dev.ReadScheduledInterruptInput(context.Background(), never, 1, buffer); readErr != nil || written != 20 {
 		t.Fatalf("event read=(%d, %v)", written, readErr)
 	}
@@ -44,5 +55,34 @@ func TestScheduledInterruptInputPreservesXboxStateAndDeadlineReplay(t *testing.T
 	}
 	if buffer[4] != state.LT {
 		t.Fatalf("post-cancel state=%x", buffer)
+	}
+}
+
+func TestNativeInterruptEndpointSelectionAndControlInitialization(t *testing.T) {
+	dev, err := New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for endpoint := uint32(1); endpoint <= 4; endpoint++ {
+		want := endpoint == 1 || endpoint == 3
+		if got := dev.SupportsInterruptInputEndpoint(endpoint); got != want {
+			t.Fatalf("endpoint %d support=%v want=%v", endpoint, got, want)
+		}
+	}
+	buffer := make([]byte, 32)
+	never := make(chan time.Time)
+	written, transition, err := dev.ReadClassifiedScheduledInterruptInput(
+		context.Background(), never, 3, buffer)
+	if err != nil || !transition || written != len(nativeControlInitializationReport) {
+		t.Fatalf("control initialization=(%d, %v, %v)", written, transition, err)
+	}
+	if got := buffer[:written]; string(got) != string(nativeControlInitializationReport[:]) {
+		t.Fatalf("control initialization=%x want=%x", got, nativeControlInitializationReport)
+	}
+	deadline := make(chan time.Time, 1)
+	deadline <- time.Now()
+	if _, _, err = dev.ReadClassifiedScheduledInterruptInput(
+		context.Background(), deadline, 3, buffer); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("idle control endpoint error=%v want deadline exceeded", err)
 	}
 }

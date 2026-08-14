@@ -22,7 +22,8 @@ const NativeBrokerServiceName = "VIIPERNativeBroker"
 const serviceStopTimeout = 30 * time.Second
 
 type nativeBrokerService struct {
-	run func(context.Context, func()) error
+	run    func(context.Context, func()) error
+	logger *slog.Logger
 }
 
 func (c *ServiceCommand) Run(logger *slog.Logger, rawLogger log.RawLogger) error {
@@ -44,7 +45,7 @@ func (c *ServiceCommand) Run(logger *slog.Logger, rawLogger log.RawLogger) error
 		c.KeyFile = path
 	}
 	c.serviceMode = true
-	handler := &nativeBrokerService{run: func(ctx context.Context, ready func()) error {
+	handler := &nativeBrokerService{logger: logger, run: func(ctx context.Context, ready func()) error {
 		c.ready = ready
 		return c.StartServer(ctx, logger, rawLogger)
 	}}
@@ -87,6 +88,7 @@ func (s *nativeBrokerService) Execute(
 		case err := <-done:
 			changes <- svc.Status{State: svc.StopPending, WaitHint: 1_000}
 			if err != nil {
+				s.logFailure(err)
 				return true, 1
 			}
 			return true, 3
@@ -109,6 +111,7 @@ Running:
 		case err := <-done:
 			changes <- svc.Status{State: svc.StopPending, WaitHint: 1_000}
 			if err != nil {
+				s.logFailure(err)
 				return true, 1
 			}
 			return false, 0
@@ -122,6 +125,12 @@ Running:
 				return waitForServiceStop(done)
 			}
 		}
+	}
+}
+
+func (s *nativeBrokerService) logFailure(err error) {
+	if err != nil && s.logger != nil {
+		s.logger.Error("VIIPER native broker stopped unexpectedly", "error", err)
 	}
 }
 

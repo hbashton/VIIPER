@@ -223,9 +223,14 @@ func fastInputEndpoints(dev usb.Device) map[uint8]fastInputEndpoint {
 	if dev == nil || dev.GetDescriptor() == nil {
 		return result
 	}
+	selector, restrictEndpoints := dev.(usb.InterruptInputEndpointSelector)
 	for _, iface := range dev.GetDescriptor().Interfaces {
 		for _, endpoint := range iface.Endpoints {
 			if endpoint.BEndpointAddress&0x80 != 0 && endpoint.BMAttributes&0x03 == 0x03 {
+				if restrictEndpoints && !selector.SupportsInterruptInputEndpoint(
+					uint32(endpoint.BEndpointAddress&0x0f)) {
+					continue
+				}
 				// USB 2.0 wMaxPacketSize uses bits 0..10 for bytes and bits
 				// 11..12 for additional high-bandwidth transactions. Allocate
 				// the complete service opportunity while enforcing the native

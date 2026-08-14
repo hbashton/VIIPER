@@ -3,9 +3,12 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -106,13 +109,50 @@ func TestNativeServiceDoesNotReportRunningBeforeBrokerReady(t *testing.T) {
 }
 
 func TestNativeServiceReportsUnexpectedBrokerFailure(t *testing.T) {
-	handler := &nativeBrokerService{run: func(context.Context, func()) error {
-		return errors.New("broker failed")
-	}}
+	var records bytes.Buffer
+	handler := &nativeBrokerService{
+		logger: slog.New(slog.NewTextHandler(&records, nil)),
+		run: func(context.Context, func()) error {
+			return errors.New("broker failed")
+		},
+	}
 	changes := make(chan svc.Status, 8)
 	specific, code := handler.Execute(nil, make(chan svc.ChangeRequest), changes)
 	if !specific || code != 1 {
 		t.Fatalf("service result=(specific=%v code=%d), want service-specific failure 1", specific, code)
+	}
+	if logged := records.String(); !strings.Contains(logged, "VIIPER native broker stopped unexpectedly") ||
+		!strings.Contains(logged, "broker failed") {
+		t.Fatalf("service failure log=%q", logged)
+	}
+}
+
+func TestNativeServiceLogsFailureAfterReportingRunning(t *testing.T) {
+	var records bytes.Buffer
+	release := make(chan struct{})
+	handler := &nativeBrokerService{
+		logger: slog.New(slog.NewTextHandler(&records, nil)),
+		run: func(_ context.Context, ready func()) error {
+			ready()
+			<-release
+			return errors.New("live transport failed")
+		},
+	}
+	changes := make(chan svc.Status, 8)
+	result := make(chan uint32, 1)
+	go func() {
+		_, code := handler.Execute(nil, make(chan svc.ChangeRequest), changes)
+		result <- code
+	}()
+	waitForServiceState(t, changes, svc.StartPending)
+	waitForServiceState(t, changes, svc.Running)
+	close(release)
+	waitForServiceState(t, changes, svc.StopPending)
+	if code := <-result; code != 1 {
+		t.Fatalf("live service failure exit code=%d want=1", code)
+	}
+	if logged := records.String(); !strings.Contains(logged, "live transport failed") {
+		t.Fatalf("live service failure log=%q", logged)
 	}
 }
 

@@ -784,6 +784,14 @@ type staleDeadlineInputPublisherTestDevice struct {
 	calls         atomic.Int32
 }
 
+type selectedInputPublisherTestDevice struct {
+	*inputPublisherTestDevice
+}
+
+func (*selectedInputPublisherTestDevice) SupportsInterruptInputEndpoint(endpoint uint32) bool {
+	return endpoint == 1
+}
+
 type controlledInputAttempt struct {
 	context.Context
 	deadline   time.Time
@@ -828,6 +836,32 @@ func (c *controlledInputAttempt) cancel() {
 func newInputPublisherTestDevice() *inputPublisherTestDevice {
 	base := hostTestDevice().GetDescriptor()
 	return &inputPublisherTestDevice{descriptor: *base, reports: make(chan []byte, 4)}
+}
+
+func TestFastInputEndpointsHonorDeviceEndpointSelection(t *testing.T) {
+	base := newInputPublisherTestDevice()
+	base.descriptor.Interfaces[0].Endpoints = append(
+		base.descriptor.Interfaces[0].Endpoints,
+		usb.EndpointDescriptor{
+			BEndpointAddress: 0x82, BMAttributes: 0x03,
+			WMaxPacketSize: 32, BInterval: 4,
+		},
+		usb.EndpointDescriptor{
+			BEndpointAddress: 0x84, BMAttributes: 0x03,
+			WMaxPacketSize: 32, BInterval: 16,
+		},
+	)
+	device := &selectedInputPublisherTestDevice{inputPublisherTestDevice: base}
+	endpoints := fastInputEndpoints(device)
+	if len(endpoints) != 1 {
+		t.Fatalf("selected fast-input endpoints=%v want only 0x81", endpoints)
+	}
+	if _, ok := endpoints[0x81]; !ok {
+		t.Fatalf("selected fast-input endpoints=%v missing 0x81", endpoints)
+	}
+	if unrestricted := fastInputEndpoints(base); len(unrestricted) != 3 {
+		t.Fatalf("compatibility fast-input endpoints=%v want all three", unrestricted)
+	}
 }
 
 func newDirectInputPublisherTestDevice() *directInputPublisherTestDevice {

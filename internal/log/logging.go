@@ -7,12 +7,96 @@ package log
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"strings"
+	"sync"
 )
+
+const maxLogFileBytes int64 = 16 << 20
+
+type boundedFile struct {
+	mu       sync.Mutex
+	file     *os.File
+	path     string
+	mode     os.FileMode
+	size     int64
+	maxBytes int64
+}
+
+func openBoundedFile(path string, mode os.FileMode, maxBytes int64) (*boundedFile, error) {
+	if maxBytes <= 0 {
+		return nil, errors.New("bounded log file size must be positive")
+	}
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_RDWR, mode)
+	if err != nil {
+		return nil, err
+	}
+	info, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	return &boundedFile{
+		file: file, path: path, mode: mode, size: info.Size(), maxBytes: maxBytes,
+	}, nil
+}
+
+// OpenBoundedFile opens a durable append-only session log. Recovery restarts
+// retain the previous failure, while a fixed-size wrap prevents unattended
+// trace logging from consuming the machine's disk.
+func OpenBoundedFile(path string, mode os.FileMode) (io.WriteCloser, error) {
+	return openBoundedFile(path, mode, maxLogFileBytes)
+}
+
+func (f *boundedFile) Write(payload []byte) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.file == nil {
+		return 0, os.ErrClosed
+	}
+	originalLength := len(payload)
+	if int64(len(payload)) > f.maxBytes {
+		payload = payload[len(payload)-int(f.maxBytes):]
+	}
+	if f.size+int64(len(payload)) > f.maxBytes {
+		if err := f.file.Close(); err != nil {
+			f.file = nil
+			return 0, err
+		}
+		file, err := os.OpenFile(
+			f.path, os.O_CREATE|os.O_TRUNC|os.O_APPEND|os.O_RDWR, f.mode)
+		if err != nil {
+			f.file = nil
+			return 0, err
+		}
+		f.file = file
+		f.size = 0
+	}
+	written, err := f.file.Write(payload)
+	f.size += int64(written)
+	if err != nil {
+		return written, err
+	}
+	if written != len(payload) {
+		return written, io.ErrShortWrite
+	}
+	return originalLength, nil
+}
+
+func (f *boundedFile) Close() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.file == nil {
+		return nil
+	}
+	err := f.file.Close()
+	f.file = nil
+	return err
+}
 
 // LevelTrace defines a custom slog level below Debug for very verbose output.
 const LevelTrace slog.Level = -8
@@ -46,7 +130,7 @@ func SetupLogger(logLevel, logFile string) (*slog.Logger, []io.Closer, error) {
 	handlers = append(handlers, LevelFilter{pass: func(l slog.Level) bool { return l >= slog.LevelError }, h: stderrHandler})
 	var closeFiles []io.Closer
 	if logFile != "" {
-		f, err := os.OpenFile(logFile, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+		f, err := OpenBoundedFile(logFile, 0o644)
 		if err != nil {
 			return nil, nil, err
 		}

@@ -43,6 +43,19 @@ type InterruptInputDevice interface {
 	ReadInterruptInput(ctx context.Context, ep uint32, dst []byte) (int, error)
 }
 
+// InterruptInputEndpointSelector lets a device restrict the interrupt-IN
+// endpoints owned by the native producer lane. Descriptors may expose
+// auxiliary interrupt pipes which intentionally remain pending until a
+// protocol-specific event occurs. Starting a periodic state publisher for
+// those pipes would invent traffic and can break device enumeration.
+//
+// ep is the endpoint number without the direction bit, matching
+// ReadInterruptInput. Devices which do not implement this interface retain the
+// compatibility behavior of publishing every interrupt-IN endpoint.
+type InterruptInputEndpointSelector interface {
+	SupportsInterruptInputEndpoint(ep uint32) bool
+}
+
 // ScheduledInterruptInputDevice is the allocation-free deadline extension of
 // InterruptInputDevice. Native transports keep one reusable timer per active
 // endpoint and pass its channel here instead of creating a new timer-backed

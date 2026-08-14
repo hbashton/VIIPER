@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"sync"
 	"time"
 
@@ -14,16 +15,31 @@ import (
 )
 
 type Xbox360 struct {
-	inputMu          sync.RWMutex
-	inputState       InputState
-	inputSignal      chan struct{}
-	rumbleDispatchMu sync.Mutex
-	rumbleMu         sync.Mutex
-	rumbleFunc       func(XRumbleState)
-	rumbleState      XRumbleState
-	rumbleSeen       bool
-	descriptor       usb.Descriptor
+	inputMu           sync.RWMutex
+	inputState        InputState
+	inputSignal       chan struct{}
+	nativeInputMu     sync.Mutex
+	nativeDataStage   uint8
+	nativeControlSent bool
+	rumbleDispatchMu  sync.Mutex
+	rumbleMu          sync.Mutex
+	rumbleFunc        func(XRumbleState)
+	rumbleState       XRumbleState
+	rumbleSeen        bool
+	descriptor        usb.Descriptor
 }
+
+var nativeDataInitializationReports = [...][]byte{
+	{0x01, 0x03, 0x0e},
+	{0x02, 0x03, 0x00},
+	{0x03, 0x03, 0x03},
+	{0x08, 0x03, 0x00},
+	{0x00, 0x14, 0x00, 0x00, 0x00, 0x00, 0xe4, 0xf2, 0xb3, 0xf8,
+		0x49, 0xf3, 0xb0, 0xfc, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+	{0x01, 0x03, 0x03},
+}
+
+var nativeControlInitializationReport = [...]byte{0x05, 0x03, 0x00}
 
 type Xbox360CreateOptions struct {
 	SubType *uint8 `json:"subType"`
@@ -129,29 +145,83 @@ func (x *Xbox360) HandleTransfer(ctx context.Context, ep uint32, dir uint32, out
 // ReadInterruptInput implements usb.InterruptInputDevice for the native UDE
 // input lane without changing the USB/IP report ownership contract.
 func (x *Xbox360) ReadInterruptInput(ctx context.Context, ep uint32, dst []byte) (int, error) {
-	return x.readInterruptInput(ctx, nil, ep, dst)
+	written, _, err := x.readInterruptInput(ctx, nil, ep, dst)
+	return written, err
 }
 
 func (x *Xbox360) ReadScheduledInterruptInput(
 	ctx context.Context, deadline <-chan time.Time, ep uint32, dst []byte,
 ) (int, error) {
+	written, _, err := x.readInterruptInput(ctx, deadline, ep, dst)
+	return written, err
+}
+
+func (x *Xbox360) ReadClassifiedScheduledInterruptInput(
+	ctx context.Context, deadline <-chan time.Time, ep uint32, dst []byte,
+) (int, bool, error) {
 	return x.readInterruptInput(ctx, deadline, ep, dst)
+}
+
+func (x *Xbox360) SupportsInterruptInputEndpoint(ep uint32) bool {
+	return ep == 1 || ep == 3
+}
+
+func (x *Xbox360) nativeInitializationReport(ep uint32, dst []byte) (int, bool, error) {
+	x.nativeInputMu.Lock()
+	defer x.nativeInputMu.Unlock()
+
+	var report []byte
+	switch ep {
+	case 1:
+		if int(x.nativeDataStage) >= len(nativeDataInitializationReports) {
+			return 0, false, nil
+		}
+		report = nativeDataInitializationReports[x.nativeDataStage]
+	case 3:
+		if x.nativeControlSent {
+			return 0, false, nil
+		}
+		report = nativeControlInitializationReport[:]
+	default:
+		return 0, false, fmt.Errorf("Xbox 360 interrupt-IN endpoint %d is unsupported", ep)
+	}
+	if len(dst) < len(report) {
+		return 0, false, io.ErrShortBuffer
+	}
+	copy(dst, report)
+	if ep == 1 {
+		x.nativeDataStage++
+	} else {
+		x.nativeControlSent = true
+	}
+	return len(report), true, nil
 }
 
 func (x *Xbox360) readInterruptInput(
 	ctx context.Context, deadline <-chan time.Time, ep uint32, dst []byte,
-) (int, error) {
-	if ep != 1 {
-		return 0, fmt.Errorf("Xbox 360 interrupt-IN endpoint %d is unsupported", ep)
+) (int, bool, error) {
+	if !x.SupportsInterruptInputEndpoint(ep) {
+		return 0, false, fmt.Errorf("Xbox 360 interrupt-IN endpoint %d is unsupported", ep)
 	}
 	if deadline != nil && ctx.Err() != nil {
-		return 0, ctx.Err()
+		return 0, false, ctx.Err()
+	}
+	if written, transition, err := x.nativeInitializationReport(ep, dst); err != nil || transition {
+		return written, transition, err
+	}
+	if ep == 3 {
+		select {
+		case <-ctx.Done():
+			return 0, false, ctx.Err()
+		case <-deadline:
+			return 0, false, context.DeadlineExceeded
+		}
 	}
 	inputReady := false
 	select {
 	case <-ctx.Done():
 		if deadline != nil || !errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return 0, ctx.Err()
+			return 0, false, ctx.Err()
 		}
 	case <-deadline:
 	case <-x.inputSignal:
@@ -164,12 +234,13 @@ func (x *Xbox360) readInterruptInput(
 			default:
 			}
 		}
-		return 0, ctx.Err()
+		return 0, false, ctx.Err()
 	}
 	x.inputMu.RLock()
 	st := x.inputState
 	x.inputMu.RUnlock()
-	return st.BuildReportInto(dst)
+	written, err := st.BuildReportInto(dst)
+	return written, inputReady, err
 }
 
 func (x *Xbox360) emitRumble(rumble XRumbleState) {
