@@ -74,6 +74,7 @@ func TestNativeEndpointQuiescenceUsesUdeCxRequiredQueueLifecycle(t *testing.T) {
 	purge := normalizedContract(nativeCFunction(t, device, "ViiperEvtEndpointPurge"))
 	requireContractOrder(t, purge,
 		"InterlockedExchange(&endpointContext->Purging, TRUE);",
+		"InterlockedExchange(&endpointContext->StartAnnounced, FALSE);",
 		"ViiperPurgeEndpointOperations(Endpoint, STATUS_DEVICE_NOT_READY);",
 		"WdfIoQueuePurge(endpointContext->Queue, ViiperEvtEndpointQueuePurged, Endpoint);")
 	purgeComplete := normalizedContract(nativeCFunction(t, device, "ViiperEvtEndpointQueuePurged"))
@@ -83,10 +84,17 @@ func TestNativeEndpointQuiescenceUsesUdeCxRequiredQueueLifecycle(t *testing.T) {
 		"ViiperInvalidateEndpointInputReport(endpoint);",
 		"UdecxUsbEndpointPurgeComplete(endpoint);")
 	start := normalizedContract(nativeCFunction(t, device, "ViiperEvtEndpointStart"))
-	requireContractOrder(t, start,
+	if !strings.Contains(start, "ViiperActivateEndpoint(Endpoint, TRUE);") {
+		t.Fatal("explicit UdeCx START no longer performs the queue-owning endpoint activation")
+	}
+	activate := normalizedContract(nativeCFunction(t, device, "ViiperActivateEndpoint"))
+	requireContractOrder(t, activate,
 		"InterlockedExchange(&endpointContext->Purging, FALSE);",
+		"endpointContext->StartAnnounced, TRUE, FALSE",
+		"if (StartQueue)",
 		"WdfIoQueueStart(endpointContext->Queue);",
-		"ViiperQueueEndpointLifecycleEvent(Endpoint, ViiperUdeOperationEndpointStart);")
+		"ViiperQueueEndpointLifecycleEvent( Endpoint, ViiperUdeOperationEndpointStart);",
+		"endpointContext->StartAnnounced, FALSE, TRUE")
 	resetWork := normalizedContract(nativeCFunction(t, device, "ViiperEvtEndpointResetWorkItem"))
 	requireContractOrder(t, resetWork,
 		"resetCurrent = ViiperQuiesceResetByIdentity(",

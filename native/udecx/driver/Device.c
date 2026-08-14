@@ -666,6 +666,11 @@ ViiperCreateVirtualDevice(
     deviceContext->Slot = VIIPER_UDE_MAX_DEVICES;
     deviceContext->Speed = speed;
     deviceContext->MaxPendingOperations = input->MaxPendingOperations;
+    // A newly attached virtual USB device is already in working link state.
+    // UdeCx invokes LinkPowerEntry only when a later request resumes the child
+    // from low power, so waiting for that callback leaves the first selected
+    // endpoints permanently closed on systems which never suspend them.
+    InterlockedExchange(&deviceContext->InD0, TRUE);
     WdfObjectReference(ownerFile);
     InterlockedExchange(&deviceContext->OwnerReferenced, 1);
 
@@ -2124,6 +2129,7 @@ ViiperEvtEndpointPurge(
     // input before the queue begins cancellation.
     WdfSpinLockAcquire(controllerContext->BrokerLock);
     InterlockedExchange(&endpointContext->Purging, TRUE);
+    InterlockedExchange(&endpointContext->StartAnnounced, FALSE);
     WdfSpinLockRelease(controllerContext->BrokerLock);
     InterlockedExchange64(&endpointContext->NextIsoStartFrame, 0);
     ViiperInvalidateEndpointInputReport(Endpoint);
@@ -2135,32 +2141,62 @@ ViiperEvtEndpointPurge(
     WdfIoQueuePurge(endpointContext->Queue, ViiperEvtEndpointQueuePurged, Endpoint);
 }
 
+static
 VOID
-ViiperEvtEndpointStart(
-    _In_ UDECXUSBENDPOINT Endpoint
+ViiperActivateEndpoint(
+    _In_ UDECXUSBENDPOINT Endpoint,
+    _In_ BOOLEAN StartQueue
     )
 {
     VIIPER_UDE_ENDPOINT_CONTEXT *endpointContext = ViiperGetEndpointContext(Endpoint);
     VIIPER_UDE_DEVICE_CONTEXT *deviceContext = ViiperGetDeviceContext(endpointContext->Device);
     VIIPER_UDE_CONTROLLER_CONTEXT *controllerContext =
         ViiperGetControllerContext(deviceContext->Controller);
+    BOOLEAN active = FALSE;
+    BOOLEAN announce = FALSE;
+    NTSTATUS status = STATUS_SUCCESS;
 
-    // UdeCx defines START as the boundary at which both the endpoint queue and
-    // any client-owned forwarded paths may resume. Open the kernel admission
-    // gate before publishing that boundary to user mode. Publishing first lets
-    // the newly started input publisher race back through SUBMIT_INPUT_REPORT
-    // while Purging is still true, consuming and discarding the first fresh
-    // sequence after resume.
+    // Device configuration is the hardware-selection boundary for dynamic
+    // endpoints. UdeCx does not issue a separate START callback for every
+    // newly selected endpoint on all supported Windows builds, so publish that
+    // selection before completing the configuration request. A later explicit
+    // START still owns the KMDF queue transition, but its user-mode activation
+    // is deduplicated by StartAnnounced. PURGE closes both gates together.
     InterlockedExchange64(&endpointContext->NextIsoStartFrame, 0);
     WdfSpinLockAcquire(controllerContext->BrokerLock);
-    if (InterlockedCompareExchange(&controllerContext->ShuttingDown, 0, 0) == 0) {
+    if (InterlockedCompareExchange(&controllerContext->ShuttingDown, 0, 0) == 0 &&
+        InterlockedCompareExchange(&deviceContext->Purging, 0, 0) == 0) {
         InterlockedExchange(&endpointContext->Purging, FALSE);
+        active = TRUE;
+        announce = InterlockedCompareExchange(
+            &endpointContext->StartAnnounced, TRUE, FALSE) == FALSE;
     }
     WdfSpinLockRelease(controllerContext->BrokerLock);
-    if (InterlockedCompareExchange(&controllerContext->ShuttingDown, 0, 0) == 0) {
-        WdfIoQueueStart(endpointContext->Queue);
-        (VOID)ViiperQueueEndpointLifecycleEvent(Endpoint, ViiperUdeOperationEndpointStart);
+    if (!active) {
+        return;
     }
+    if (StartQueue) {
+        WdfIoQueueStart(endpointContext->Queue);
+    }
+    if (announce) {
+        status = ViiperQueueEndpointLifecycleEvent(
+            Endpoint, ViiperUdeOperationEndpointStart);
+        if (!NT_SUCCESS(status)) {
+            // Permit a later explicit START to retry publication. Compare-
+            // exchange preserves a PURGE which may already have cleared the
+            // announcement while the notification path was being dispatched.
+            (VOID)InterlockedCompareExchange(
+                &endpointContext->StartAnnounced, FALSE, TRUE);
+        }
+    }
+}
+
+VOID
+ViiperEvtEndpointStart(
+    _In_ UDECXUSBENDPOINT Endpoint
+    )
+{
+    ViiperActivateEndpoint(Endpoint, TRUE);
 }
 
 VOID
@@ -2171,6 +2207,7 @@ ViiperEvtEndpointsConfigure(
     )
 {
     NTSTATUS status = STATUS_SUCCESS;
+    ULONG endpointIndex;
 
     switch (ConfigureParams->ConfigureType) {
     case UdecxEndpointsConfigureTypeDeviceInitialize:
@@ -2178,8 +2215,15 @@ ViiperEvtEndpointsConfigure(
         // post-enumeration device reset. It can run more than once while the
         // child is being initialized. Completing it synchronously avoids
         // introducing a user-mode reset dependency before Windows can finish
-        // enumerating the child; endpoint START/PURGE and later configuration
-        // changes retain their existing state and media lifecycle handling.
+        // enumerating the child. Announce only the exact endpoint handles UdeCx
+        // selected; this also covers Windows builds which do not follow a new
+        // dynamic endpoint with a separate START callback.
+        for (endpointIndex = 0;
+             endpointIndex < ConfigureParams->EndpointsToConfigureCount;
+             ++endpointIndex) {
+            ViiperActivateEndpoint(
+                ConfigureParams->EndpointsToConfigure[endpointIndex], FALSE);
+        }
         WdfRequestComplete(Request, STATUS_SUCCESS);
         return;
     case UdecxEndpointsConfigureTypeDeviceConfigurationChange:
@@ -2187,8 +2231,15 @@ ViiperEvtEndpointsConfigure(
         // created dynamic endpoint queues eligible for START. It is not a USB
         // device reset. Holding this request for a user-mode reset round trip
         // leaves every non-default endpoint in UdeCx's preceding PURGE state.
-        // Endpoint START/PURGE callbacks remain the authoritative ordered
-        // boundary for input, feedback, and media state.
+        // Publish the selected endpoints before completing this asynchronous
+        // configuration boundary. PURGE remains authoritative for release and
+        // a later explicit START performs only the KMDF queue transition.
+        for (endpointIndex = 0;
+             endpointIndex < ConfigureParams->EndpointsToConfigureCount;
+             ++endpointIndex) {
+            ViiperActivateEndpoint(
+                ConfigureParams->EndpointsToConfigure[endpointIndex], FALSE);
+        }
         WdfRequestComplete(Request, STATUS_SUCCESS);
         return;
     case UdecxEndpointsConfigureTypeInterfaceSettingChange:

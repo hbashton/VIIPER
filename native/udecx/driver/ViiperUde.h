@@ -280,6 +280,7 @@ typedef struct VIIPER_UDE_ENDPOINT_CONTEXT {
     KEVENT OperationsDrained;
     USB_ENDPOINT_DESCRIPTOR Descriptor;
     volatile LONG Purging;
+    volatile LONG StartAnnounced;
     volatile LONG Resetting;
     volatile LONG64 ResetDeviceEpoch;
     volatile LONG ActiveOperations;

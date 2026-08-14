@@ -308,15 +308,21 @@ $endpointPurgeMatch = [regex]::Match(
 $endpointStartMatch = [regex]::Match(
     $deviceSource,
     '(?ms)^VOID\s+ViiperEvtEndpointStart\s*\([^)]*\)\s*\{(?<body>.*?)^\}')
+$endpointActivateMatch = [regex]::Match(
+    $deviceSource,
+    '(?ms)^static\s+VOID\s+ViiperActivateEndpoint\s*\([^)]*\)\s*\{(?<body>.*?)^\}')
 if (-not $purgeQueueCallbackMatch.Success -or
         $purgeQueueCallbackMatch.Groups['body'].Value -notmatch
             'KeWaitForSingleObject\s*\(\s*&endpointContext->OperationsDrained[\s\S]*endpointContext->ActiveOperations[\s\S]*ViiperInvalidateEndpointInputReport\s*\(\s*endpoint\s*\)[\s\S]*UdecxUsbEndpointPurgeComplete\s*\(\s*endpoint\s*\)' -or
         -not $endpointPurgeMatch.Success -or
         $endpointPurgeMatch.Groups['body'].Value -notmatch
-            'InterlockedExchange\s*\(\s*&endpointContext->Purging\s*,\s*TRUE\s*\)[\s\S]*ViiperPurgeEndpointOperations[\s\S]*WdfIoQueuePurge\s*\(\s*endpointContext->Queue\s*,\s*ViiperEvtEndpointQueuePurged\s*,\s*Endpoint\s*\)' -or
+            'InterlockedExchange\s*\(\s*&endpointContext->Purging\s*,\s*TRUE\s*\)[\s\S]*InterlockedExchange\s*\(\s*&endpointContext->StartAnnounced\s*,\s*FALSE\s*\)[\s\S]*ViiperPurgeEndpointOperations[\s\S]*WdfIoQueuePurge\s*\(\s*endpointContext->Queue\s*,\s*ViiperEvtEndpointQueuePurged\s*,\s*Endpoint\s*\)' -or
         -not $endpointStartMatch.Success -or
         $endpointStartMatch.Groups['body'].Value -notmatch
-            'InterlockedExchange\s*\(\s*&endpointContext->Purging\s*,\s*FALSE\s*\)[\s\S]*WdfIoQueueStart\s*\(\s*endpointContext->Queue\s*\)[\s\S]*ViiperQueueEndpointLifecycleEvent') {
+            'ViiperActivateEndpoint\s*\(\s*Endpoint\s*,\s*TRUE\s*\)' -or
+        -not $endpointActivateMatch.Success -or
+        $endpointActivateMatch.Groups['body'].Value -notmatch
+            'InterlockedExchange\s*\(\s*&endpointContext->Purging\s*,\s*FALSE\s*\)[\s\S]*StartAnnounced[\s\S]*if\s*\(\s*StartQueue\s*\)[\s\S]*WdfIoQueueStart\s*\(\s*endpointContext->Queue\s*\)[\s\S]*ViiperQueueEndpointLifecycleEvent') {
     throw 'Endpoint PURGE/START must use the UdeCx-required asynchronous WDF queue lifecycle and keep admission closed until START.'
 }
 $resetWorkItemMatch = [regex]::Match(
@@ -358,10 +364,10 @@ $endpointsConfigureMatch = [regex]::Match(
     '(?ms)^VOID\s+ViiperEvtEndpointsConfigure\s*\([^)]*\)\s*\{(?<body>.*?)^\}')
 if (-not $endpointsConfigureMatch.Success -or
         $endpointsConfigureMatch.Groups['body'].Value -notmatch
-            'case\s+UdecxEndpointsConfigureTypeDeviceConfigurationChange\s*:[\s\S]*WdfRequestComplete\s*\(\s*Request\s*,\s*STATUS_SUCCESS\s*\)[\s\S]*return\s*;[\s\S]*case\s+UdecxEndpointsConfigureTypeInterfaceSettingChange\s*:' -or
+            'case\s+UdecxEndpointsConfigureTypeDeviceConfigurationChange\s*:[\s\S]*EndpointsToConfigureCount[\s\S]*ViiperActivateEndpoint\s*\([\s\S]*FALSE\s*\)[\s\S]*WdfRequestComplete\s*\(\s*Request\s*,\s*STATUS_SUCCESS\s*\)[\s\S]*return\s*;[\s\S]*case\s+UdecxEndpointsConfigureTypeInterfaceSettingChange\s*:' -or
         $endpointsConfigureMatch.Groups['body'].Value -match
             'ViiperBeginAcknowledgedDeviceReset|ViiperUdeOperationDeviceReset') {
-    throw 'Device configuration selection must complete directly so UdeCx can START the selected dynamic endpoints.'
+    throw 'Device configuration selection must announce selected dynamic endpoints before completing directly.'
 }
 if ($deviceSource -match 'callbacks\.EvtUsbDeviceReset\s*=' -or
         $deviceSource -match '(?m)^ViiperEvtUsbDeviceReset\s*\(' -or

@@ -20,9 +20,13 @@ func TestNativeConfigurationSelectionDoesNotEnterResetProtocol(t *testing.T) {
 		"ViiperEvtEndpointsConfigure"))
 	requireContractOrder(t, device,
 		"case UdecxEndpointsConfigureTypeDeviceInitialize:",
+		"ConfigureParams->EndpointsToConfigureCount",
+		"ViiperActivateEndpoint( ConfigureParams->EndpointsToConfigure[endpointIndex], FALSE);",
 		"WdfRequestComplete(Request, STATUS_SUCCESS);",
 		"return;",
 		"case UdecxEndpointsConfigureTypeDeviceConfigurationChange:",
+		"ConfigureParams->EndpointsToConfigureCount",
+		"ViiperActivateEndpoint( ConfigureParams->EndpointsToConfigure[endpointIndex], FALSE);",
 		"WdfRequestComplete(Request, STATUS_SUCCESS);",
 		"return;",
 		"case UdecxEndpointsConfigureTypeInterfaceSettingChange:")
@@ -47,6 +51,16 @@ func TestNativePostEnumerationResetDoesNotBlockEnumerationOnUserMode(t *testing.
 		"case UdecxEndpointsConfigureTypeDeviceConfigurationChange:",
 		"WdfRequestComplete(Request, STATUS_SUCCESS);",
 		"return;")
+}
+
+func TestNativeInitialAttachOpensWorkingStateBeforePlugIn(t *testing.T) {
+	device := normalizedContract(nativeCFunction(t,
+		nativeContractSource(t, "native", "udecx", "driver", "Device.c"),
+		"ViiperCreateVirtualDevice"))
+	requireContractOrder(t, device,
+		"InterlockedExchange(&deviceContext->InD0, TRUE);",
+		"ViiperClaimDeviceSlot(",
+		"UdecxUsbDevicePlugIn(device, &plugOptions);")
 }
 
 func TestNativeSuperSpeedPortsUseControllerGlobalNumbering(t *testing.T) {
@@ -758,12 +772,15 @@ func TestNativeEndpointRundownPrecedesCleanupAndDPCMayRunImmediately(t *testing.
 		"ViiperInvalidateEndpointInputReport(endpoint);",
 		"ViiperQueueAcknowledgedEndpointLifecycleEvent(")
 	start := normalizedContract(nativeCFunction(t, device, "ViiperEvtEndpointStart"))
-	requireContractOrder(t, start,
-		"WdfSpinLockAcquire(controllerContext->BrokerLock);",
+	if !strings.Contains(start, "ViiperActivateEndpoint(Endpoint, TRUE);") {
+		t.Fatal("explicit endpoint START no longer performs the KMDF queue transition")
+	}
+	activate := normalizedContract(nativeCFunction(t, device, "ViiperActivateEndpoint"))
+	requireContractOrder(t, activate,
 		"InterlockedExchange(&endpointContext->Purging, FALSE);",
-		"WdfSpinLockRelease(controllerContext->BrokerLock);",
+		"endpointContext->StartAnnounced, TRUE, FALSE",
 		"WdfIoQueueStart(endpointContext->Queue);",
-		"ViiperQueueEndpointLifecycleEvent(Endpoint, ViiperUdeOperationEndpointStart);")
+		"ViiperQueueEndpointLifecycleEvent( Endpoint, ViiperUdeOperationEndpointStart);")
 
 	cleanup := normalizedContract(nativeCFunction(t, device, "ViiperEvtEndpointCleanup"))
 	requireContractOrder(t, cleanup,
