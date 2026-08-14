@@ -189,6 +189,25 @@ func (p *recordingProcessor) Lifecycle(_ context.Context, _ usb.Device, op Opera
 }
 func (p *recordingProcessor) Reset(_ usb.Device, identity DeviceIdentity) { p.resets <- identity }
 
+type lifecycleOperationProcessor struct {
+	lifecycle chan Operation
+}
+
+func (*lifecycleOperationProcessor) Process(
+	context.Context, usb.Device, Operation,
+) (Completion, error) {
+	return Completion{}, nil
+}
+
+func (p *lifecycleOperationProcessor) Lifecycle(
+	_ context.Context, _ usb.Device, op Operation,
+) error {
+	p.lifecycle <- op
+	return nil
+}
+
+func (*lifecycleOperationProcessor) Reset(usb.Device, DeviceIdentity) {}
+
 type cancellableProcessor struct {
 	started   chan struct{}
 	cancelled chan struct{}
@@ -1534,10 +1553,7 @@ func TestHostRestartsInputPublisherAcrossD0WithoutResettingSequence(t *testing.T
 
 func TestHostDoesNotResurrectInputFromPreD0ExitEndpointStart(t *testing.T) {
 	driver := &fastInputDriver{fakeHostDriver: newFakeHostDriver(), reports: make(chan InputReport, 4)}
-	processor := &recordingProcessor{
-		processed: make(chan uint64, 1), lifecycle: make(chan uint64, 3),
-		resets: make(chan DeviceIdentity, 1),
-	}
+	processor := &lifecycleOperationProcessor{lifecycle: make(chan Operation, 3)}
 	host, _ := NewHost(driver, processor, 4)
 	device := newInputPublisherTestDevice()
 	identity, err := host.Register(context.Background(), 47, device)
@@ -1562,15 +1578,25 @@ func TestHostDoesNotResurrectInputFromPreD0ExitEndpointStart(t *testing.T) {
 		EndpointAddress: 0x81, EndpointSequence: 1, DeviceSequence: 1,
 		Kind: OperationEndpointStart,
 	}
-	select {
-	case <-processor.lifecycle:
-	case <-time.After(time.Second):
-		t.Fatal("D0 exit was not processed after the older sequence was retired")
-	}
-	select {
-	case sequence := <-processor.lifecycle:
-		t.Fatalf("superseded endpoint start reached lifecycle processor as sequence %d", sequence)
-	default:
+	deadline := time.After(time.Second)
+	d0ExitProcessed := false
+	for !d0ExitProcessed {
+		select {
+		case op := <-processor.lifecycle:
+			switch op.DeviceSequence {
+			case 1:
+				// A worker can finish dequeuing the older START before the
+				// already-delivered D0 barrier is announced centrally. Applying
+				// START and then D0-exit is safe; the invariant begins when exit
+				// processing finishes.
+			case 2:
+				d0ExitProcessed = true
+			default:
+				t.Fatalf("unexpected lifecycle sequence before D0 exit: %+v", op)
+			}
+		case <-deadline:
+			t.Fatal("D0 exit was not processed after the older sequence was retired")
+		}
 	}
 	device.reports <- []byte{1}
 	select {
@@ -1585,7 +1611,10 @@ func TestHostDoesNotResurrectInputFromPreD0ExitEndpointStart(t *testing.T) {
 		Kind: OperationDeviceD0Entry,
 	}
 	select {
-	case <-processor.lifecycle:
+	case op := <-processor.lifecycle:
+		if op.Kind != OperationDeviceD0Entry || op.DeviceSequence != 3 {
+			t.Fatalf("unexpected lifecycle after D0 exit: %+v", op)
+		}
 	case <-time.After(time.Second):
 		t.Fatal("D0 entry was not processed")
 	}

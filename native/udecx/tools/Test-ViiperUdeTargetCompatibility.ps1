@@ -345,19 +345,23 @@ if (-not $resetIdentityMatch.Success -or
             'ViiperAcquireDeviceLockShared[\s\S]*device\s*!=\s*ExpectedDevice[\s\S]*DeviceId[\s\S]*Generation[\s\S]*ResetEpoch[\s\S]*ExpectedResetEpoch[\s\S]*Endpoints\[EndpointAddress\][\s\S]*endpoint\s*==\s*ExpectedEndpoint[\s\S]*ViiperWaitForEndpointQuiescence\s*\(\s*endpoint\s*\)[\s\S]*if\s*\(\s*ReleaseGate\s*\)[\s\S]*endpointContext->Resetting[\s\S]*ViiperReleaseDeviceLockShared') {
     throw 'Reset acknowledgement must prove and release only an exact pinned device/endpoint generation and reset epoch.'
 }
-$deviceResetAdmissionMatch = [regex]::Match(
-    $deviceSource,
-    '(?ms)^ViiperBeginAcknowledgedDeviceReset\s*\([^)]*\)\s*\{(?<body>.*?)^\}')
 $endpointResetAdmissionMatch = [regex]::Match(
     $deviceSource,
     '(?ms)^VOID\s+ViiperEvtEndpointReset\s*\([^)]*\)\s*\{(?<body>.*?)^\}')
-if (-not $deviceResetAdmissionMatch.Success -or
-        $deviceResetAdmissionMatch.Groups['body'].Value -notmatch
-            'BrokerFaulted[\s\S]*InterlockedCompareExchange\s*\(\s*&deviceContext->Resetting\s*,\s*TRUE\s*,\s*FALSE\s*\)[\s\S]*status\s*=\s*STATUS_DEVICE_BUSY[\s\S]*else[\s\S]*InterlockedIncrement64\s*\(\s*&deviceContext->ResetEpoch\s*\)[\s\S]*ViiperQuiesceResetByIdentity' -or
-        -not $endpointResetAdmissionMatch.Success -or
+if (-not $endpointResetAdmissionMatch.Success -or
         $endpointResetAdmissionMatch.Groups['body'].Value -notmatch
             'InterlockedCompareExchange\s*\(\s*&endpointContext->Resetting\s*,\s*TRUE\s*,\s*FALSE\s*\)[\s\S]*else[\s\S]*ResetDeviceEpoch[\s\S]*deviceContext->ResetEpoch') {
-    throw 'Device reset must advance its private epoch only after admission, and endpoint reset must capture that epoch atomically.'
+    throw 'Endpoint reset must capture the device reset epoch atomically after admission.'
+}
+$endpointsConfigureMatch = [regex]::Match(
+    $deviceSource,
+    '(?ms)^VOID\s+ViiperEvtEndpointsConfigure\s*\([^)]*\)\s*\{(?<body>.*?)^\}')
+if (-not $endpointsConfigureMatch.Success -or
+        $endpointsConfigureMatch.Groups['body'].Value -notmatch
+            'case\s+UdecxEndpointsConfigureTypeDeviceConfigurationChange\s*:[\s\S]*WdfRequestComplete\s*\(\s*Request\s*,\s*STATUS_SUCCESS\s*\)[\s\S]*return\s*;[\s\S]*case\s+UdecxEndpointsConfigureTypeInterfaceSettingChange\s*:' -or
+        $endpointsConfigureMatch.Groups['body'].Value -match
+            'ViiperBeginAcknowledgedDeviceReset|ViiperUdeOperationDeviceReset') {
+    throw 'Device configuration selection must complete directly so UdeCx can START the selected dynamic endpoints.'
 }
 if ($deviceSource -match 'callbacks\.EvtUsbDeviceReset\s*=' -or
         $deviceSource -match '(?m)^ViiperEvtUsbDeviceReset\s*\(' -or

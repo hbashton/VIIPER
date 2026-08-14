@@ -14,7 +14,7 @@ func TestNativeControllerNamesDeviceBeforeAssigningSecurity(t *testing.T) {
 		"status = WdfDeviceInitAssignSDDLString(DeviceInit, &sddl);")
 }
 
-func TestNativeDeviceInitializeDoesNotEnterResetProtocol(t *testing.T) {
+func TestNativeConfigurationSelectionDoesNotEnterResetProtocol(t *testing.T) {
 	device := normalizedContract(nativeCFunction(t,
 		nativeContractSource(t, "native", "udecx", "driver", "Device.c"),
 		"ViiperEvtEndpointsConfigure"))
@@ -23,9 +23,12 @@ func TestNativeDeviceInitializeDoesNotEnterResetProtocol(t *testing.T) {
 		"WdfRequestComplete(Request, STATUS_SUCCESS);",
 		"return;",
 		"case UdecxEndpointsConfigureTypeDeviceConfigurationChange:",
-		"status = ViiperBeginAcknowledgedDeviceReset(Device, Request);")
-	if strings.Count(device, "ViiperBeginAcknowledgedDeviceReset(Device, Request)") != 1 {
-		t.Fatal("initial endpoint publication can enter the post-enumeration reset protocol")
+		"WdfRequestComplete(Request, STATUS_SUCCESS);",
+		"return;",
+		"case UdecxEndpointsConfigureTypeInterfaceSettingChange:")
+	if strings.Contains(device, "ViiperUdeOperationDeviceReset") ||
+		strings.Contains(device, "ViiperBeginAcknowledgedDeviceReset") {
+		t.Fatal("dynamic endpoint configuration can enter the device-reset protocol")
 	}
 }
 
@@ -40,10 +43,10 @@ func TestNativePostEnumerationResetDoesNotBlockEnumerationOnUserMode(t *testing.
 		t.Fatal("post-enumeration reset can block child enumeration on a user-mode acknowledgement")
 	}
 	configure := normalizedContract(nativeCFunction(t, device, "ViiperEvtEndpointsConfigure"))
-	if !strings.Contains(configure,
-		"case UdecxEndpointsConfigureTypeDeviceConfigurationChange: status = ViiperBeginAcknowledgedDeviceReset(Device, Request);") {
-		t.Fatal("configuration replacement lost its acknowledged device-reset boundary")
-	}
+	requireContractOrder(t, configure,
+		"case UdecxEndpointsConfigureTypeDeviceConfigurationChange:",
+		"WdfRequestComplete(Request, STATUS_SUCCESS);",
+		"return;")
 }
 
 func TestNativeSuperSpeedPortsUseControllerGlobalNumbering(t *testing.T) {

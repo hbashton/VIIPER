@@ -133,26 +133,6 @@ func TestNativeResetQuiescenceIsExactGenerationAndFailClosed(t *testing.T) {
 	broker := nativeContractSource(t, "native", "udecx", "driver", "Broker.c")
 	device := nativeContractSource(t, "native", "udecx", "driver", "Device.c")
 
-	deviceReset := normalizedContract(nativeCFunction(t, device, "ViiperBeginAcknowledgedDeviceReset"))
-	requireContractOrder(t, deviceReset,
-		"controllerContext->BrokerFaulted",
-		"InterlockedCompareExchange(&deviceContext->Resetting, TRUE, FALSE)",
-		"status = STATUS_DEVICE_BUSY;",
-		"} else {",
-		"InterlockedIncrement64(&deviceContext->ResetEpoch)",
-		"status = STATUS_SUCCESS;",
-		"if (!ViiperQuiesceResetByIdentity(",
-		"deviceContext->DeviceId",
-		"deviceContext->Generation",
-		"Device",
-		"resetEpoch",
-		"TRUE, FALSE))",
-		"WdfSpinLockAcquire(controllerContext->BrokerLock);",
-		"InterlockedExchange(&deviceContext->Resetting, FALSE);",
-		"WdfSpinLockRelease(controllerContext->BrokerLock);",
-		"return STATUS_DEVICE_NOT_READY;",
-		"ViiperQueueAcknowledgedDeviceLifecycleEvent(")
-
 	identityProof := normalizedContract(nativeCFunction(t, device, "ViiperQuiesceResetByIdentity"))
 	requireContractOrder(t, identityProof,
 		"ViiperAcquireDeviceLockShared(controllerContext);",

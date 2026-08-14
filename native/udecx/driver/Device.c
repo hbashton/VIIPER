@@ -1096,83 +1096,6 @@ ViiperEvtUsbDeviceSetFunctionSuspendAndWake(
 
 static
 NTSTATUS
-ViiperBeginAcknowledgedDeviceReset(
-    _In_ UDECXUSBDEVICE Device,
-    _In_ WDFREQUEST Request
-    )
-{
-    VIIPER_UDE_DEVICE_CONTEXT *deviceContext = ViiperGetDeviceContext(Device);
-    VIIPER_UDE_CONTROLLER_CONTEXT *controllerContext =
-        ViiperGetControllerContext(deviceContext->Controller);
-    NTSTATUS status;
-    ULONGLONG resetEpoch = 0;
-
-    // Post-enumeration reset and device-configuration replacement are both
-    // asynchronous UdeCx reset boundaries. Close every client-owned admission
-    // path synchronously and permit only one reset transaction for a child.
-    // User mode stops and joins the publishers before acknowledging the
-    // operation; completion then reopens this exact kernel gate.
-    WdfSpinLockAcquire(controllerContext->BrokerLock);
-    if (InterlockedCompareExchange(&controllerContext->ShuttingDown, 0, 0) != 0 ||
-        InterlockedCompareExchange(&controllerContext->BrokerFaulted, FALSE, FALSE) != FALSE ||
-        InterlockedCompareExchange(&deviceContext->Purging, 0, 0) != 0 ||
-        InterlockedCompareExchange(&deviceContext->Resetting, TRUE, FALSE) != FALSE) {
-        status = STATUS_DEVICE_BUSY;
-    } else {
-        resetEpoch = (ULONGLONG)InterlockedIncrement64(&deviceContext->ResetEpoch);
-        if (resetEpoch == 0) {
-            resetEpoch = (ULONGLONG)InterlockedIncrement64(&deviceContext->ResetEpoch);
-        }
-        status = STATUS_SUCCESS;
-    }
-    WdfSpinLockRelease(controllerContext->BrokerLock);
-    if (!NT_SUCCESS(status)) {
-        return STATUS_DEVICE_BUSY;
-    }
-    // Device callbacks are explicitly passive on the UDECXUSBDEVICE object.
-    // The unresolved asynchronous reset prevents UdeCx from resuming endpoint
-    // transfers, so a read-only DriverNoRequests sample plus endpoint rundown
-    // is stable until Request is completed. Join every endpoint before the
-    // reset is published to the owner; owner acknowledgement repeats this
-    // exact-generation proof immediately before completion.
-    if (!ViiperQuiesceResetByIdentity(
-            deviceContext->Controller,
-            deviceContext->DeviceId,
-            deviceContext->Generation,
-            Device,
-            WDF_NO_HANDLE,
-            resetEpoch,
-            0,
-            TRUE,
-            FALSE)) {
-        // Removal/purge/fault won after this callback closed Resetting. Release
-        // only this callback-owned gate under the admission lock; the winning
-        // ShuttingDown/Purging/BrokerFaulted predicate remains closed. The
-        // caller owns the UdeCx request and completes the failed boundary.
-        WdfSpinLockAcquire(controllerContext->BrokerLock);
-        if ((ULONGLONG)InterlockedCompareExchange64(
-                &deviceContext->ResetEpoch, 0, 0) == resetEpoch) {
-            InterlockedExchange(&deviceContext->Resetting, FALSE);
-        }
-        WdfSpinLockRelease(controllerContext->BrokerLock);
-        return STATUS_DEVICE_NOT_READY;
-    }
-    ViiperInvalidateDeviceInputReports(Device);
-    status = ViiperQueueAcknowledgedDeviceLifecycleEvent(
-        Device, Request, ViiperUdeOperationDeviceReset);
-    if (!NT_SUCCESS(status)) {
-        WdfSpinLockAcquire(controllerContext->BrokerLock);
-        if ((ULONGLONG)InterlockedCompareExchange64(
-                &deviceContext->ResetEpoch, 0, 0) == resetEpoch) {
-            InterlockedExchange(&deviceContext->Resetting, FALSE);
-        }
-        WdfSpinLockRelease(controllerContext->BrokerLock);
-    }
-    return status;
-}
-
-static
-NTSTATUS
 ViiperCreateEndpointQueue(
     _In_ UDECXUSBENDPOINT Endpoint,
     _In_ WDF_IO_QUEUE_DISPATCH_TYPE DispatchType
@@ -2260,8 +2183,14 @@ ViiperEvtEndpointsConfigure(
         WdfRequestComplete(Request, STATUS_SUCCESS);
         return;
     case UdecxEndpointsConfigureTypeDeviceConfigurationChange:
-        status = ViiperBeginAcknowledgedDeviceReset(Device, Request);
-        break;
+        // Selecting a configuration is the boundary that makes the newly
+        // created dynamic endpoint queues eligible for START. It is not a USB
+        // device reset. Holding this request for a user-mode reset round trip
+        // leaves every non-default endpoint in UdeCx's preceding PURGE state.
+        // Endpoint START/PURGE callbacks remain the authoritative ordered
+        // boundary for input, feedback, and media state.
+        WdfRequestComplete(Request, STATUS_SUCCESS);
+        return;
     case UdecxEndpointsConfigureTypeInterfaceSettingChange:
         status = ViiperQueueAcknowledgedInterfaceLifecycleEvent(
             Device,
