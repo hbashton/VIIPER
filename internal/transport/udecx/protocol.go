@@ -16,12 +16,12 @@ import (
 const (
 	Magic    uint32 = 0x45445556
 	ABIMajor uint16 = 1
-	ABIMinor uint16 = 12
+	ABIMinor uint16 = 13
 	// DriverPackageVersion is the native driver package version built and
 	// shipped with this service. Runtime negotiation proves the loaded driver
 	// carries this version in its source-bound build identity; package
 	// installation additionally verifies DriverVer and the signed catalog.
-	DriverPackageVersion = "0.1.0.36"
+	DriverPackageVersion = "0.1.0.37"
 	BuildIdentitySize    = sha256.Size
 
 	HeaderSize               = 16
@@ -31,21 +31,22 @@ const (
 	CreateDeviceSize         = 56
 	DeviceIdentitySize       = 32
 	IsoPacketSize            = 16
-	OperationSize            = 104
+	OperationSize            = 108
 	CompletionSize           = 72
-	InputReportSize          = 48
+	InputReportSize          = 52
 	StatsSize                = 152
 	LifecycleTraceRecordSize = 80
 	LifecycleTraceSize       = 41008
 	LifecycleTraceCapacity   = 512
 
-	MaxDevices                  = 32
-	MaxDescriptorBytes          = 256 * 1024
-	MaxTransferBytes            = 1024 * 1024
-	MaxIsoPackets               = 1024
-	MaxInputReportBytes         = 4096
-	MaxPendingOperations        = 4096
-	InputReportTransition uint8 = 0x01
+	MaxDevices                   = 32
+	MaxDescriptorBytes           = 256 * 1024
+	MaxTransferBytes             = 1024 * 1024
+	MaxIsoPackets                = 1024
+	MaxInputReportBytes          = 4096
+	MaxPendingOperations         = 4096
+	ManagementSlotFlag    uint32 = 0x80000000
+	InputReportTransition uint8  = 0x01
 	// TransferFlagDirectionIn is the wire value of
 	// USBD_TRANSFER_DIRECTION_IN from usb.h.
 	TransferFlagDirectionIn uint32 = 0x00000001
@@ -118,6 +119,19 @@ const (
 	TraceDeviceCleanupEnd
 	TraceControllerShutdownBegin
 	TraceControllerShutdownEnd
+	TraceEndpointQuiescenceWatchdog
+	TraceCompletionRundownWatchdog
+	TraceControllerRundownWatchdog
+	TraceOwnerRundownWatchdog
+)
+
+type LifecycleTraceStatus uint32
+
+const (
+	LifecycleTraceStatusDroppedRecord LifecycleTraceStatus = 1 << iota
+	LifecycleTraceStatusWatchdogFired
+	lifecycleTraceStatusValidMask = LifecycleTraceStatusDroppedRecord |
+		LifecycleTraceStatusWatchdogFired
 )
 
 // nativeSourceRevision must be injected by the production build. Native
@@ -425,6 +439,55 @@ type Operation struct {
 	Payload               []byte
 	EndpointSequence      uint64
 	DeviceSequence        uint64
+	EndpointGeneration    uint32
+}
+
+func operationUsesEndpointGeneration(kind OperationKind) bool {
+	switch kind {
+	case OperationControl, OperationTransfer, OperationEndpointStart,
+		OperationEndpointPurge, OperationEndpointReset, OperationCancel:
+		return true
+	default:
+		return false
+	}
+}
+
+func isManagementToken(token uint64) bool {
+	return uint32(token)&ManagementSlotFlag != 0
+}
+
+func operationRequiresEndpointGeneration(op Operation) bool {
+	if op.Kind == OperationCancel {
+		return !isManagementToken(op.Token)
+	}
+	return operationUsesEndpointGeneration(op.Kind)
+}
+
+func validateOperationIdentity(op Operation) error {
+	if op.Kind < OperationControl || op.Kind > OperationBrokerFault {
+		return fmt.Errorf("%w: unknown operation kind %d", ErrInvalidRange, op.Kind)
+	}
+	if op.Kind == OperationBrokerFault {
+		if op.Token != 0 || op.DeviceID != 0 || op.Generation != 0 ||
+			op.EndpointGeneration != 0 {
+			return fmt.Errorf("%w: broker-fault operation carries an identity", ErrInvalidRange)
+		}
+		return nil
+	}
+	if op.DeviceID == 0 || op.Generation == 0 {
+		return fmt.Errorf("%w: zero operation device identity", ErrInvalidRange)
+	}
+	if op.Kind == OperationCancel && op.Token == 0 {
+		return fmt.Errorf("%w: zero cancellation token", ErrInvalidRange)
+	}
+	if operationRequiresEndpointGeneration(op) {
+		if op.EndpointGeneration == 0 {
+			return fmt.Errorf("%w: zero operation endpoint generation", ErrInvalidRange)
+		}
+	} else if op.Kind != OperationCancel && op.EndpointGeneration != 0 {
+		return fmt.Errorf("%w: device-scoped operation carries an endpoint generation", ErrInvalidRange)
+	}
+	return nil
 }
 
 func ParseOperation(src []byte) (Operation, error) {
@@ -479,6 +542,7 @@ func ParseOperation(src []byte) (Operation, error) {
 		TransferLength:        transferLength,
 		EndpointSequence:      binary.LittleEndian.Uint64(src[88:96]),
 		DeviceSequence:        binary.LittleEndian.Uint64(src[96:104]),
+		EndpointGeneration:    binary.LittleEndian.Uint32(src[104:108]),
 		IsoPackets:            make([]IsoPacket, int(packetCount)),
 		Payload:               append([]byte(nil), src[payloadOffset:payloadOffset+payloadLength]...),
 	}
@@ -495,6 +559,9 @@ func ParseOperation(src []byte) (Operation, error) {
 			return Operation{}, fmt.Errorf("%w: ISO packet %d", ErrInvalidRange, i)
 		}
 		op.IsoPackets[i] = packet
+	}
+	if err := validateOperationIdentity(op); err != nil {
+		return Operation{}, err
 	}
 	return op, nil
 }
@@ -514,11 +581,12 @@ func parseDequeuedOperation(buffer []byte, bytesReturned uint32) (Operation, err
 }
 
 type Completion struct {
-	Token      uint64
-	DeviceID   uint64
-	Generation uint32
-	Status     int32
-	USBDStatus uint32
+	Token              uint64
+	DeviceID           uint64
+	Generation         uint32
+	EndpointGeneration uint32
+	Status             int32
+	USBDStatus         uint32
 	// TransferLength is the number of bytes completed. For ISO-IN transfers,
 	// Payload may span the original gapped transfer buffer and therefore be
 	// larger than this sum of packet actual lengths.
@@ -532,16 +600,18 @@ type Completion struct {
 // only a fresh, already encoded report. Audio, control, output, and lifecycle
 // traffic deliberately remain on the ordered operation broker.
 type InputReport struct {
-	DeviceID        uint64
-	Generation      uint32
-	EndpointAddress uint8
-	Transition      bool
-	Sequence        uint64
-	Payload         []byte
+	DeviceID           uint64
+	Generation         uint32
+	EndpointGeneration uint32
+	EndpointAddress    uint8
+	Transition         bool
+	Sequence           uint64
+	Payload            []byte
 }
 
 func (m InputReport) marshalMetadata(dst []byte) error {
-	if m.DeviceID == 0 || m.Generation == 0 || m.EndpointAddress&0x80 == 0 ||
+	if m.DeviceID == 0 || m.Generation == 0 || m.EndpointGeneration == 0 ||
+		m.EndpointAddress&0x80 == 0 ||
 		m.Sequence == 0 || m.Sequence > math.MaxInt64 {
 		return fmt.Errorf("%w: invalid input-report identity", ErrInvalidRange)
 	}
@@ -567,6 +637,7 @@ func (m InputReport) marshalMetadata(dst []byte) error {
 	binary.LittleEndian.PutUint32(dst[32:36], InputReportSize)
 	binary.LittleEndian.PutUint32(dst[36:40], uint32(len(m.Payload)))
 	binary.LittleEndian.PutUint64(dst[40:48], m.Sequence)
+	binary.LittleEndian.PutUint32(dst[48:52], m.EndpointGeneration)
 	return nil
 }
 
@@ -661,6 +732,7 @@ type LifecycleTraceRecord struct {
 type LifecycleTrace struct {
 	LatestSequence       uint64
 	PerformanceFrequency uint64
+	StatusFlags          LifecycleTraceStatus
 	Records              []LifecycleTraceRecord
 }
 
@@ -671,9 +743,12 @@ func ParseLifecycleTrace(src []byte) (LifecycleTrace, error) {
 	}
 	if h.Size != LifecycleTraceSize || len(src) != LifecycleTraceSize ||
 		binary.LittleEndian.Uint32(src[36:40]) != LifecycleTraceRecordSize ||
-		binary.LittleEndian.Uint32(src[40:44]) != LifecycleTraceCapacity ||
-		binary.LittleEndian.Uint32(src[44:48]) != 0 {
+		binary.LittleEndian.Uint32(src[40:44]) != LifecycleTraceCapacity {
 		return LifecycleTrace{}, ErrInvalidSize
+	}
+	statusFlags := LifecycleTraceStatus(binary.LittleEndian.Uint32(src[44:48]))
+	if statusFlags&^lifecycleTraceStatusValidMask != 0 {
+		return LifecycleTrace{}, ErrInvalidRange
 	}
 	recordCount := binary.LittleEndian.Uint32(src[32:36])
 	if recordCount > LifecycleTraceCapacity {
@@ -682,6 +757,7 @@ func ParseLifecycleTrace(src []byte) (LifecycleTrace, error) {
 	trace := LifecycleTrace{
 		LatestSequence:       binary.LittleEndian.Uint64(src[16:24]),
 		PerformanceFrequency: binary.LittleEndian.Uint64(src[24:32]),
+		StatusFlags:          statusFlags,
 		Records:              make([]LifecycleTraceRecord, 0, recordCount),
 	}
 	for index := uint32(0); index < recordCount; index++ {
@@ -713,6 +789,9 @@ func ParseLifecycleTrace(src []byte) (LifecycleTrace, error) {
 func (m Completion) wireLayout() (transferLength uint32, isoBytes int, total int, err error) {
 	if m.Token == 0 || m.DeviceID == 0 || m.Generation == 0 {
 		return 0, 0, 0, fmt.Errorf("%w: zero completion identity", ErrInvalidRange)
+	}
+	if !isManagementToken(m.Token) && m.EndpointGeneration == 0 {
+		return 0, 0, 0, fmt.Errorf("%w: zero completion endpoint generation", ErrInvalidRange)
 	}
 	if len(m.Payload) > MaxTransferBytes || len(m.IsoPackets) > MaxIsoPackets {
 		return 0, 0, 0, ErrLimitExceeded
@@ -761,10 +840,10 @@ func (m Completion) marshalBinaryInto(dst []byte) error {
 	binary.LittleEndian.PutUint32(dst[52:56], uint32(CompletionSize+isoBytes))
 	binary.LittleEndian.PutUint32(dst[56:60], uint32(len(m.Payload)))
 	binary.LittleEndian.PutUint32(dst[60:64], CompletionSize)
-	// CompletionSize includes the C ABI's two explicit reserved words. Fresh
-	// allocations make both zero implicitly; caller-owned and pooled buffers
-	// must make that wire invariant explicit.
-	clear(dst[64:CompletionSize])
+	binary.LittleEndian.PutUint32(dst[64:68], m.EndpointGeneration)
+	// CompletionSize retains one explicit reserved word. Caller-owned and
+	// pooled buffers must restore its zero wire invariant on every use.
+	clear(dst[68:CompletionSize])
 	for i, packet := range m.IsoPackets {
 		off := CompletionSize + i*IsoPacketSize
 		binary.LittleEndian.PutUint32(dst[off:off+4], packet.Offset)

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -18,6 +19,15 @@ var nativePackageSHA256 = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
 var nativePackageInstallProofPattern = regexp.MustCompile(
 	`(?m)^result=(success|error) operation=install changed=([01]) rebootRequired=([01]) rollback=(not-needed|succeeded|failed) exitCode=([0-9]+)(?: .*)?\r?$`,
 )
+var nativePackageInstallJournalBindingPattern = regexp.MustCompile(
+	`(?m)^journal-binding operation=install transactionId=([0-9a-f]{32}) outerTransactionId=([0-9a-f]{64}) candidateSha256=([0-9a-f]{64}) state=(nested-ready) digest=([0-9a-f]{64}) driverTransactionId=([0-9a-f]{64}) driverDigest=([0-9a-f]{64}) settlementNonce=([0-9a-f]{64}) recovery=(fresh|replayed)\r?$`,
+)
+var nativePackageBrokerSettlementReceiptPattern = regexp.MustCompile(
+	`(?m)^journal-settlement operation=broker-settlement-ack brokerTransactionId=([0-9a-f]{32}) brokerPendingDigest=([0-9a-f]{64}) driverTransactionId=([0-9a-f]{64}) driverPendingDigest=([0-9a-f]{64}) settlementNonce=([0-9a-f]{64}) requestSha256=([0-9a-f]{64}) state=(outer-settled) digest=([0-9a-f]{64})\r?$`,
+)
+var nativePackageBrokerSettlementDiscardPattern = regexp.MustCompile(
+	`(?m)^journal-discard operation=broker-settlement-discard brokerTransactionId=([0-9a-f]{32}) brokerDigest=([0-9a-f]{64}) driverTransactionId=([0-9a-f]{64}) driverDigest=([0-9a-f]{64}) settlementNonce=([0-9a-f]{64}) requestSha256=([0-9a-f]{64}) discarded=([01]) retained=([01])\r?$`,
+)
 
 const (
 	nativePackageTransactionTimeout = 4 * time.Minute
@@ -27,6 +37,12 @@ const (
 
 type nativePackageRebootRequiredError struct {
 	cause error
+}
+
+type nativePackageRecoveryRetryError struct{}
+
+func (*nativePackageRecoveryRetryError) Error() string {
+	return "a prior native package transaction was recovered and settled; retry the requested package transaction"
 }
 
 func (e *nativePackageRebootRequiredError) Error() string {
@@ -69,6 +85,7 @@ type NativePackageBrokerCommit struct {
 	ExpectedBrokerSHA256      string `help:"Installer-bound SHA-256 of the broker being committed." required:""`
 	TargetUserSID             string `help:"Interactive Windows user SID that owns legacy startup state." required:""`
 	TransactionDeadlineUnixMS string `help:"Outer package transaction deadline as Unix milliseconds." required:""`
+	RecoveryOnly              bool   `help:"Replay or reconcile only the exact durable child transaction; never start a new one." hidden:""`
 }
 
 type nativePackageBrokerCommitResult struct {
@@ -76,14 +93,50 @@ type nativePackageBrokerCommitResult struct {
 	changed  bool
 	rollback string
 	exitCode int
+	journal  nativeBrokerJournalProof
+}
+
+type nativeBrokerJournalProof struct {
+	TransactionID      string
+	OuterTransactionID string
+	CandidateSHA256    string
+	State              string
+	Digest             string
 }
 
 type nativePackageInstallProof struct {
-	success        bool
-	changed        bool
-	rebootRequired bool
-	rollback       string
-	exitCode       int
+	success             bool
+	changed             bool
+	rebootRequired      bool
+	rollback            string
+	exitCode            int
+	journal             nativeBrokerJournalProof
+	driverTransactionID string
+	driverPendingDigest string
+	settlementNonce     string
+	journalRecovery     string
+}
+
+type nativePackageBrokerSettlementReceipt struct {
+	BrokerTransactionID string `json:"brokerTransactionId"`
+	BrokerPendingDigest string `json:"brokerPendingDigest"`
+	DriverTransactionID string `json:"driverTransactionId"`
+	DriverPendingDigest string `json:"driverPendingDigest"`
+	SettlementNonce     string `json:"settlementNonce"`
+	RequestSHA256       string `json:"requestSha256"`
+	State               string `json:"state"`
+	Digest              string `json:"digest"`
+}
+
+type nativePackageBrokerSettlementDiscardReceipt struct {
+	BrokerTransactionID string
+	BrokerDigest        string
+	DriverTransactionID string
+	DriverDigest        string
+	SettlementNonce     string
+	RequestSHA256       string
+	Discarded           bool
+	Retained            bool
 }
 
 func parseNativePackageInstallProof(output string, processExitCode int) (nativePackageInstallProof, error) {
@@ -101,6 +154,44 @@ func parseNativePackageInstallProof(output string, processExitCode int) (nativeP
 		rebootRequired: matches[0][3] == "1",
 		rollback:       matches[0][4],
 		exitCode:       proofExitCode,
+	}
+	journalBindingSeen := false
+	for cursor := 0; cursor < len(output); {
+		lineEnd := strings.IndexByte(output[cursor:], '\n')
+		terminated := lineEnd >= 0
+		if terminated {
+			lineEnd += cursor
+		} else {
+			lineEnd = len(output)
+		}
+		line := output[cursor:lineEnd]
+		if strings.HasPrefix(line, "journal-binding") {
+			journalBinding := nativePackageInstallJournalBindingPattern.FindStringSubmatch(line)
+			if !terminated || len(journalBinding) != 10 || journalBinding[0] != line {
+				return nativePackageInstallProof{}, errors.New(
+					"driver helper emitted a noncanonical broker journal binding",
+				)
+			}
+			if journalBindingSeen {
+				return nativePackageInstallProof{}, errors.New("driver helper emitted multiple broker journal bindings")
+			}
+			journalBindingSeen = true
+			proof.journal = nativeBrokerJournalProof{
+				TransactionID:      journalBinding[1],
+				OuterTransactionID: journalBinding[2],
+				CandidateSHA256:    journalBinding[3],
+				State:              journalBinding[4],
+				Digest:             journalBinding[5],
+			}
+			proof.driverTransactionID = journalBinding[6]
+			proof.driverPendingDigest = journalBinding[7]
+			proof.settlementNonce = journalBinding[8]
+			proof.journalRecovery = journalBinding[9]
+		}
+		if !terminated {
+			break
+		}
+		cursor = lineEnd + 1
 	}
 	if proof.exitCode != processExitCode {
 		return nativePackageInstallProof{}, fmt.Errorf(
@@ -139,7 +230,126 @@ func parseNativePackageInstallProof(output string, processExitCode int) (nativeP
 			"driver helper returned unsupported structured install exit %d", proof.exitCode,
 		)
 	}
+	if journalBindingSeen && (!proof.success || !proof.changed || proof.exitCode != 0) {
+		return nativePackageInstallProof{}, errors.New(
+			"driver helper emitted a broker journal binding for a non-forward-success outcome",
+		)
+	}
 	return proof, nil
+}
+
+func parseNativePackageBrokerSettlementReceipt(
+	output string,
+	processExitCode int,
+) (nativePackageBrokerSettlementReceipt, error) {
+	if processExitCode != 0 {
+		return nativePackageBrokerSettlementReceipt{}, fmt.Errorf(
+			"driver helper settlement acknowledgement exited with %d", processExitCode,
+		)
+	}
+	var receipt nativePackageBrokerSettlementReceipt
+	seen := false
+	for cursor := 0; cursor < len(output); {
+		lineEnd := strings.IndexByte(output[cursor:], '\n')
+		terminated := lineEnd >= 0
+		if terminated {
+			lineEnd += cursor
+		} else {
+			lineEnd = len(output)
+		}
+		line := output[cursor:lineEnd]
+		if strings.HasPrefix(line, "journal-settlement") {
+			match := nativePackageBrokerSettlementReceiptPattern.FindStringSubmatch(line)
+			if !terminated || len(match) != 9 || match[0] != line {
+				return nativePackageBrokerSettlementReceipt{}, errors.New(
+					"driver helper emitted a noncanonical broker settlement acknowledgement",
+				)
+			}
+			if seen {
+				return nativePackageBrokerSettlementReceipt{}, errors.New(
+					"driver helper emitted multiple broker settlement acknowledgements",
+				)
+			}
+			seen = true
+			receipt = nativePackageBrokerSettlementReceipt{
+				BrokerTransactionID: match[1],
+				BrokerPendingDigest: match[2],
+				DriverTransactionID: match[3],
+				DriverPendingDigest: match[4],
+				SettlementNonce:     match[5],
+				RequestSHA256:       match[6],
+				State:               match[7],
+				Digest:              match[8],
+			}
+		}
+		if !terminated {
+			break
+		}
+		cursor = lineEnd + 1
+	}
+	if !seen {
+		return nativePackageBrokerSettlementReceipt{}, errors.New(
+			"driver helper emitted no broker settlement acknowledgement",
+		)
+	}
+	return receipt, nil
+}
+
+func parseNativePackageBrokerSettlementDiscardReceipt(
+	output string,
+	processExitCode int,
+) (nativePackageBrokerSettlementDiscardReceipt, error) {
+	if processExitCode != 0 {
+		return nativePackageBrokerSettlementDiscardReceipt{}, fmt.Errorf(
+			"driver helper settled-tombstone discard exited with %d", processExitCode,
+		)
+	}
+	var receipt nativePackageBrokerSettlementDiscardReceipt
+	seen := false
+	for cursor := 0; cursor < len(output); {
+		lineEnd := strings.IndexByte(output[cursor:], '\n')
+		terminated := lineEnd >= 0
+		if terminated {
+			lineEnd += cursor
+		} else {
+			lineEnd = len(output)
+		}
+		line := output[cursor:lineEnd]
+		if strings.HasPrefix(line, "journal-discard") {
+			match := nativePackageBrokerSettlementDiscardPattern.FindStringSubmatch(line)
+			if !terminated || len(match) != 9 || match[0] != line {
+				return nativePackageBrokerSettlementDiscardReceipt{}, errors.New(
+					"driver helper emitted a noncanonical settled-tombstone discard receipt",
+				)
+			}
+			if seen {
+				return nativePackageBrokerSettlementDiscardReceipt{}, errors.New(
+					"driver helper emitted multiple settled-tombstone discard receipts",
+				)
+			}
+			seen = true
+			receipt = nativePackageBrokerSettlementDiscardReceipt{
+				BrokerTransactionID: match[1],
+				BrokerDigest:        match[2],
+				DriverTransactionID: match[3],
+				DriverDigest:        match[4],
+				SettlementNonce:     match[5],
+				RequestSHA256:       match[6],
+				Discarded:           match[7] == "1",
+				Retained:            match[8] == "1",
+			}
+		}
+		if !terminated {
+			break
+		}
+		cursor = lineEnd + 1
+	}
+	if !seen {
+		return nativePackageBrokerSettlementDiscardReceipt{}, errors.New(
+			"driver helper emitted no settled-tombstone discard receipt",
+		)
+	}
+	return receipt, nil
 }
 
 func (r nativePackageBrokerCommitResult) proofLine() string {
@@ -154,6 +364,29 @@ func (r nativePackageBrokerCommitResult) proofLine() string {
 	return fmt.Sprintf(
 		"result=%s operation=native-package-broker-commit changed=%d rollback=%s exitCode=%d\n",
 		status, changed, r.rollback, r.exitCode,
+	)
+}
+
+func (r nativePackageBrokerCommitResult) journalProofLine() string {
+	if len(r.journal.TransactionID) != 32 ||
+		!nativePackageSHA256.MatchString(r.journal.OuterTransactionID) ||
+		!nativePackageSHA256.MatchString(r.journal.CandidateSHA256) ||
+		!nativePackageSHA256.MatchString(r.journal.Digest) ||
+		r.journal.TransactionID != strings.ToLower(r.journal.TransactionID) ||
+		r.journal.OuterTransactionID != strings.ToLower(r.journal.OuterTransactionID) ||
+		r.journal.CandidateSHA256 != strings.ToLower(r.journal.CandidateSHA256) ||
+		r.journal.Digest != strings.ToLower(r.journal.Digest) ||
+		(r.journal.State != "nested-ready" && r.journal.State != "rollback-settled" &&
+			r.journal.State != "manual") {
+		return ""
+	}
+	if _, err := hex.DecodeString(r.journal.TransactionID); err != nil {
+		return ""
+	}
+	return fmt.Sprintf(
+		"journal-proof operation=native-package-broker-commit transactionId=%s outerTransactionId=%s candidateSha256=%s state=%s digest=%s\n",
+		r.journal.TransactionID, r.journal.OuterTransactionID, r.journal.CandidateSHA256,
+		r.journal.State, r.journal.Digest,
 	)
 }
 
@@ -182,9 +415,9 @@ func (c *NativePackageBrokerCommit) Run(logger *slog.Logger) error {
 		result, err = commitNativePackageBroker(logger, strings.TrimSpace(c.TokenFile),
 			strings.ToLower(strings.TrimSpace(c.ExpectedTokenSHA256)),
 			strings.ToLower(strings.TrimSpace(c.ExpectedBrokerSHA256)), strings.TrimSpace(c.TargetUserSID),
-			strings.TrimSpace(c.TransactionDeadlineUnixMS))
+			strings.TrimSpace(c.TransactionDeadlineUnixMS), c.RecoveryOnly)
 	}
-	fmt.Fprint(os.Stdout, result.proofLine())
+	fmt.Fprint(os.Stdout, result.proofLine()+result.journalProofLine())
 	if err != nil {
 		return &nativePackageBrokerCommitError{cause: err, exitCode: result.exitCode}
 	}

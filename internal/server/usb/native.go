@@ -12,12 +12,13 @@ import (
 )
 
 type nativeLaneKey struct {
-	deviceID   uint64
-	generation uint32
-	endpoint   uint8
-	attributes uint8
-	interval   uint8
-	maxPacket  uint16
+	deviceID           uint64
+	generation         uint32
+	endpointGeneration uint32
+	endpoint           uint8
+	attributes         uint8
+	interval           uint8
+	maxPacket          uint16
 }
 
 type nativeSessionKey struct {
@@ -26,10 +27,11 @@ type nativeSessionKey struct {
 }
 
 type nativeEndpointSignature struct {
-	address    uint8
-	attributes uint8
-	interval   uint8
-	maxPacket  uint16
+	endpointGeneration uint32
+	address            uint8
+	attributes         uint8
+	interval           uint8
+	maxPacket          uint16
 }
 
 type nativeSessionState struct {
@@ -180,14 +182,15 @@ func (p *NativeProcessor) Lifecycle(ctx context.Context, dev usbdevice.Device, o
 		return err
 	}
 	key := nativeLaneKey{
-		deviceID: op.DeviceID, generation: op.Generation, endpoint: op.EndpointAddress,
+		deviceID: op.DeviceID, generation: op.Generation,
+		endpointGeneration: op.EndpointGeneration, endpoint: op.EndpointAddress,
 		attributes: op.EndpointAttributes, interval: op.EndpointInterval,
 		maxPacket: op.EndpointMaxPacketSize,
 	}
 
 	switch op.Kind {
 	case udecx.OperationEndpointStart:
-		p.clearEndpointLanes(key)
+		p.clearEndpointAddressLanes(key)
 		p.invalidateInterruptInput(dev, op.EndpointAddress)
 		p.activateEndpointLocked(dev, op, session)
 	case udecx.OperationEndpointPurge:
@@ -232,7 +235,8 @@ func (p *NativeProcessor) Lifecycle(ctx context.Context, dev usbdevice.Device, o
 
 func signatureFromOperation(op udecx.Operation) nativeEndpointSignature {
 	return nativeEndpointSignature{
-		address: op.EndpointAddress, attributes: op.EndpointAttributes,
+		endpointGeneration: op.EndpointGeneration,
+		address:            op.EndpointAddress, attributes: op.EndpointAttributes,
 		interval: op.EndpointInterval, maxPacket: op.EndpointMaxPacketSize,
 	}
 }
@@ -242,6 +246,11 @@ func signatureFromDescriptor(endpoint usbdevice.EndpointDescriptor) nativeEndpoi
 		address: endpoint.BEndpointAddress, attributes: endpoint.BMAttributes,
 		interval: endpoint.BInterval, maxPacket: endpoint.WMaxPacketSize,
 	}
+}
+
+func sameNativeEndpointShape(left, right nativeEndpointSignature) bool {
+	return left.address == right.address && left.attributes == right.attributes &&
+		left.interval == right.interval && left.maxPacket == right.maxPacket
 }
 
 func nativeSignatureFromDescriptor(speed uint32,
@@ -267,7 +276,7 @@ func descriptorInterfaceAltForEndpoint(desc *usbdevice.Descriptor,
 		}
 		for _, endpoint := range iface.Endpoints {
 			projected, valid := nativeSignatureFromDescriptor(desc.Device.Speed, endpoint)
-			if !valid || projected != signature {
+			if !valid || !sameNativeEndpointShape(projected, signature) {
 				continue
 			}
 			candidateInterface := iface.Descriptor.BInterfaceNumber
@@ -307,8 +316,10 @@ func descriptorInterfaceAltIsActive(desc *usbdevice.Descriptor, interfaceNumber,
 		for _, endpoint := range iface.Endpoints {
 			projected, valid := nativeSignatureFromDescriptor(desc.Device.Speed, endpoint)
 			if valid {
-				if _, ok := active[projected]; ok {
-					return true
+				for signature := range active {
+					if sameNativeEndpointShape(projected, signature) {
+						return true
+					}
 				}
 			}
 		}
@@ -330,6 +341,12 @@ func (p *NativeProcessor) activateEndpointLocked(dev usbdevice.Device, op udecx.
 		dev.GetDescriptor(), signature)
 	if !ok {
 		return
+	}
+	for active := range session.active {
+		if active.address == signature.address &&
+			active.endpointGeneration != signature.endpointGeneration {
+			delete(session.active, active)
+		}
 	}
 	session.active[signature] = struct{}{}
 	if p.server.getInterfaceAlt(dev, interfaceNumber) != alternateSetting {
@@ -389,6 +406,26 @@ func (p *NativeProcessor) clearEndpointLanes(endpoint nativeLaneKey) {
 	p.mu.Lock()
 	for key := range p.next {
 		if key.deviceID == endpoint.deviceID && key.generation == endpoint.generation &&
+			key.endpoint == endpoint.endpoint &&
+			key.endpointGeneration == endpoint.endpointGeneration {
+			delete(p.next, key)
+			delete(p.lastIn, key)
+		}
+	}
+	for key := range p.lastIn {
+		if key.deviceID == endpoint.deviceID && key.generation == endpoint.generation &&
+			key.endpoint == endpoint.endpoint &&
+			key.endpointGeneration == endpoint.endpointGeneration {
+			delete(p.lastIn, key)
+		}
+	}
+	p.mu.Unlock()
+}
+
+func (p *NativeProcessor) clearEndpointAddressLanes(endpoint nativeLaneKey) {
+	p.mu.Lock()
+	for key := range p.next {
+		if key.deviceID == endpoint.deviceID && key.generation == endpoint.generation &&
 			key.endpoint == endpoint.endpoint {
 			delete(p.next, key)
 			delete(p.lastIn, key)
@@ -405,7 +442,8 @@ func (p *NativeProcessor) clearEndpointLanes(endpoint nativeLaneKey) {
 
 func nativeLaneKeyFromOperation(op udecx.Operation) nativeLaneKey {
 	return nativeLaneKey{
-		deviceID: op.DeviceID, generation: op.Generation, endpoint: op.EndpointAddress,
+		deviceID: op.DeviceID, generation: op.Generation,
+		endpointGeneration: op.EndpointGeneration, endpoint: op.EndpointAddress,
 		attributes: op.EndpointAttributes, interval: op.EndpointInterval,
 		maxPacket: op.EndpointMaxPacketSize,
 	}
@@ -419,7 +457,7 @@ func logicalEndpointForNativeSignature(desc *usbdevice.Descriptor,
 	for _, iface := range desc.Interfaces {
 		for _, endpoint := range iface.Endpoints {
 			projected, valid := nativeSignatureFromDescriptor(desc.Device.Speed, endpoint)
-			if valid && projected == signature {
+			if valid && sameNativeEndpointShape(projected, signature) {
 				return endpoint, true
 			}
 		}
@@ -757,7 +795,8 @@ func successCompletion(op udecx.Operation, transferLength uint32, payload []byte
 	packets []udecx.IsoPacket) udecx.Completion {
 	return udecx.Completion{
 		Token: op.Token, DeviceID: op.DeviceID, Generation: op.Generation,
-		Status: 0, USBDStatus: 0, IsoPackets: packets, Payload: payload,
+		EndpointGeneration: op.EndpointGeneration,
+		Status:             0, USBDStatus: 0, IsoPackets: packets, Payload: payload,
 		TransferLength: transferLength,
 	}
 }

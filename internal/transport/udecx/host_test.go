@@ -152,6 +152,12 @@ func (d *fakeHostDriver) DestroyDevice(_ context.Context, identity DeviceIdentit
 func (d *fakeHostDriver) Dequeue(ctx context.Context, _ []byte) (Operation, error) {
 	select {
 	case op := <-d.operations:
+		// Most host tests construct semantic operations directly instead of
+		// round-tripping the versioned wire parser. Supply the current endpoint
+		// incarnation those fixtures would carry on the ABI.
+		if operationRequiresEndpointGeneration(op) && op.EndpointGeneration == 0 {
+			op.EndpointGeneration = 1
+		}
 		return op, nil
 	case <-ctx.Done():
 		return Operation{}, ctx.Err()
@@ -1012,7 +1018,7 @@ func (*inputPublisherTestDevice) GetDeviceSpecificArgs() map[string]any {
 func TestHostPublishesInterruptInputDirectlyAfterEndpointStart(t *testing.T) {
 	driver := &fastInputDriver{fakeHostDriver: newFakeHostDriver(), reports: make(chan InputReport, 4)}
 	processor := &recordingProcessor{
-		processed: make(chan uint64, 1), lifecycle: make(chan uint64, 2),
+		processed: make(chan uint64, 1), lifecycle: make(chan uint64, 4),
 		resets: make(chan DeviceIdentity, 1),
 	}
 	host, err := NewHost(driver, processor, 2)
@@ -1029,7 +1035,8 @@ func TestHostPublishesInterruptInputDirectlyAfterEndpointStart(t *testing.T) {
 	go func() { done <- host.Serve(ctx) }()
 	driver.operations <- Operation{
 		DeviceID: identity.DeviceID, Generation: identity.Generation,
-		EndpointAddress: 0x81, EndpointSequence: 1, DeviceSequence: 1,
+		EndpointAddress: 0x81, EndpointGeneration: 1,
+		EndpointSequence: 1, DeviceSequence: 1,
 		Kind: OperationEndpointStart,
 	}
 	select {
@@ -1041,22 +1048,64 @@ func TestHostPublishesInterruptInputDirectlyAfterEndpointStart(t *testing.T) {
 	select {
 	case report := <-driver.reports:
 		if report.DeviceID != identity.DeviceID || report.Generation != identity.Generation ||
-			report.EndpointAddress != 0x81 || report.Sequence != 1 ||
+			report.EndpointGeneration != 1 || report.EndpointAddress != 0x81 ||
+			report.Sequence != 1 ||
 			string(report.Payload) != string([]byte{1, 2, 3, 4}) {
 			t.Fatalf("unexpected direct input report: %+v", report)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("interrupt-IN report did not use the direct publisher")
 	}
+	if diagnostics := host.InputDiagnostics(); diagnostics.PublisherStarts != 1 ||
+		diagnostics.LegacyTransferFallbackStarts != 1 ||
+		diagnostics.DeadlineContextFallbackStarts != 0 {
+		t.Fatalf("legacy input fallback diagnostics=%+v want starts=1 legacy=1 deadline=0",
+			diagnostics)
+	}
 
 	driver.operations <- Operation{
 		DeviceID: identity.DeviceID, Generation: identity.Generation,
-		EndpointAddress: 0x81, EndpointSequence: 2, Kind: OperationEndpointPurge,
+		EndpointAddress: 0x81, EndpointGeneration: 1,
+		EndpointSequence: 2, DeviceSequence: 2, Kind: OperationEndpointPurge,
 	}
 	select {
 	case <-processor.lifecycle:
 	case <-time.After(time.Second):
 		t.Fatal("endpoint purge was not processed")
+	}
+
+	// Recreating the same endpoint address establishes an independent lane and
+	// direct-input sequence. A delayed callback for generation 1 must not invoke
+	// controller state or replace the generation 2 publisher.
+	driver.operations <- Operation{
+		DeviceID: identity.DeviceID, Generation: identity.Generation,
+		EndpointAddress: 0x81, EndpointGeneration: 2,
+		EndpointSequence: 1, DeviceSequence: 3, Kind: OperationEndpointStart,
+	}
+	select {
+	case <-processor.lifecycle:
+	case <-time.After(time.Second):
+		t.Fatal("replacement endpoint start was not processed")
+	}
+	device.reports <- []byte{5, 6, 7, 8}
+	select {
+	case report := <-driver.reports:
+		if report.EndpointGeneration != 2 || report.Sequence != 1 ||
+			string(report.Payload) != string([]byte{5, 6, 7, 8}) {
+			t.Fatalf("replacement direct input report: %+v", report)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("replacement endpoint did not publish direct input")
+	}
+	driver.operations <- Operation{
+		DeviceID: identity.DeviceID, Generation: identity.Generation,
+		EndpointAddress: 0x81, EndpointGeneration: 1,
+		EndpointSequence: 3, DeviceSequence: 4, Kind: OperationEndpointStart,
+	}
+	select {
+	case sequence := <-processor.lifecycle:
+		t.Fatalf("stale endpoint generation reached lifecycle callback at sequence %d", sequence)
+	case <-time.After(75 * time.Millisecond):
 	}
 	cancel()
 	select {
@@ -1176,6 +1225,12 @@ func TestHostReusesOneDescriptorSizedDirectInputBuffer(t *testing.T) {
 	if first.Sequence != 1 || second.Sequence != 2 {
 		t.Fatalf("direct input sequences first=%d second=%d", first.Sequence, second.Sequence)
 	}
+	if diagnostics := host.InputDiagnostics(); diagnostics.PublisherStarts != 1 ||
+		diagnostics.LegacyTransferFallbackStarts != 0 ||
+		diagnostics.DeadlineContextFallbackStarts != 1 {
+		t.Fatalf("deadline input fallback diagnostics=%+v want starts=1 legacy=0 deadline=1",
+			diagnostics)
+	}
 
 	cancel()
 	select {
@@ -1246,6 +1301,12 @@ func TestHostReusesOneDeadlineTimerForScheduledInterruptInput(t *testing.T) {
 	}
 	if calls := device.fallbackRead.Load(); calls != 0 {
 		t.Fatalf("scheduled input used fallback ReadInterruptInput %d time(s)", calls)
+	}
+	if diagnostics := host.InputDiagnostics(); diagnostics.PublisherStarts != 1 ||
+		diagnostics.LegacyTransferFallbackStarts != 0 ||
+		diagnostics.DeadlineContextFallbackStarts != 0 {
+		t.Fatalf("scheduled input diagnostics=%+v want no compatibility fallback",
+			diagnostics)
 	}
 
 	// Endpoint reset must synchronously cancel the blocked scheduled read,
@@ -3366,11 +3427,12 @@ func TestHostCancelBeforeOperationSkipsProcessingAndCompletion(t *testing.T) {
 
 	driver.operations <- Operation{
 		Token: 44, DeviceID: identity.DeviceID, Generation: identity.Generation,
-		EndpointAddress: 0x81, Kind: OperationCancel,
+		EndpointAddress: 0x81, EndpointGeneration: 1, Kind: OperationCancel,
 	}
 	driver.operations <- Operation{
 		Token: 44, DeviceID: identity.DeviceID, Generation: identity.Generation,
-		EndpointAddress: 0x81, EndpointSequence: 1, Kind: OperationTransfer,
+		EndpointAddress: 0x81, EndpointGeneration: 1,
+		EndpointSequence: 1, Kind: OperationTransfer,
 	}
 
 	deadline := time.Now().Add(time.Second)
@@ -3401,6 +3463,53 @@ func TestHostCancelBeforeOperationSkipsProcessingAndCompletion(t *testing.T) {
 	<-done
 }
 
+func TestHostAcceptsDeviceScopedManagementCancelTombstone(t *testing.T) {
+	driver := newFakeHostDriver()
+	processor := &recordingProcessor{
+		processed: make(chan uint64, 1), resets: make(chan DeviceIdentity, 1),
+	}
+	host, _ := NewHost(driver, processor, 1)
+	identity, err := host.Register(context.Background(), 61, hostTestDevice())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- host.Serve(ctx) }()
+
+	managementToken := uint64(2)<<32 | uint64(ManagementSlotFlag) | 1
+	driver.operations <- Operation{
+		Token: managementToken, DeviceID: identity.DeviceID,
+		Generation: identity.Generation, Kind: OperationCancel,
+	}
+	driver.operations <- Operation{
+		Token: 62, DeviceID: identity.DeviceID, Generation: identity.Generation,
+		EndpointAddress: 0x81, EndpointGeneration: 1,
+		EndpointSequence: 1, DeviceSequence: 1, Kind: OperationTransfer,
+	}
+	select {
+	case completion := <-driver.completions:
+		if completion.Token != 62 || completion.EndpointGeneration != 1 {
+			t.Fatalf("post-tombstone completion=%+v", completion)
+		}
+	case serveErr := <-done:
+		t.Fatalf("device-scoped management tombstone faulted host: %v", serveErr)
+	case <-time.After(time.Second):
+		t.Fatal("host did not continue after device-scoped management tombstone")
+	}
+	host.operationMu.Lock()
+	_, retained := host.operations[managementToken]
+	host.operationMu.Unlock()
+	if retained {
+		t.Fatal("device-scoped management tombstone retained an unmatched cancellation owner")
+	}
+
+	cancel()
+	if err = <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestHostCancelInterruptsActiveProcessor(t *testing.T) {
 	driver := newFakeHostDriver()
 	processor := &cancellableProcessor{started: make(chan struct{}), cancelled: make(chan struct{})}
@@ -3414,7 +3523,8 @@ func TestHostCancelInterruptsActiveProcessor(t *testing.T) {
 	go func() { done <- host.Serve(ctx) }()
 	driver.operations <- Operation{
 		Token: 55, DeviceID: identity.DeviceID, Generation: identity.Generation,
-		EndpointAddress: 0x81, EndpointSequence: 1, Kind: OperationTransfer,
+		EndpointAddress: 0x81, EndpointGeneration: 2,
+		EndpointSequence: 1, Kind: OperationTransfer,
 	}
 	select {
 	case <-processor.started:
@@ -3423,7 +3533,16 @@ func TestHostCancelInterruptsActiveProcessor(t *testing.T) {
 	}
 	driver.operations <- Operation{
 		Token: 55, DeviceID: identity.DeviceID, Generation: identity.Generation,
-		EndpointAddress: 0x81, Kind: OperationCancel,
+		EndpointAddress: 0x81, EndpointGeneration: 1, Kind: OperationCancel,
+	}
+	select {
+	case <-processor.cancelled:
+		t.Fatal("stale endpoint generation cancelled the active request")
+	case <-time.After(50 * time.Millisecond):
+	}
+	driver.operations <- Operation{
+		Token: 55, DeviceID: identity.DeviceID, Generation: identity.Generation,
+		EndpointAddress: 0x81, EndpointGeneration: 2, Kind: OperationCancel,
 	}
 	select {
 	case <-processor.cancelled:

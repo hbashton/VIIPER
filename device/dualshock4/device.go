@@ -52,6 +52,7 @@ type DualShock4 struct {
 	streamFrameVersion        byte
 	microphoneBuffer          microphonebuffer.Buffer
 	microphoneSignal          chan struct{}
+	speakerStreamTelemetry    *dualShock4OutputStreamTelemetry
 
 	mtx sync.Mutex
 }
@@ -173,6 +174,21 @@ func (d *DualShock4) setSpeakerCallbacks(speaker func([]byte), reset func()) {
 	})
 }
 
+// detachSpeakerStreamCallbacks is the terminal transport boundary. It fences
+// every callback already publishing and removes future producers without
+// synchronously invoking the old writer's reset callback. The owning handler
+// then performs the authoritative writer rundown and reports any join error.
+func (d *DualShock4) detachSpeakerStreamCallbacks() {
+	d.speakerPublishMu.Lock()
+	defer d.speakerPublishMu.Unlock()
+
+	d.mtx.Lock()
+	d.speakerRevision++
+	d.speakerFunc = nil
+	d.speakerResetFunc = nil
+	d.mtx.Unlock()
+}
+
 func (d *DualShock4) replaceSpeakerCallbacks(update func()) {
 	d.speakerPublishMu.Lock()
 	defer d.speakerPublishMu.Unlock()
@@ -242,6 +258,52 @@ func (d *DualShock4) GetDeviceSpecificArgs() map[string]any {
 		return map[string]any{}
 	}
 	res["speakerInterfaceActive"] = d.speakerInterfaceActive
+	speakerState := d.speakerStreamTelemetry.snapshot()
+	res["speakerStreamActive"] = speakerState.Active
+	res["speakerOrderedFramesReceived"] = speakerState.OrderedReceived
+	res["speakerOrderedFramesEnqueued"] = speakerState.OrderedEnqueued
+	res["speakerOrderedFramesRejected"] = speakerState.OrderedRejected
+	res["speakerOrderedFramesWritten"] = speakerState.OrderedWritten
+	res["speakerOrderedSaturations"] = speakerState.OrderedSaturations
+	res["speakerOrderedQueueDepth"] = speakerState.OrderedQueueDepth
+	res["speakerOrderedQueueHighWater"] = speakerState.OrderedQueueHighWater
+	res["speakerOrderedLifecycleDiscardedFrames"] =
+		speakerState.OrderedLifecycleDiscardedFrames
+	res["speakerOrderedLifecycleDiscardedBytes"] =
+		speakerState.OrderedLifecycleDiscardedBytes
+	res["speakerPayloadsReceived"] = speakerState.MediaReceivedPayloads
+	res["speakerBytesReceived"] = speakerState.MediaReceivedBytes
+	res["speakerPayloadsEnqueued"] = speakerState.MediaEnqueuedPayloads
+	res["speakerBytesEnqueued"] = speakerState.MediaEnqueuedBytes
+	res["speakerPayloadsRejectedAfterFault"] = speakerState.MediaRejectedPayloads
+	res["speakerBytesRejectedAfterFault"] = speakerState.MediaRejectedBytes
+	res["speakerMalformedPayloads"] = speakerState.MediaMalformedPayloads
+	res["speakerMalformedBytes"] = speakerState.MediaMalformedBytes
+	res["speakerOversizePayloads"] = speakerState.MediaOversizePayloads
+	res["speakerOversizeBytes"] = speakerState.MediaOversizeBytes
+	res["speakerPayloadsDropped"] = speakerState.MediaDroppedPayloads
+	res["speakerBytesDropped"] = speakerState.MediaDroppedBytes
+	res["speakerQueueOverruns"] = speakerState.MediaOverruns
+	res["speakerQueueUnderruns"] = speakerState.MediaUnderruns
+	res["speakerLateGaps"] = speakerState.MediaLateGaps
+	res["speakerStalePayloads"] = speakerState.MediaStalePayloads
+	res["speakerStaleBytes"] = speakerState.MediaStaleBytes
+	res["speakerLifecycleDiscardedPayloads"] =
+		speakerState.MediaLifecycleDiscardedPayloads
+	res["speakerLifecycleDiscardedBytes"] =
+		speakerState.MediaLifecycleDiscardedBytes
+	res["speakerPayloadsWritten"] = speakerState.MediaWrittenPayloads
+	res["speakerBytesWritten"] = speakerState.MediaWrittenBytes
+	res["speakerOrderedWriteFailures"] = speakerState.OrderedWriteFailures
+	res["speakerWriteFailures"] = speakerState.MediaWriteFailures
+	res["speakerQueueDepth"] = speakerState.MediaQueueDepth
+	res["speakerQueueHighWater"] = speakerState.MediaQueueHighWater
+	res["speakerQueueDurationUS"] = speakerState.MediaQueueDurationUS
+	res["speakerQueueDurationHighWaterUS"] = speakerState.MediaQueueDurationHighWaterUS
+	res["speakerMaxEnqueueGapUS"] = speakerState.MaxMediaEnqueueGapUS
+	res["speakerMaxWriteGapUS"] = speakerState.MaxMediaWriteGapUS
+	res["speakerTeardownFailures"] = speakerState.TeardownFailures
+	res["speakerTeardownPending"] = speakerState.TeardownPending
 	res["microphoneInterfaceActive"] = d.microphoneInterfaceActive
 	microphoneState := d.microphoneBuffer.State()
 	res["queuedMicrophoneBytes"] = microphoneState.QueuedBytes
@@ -270,6 +332,16 @@ func (d *DualShock4) GetDeviceSpecificArgs() map[string]any {
 	res["microphoneReadMinGapUS"] = microphoneState.ReadMinGapUS
 	res["microphoneReadMaxGapUS"] = microphoneState.ReadMaxGapUS
 	return res
+}
+
+// beginSpeakerStream gives each transport generation independent counters so
+// an older writer cannot overwrite the health state of its replacement.
+func (d *DualShock4) beginSpeakerStream() *dualShock4OutputStreamTelemetry {
+	telemetry := &dualShock4OutputStreamTelemetry{}
+	d.mtx.Lock()
+	d.speakerStreamTelemetry = telemetry
+	d.mtx.Unlock()
+	return telemetry
 }
 
 func (d *DualShock4) SetInterfaceAltSetting(iface, alt uint8) {

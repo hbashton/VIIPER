@@ -45,6 +45,17 @@ type nativePlayStationSoakDriver struct {
 	failures          []error
 }
 
+func nativePlayStationOperationUsesEndpointGeneration(kind udecx.OperationKind) bool {
+	switch kind {
+	case udecx.OperationControl, udecx.OperationTransfer,
+		udecx.OperationEndpointStart, udecx.OperationEndpointPurge,
+		udecx.OperationEndpointReset, udecx.OperationCancel:
+		return true
+	default:
+		return false
+	}
+}
+
 func newNativePlayStationSoakDriver() *nativePlayStationSoakDriver {
 	return &nativePlayStationSoakDriver{
 		operations:        make(chan udecx.Operation, 4096),
@@ -137,6 +148,9 @@ func (d *nativePlayStationSoakDriver) submit(
 ) (uint64, <-chan udecx.Completion) {
 	d.mu.Lock()
 	op.DeviceID, op.Generation = identity.DeviceID, identity.Generation
+	if nativePlayStationOperationUsesEndpointGeneration(op.Kind) && op.EndpointGeneration == 0 {
+		op.EndpointGeneration = 1
+	}
 	if op.Kind != udecx.OperationCancel {
 		key := nativePlayStationEndpointKey{deviceID: identity.DeviceID, address: op.EndpointAddress}
 		d.endpointSequences[key]++
@@ -166,6 +180,9 @@ func (d *nativePlayStationSoakDriver) submitCancellable(
 ) uint64 {
 	d.mu.Lock()
 	op.DeviceID, op.Generation = identity.DeviceID, identity.Generation
+	if nativePlayStationOperationUsesEndpointGeneration(op.Kind) && op.EndpointGeneration == 0 {
+		op.EndpointGeneration = 1
+	}
 	key := nativePlayStationEndpointKey{deviceID: identity.DeviceID, address: op.EndpointAddress}
 	d.endpointSequences[key]++
 	d.deviceSequences[identity.DeviceID]++
@@ -184,7 +201,7 @@ func (d *nativePlayStationSoakDriver) cancel(
 	d.operations <- udecx.Operation{
 		Kind: udecx.OperationCancel, Token: token,
 		DeviceID: identity.DeviceID, Generation: identity.Generation,
-		EndpointAddress: endpoint,
+		EndpointAddress: endpoint, EndpointGeneration: 1,
 	}
 }
 

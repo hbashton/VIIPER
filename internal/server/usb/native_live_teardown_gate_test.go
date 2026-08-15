@@ -55,6 +55,14 @@ func nativeLiveTraceEventName(event uint16) string {
 		return "endpoint-cleanup-end"
 	case udecx.TraceDeviceCleanupEnd:
 		return "device-cleanup-end"
+	case udecx.TraceEndpointQuiescenceWatchdog:
+		return "endpoint-quiescence-watchdog"
+	case udecx.TraceCompletionRundownWatchdog:
+		return "completion-rundown-watchdog"
+	case udecx.TraceControllerRundownWatchdog:
+		return "controller-rundown-watchdog"
+	case udecx.TraceOwnerRundownWatchdog:
+		return "owner-rundown-watchdog"
 	default:
 		return fmt.Sprintf("event-%d", event)
 	}
@@ -102,6 +110,16 @@ func auditNativeLiveTeardown(
 	trace udecx.LifecycleTrace,
 	stats udecx.Stats,
 ) (nativeLiveTeardownAudit, error) {
+	if trace.StatusFlags&udecx.LifecycleTraceStatusWatchdogFired != 0 {
+		return nativeLiveTeardownAudit{}, fmt.Errorf(
+			"lifecycle watchdog status is sticky even if its record rolled out: flags=%#x latest-sequence=%d",
+			trace.StatusFlags, trace.LatestSequence)
+	}
+	if trace.StatusFlags&udecx.LifecycleTraceStatusDroppedRecord != 0 {
+		return nativeLiveTeardownAudit{}, fmt.Errorf(
+			"lifecycle recorder dropped a contended record: flags=%#x latest-sequence=%d",
+			trace.StatusFlags, trace.LatestSequence)
+	}
 	if trace.LatestSequence == 0 {
 		return nativeLiveTeardownAudit{diagnostic: "no lifecycle records are published yet"}, nil
 	}
@@ -151,6 +169,15 @@ func auditNativeLiveTeardown(
 	}
 
 	for _, record := range trace.Records {
+		if record.Event >= udecx.TraceEndpointQuiescenceWatchdog &&
+			record.Event <= udecx.TraceOwnerRundownWatchdog {
+			return nativeLiveTeardownAudit{}, fmt.Errorf(
+				"lifecycle watchdog %s fired at sequence %d: device=%#x generation=%d endpoint=%#02x object=%#x line=%d queue-state=%#x active=%d pending=%d",
+				nativeLiveTraceEventName(record.Event),
+				record.PublishedSequence, record.DeviceID, record.Generation,
+				record.EndpointAddress, record.EndpointObject, record.Line,
+				record.QueueState, record.ActiveOperations, record.PendingOperations)
+		}
 		deviceKey := nativeLiveTeardownDevice(record)
 		lastDevice[deviceKey] = record
 		if record.EndpointObject != 0 {
@@ -313,7 +340,8 @@ func nativeLiveTrace(events ...uint16) udecx.LifecycleTrace {
 			Event:             event,
 			Line:              uint32(100 + index),
 		}
-		if event >= udecx.TraceEndpointPurgeBegin && event <= udecx.TraceEndpointCleanupEnd {
+		if (event >= udecx.TraceEndpointPurgeBegin && event <= udecx.TraceEndpointCleanupEnd) ||
+			event == udecx.TraceEndpointQuiescenceWatchdog {
 			record.EndpointObject = endpointObject
 			record.EndpointAddress = 0x81
 		}
@@ -358,6 +386,39 @@ func TestNativeLiveTeardownAuditAcceptsReadyQueuePurge(t *testing.T) {
 	}
 	if !audit.complete || audit.purgeCount != 1 {
 		t.Fatalf("ready 0x0f purge did not pass teardown audit: %+v", audit)
+	}
+}
+
+func TestNativeLiveTeardownAuditRejectsAnyQuiescenceWatchdog(t *testing.T) {
+	trace := nativeLiveTrace(
+		udecx.TraceEndpointPurgeBegin,
+		udecx.TraceEndpointQuiescenceWatchdog,
+	)
+	trace.Records[1].Status = -1
+	trace.Records[1].ActiveOperations = 1
+	trace.Records[1].QueueState = 0x0f
+	_, err := auditNativeLiveTeardown(trace, udecx.Stats{})
+	if err == nil || !strings.Contains(err.Error(), "endpoint-quiescence-watchdog") ||
+		!strings.Contains(err.Error(), "active=1") {
+		t.Fatalf("watchdog audit error=%v want explicit active rundown snapshot", err)
+	}
+}
+
+func TestNativeLiveTeardownAuditRejectsStickyWatchdogAfterRecordRollover(t *testing.T) {
+	trace := nativeLiveTrace(udecx.TraceCreateBegin)
+	trace.StatusFlags = udecx.LifecycleTraceStatusWatchdogFired
+	_, err := auditNativeLiveTeardown(trace, udecx.Stats{})
+	if err == nil || !strings.Contains(err.Error(), "watchdog status is sticky") {
+		t.Fatalf("sticky watchdog audit error=%v want permanent release failure", err)
+	}
+}
+
+func TestNativeLiveTeardownAuditRejectsRecorderContentionDrop(t *testing.T) {
+	trace := nativeLiveTrace(udecx.TraceCreateBegin)
+	trace.StatusFlags = udecx.LifecycleTraceStatusDroppedRecord
+	_, err := auditNativeLiveTeardown(trace, udecx.Stats{})
+	if err == nil || !strings.Contains(err.Error(), "dropped a contended record") {
+		t.Fatalf("recorder drop audit error=%v want fail-closed release result", err)
 	}
 }
 

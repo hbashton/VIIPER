@@ -58,56 +58,90 @@ of the source-provenance evidence without becoming a user-machine dependency.
    an administrator/SYSTEM-only DACL, and pass its installer-bound SHA-256 to
    `ViiperUdeCtl install`. The helper independently reopens and verifies the
    source manifest and all three runtime driver hashes, acquires its private
-   driver mutex, and snapshots the exact Driver Store/devnode topology.
+   driver mutex, and snapshots the exact Driver Store/devnode topology. Before
+   its first SetupAPI or broker mutation, it creates the protected fixed
+   `%ProgramData%\VIIPER\UdeCx\Transactions\active-v2` journal, copies and
+   revalidates immutable prior/candidate recovery material, and publishes the
+   first write-through record in a bounded canonical SHA-256 chain. Every later
+   staging, quiescence, binding, rollback, reboot, and broker handoff cut point
+   is durably appended before the next mutation. Startup admission reconciles
+   this journal from exact current state; unknown transitions, identities,
+   package inventories, or partial topology fail closed and retain evidence.
 3. Classify the driver under that mutex. Exact package bytes plus an exact
-   started binding cause no SetupAPI mutation. Exact bytes with missing,
-   stopped, or stale topology select the already-published driver for the exact
-   devnode and call `DiInstallDevice`; they never replace same-version Driver
-   Store content. An absent or newer candidate uses `DiInstallDriverW` under the
-   monotonic version policy. Same-version INF/SYS/CAT conflicts and implicit
-   downgrades fail before mutation. Only after classification proves a SetupAPI
-   mutation is required, the helper signals its inherited quiescence-request
-   event and waits for the outer transaction. The outer transaction stops only
-   a trusted formerly-running broker (or acknowledges an absent/already-stopped
-   trusted service) while retaining the broker-service mutex. Weak service
-   ownership aborts before driver mutation because it is not a safe rollback
-   source. A newer package never updates a live root bus in place: with the
-   trusted broker quiescent, the helper removes only the captured exact owned devnode,
-   proves its child topology absent, stages the candidate, recreates the same
-   root instance ID, and binds the exact published candidate with
-   `DiInstallDevice`. The captured snapshot remains authoritative until broker
-   commit and recreates the prior identity/package on any failure.
+   started binding cause no SetupAPI mutation. Same-version INF/SYS/CAT
+   conflicts and implicit downgrades fail before mutation. A missing candidate
+   is add-only staged with `SetupCopyOEMInfW`; the helper validates its returned
+   published name, bytes, catalog, signer, and complete package inventory, then
+   proves that staging did not alter the captured root. Only after that proof
+   does it signal the inherited quiescence request. The outer transaction stops
+   only a trusted broker while retaining the broker-service mutex. Weak service
+   ownership aborts because it is not a safe rollback source. After quiescence,
+   the helper re-enumerates global topology, repeats exact package/root-byte and
+   pristine-runtime proofs, prepares the compatible-driver list, and switches
+   only the captured devnode in place with `DiInstallDevice`. There is no
+   forward remove/recreate gap. If the captured topology had no root, the helper
+   obtains the generated instance ID, durably records that exact receipt before
+   setting its hardware ID or registering it, and can therefore reconcile a
+   crash-partial root without adopting a lookalike. The captured snapshot and
+   exact staging receipt remain authoritative until broker commit; rollback
+   restores the prior binding before removing only a package proved staged by
+   this transaction.
 4. After the exact binding is verified, the helper signals its inherited broker
    handoff event. The outer transaction releases its protected prior-image and
    SCM handles, then releases the broker-service mutex on the same pinned OS
    thread. Only then does the helper launch the immutable package broker's
    hidden `native-package-broker-commit` command while still holding the driver
    mutex and snapshot. That command reopens the token, requires its exact
-   DACL/hash/path, proves the separate outer process still owns the package
+   DACL/hash/path, proves that the separate outer process still owns the package
    mutex, then acquires the broker-service mutex. An exact driver no-op skips
-   service quiescence but uses the same handoff before broker health/repair.
-5. The nested command first checks for a true no-op: canonical protected
-   service/image/credential state, no live legacy owner, stable service PID, and
-   authenticated `ping` with `Ready=true`, ABI 1.10, the exact capability mask,
-   package version, and loaded-kernel build identity. If any part is unhealthy,
-   it transactionally publishes the exact broker through a flushed protected
-   sibling, creates or repairs the LocalSystem service, rotates its credential,
-   and repeats authenticated health before and after removing legacy
-   Run/task/process ownership. A weak pre-existing service is deleted and
-   recreated; its unsafe ACL is never repaired in place or restored.
-6. The child emits one newline-terminated canonical result. A broker failure
-   first rolls back SCM, credential, and legacy state, then restores the prior
-   broker image and run-state inside the child. Only a pre-mutation proof or a
-   fully settled child rollback authorizes the still-running helper to restore
-   its captured driver packages/devnode. Crash, malformed/missing proof, exit 3,
-   pipe/wait ambiguity, or an over-budget child leaves driver rollback
-   unauthorized and reports external reconciliation. If the outer transaction
-   stopped a trusted prior broker and the helper fails before handoff, it keeps
-   the service mutex and restores the exact snapshotted service/image/run-state
-   only after a settled driver proof. After handoff, it reacquires that mutex
-   and performs the same exact revalidation/restart only when the nested and
-   driver rollback proof is settled; indeterminate proof leaves the service
-   stopped. USB/IP itself is never directly removed by this transaction.
+   service quiescence but uses the same handoff before broker health or repair.
+5. Before its first broker mutation, the nested command builds all rollback
+   material below a protected
+   `%ProgramData%\VIIPER\BrokerTransactions\preparing-<transaction>` directory.
+   Its bounded canonical snapshot binds the outer token, candidate and prior
+   image, exact service state, target SID, and encrypted prior credential and
+   legacy-registration artifacts. Only after every file is flushed, reopened,
+   hash-verified, and protected does an atomic no-replace rename publish the
+   fixed `active-v1` journal. A write-through SHA-256 chain then records intent
+   and return phases around service stop, atomic image replacement, legacy-owner
+   stop, credential rotation, SCM configuration, start, authentication, legacy
+   removal, and reauthentication.
+6. The nested command accepts a true no-op only when the protected
+   service/image/credential state is canonical, no legacy owner is live, the
+   service PID is stable, and authenticated `ping` proves `Ready=true`, ABI
+   1.13, the exact capability mask, package version, and loaded-kernel build
+   identity. Otherwise it performs the journaled repair. Exact forward health
+   ends at durable `nested-ready`; it does not delete rollback material or claim
+   outer success. A broker failure restores SCM, credential, image, legacy
+   state, and prior run-state in dependency order before recording an exact
+   rollback result. Missing, malformed, ambiguous, or corrupt evidence latches
+   manual reconciliation and never authorizes an independent driver rollback.
+7. Driver and broker success settle through a two-phase receipt. The helper
+   durably records `BrokerOuterSettlementPending` and emits one canonical
+   binding containing both transaction IDs, both pending journal digests, the
+   candidate and outer-token identity, a fresh settlement nonce, and the
+   protected request hash. The Go parent revalidates live forward state, records
+   `outer-settlement-pending`, atomically publishes the protected request, and
+   calls the hash-pinned helper's `broker-settlement-ack` command while it still
+   owns the package mutex. The helper authenticates both journals and the
+   request, records `BrokerOuterSettled`, atomically retires its active journal
+   to an exact settled tombstone, and returns the final driver digest. Go binds
+   that receipt into `outer-settled`, publishes the protected final receipt,
+   atomically retires its journal, and only then asks the helper to atomically
+   rename the driver tombstone to an inert discarding name. Recursive deletion
+   is best-effort after those authoritative renames.
+8. Every ordinary process or power cut re-enters the same transaction. A
+   protected `nested-ready`, pending settlement, active final state, or settled
+   tombstone is replayed idempotently using the original token and journal
+   identities; a new broker child is not started while old settlement exists.
+   The caller retries its requested new transaction only after the old one is
+   exactly settled. A pre-mutation proof or fully settled child rollback is the
+   only authority for restoring the captured driver packages/devnode. If the
+   outer transaction stopped a trusted prior broker and failure occurred before
+   handoff, it restores the exact snapshot only after settled driver proof.
+   After handoff, indeterminate proof leaves the service stopped and preserves
+   both journals for reconciliation. The legacy transport itself is never
+   directly removed by this transaction.
 
 The mutating broker process is never hard-terminated. The outer absolute
 four-minute deadline is passed through the helper into the nested broker, so it
@@ -172,23 +206,23 @@ the historical broker-only uninstall routine.
    Exit 3, a crash, a missing/malformed proof, or any ambiguous wait cannot prove
    a safe binding, so the broker remains stopped and the command reports that
    external reconciliation is required.
-   Before mutation, an exact three-file INF/SYS/CAT rollback tree is placed
-   below the non-reparse Windows temporary directory in a cryptographically
-   unpredictable location. Every directory and file is created with, and then
-   verified against, an explicit protected Administrators/LocalSystem-only ACL;
-   payload writes are write-through, explicitly flushed, signature/hash
-   revalidated, and locked against write/delete sharing. A canonical journal
-   binds every captured devnode to one package index and every package to its
-   relative backup paths and exact hashes. It is written to a private temporary
-   name, flushed, atomically published with a write-through rename, reopened,
-   ACL/byte verified, and flushed again before the first SetupAPI mutation.
-   Journal presence means manual reconciliation may be required; it never
-   authorizes automatic restoration. Preservation is armed before mutation and
-   therefore survives C++ exceptions or process failure. It is disarmed only
-   after explicit, verified deletion following either committed removal or a
-   verified rollback; cleanup failure is surfaced and retains the journal and
-   backup tree. A backup-preparation failure whose tree cannot be deleted emits
-   the retained root and planned journal path with `recoveryRecordWritten=0`.
+   Before mutation, the helper creates the fixed protected
+   `%ProgramData%\VIIPER-UdeCx-RemoveTransactions\active-v2` recovery root and
+   stores the exact prior devnode plus every INF/SYS/CAT package in immutable
+   write-through backups. A canonical, bounded, append-only SHA-256 chain binds
+   those backups, boot/reboot epochs, and device/package entered, returned, and
+   committed cut points. Every directory and file is non-reparse, single-link,
+   Administrators/LocalSystem-only, explicitly flushed, reopened, byte-compared,
+   and held against write/delete sharing. Startup recovery uses exact raw-root,
+   package-inventory, and cut-point authority to finish removal or restore the
+   prior state; unknown, mixed, or concurrent topology latches manual
+   reconciliation without broad mutation. Terminal validation releases evidence
+   handles, atomically renames `active-v2` to a transaction-bound settled
+   tombstone, proves active admission absent, and only then makes deletion
+   best-effort. A retained tombstone is a successful but explicitly surfaced
+   cleanup warning, never hidden evidence loss. Preservation is armed before
+   mutation and survives exceptions, process failure, power loss, and
+   reboot-required SetupAPI returns.
    The allocation-free exception outcome separately tracks whether transaction
    mutation actually started: pre-mutation exceptions remain exit 4 with
    `changed=0`, while post-mutation exceptions require exit 3 reconciliation.
@@ -215,12 +249,10 @@ which removes a selected devnode and its child topology, and
 which removes a specified package from devices and then the Driver Store. Both
 APIs return a `NeedReboot` result; the caller must aggregate that result while it
 finishes its other required uninstall operations. VIIPER therefore preserves
-3010 only after exact owned cleanup has reconciled. The
-[usbip-win2 uninstall sequence](https://github.com/vadimgrn/usbip-win2#uninstallation-of-usbip)
-is used only as the devnode-before-package lifecycle reference, while
-[ViGEmBus releases](https://github.com/ViGEm/ViGEmBus/releases) are used only as
-the root-bus installer lifecycle reference. Neither product's broad package or
-registration cleanup is treated as VIIPER ownership authority.
+  3010 only after exact owned cleanup has reconciled. The transaction follows
+  the generic Windows devnode-before-package lifecycle and root-bus ownership
+  model; no third-party package, registration, service, or cleanup convention is
+  treated as VIIPER ownership authority.
 
 ## Reference-backed Windows invariants
 
@@ -239,23 +271,22 @@ registration cleanup is treated as VIIPER ownership authority.
   and [CancelIoEx](https://learn.microsoft.com/windows/win32/fileio/cancelioex-func)
   lifetime rule.
 - SetupAPI upgrade and rollback preserve the captured root device instance ID.
-  A newer package follows the same devnode-before-package lifecycle used for
-  exact removal so Windows does not treat the operation as an in-place update
-  of a loaded kernel bus. Per
+  Upgrade add-only stages the exact candidate before broker quiescence, then
+  performs an exact selected-driver switch on the captured devnode. Root
+  creation is needed only when no prior root exists. Per
   [`SetupDiCreateDeviceInfoW`](https://learn.microsoft.com/windows/win32/api/setupapi/nf-setupapi-setupdicreatedeviceinfow),
   forward creation passes the VIIPER-owned `VIIPERUDE` device name with
   `DICD_GENERATE_ID` and verifies the returned `ROOT\VIIPERUDE\####` identity.
-  Upgrade recreation and rollback omit `DICD_GENERATE_ID`, making `DeviceName`
-  the complete captured instance ID. They accept only that namespace or the exact legacy
+  Rollback recreation omits `DICD_GENERATE_ID`, making `DeviceName` the complete
+  captured instance ID. It accepts only that namespace or the exact legacy
   `ROOT\USB\####` form produced when older builds incorrectly passed the USB
   class name, after the existing service/package ownership proof. The helper
   then verifies the restored identity, topology, and signed package hashes rather
   than deleting every matching devnode and manufacturing a replacement.
-- ViGEmBus's root-enumerated bus architecture is used only as the lifecycle
-  reference: the bus owns its exact child identities and separates user-mode
-  submission from PnP mutation. usbip-win2 remains an untouched legacy
-  fallback until authenticated native health succeeds; package rollback never
-  treats its service or driver store as installer-owned.
+- The root-enumerated bus owns its exact child identities and separates
+  user-mode submission from PnP mutation. The configured legacy transport
+  remains untouched until authenticated native health succeeds; package
+  rollback never treats its service or Driver Store packages as installer-owned.
 
 Every public native install, repair, or uninstall takes locks in the same
 machine-wide order: package mutex, then broker-service mutex. During install,
@@ -264,49 +295,72 @@ replacement, then performs an explicit service-lock handoff to the nested
 broker commit while continuing to own the package mutex. The nested callback
 does not reacquire the package mutex (which would deadlock); the protected
 one-time token and zero-time ownership check authorize that one service
-transaction. The token is removed on commit or rollback and is inert without a
-live outer mutex owner. Because Win32 mutexes are thread-owned, each Go
-acquisition pins its goroutine to that OS thread until the matching release;
-scheduler migration cannot strand either global lock.
+transaction. Once handoff occurs, an unsettled helper exit closes but preserves
+the exact token so journal replay can prove the original outer identity. It is
+deleted only after exact rollback or completed two-phase forward settlement and
+is inert without the matching package-mutex owner. A later outer package run
+may reconcile that old transaction under the same package-to-service lock order
+but must return retry instead of beginning a new child in the same admission.
+Because Win32 mutexes are thread-owned, each Go acquisition pins its goroutine
+to that OS thread until the matching release; scheduler migration cannot strand
+either global lock.
 
 ## Restart boundary
 
-The normal newer-package path first quiesces the trusted native broker while
-holding the service mutex, then removes the captured exact root devnode before
-staging and recreates its identity afterward. This removes the broker's open
-UdeCx ownership from the PnP boundary, avoids an in-place update of the loaded
-bus, and should commit without a restart. If Windows still reports
-that either removal, package staging, or exact binding requires a restart, the
-helper does not start the broker or remove legacy ownership. It rolls the
-attempted driver transaction back, the outer transaction restores the prior
-executable/service, and preserves Windows `ERROR_SUCCESS_REBOOT_REQUIRED`
-(3010) through the Go bootstrapper for the signed installer. After restart, the
-installer retries the complete preflight and transaction from the beginning.
-No cross-reboot journal is trusted as executable authority.
+The normal newer-package path add-only stages and verifies the candidate before
+quiescence, then switches only the captured root in place. Every SetupAPI return
+that requests a restart is durably recorded with the boot identifier that
+produced it before control can leave the mutation boundary. On that same boot,
+reconciliation returns the pending restart without repeating the mutation,
+starting the broker, removing legacy ownership, or retiring recovery evidence.
+The production composition attempts exact driver rollback when a forward
+activation requests a restart; if restoring the prior binding also needs a
+restart, the journal enters `RestoreRebootPending` and the prior broker remains
+stopped. A changed forward state that has not completed broker settlement is an
+unsettled reconciliation result, never a success-shaped 3010.
 
-For removal, 3010 means the helper accepted the exact devnode/package removal
-but Windows needs a restart to finish it. The service and exact managed
-ownership are cleaned first, then 3010 is returned. A retry before or after the
-restart performs a fresh exact inventory and is idempotent; no pending-removal
-journal is trusted as authority. If owned cleanup itself fails, the command
-reports failure (including that Windows still requires restart) rather than
-misrepresenting a partial uninstall as 3010 success.
+After Windows crosses the recorded boot boundary, the helper treats current
+root/package/service state as authority and the protected journal as the narrow
+ownership receipt. It revalidates exact bytes, topology, phase history, and
+reboot epoch before finishing forward, finishing rollback, or latching manual
+reconciliation. A new install cannot start while `active-v2` or a pending
+cross-journal broker settlement exists. Only an exact terminal state is
+atomically retired; rerunning the signed installer then starts a fresh
+transaction if the requested update still remains.
+
+Removal uses the same rule. Device and package API returns record their fresh
+restart bit and generating boot before any subsequent step. Same-boot recovery
+does not repeat a pending device removal or mutate packages. After a later boot,
+the raw root namespace and exact package inventory must prove either the
+expected removed prefix or the exact rollback state before work continues.
+Forward 3010 authorizes only the cleanup associated with that exact committed
+removal; rollback 3010 preserves the prior managed files and leaves the service
+stopped until restoration settles. A crossed restart that still exposes an
+indeterminate pending root, any extra package/root, or any mismatched epoch
+latches manual reconciliation instead of requesting restart forever. Cleanup
+failure is reported separately and never turns a partial uninstall into
+terminal success.
 
 ## Deterministic gates
 
-The normal Go suite runs a failpoint matrix for every transaction phase,
-including partial preparation, authenticated-health failure, commit failure,
-caller cancellation, rollback failure, and close failure. A source-contract
-test requires the immutable-input locks, read-only helper verification,
-protected ACLs, weak-service delete/recreate path, atomic publication, inner
-driver/broker rollback, protected nested-commit token, global lock ordering,
-and authenticated proof. It also rejects hard process
-termination, context-killed helper processes, recursive deletion, or direct
-legacy/USB-IP removal in the outer layer.
+The normal Go suite and compiled helper self-test run a failpoint matrix for
+every driver, broker, cross-journal settlement, rollback, reboot, and retirement
+phase. Coverage includes partial protected preparation, every atomic record
+publication cut, authenticated-health failure, child exit before parent proof,
+both sides of the settlement acknowledgement, final-receipt publication,
+active-to-settled and settled-to-discarding renames, caller cancellation,
+rollback failure, and retained cleanup. Source contracts require immutable
+input locks, read-only helper verification, protected ACLs, exact service
+ownership, atomic image publication, exact package/root mutation, nested token
+binding, global lock ordering, and both-journal authenticated proof. They reject
+hard process termination, context-killed helper processes, in-place recursive
+deletion of authoritative evidence, or direct legacy-transport removal in the
+outer layer.
 
 The removal matrix independently covers both mutex acquisitions, immutable
 preflight, service inventory, partial stop, helper launch/outcome, exact cleanup,
-restore failure, close failure, 3010, structured preflight, verified rollback,
-unverified rollback, malformed proof, idempotent absence, and exact ownership.
-The targeted matrix is also run repeatedly to catch state leakage and ordering
-regressions.
+restore failure, close failure, every 3010 cut and boot epoch, structured
+preflight, verified and unverified rollback, malformed proof, concurrent root or
+package appearance, idempotent absence, evidence-lock release, tombstone cleanup
+warnings, and exact ownership. The targeted matrices are also run repeatedly to
+catch state leakage and ordering regressions.

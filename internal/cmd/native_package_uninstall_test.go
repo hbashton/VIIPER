@@ -1,10 +1,13 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -344,13 +347,15 @@ func TestNativePackageRemoveStructuredExitSemantics(t *testing.T) {
 		{name: "success", line: "result=success operation=remove changed=1 rebootRequired=0 rollback=not-needed exitCode=0", exit: 0},
 		{name: "idempotent success", line: "result=success operation=remove changed=0 rebootRequired=0 rollback=not-needed exitCode=0", exit: 0},
 		{name: "reboot success", line: "result=success operation=remove changed=1 rebootRequired=1 rollback=not-needed exitCode=3010", exit: 3010, reboot: true},
-		{name: "preflight", line: `result=error operation=remove changed=0 rebootRequired=0 rollback=not-needed exitCode=4 phase="remove-topology"`, exit: 4, wantErr: true, errContains: "before mutation"},
-		{name: "rolled back", line: `result=error operation=remove changed=1 rebootRequired=0 rollback=succeeded exitCode=1 phase="remove-driver"`, exit: 1, wantErr: true, errContains: "rolled back"},
-		{name: "rolled back pending reboot", line: `result=error operation=remove changed=1 rebootRequired=1 rollback=succeeded exitCode=1 phase="remove-driver"`, exit: 1, wantErr: true, errContains: "rolled back"},
-		{name: "rollback failed", line: `result=error operation=remove changed=1 rebootRequired=1 rollback=failed exitCode=3 phase="remove-rollback"`, exit: 3, wantErr: true, errContains: "rollback failed"},
+		{name: "preflight", line: `result=error operation=remove changed=0 rebootRequired=0 rollback=not-needed exitCode=4 phase="remove-topology" win32Error=13 message="rejected"`, exit: 4, wantErr: true, errContains: "before mutation"},
+		{name: "rolled back", line: `result=error operation=remove changed=1 rebootRequired=0 rollback=succeeded exitCode=1 phase="remove-driver" win32Error=5 message="failed"`, exit: 1, wantErr: true, errContains: "rolled back"},
+		{name: "rolled back pending reboot", line: `result=error operation=remove changed=1 rebootRequired=1 rollback=succeeded exitCode=1 phase="remove-driver" win32Error=5 message="failed"`, exit: 1, wantErr: true, errContains: "rolled back"},
+		{name: "rollback failed", line: `result=error operation=remove changed=1 rebootRequired=1 rollback=failed exitCode=3 phase="remove-rollback" win32Error=5 nestedExitCode=1 message="failed" recoveryRecord="C:\\ProgramData\\active-v2" recoveryRecordWritten=0 recoveryRecordPhase="journal-write" recoveryRecordWin32Error=112 recoveryRecordMessage="full" recoveryBackup="C:\\ProgramData\\backup" recoveryBackupRetained=1`, exit: 3, wantErr: true, errContains: "rollback failed"},
 		{name: "exit mismatch", line: "result=success operation=remove changed=1 rebootRequired=0 rollback=not-needed exitCode=0", exit: 1, wantErr: true, errContains: "disagreed"},
 		{name: "invalid 3010", line: "result=success operation=remove changed=1 rebootRequired=0 rollback=not-needed exitCode=3010", exit: 3010, wantErr: true, errContains: "invalid reboot-success"},
 		{name: "unchanged 3010", line: "result=success operation=remove changed=0 rebootRequired=1 rollback=not-needed exitCode=3010", exit: 3010, wantErr: true, errContains: "invalid reboot-success"},
+		{name: "success trailing field", line: "result=success operation=remove changed=1 rebootRequired=0 rollback=not-needed exitCode=0 phase=spoof", exit: 0, wantErr: true, errContains: "warning"},
+		{name: "error missing evidence", line: `result=error operation=remove changed=0 rebootRequired=0 rollback=not-needed exitCode=4 phase="remove-topology"`, exit: 4, wantErr: true, errContains: "win32Error"},
 		{name: "unstructured", line: "removed", exit: 0, wantErr: true, errContains: "exactly one"},
 		{name: "duplicate proof", line: "result=success operation=remove changed=0 rebootRequired=0 rollback=not-needed exitCode=0\nresult=success operation=remove changed=0 rebootRequired=0 rollback=not-needed exitCode=0", exit: 0, wantErr: true, errContains: "exactly one"},
 	}
@@ -378,6 +383,77 @@ func TestNativePackageRemoveStructuredExitSemantics(t *testing.T) {
 				t.Fatal("indeterminate helper outcome authorized broker restoration")
 			}
 		})
+	}
+}
+
+func TestNativePackageRemoveRetainedTombstoneProofIsExactAndBounded(t *testing.T) {
+	t.Parallel()
+	tombstone := `C:\ProgramData\VIIPER-UdeCx-RemoveTransactions\settled-v2-` + strings.Repeat("a", 64)
+	base := "result=success operation=remove changed=1 rebootRequired=0 rollback=not-needed exitCode=0"
+	warning := " warning=\"remove-settled-cleanup-retained\" warningWin32Error=5 retainedTombstone=" + strconv.Quote(tombstone)
+	result, err := parseNativePackageRemoveProof(base+warning, 0)
+	if err != nil {
+		t.Fatalf("parse exact retained tombstone proof: %v", err)
+	}
+	if result.retainedTombstone != tombstone || result.retainedTombstoneWin32Error != 5 {
+		t.Fatalf("retained tombstone result=%+v", result)
+	}
+	rolledBack := `result=error operation=remove changed=1 rebootRequired=0 rollback=succeeded exitCode=1 phase="remove-driver" win32Error=5 message="rolled back"`
+	result, err = parseNativePackageRemoveProof(rolledBack+warning, 1)
+	if err == nil || !strings.Contains(err.Error(), "rolled back") ||
+		result.retainedTombstone != tombstone || result.retainedTombstoneWin32Error != 5 ||
+		!result.serviceRestoreVerified {
+		t.Fatalf("rolled-back retained tombstone result=%+v error=%v", result, err)
+	}
+
+	cases := map[string]string{
+		"missing code":       base + ` warning="remove-settled-cleanup-retained" retainedTombstone=` + strconv.Quote(tombstone),
+		"zero code":          base + ` warning="remove-settled-cleanup-retained" warningWin32Error=0 retainedTombstone=` + strconv.Quote(tombstone),
+		"overflow code":      base + ` warning="remove-settled-cleanup-retained" warningWin32Error=4294967296 retainedTombstone=` + strconv.Quote(tombstone),
+		"wrong warning":      base + ` warning="unknown" warningWin32Error=5 retainedTombstone=` + strconv.Quote(tombstone),
+		"relative path":      base + ` warning="remove-settled-cleanup-retained" warningWin32Error=5 retainedTombstone="settled-v2-` + strings.Repeat("a", 64) + `"`,
+		"wrong directory":    base + ` warning="remove-settled-cleanup-retained" warningWin32Error=5 retainedTombstone=` + strconv.Quote(`C:\Other\settled-v2-`+strings.Repeat("a", 64)),
+		"bad identity":       base + ` warning="remove-settled-cleanup-retained" warningWin32Error=5 retainedTombstone=` + strconv.Quote(strings.TrimSuffix(tombstone, "a")+"g"),
+		"duplicate warning":  base + warning + warning,
+		"trailing field":     base + warning + ` ignored=1`,
+		"reordered tuple":    base + ` warning="remove-settled-cleanup-retained" retainedTombstone=` + strconv.Quote(tombstone) + ` warningWin32Error=5`,
+		"unescaped path":     base + ` warning="remove-settled-cleanup-retained" warningWin32Error=5 retainedTombstone="C:\ProgramData"`,
+		"duplicate base key": base + ` changed=1`,
+	}
+	for name, line := range cases {
+		name, line := name, line
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if result, err := parseNativePackageRemoveProof(line, 0); err == nil {
+				t.Fatalf("malformed warning proof accepted: %+v", result)
+			}
+		})
+	}
+}
+
+func TestNativePackageUninstallSurfacesRetainedTombstoneWarning(t *testing.T) {
+	t.Parallel()
+	tombstone := `C:\ProgramData\VIIPER-UdeCx-RemoveTransactions\settled-v2-` + strings.Repeat("b", 64)
+	fake := &fakeNativePackageUninstallTransaction{
+		removeResult: nativePackageRemoveResult{
+			retainedTombstone:           tombstone,
+			retainedTombstoneWin32Error: 5,
+		},
+	}
+	var records bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&records, nil))
+	if err := runNativePackageUninstallTransaction(context.Background(), logger, fake); err != nil {
+		t.Fatalf("run uninstall: %v", err)
+	}
+	for _, evidence := range []string{
+		"Native remove journal retired with a retained settled tombstone",
+		"warning=remove-settled-cleanup-retained",
+		"win32Error=5",
+		"retainedTombstone=" + tombstone,
+	} {
+		if !strings.Contains(records.String(), evidence) {
+			t.Fatalf("warning log %q missing %q", records.String(), evidence)
+		}
 	}
 }
 

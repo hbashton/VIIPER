@@ -107,33 +107,36 @@ type contractOperation struct {
 	EndpointMaxPacketSize uint16
 	EndpointSequence      uint64
 	DeviceSequence        uint64
+	EndpointGeneration    uint32
 }
 
 type contractCompletion struct {
-	Header           contractHeader
-	Token            uint64
-	DeviceId         uint64
-	Generation       uint32
-	Status           int32
-	UsbdStatus       uint32
-	TransferLength   uint32
-	IsoPacketCount   uint32
-	PayloadOffset    uint32
-	PayloadLength    uint32
-	IsoPacketsOffset uint32
-	Reserved         [2]uint32
+	Header             contractHeader
+	Token              uint64
+	DeviceId           uint64
+	Generation         uint32
+	Status             int32
+	UsbdStatus         uint32
+	TransferLength     uint32
+	IsoPacketCount     uint32
+	PayloadOffset      uint32
+	PayloadLength      uint32
+	IsoPacketsOffset   uint32
+	EndpointGeneration uint32
+	Reserved           uint32
 }
 
 type contractInputReport struct {
-	Header          contractHeader
-	DeviceId        uint64
-	Generation      uint32
-	EndpointAddress uint8
-	Flags           uint8
-	Reserved1       [2]uint8
-	PayloadOffset   uint32
-	PayloadLength   uint32
-	Sequence        uint64
+	Header             contractHeader
+	DeviceId           uint64
+	Generation         uint32
+	EndpointAddress    uint8
+	Flags              uint8
+	Reserved1          [2]uint8
+	PayloadOffset      uint32
+	PayloadLength      uint32
+	Sequence           uint64
+	EndpointGeneration uint32
 }
 
 type contractStats struct {
@@ -188,8 +191,28 @@ type contractLifecycleTrace struct {
 	RecordCount          uint32
 	RecordSize           uint32
 	Capacity             uint32
-	Reserved             uint32
+	StatusFlags          uint32
 	Records              [LifecycleTraceCapacity]contractLifecycleTraceRecord
+}
+
+func packedContractSize(contract reflect.Type) uintptr {
+	var size uintptr
+	for index := 0; index < contract.NumField(); index++ {
+		size += contract.Field(index).Type.Size()
+	}
+	return size
+}
+
+func packedContractFieldOffset(contract reflect.Type, name string) (uintptr, bool) {
+	var offset uintptr
+	for index := 0; index < contract.NumField(); index++ {
+		field := contract.Field(index)
+		if field.Name == name {
+			return offset, true
+		}
+		offset += field.Type.Size()
+	}
+	return 0, false
 }
 
 func nativeContractSource(t *testing.T, name ...string) string {
@@ -235,26 +258,35 @@ func TestNativeProtocolHeaderMatchesGoContract(t *testing.T) {
 	header := nativeContractSource(t, "native", "udecx", "include", "ViiperUdeProtocol.h")
 
 	numbers := map[string]uint64{
-		"VIIPER_UDE_MAGIC":                       uint64(Magic),
-		"VIIPER_UDE_ABI_MAJOR":                   uint64(ABIMajor),
-		"VIIPER_UDE_ABI_MINOR":                   uint64(ABIMinor),
-		"VIIPER_UDE_BUILD_IDENTITY_BYTES":        BuildIdentitySize,
-		"VIIPER_UDE_MAX_DEVICES":                 MaxDevices,
-		"VIIPER_UDE_MAX_DESCRIPTOR_BYTES":        MaxDescriptorBytes,
-		"VIIPER_UDE_MAX_TRANSFER_BYTES":          MaxTransferBytes,
-		"VIIPER_UDE_MAX_ISO_PACKETS":             MaxIsoPackets,
-		"VIIPER_UDE_MAX_INPUT_REPORT_BYTES":      MaxInputReportBytes,
-		"VIIPER_UDE_MAX_PENDING_OPERATIONS":      MaxPendingOperations,
-		"VIIPER_UDE_INPUT_REPORT_TRANSITION":     uint64(InputReportTransition),
-		"VIIPER_UDE_MS_OS_10_STRING_INDEX":       uint64(MicrosoftOS10StringIndex),
-		"VIIPER_UDE_MS_OS_10_STRING_LENGTH":      MicrosoftOS10StringLength,
-		"VIIPER_UDE_MS_OS_10_VENDOR_CODE_OFFSET": MicrosoftOS10VendorCodeOffset,
-		"VIIPER_UDE_CAP_ISOCHRONOUS":             uint64(CapabilityIsochronous),
-		"VIIPER_UDE_CAP_STREAMS":                 uint64(CapabilityStreams),
-		"VIIPER_UDE_CAP_DEVICE_LIFECYCLE":        uint64(CapabilityDeviceLifecycle),
-		"VIIPER_UDE_CAP_INPUT_REPORTS":           uint64(CapabilityInputReports),
-		"VIIPER_UDE_CAP_LIFECYCLE_TRACE":         uint64(CapabilityLifecycleTrace),
-		"VIIPER_UDE_LIFECYCLE_TRACE_CAPACITY":    LifecycleTraceCapacity,
+		"VIIPER_UDE_MAGIC":                              uint64(Magic),
+		"VIIPER_UDE_ABI_MAJOR":                          uint64(ABIMajor),
+		"VIIPER_UDE_ABI_MINOR":                          uint64(ABIMinor),
+		"VIIPER_UDE_BUILD_IDENTITY_BYTES":               BuildIdentitySize,
+		"VIIPER_UDE_MAX_DEVICES":                        MaxDevices,
+		"VIIPER_UDE_MAX_DESCRIPTOR_BYTES":               MaxDescriptorBytes,
+		"VIIPER_UDE_MAX_TRANSFER_BYTES":                 MaxTransferBytes,
+		"VIIPER_UDE_MAX_ISO_PACKETS":                    MaxIsoPackets,
+		"VIIPER_UDE_MAX_INPUT_REPORT_BYTES":             MaxInputReportBytes,
+		"VIIPER_UDE_MAX_PENDING_OPERATIONS":             MaxPendingOperations,
+		"VIIPER_UDE_MANAGEMENT_SLOT_FLAG":               uint64(ManagementSlotFlag),
+		"VIIPER_UDE_INPUT_REPORT_TRANSITION":            uint64(InputReportTransition),
+		"VIIPER_UDE_MS_OS_10_STRING_INDEX":              uint64(MicrosoftOS10StringIndex),
+		"VIIPER_UDE_MS_OS_10_STRING_LENGTH":             MicrosoftOS10StringLength,
+		"VIIPER_UDE_MS_OS_10_VENDOR_CODE_OFFSET":        MicrosoftOS10VendorCodeOffset,
+		"VIIPER_UDE_CAP_ISOCHRONOUS":                    uint64(CapabilityIsochronous),
+		"VIIPER_UDE_CAP_STREAMS":                        uint64(CapabilityStreams),
+		"VIIPER_UDE_CAP_DEVICE_LIFECYCLE":               uint64(CapabilityDeviceLifecycle),
+		"VIIPER_UDE_CAP_INPUT_REPORTS":                  uint64(CapabilityInputReports),
+		"VIIPER_UDE_CAP_LIFECYCLE_TRACE":                uint64(CapabilityLifecycleTrace),
+		"VIIPER_UDE_LIFECYCLE_TRACE_CAPACITY":           LifecycleTraceCapacity,
+		"VIIPER_UDE_TRACE_ENDPOINT_QUIESCENCE_WATCHDOG": uint64(TraceEndpointQuiescenceWatchdog),
+		"VIIPER_UDE_TRACE_COMPLETION_RUNDOWN_WATCHDOG":  uint64(TraceCompletionRundownWatchdog),
+		"VIIPER_UDE_TRACE_CONTROLLER_RUNDOWN_WATCHDOG":  uint64(TraceControllerRundownWatchdog),
+		"VIIPER_UDE_TRACE_OWNER_RUNDOWN_WATCHDOG":       uint64(TraceOwnerRundownWatchdog),
+		"VIIPER_UDE_LIFECYCLE_TRACE_STATUS_DROPPED_RECORD": uint64(
+			LifecycleTraceStatusDroppedRecord),
+		"VIIPER_UDE_LIFECYCLE_TRACE_STATUS_WATCHDOG_FIRED": uint64(
+			LifecycleTraceStatusWatchdogFired),
 	}
 	for name, want := range numbers {
 		if got := cDefineNumber(t, header, name); got != want {
@@ -295,7 +327,7 @@ func TestNativeProtocolHeaderMatchesGoContract(t *testing.T) {
 			t.Fatalf("C contract added unmodeled type VIIPER_UDE_%s", name)
 		}
 		declared, _ := strconv.ParseUint(match[2], 10, 64)
-		if got := wireType.Size(); uint64(got) != declared || got != wantSizes[name] {
+		if got := packedContractSize(wireType); uint64(got) != declared || got != wantSizes[name] {
 			t.Errorf("VIIPER_UDE_%s size: C=%d Go=%d contract=%d", name, declared, got, wantSizes[name])
 		}
 		seenSizes[name] = true
@@ -311,13 +343,13 @@ func TestNativeProtocolHeaderMatchesGoContract(t *testing.T) {
 		if !ok {
 			t.Fatalf("C contract added offsets for unmodeled type VIIPER_UDE_%s", match[1])
 		}
-		field, ok := wireType.FieldByName(match[2])
+		fieldOffset, ok := packedContractFieldOffset(wireType, match[2])
 		if !ok {
 			t.Fatalf("Go contract type %s has no field %s", match[1], match[2])
 		}
 		want, _ := strconv.ParseUint(match[3], 10, 64)
-		if uint64(field.Offset) != want {
-			t.Errorf("VIIPER_UDE_%s.%s offset: C=%d Go=%d", match[1], match[2], want, field.Offset)
+		if uint64(fieldOffset) != want {
+			t.Errorf("VIIPER_UDE_%s.%s offset: C=%d Go=%d", match[1], match[2], want, fieldOffset)
 		}
 		seenOffsets++
 	}

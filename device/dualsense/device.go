@@ -285,6 +285,23 @@ func (d *DualSense) setV5MediaCallbacks(
 	})
 }
 
+// detachV5MediaStreamCallbacks is a terminal detach, not an operational audio
+// reset. It advances the device media generation, clears its assembled audio,
+// and fences/removes every producer without waiting on the old transport's
+// reset callback. The stream handler immediately follows with writer Stop.
+func (d *DualSense) detachV5MediaStreamCallbacks() {
+	d.mediaPublishMu.Lock()
+	defer d.mediaPublishMu.Unlock()
+
+	d.mtx.Lock()
+	d.mediaRevision++
+	d.resetSpeakerAudioLocked()
+	d.atomicAudioHapticsFunc = nil
+	d.realtimeHapticsFunc = nil
+	d.speakerResetFunc = nil
+	d.mtx.Unlock()
+}
+
 // replaceMediaCallbacks is a hard lifecycle boundary. A callback already in
 // progress finishes before the old transport is flushed; a callback assembled
 // before this revision can never publish into the replacement transport.
@@ -367,19 +384,46 @@ func (d *DualSense) GetDeviceSpecificArgs() map[string]any {
 	res["speakerInterfaceActive"] = d.speakerInterfaceActive
 	speakerState := d.speakerStreamTelemetry.snapshot()
 	res["speakerStreamActive"] = speakerState.Active
+	res["speakerOrderedFramesReceived"] = speakerState.OrderedReceived
+	res["speakerOrderedFramesEnqueued"] = speakerState.OrderedEnqueued
+	res["speakerOrderedFramesRejected"] = speakerState.OrderedRejected
+	res["speakerOrderedFramesWritten"] = speakerState.OrderedWritten
+	res["speakerOrderedSaturations"] = speakerState.OrderedSaturations
+	res["speakerOrderedQueueDepth"] = speakerState.OrderedQueueDepth
+	res["speakerOrderedQueueHighWater"] = speakerState.OrderedQueueHighWater
+	res["speakerOrderedLifecycleDiscardedFrames"] =
+		speakerState.OrderedLifecycleDiscardedFrames
+	res["speakerOrderedLifecycleDiscardedBytes"] =
+		speakerState.OrderedLifecycleDiscardedBytes
 	res["speakerPayloadsReceived"] = speakerState.ReceivedPayloads
 	res["speakerBytesReceived"] = speakerState.ReceivedBytes
 	res["speakerPayloadsEnqueued"] = speakerState.EnqueuedPayloads
 	res["speakerBytesEnqueued"] = speakerState.EnqueuedBytes
+	res["speakerPayloadsRejectedAfterFault"] = speakerState.RejectedPayloads
+	res["speakerBytesRejectedAfterFault"] = speakerState.RejectedBytes
 	res["speakerPayloadsDropped"] = speakerState.DroppedPayloads
 	res["speakerBytesDropped"] = speakerState.DroppedBytes
+	res["speakerQueueOverruns"] = speakerState.Overruns
+	res["speakerQueueUnderruns"] = speakerState.Underruns
+	res["speakerLateGaps"] = speakerState.LateGaps
+	res["speakerStalePayloads"] = speakerState.StalePayloads
+	res["speakerStaleBytes"] = speakerState.StaleBytes
+	res["speakerLifecycleDiscardedPayloads"] =
+		speakerState.LifecycleDiscardedPayloads
+	res["speakerLifecycleDiscardedBytes"] =
+		speakerState.LifecycleDiscardedBytes
 	res["speakerPayloadsWritten"] = speakerState.WrittenPayloads
 	res["speakerBytesWritten"] = speakerState.WrittenBytes
 	res["speakerWriteFailures"] = speakerState.WriteFailures
+	res["speakerOrderedWriteFailures"] = speakerState.OrderedWriteFailures
 	res["speakerQueueDepth"] = speakerState.QueueDepth
 	res["speakerQueueHighWater"] = speakerState.QueueHighWater
+	res["speakerQueueDurationUS"] = speakerState.QueueDurationUS
+	res["speakerQueueDurationHighWaterUS"] = speakerState.QueueDurationHighUS
 	res["speakerMaxEnqueueGapUS"] = speakerState.MaxEnqueueGapUS
 	res["speakerMaxWriteGapUS"] = speakerState.MaxWriteGapUS
+	res["speakerTeardownFailures"] = speakerState.TeardownFailures
+	res["speakerTeardownPending"] = speakerState.TeardownPending
 	res["microphoneInterfaceActive"] = d.microphoneInterfaceActive
 	microphoneState := d.microphoneBuffer.State()
 	res["queuedMicrophoneBytes"] = microphoneState.QueuedBytes

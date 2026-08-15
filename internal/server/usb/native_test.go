@@ -737,6 +737,89 @@ func TestNativeEndpointResetClearsAlternateReuseClocks(t *testing.T) {
 	}
 }
 
+func TestNativeEndpointIncarnationDoesNotReuseWorkerOrActiveState(t *testing.T) {
+	desc := &usbdevice.Descriptor{
+		Device: usbdevice.DeviceDescriptor{Speed: uint32(udecx.DeviceSpeedHigh)},
+		Interfaces: []usbdevice.InterfaceConfig{
+			{Descriptor: usbdevice.InterfaceDescriptor{BInterfaceNumber: 2}},
+			{Descriptor: usbdevice.InterfaceDescriptor{
+				BInterfaceNumber: 2, BAlternateSetting: 1, BNumEndpoints: 1,
+			}, Endpoints: []usbdevice.EndpointDescriptor{{
+				BEndpointAddress: 0x82, BMAttributes: 0x03,
+				WMaxPacketSize: 64, BInterval: 4,
+			}}},
+		},
+	}
+	dev := &altSettingTestDevice{desc: desc}
+	processor := nativeProcessorForTest(t)
+	first := udecx.Operation{
+		DeviceID: 8, Generation: 3, EndpointGeneration: 1,
+		EndpointAddress: 0x82, EndpointAttributes: 0x03,
+		EndpointInterval: 4, EndpointMaxPacketSize: 64,
+	}
+	second := first
+	second.EndpointGeneration = 2
+	firstKey, secondKey := nativeLaneKeyFromOperation(first), nativeLaneKeyFromOperation(second)
+	if firstKey == secondKey {
+		t.Fatal("same-address endpoint incarnations share a worker/cache key")
+	}
+	processor.next[firstKey] = time.Now()
+	processor.next[secondKey] = time.Now().Add(time.Second)
+	processor.lastIn[firstKey] = []byte{1}
+	processor.lastIn[secondKey] = []byte{2}
+	processor.clearEndpointLanes(firstKey)
+	if _, ok := processor.next[secondKey]; !ok {
+		t.Fatal("retired endpoint generation cleared the successor service clock")
+	}
+	if got := processor.lastIn[secondKey]; !bytes.Equal(got, []byte{2}) {
+		t.Fatalf("successor input cache=%v want [2]", got)
+	}
+
+	processor.next[firstKey] = time.Now()
+	processor.lastIn[firstKey] = []byte{1}
+	second.Kind = udecx.OperationEndpointStart
+	if err := processor.Lifecycle(context.Background(), dev, second); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := processor.next[firstKey]; ok {
+		t.Fatal("successor endpoint start retained the retired incarnation clock")
+	}
+	if _, ok := processor.lastIn[firstKey]; ok {
+		t.Fatal("successor endpoint start retained the retired incarnation cache")
+	}
+
+	sessionKey := nativeSessionKey{deviceID: second.DeviceID, generation: second.Generation}
+	session := processor.lockSession(sessionKey)
+	if len(session.active) != 1 {
+		t.Fatalf("active endpoint incarnations=%d want 1", len(session.active))
+	}
+	if _, ok := session.active[signatureFromOperation(second)]; !ok {
+		t.Fatal("successor endpoint incarnation was not made authoritative")
+	}
+	session.mu.Unlock()
+
+	first.Kind = udecx.OperationEndpointPurge
+	if err := processor.Lifecycle(context.Background(), dev, first); err != nil {
+		t.Fatal(err)
+	}
+	session = processor.lockSession(sessionKey)
+	_, successorActive := session.active[signatureFromOperation(second)]
+	session.mu.Unlock()
+	if !successorActive {
+		t.Fatal("retired endpoint purge removed the successor active state")
+	}
+	if got := processor.server.getInterfaceAlt(dev, 2); got != 1 {
+		t.Fatalf("retired endpoint generation changed active alt to %d", got)
+	}
+	second.Kind = udecx.OperationEndpointPurge
+	if err := processor.Lifecycle(context.Background(), dev, second); err != nil {
+		t.Fatal(err)
+	}
+	if got := processor.server.getInterfaceAlt(dev, 2); got != 0 {
+		t.Fatalf("authoritative endpoint purge left alt %d active", got)
+	}
+}
+
 type concurrentNativeTestDevice struct {
 	desc      *usbdevice.Descriptor
 	mu        sync.Mutex

@@ -101,6 +101,7 @@ ViiperQueueCancelEventLocked(
     event->EndpointSequence = 0;
     event->DeviceSequence = 0;
     event->Generation = Pending->DeviceGeneration;
+    event->EndpointGeneration = Pending->EndpointGeneration;
     event->Kind = ViiperUdeOperationCancel;
     event->EndpointAddress = Pending->EndpointAddress;
     event->InterfaceNumber = 0;
@@ -157,13 +158,21 @@ ViiperDispatchNotificationEvents(
                 if (managementSlot >= VIIPER_UDE_MAX_PENDING_MANAGEMENT ||
                     (controllerContext->ManagementSlots[managementSlot].Token != event.Token ||
                      controllerContext->ManagementSlots[managementSlot].State !=
-                        ViiperUdePendingQueued) &&
+                        ViiperUdePendingQueued ||
+                     controllerContext->ManagementSlots[managementSlot].DeviceId !=
+                        event.DeviceId ||
+                     controllerContext->ManagementSlots[managementSlot].DeviceGeneration !=
+                        event.Generation ||
+                     controllerContext->ManagementSlots[managementSlot].EndpointGeneration !=
+                        event.EndpointGeneration) &&
                     (!controllerContext->ManagementSlots[managementSlot].RetiredNotificationPending ||
                      controllerContext->ManagementSlots[managementSlot].RetiredToken != event.Token ||
                      controllerContext->ManagementSlots[managementSlot].RetiredDeviceId !=
                         event.DeviceId ||
                      controllerContext->ManagementSlots[managementSlot].RetiredDeviceGeneration !=
-                        event.Generation)) {
+                        event.Generation ||
+                     controllerContext->ManagementSlots[managementSlot].RetiredEndpointGeneration !=
+                        event.EndpointGeneration)) {
                     status = STATUS_INVALID_DEVICE_STATE;
                 } else if (controllerContext->ManagementSlots[
                         managementSlot].RetiredNotificationPending) {
@@ -177,6 +186,8 @@ ViiperDispatchNotificationEvents(
                     controllerContext->ManagementSlots[managementSlot].RetiredDeviceId = 0;
                     controllerContext->ManagementSlots[
                         managementSlot].RetiredDeviceGeneration = 0;
+                    controllerContext->ManagementSlots[
+                        managementSlot].RetiredEndpointGeneration = 0;
                     controllerContext->ManagementSlots[
                         managementSlot].RetiredOwnerFile = WDF_NO_HANDLE;
                     event.Kind = ViiperUdeOperationCancel;
@@ -210,6 +221,7 @@ ViiperDispatchNotificationEvents(
         operation->EndpointMaxPacketSize = event.EndpointMaxPacketSize;
         operation->EndpointSequence = event.EndpointSequence;
         operation->DeviceSequence = event.DeviceSequence;
+        operation->EndpointGeneration = event.EndpointGeneration;
         // Lifecycle and cancel notifications have an empty canonical tail.
         // Keep both offsets at the first byte after the fixed header so the
         // same strict parser contract applies to notifications and URBs.
@@ -270,6 +282,7 @@ ViiperClearManagementSlotLocked(
     pending->DeviceId = 0;
     pending->ResetEpoch = 0;
     pending->DeviceGeneration = 0;
+    pending->EndpointGeneration = 0;
     pending->State = ViiperUdePendingEmpty;
     pending->Kind = 0;
     pending->EndpointAddress = 0;
@@ -321,6 +334,10 @@ ViiperAdmissionCanPublishLocked(
         return FALSE;
     }
     endpointContext = ViiperGetEndpointContext(Pending->Endpoint);
+    if (Pending->EndpointGeneration == 0 ||
+        Pending->EndpointGeneration != endpointContext->Generation) {
+        return FALSE;
+    }
     return endpointContext->AdmissionQueue.Flink == &Pending->AdmissionEntry;
 }
 
@@ -360,6 +377,7 @@ ViiperClearSlotLocked(
     pending->DeviceId = 0;
     pending->AdmissionSequence = 0;
     pending->DeviceGeneration = 0;
+    pending->EndpointGeneration = 0;
     pending->State = ViiperUdePendingEmpty;
     pending->AbortPending = FALSE;
     pending->PublishedToOwner = FALSE;
@@ -568,6 +586,9 @@ ViiperQueueUrbCompletion(
         NT_ASSERT(FALSE);
         return FALSE;
     }
+    NT_ASSERT(requestContext->DeviceGeneration != 0);
+    NT_ASSERT(requestContext->EndpointGeneration != 0);
+    NT_ASSERT(requestContext->Endpoint == Endpoint);
 
     WdfObjectReference(Request);
     requestContext->CompletionRequest = Request;
@@ -626,6 +647,8 @@ ViiperEvtCompletionDpc(
         BOOLEAN completeWithNtStatus = FALSE;
         ULONG directInputBytes = 0;
         ULONGLONG directInputSequence = 0;
+        ULONG deviceGeneration = 0;
+        ULONG endpointGeneration = 0;
         BOOLEAN ownershipReleased = FALSE;
         PLIST_ENTRY entry;
         VIIPER_UDE_REQUEST_CONTEXT *requestContext;
@@ -649,6 +672,8 @@ ViiperEvtCompletionDpc(
         completeWithNtStatus = requestContext->CompleteWithNtStatus;
         directInputBytes = requestContext->DirectInputBytes;
         directInputSequence = requestContext->DirectInputSequence;
+        deviceGeneration = requestContext->DeviceGeneration;
+        endpointGeneration = requestContext->EndpointGeneration;
         requestContext->CompletionRequest = WDF_NO_HANDLE;
         requestContext->CompletionQueued = FALSE;
         if (slot < VIIPER_UDE_MAX_PENDING_OPERATIONS) {
@@ -664,6 +689,17 @@ ViiperEvtCompletionDpc(
             NT_ASSERT(token == 0);
         }
         WdfSpinLockRelease(controllerContext->BrokerLock);
+
+        if (endpoint == WDF_NO_HANDLE || deviceGeneration == 0 || endpointGeneration == 0 ||
+            ViiperGetEndpointContext(endpoint)->Generation != endpointGeneration ||
+            ViiperGetDeviceContext(ViiperGetEndpointContext(endpoint)->Device)->Generation !=
+                deviceGeneration) {
+            NT_ASSERT(FALSE);
+            completionStatus = STATUS_DEVICE_NOT_READY;
+            completeWithNtStatus = TRUE;
+            directInputBytes = 0;
+            directInputSequence = 0;
+        }
 
         if (completeWithNtStatus) {
             UdecxUrbCompleteWithNtStatus(request, completionStatus);
@@ -687,7 +723,8 @@ ViiperEvtCompletionDpc(
             controllerContext->PendingSlots[slot].State == ViiperUdePendingCompleting) {
             ViiperClearSlotLocked(controllerContext, slot);
             ownershipReleased = TRUE;
-        } else if (slot >= VIIPER_UDE_MAX_PENDING_OPERATIONS) {
+        } else if (slot >= VIIPER_UDE_MAX_PENDING_OPERATIONS &&
+            endpoint != WDF_NO_HANDLE) {
             ViiperEndpointOperationCompletedLocked(endpoint);
             ownershipReleased = TRUE;
         }
@@ -717,17 +754,46 @@ ViiperDrainUrbCompletions(
     )
 {
     VIIPER_UDE_CONTROLLER_CONTEXT *controllerContext = ViiperGetControllerContext(Controller);
+    LARGE_INTEGER watchdogWait;
 
     NT_ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
+    watchdogWait.QuadPart =
+        -(LONGLONG)VIIPER_UDE_RUNDOWN_WATCHDOG_INTERVAL_100NS;
     for (;;) {
         BOOLEAN drained;
+        NTSTATUS waitStatus;
 
-        (VOID)KeWaitForSingleObject(
+        waitStatus = KeWaitForSingleObject(
             &controllerContext->CompletionOperationsDrained,
             Executive,
             KernelMode,
             FALSE,
-            NULL);
+            &watchdogWait);
+        if (waitStatus == STATUS_TIMEOUT) {
+            LONG pendingCompletions;
+            ULONG completionDpcActive;
+
+            WdfSpinLockAcquire(controllerContext->BrokerLock);
+            pendingCompletions = InterlockedCompareExchange(
+                &controllerContext->PendingCompletions, 0, 0);
+            completionDpcActive =
+                controllerContext->CompletionDpcActive ? 1U : 0U;
+            WdfSpinLockRelease(controllerContext->BrokerLock);
+            VIIPER_TRACE_LIFECYCLE(
+                Controller,
+                VIIPER_UDE_TRACE_SOURCE_BROKER,
+                VIIPER_UDE_TRACE_COMPLETION_RUNDOWN_WATCHDOG,
+                0,
+                0,
+                WDF_NO_HANDLE,
+                WDF_NO_HANDLE,
+                0,
+                STATUS_IO_TIMEOUT,
+                pendingCompletions,
+                completionDpcActive);
+        } else {
+            NT_ASSERT(waitStatus == STATUS_SUCCESS);
+        }
         (VOID)WdfDpcCancel(controllerContext->CompletionDpc, TRUE);
 
         // Closing the device's I/O queues precedes this join. If cancellation
@@ -788,6 +854,7 @@ ViiperQueueLifecycleEventLocked(
     _In_ VIIPER_UDE_CONTROLLER_CONTEXT *ControllerContext,
     _In_ VIIPER_UDE_DEVICE_CONTEXT *DeviceContext,
     _In_opt_ const USB_ENDPOINT_DESCRIPTOR *EndpointDescriptor,
+    _In_ ULONG EndpointGeneration,
     _In_ VIIPER_UDE_OPERATION_KIND Kind,
     _In_ UCHAR InterfaceNumber,
     _In_ UCHAR InterfaceSetting,
@@ -813,6 +880,7 @@ ViiperQueueLifecycleEventLocked(
     event->Token = Token;
     event->DeviceId = DeviceContext->DeviceId;
     event->Generation = DeviceContext->Generation;
+    event->EndpointGeneration = EndpointGeneration;
     event->Kind = Kind;
     if (EndpointDescriptor != NULL) {
         event->EndpointAddress = EndpointDescriptor->bEndpointAddress;
@@ -822,8 +890,13 @@ ViiperQueueLifecycleEventLocked(
     }
     event->InterfaceNumber = InterfaceNumber;
     event->InterfaceSetting = InterfaceSetting;
-    event->EndpointSequence = (ULONGLONG)InterlockedIncrement64(
-        &DeviceContext->EndpointSequences[event->EndpointAddress]);
+    if (EndpointGeneration != 0) {
+        event->EndpointSequence = (ULONGLONG)InterlockedIncrement64(
+            &DeviceContext->EndpointSequences[event->EndpointAddress]);
+    } else {
+        event->EndpointSequence = (ULONGLONG)InterlockedIncrement64(
+            &DeviceContext->DeviceLifecycleSequence);
+    }
     event->DeviceSequence = (ULONGLONG)InterlockedIncrement64(
         &DeviceContext->DeviceSequence);
     ControllerContext->NotificationTail = (ControllerContext->NotificationTail + 1) %
@@ -857,6 +930,7 @@ ViiperQueueEndpointLifecycleEvent(
             controllerContext,
             deviceContext,
             &endpointContext->Descriptor,
+            endpointContext->Generation,
             Kind,
             0,
             0,
@@ -904,7 +978,7 @@ ViiperQueueDeviceLifecycleEvent(
         &controllerContext->BrokerFaulted, FALSE, FALSE) == FALSE;
     queued = active &&
         ViiperQueueLifecycleEventLocked(
-            controllerContext, deviceContext, NULL, Kind, 0, 0, 0);
+            controllerContext, deviceContext, NULL, 0, Kind, 0, 0, 0);
     faulted = ownerActive && InterlockedCompareExchange(
         &controllerContext->BrokerFaulted, FALSE, FALSE) != FALSE;
     WdfSpinLockRelease(controllerContext->BrokerLock);
@@ -945,6 +1019,7 @@ ViiperQueueInterfaceLifecycleEvent(
             controllerContext,
             deviceContext,
             NULL,
+            0,
             ViiperUdeOperationSetInterface,
             InterfaceNumber,
             InterfaceSetting,
@@ -1036,13 +1111,11 @@ ViiperQueueAcknowledgedLifecycleEvent(
         VIIPER_UDE_MANAGEMENT_SLOT *pending = &controllerContext->ManagementSlots[index];
         ULONGLONG token;
 
-        if (pending->State != ViiperUdePendingEmpty || pending->RetiredToken != 0) {
+        if (pending->State != ViiperUdePendingEmpty || pending->RetiredToken != 0 ||
+            pending->Generation == MAXULONG) {
             continue;
         }
         ++pending->Generation;
-        if (pending->Generation == 0) {
-            ++pending->Generation;
-        }
         token = ((ULONGLONG)pending->Generation << 32) |
             VIIPER_UDE_MANAGEMENT_SLOT_FLAG | (index + 1);
         pending->Request = Request;
@@ -1057,6 +1130,9 @@ ViiperQueueAcknowledgedLifecycleEvent(
             : (ULONGLONG)InterlockedCompareExchange64(
                 &deviceContext->ResetEpoch, 0, 0);
         pending->DeviceGeneration = deviceContext->Generation;
+        pending->EndpointGeneration = endpointContext != NULL
+            ? endpointContext->Generation
+            : 0;
         pending->State = ViiperUdePendingQueued;
         pending->Kind = Kind;
         pending->EndpointAddress = descriptor != NULL ? descriptor->bEndpointAddress : 0;
@@ -1064,6 +1140,7 @@ ViiperQueueAcknowledgedLifecycleEvent(
                 controllerContext,
                 deviceContext,
                 descriptor,
+                pending->EndpointGeneration,
                 Kind,
                 InterfaceNumber,
                 InterfaceSetting,
@@ -1076,6 +1153,7 @@ ViiperQueueAcknowledgedLifecycleEvent(
             pending->DeviceId = 0;
             pending->ResetEpoch = 0;
             pending->DeviceGeneration = 0;
+            pending->EndpointGeneration = 0;
             pending->State = ViiperUdePendingEmpty;
             pending->Kind = 0;
             pending->EndpointAddress = 0;
@@ -1178,14 +1256,11 @@ ViiperAllocatePendingSlot(
         ULONG index = (ControllerContext->NextPendingSlot + offset) %
             VIIPER_UDE_MAX_PENDING_OPERATIONS;
         VIIPER_UDE_PENDING_SLOT *pending = &ControllerContext->PendingSlots[index];
-        if (pending->State != ViiperUdePendingEmpty) {
+        if (pending->State != ViiperUdePendingEmpty || pending->Generation == MAXULONG) {
             continue;
         }
         NT_ASSERT(!pending->AdmissionLinked);
         ++pending->Generation;
-        if (pending->Generation == 0) {
-            ++pending->Generation;
-        }
         pending->Request = Request;
         pending->Endpoint = Endpoint;
         pending->Token = ((ULONGLONG)pending->Generation << 32) | (index + 1);
@@ -1196,6 +1271,7 @@ ViiperAllocatePendingSlot(
         }
         pending->AdmissionSequence = endpointContext->NextAdmissionSequence;
         pending->DeviceGeneration = deviceContext->Generation;
+        pending->EndpointGeneration = endpointContext->Generation;
         pending->State = ViiperUdePendingPreparing;
         pending->AbortPending = FALSE;
         pending->PublishedToOwner = FALSE;
@@ -1239,6 +1315,9 @@ ViiperEvtUrbCanceledOnQueue(
     requestContext->Controller = controller;
     requestContext->Endpoint = endpoint;
     requestContext->PendingSlot = VIIPER_UDE_MAX_PENDING_OPERATIONS;
+    requestContext->DeviceGeneration =
+        ViiperGetDeviceContext(ViiperGetEndpointContext(endpoint)->Device)->Generation;
+    requestContext->EndpointGeneration = ViiperGetEndpointContext(endpoint)->Generation;
     WdfSpinLockAcquire(controllerContext->BrokerLock);
     ViiperEndpointOperationStarted(endpoint);
     WdfSpinLockRelease(controllerContext->BrokerLock);
@@ -1712,6 +1791,7 @@ ViiperSerializeOperation(
     operation->EndpointAttributes = endpointContext->Descriptor.bmAttributes;
     operation->EndpointInterval = endpointContext->Descriptor.bInterval;
     operation->EndpointMaxPacketSize = endpointContext->Descriptor.wMaxPacketSize;
+    operation->EndpointGeneration = endpointContext->Generation;
     operation->Direction = directionIn ? 1 : 0;
     operation->UrbFunction = urb->UrbHeader.Function;
     operation->TransferFlags = transferFlags;
@@ -1983,6 +2063,14 @@ ViiperDispatchAvailable(
             VIIPER_UDE_PENDING_SLOT *pending = &controllerContext->PendingSlots[slot];
             abortPending = pending->AbortPending;
             abortStatus = pending->AbortStatus;
+            if (pending->DeviceGeneration !=
+                    ViiperGetRequestContext(urbRequest)->DeviceGeneration ||
+                pending->EndpointGeneration !=
+                    ViiperGetRequestContext(urbRequest)->EndpointGeneration ||
+                pending->EndpointGeneration !=
+                    ViiperGetEndpointContext(endpoint)->Generation) {
+                status = STATUS_DEVICE_NOT_READY;
+            }
         } else {
             status = STATUS_CANCELLED;
         }
@@ -2019,6 +2107,15 @@ ViiperDispatchAvailable(
             } else {
                 abortPending = pending->AbortPending;
                 abortStatus = pending->AbortStatus;
+                if (pending->DeviceGeneration !=
+                        ViiperGetRequestContext(urbRequest)->DeviceGeneration ||
+                    pending->EndpointGeneration !=
+                        ViiperGetRequestContext(urbRequest)->EndpointGeneration ||
+                    pending->EndpointGeneration !=
+                        ViiperGetEndpointContext(endpoint)->Generation) {
+                    abortPending = TRUE;
+                    abortStatus = STATUS_DEVICE_NOT_READY;
+                }
                 pending->State = abortPending
                     ? ViiperUdePendingCompleting
                     : ViiperUdePendingInFlight;
@@ -2136,6 +2233,8 @@ ViiperQueueUrb(
     requestContext->Controller = deviceContext->Controller;
     requestContext->Endpoint = endpoint;
     requestContext->PendingSlot = VIIPER_UDE_MAX_PENDING_OPERATIONS;
+    requestContext->DeviceGeneration = deviceContext->Generation;
+    requestContext->EndpointGeneration = endpointContext->Generation;
     // KMDF has already delivered this UdeCx request to the driver. Enter
     // endpoint rundown and decide whether it may reach the broker in the same
     // BrokerLock transaction. A request delivered immediately before PURGE,
@@ -2286,7 +2385,9 @@ ViiperCompleteManagementOperation(
     if (ControllerContext->ManagementSlots[slot].Token == Completion->Token &&
         ControllerContext->ManagementSlots[slot].State == ViiperUdePendingInFlight &&
         ControllerContext->ManagementSlots[slot].DeviceId == Completion->DeviceId &&
-        ControllerContext->ManagementSlots[slot].DeviceGeneration == Completion->Generation) {
+        ControllerContext->ManagementSlots[slot].DeviceGeneration == Completion->Generation &&
+        ControllerContext->ManagementSlots[slot].EndpointGeneration ==
+            Completion->EndpointGeneration) {
         request = ControllerContext->ManagementSlots[slot].Request;
         device = ControllerContext->ManagementSlots[slot].Device;
         endpoint = ControllerContext->ManagementSlots[slot].Endpoint;
@@ -2301,13 +2402,16 @@ ViiperCompleteManagementOperation(
         ControllerContext->ManagementSlots[slot].RetiredDeviceId ==
             Completion->DeviceId &&
         ControllerContext->ManagementSlots[slot].RetiredDeviceGeneration ==
-            Completion->Generation) {
+            Completion->Generation &&
+        ControllerContext->ManagementSlots[slot].RetiredEndpointGeneration ==
+            Completion->EndpointGeneration) {
         // The corresponding request and WDF-object pins were synchronously
         // retired by child teardown after this token crossed to user mode.
         // Consume the tombstone as a harmless expected-late ACK.
         ControllerContext->ManagementSlots[slot].RetiredToken = 0;
         ControllerContext->ManagementSlots[slot].RetiredDeviceId = 0;
         ControllerContext->ManagementSlots[slot].RetiredDeviceGeneration = 0;
+        ControllerContext->ManagementSlots[slot].RetiredEndpointGeneration = 0;
         ControllerContext->ManagementSlots[slot].RetiredOwnerFile = WDF_NO_HANDLE;
         retiredCompletion = TRUE;
     }
@@ -2330,6 +2434,7 @@ ViiperCompleteManagementOperation(
             Completion->Generation,
             device,
             WDF_NO_HANDLE,
+            0,
             resetEpoch,
             0,
             TRUE,
@@ -2346,6 +2451,7 @@ ViiperCompleteManagementOperation(
             Completion->Generation,
             device,
             endpoint,
+            Completion->EndpointGeneration,
             resetEpoch,
             endpointAddress,
             FALSE,
@@ -2432,7 +2538,9 @@ ViiperCompleteOperation(
         completion->TransferLength > VIIPER_UDE_MAX_TRANSFER_BYTES ||
         completion->PayloadLength > VIIPER_UDE_MAX_TRANSFER_BYTES ||
         completion->IsoPacketCount > VIIPER_UDE_MAX_ISO_PACKETS ||
-        completion->Reserved[0] != 0 || completion->Reserved[1] != 0) {
+        (((ULONG)completion->Token & VIIPER_UDE_MANAGEMENT_SLOT_FLAG) == 0 &&
+         completion->EndpointGeneration == 0) ||
+        completion->Reserved != 0) {
         InterlockedIncrement64(&controllerContext->InvalidMessages);
         return STATUS_INVALID_PARAMETER;
     }
@@ -2488,7 +2596,9 @@ ViiperCompleteOperation(
     if (controllerContext->PendingSlots[slot].Token == completion->Token &&
         controllerContext->PendingSlots[slot].State == ViiperUdePendingInFlight) {
         if (controllerContext->PendingSlots[slot].DeviceId == completion->DeviceId &&
-            controllerContext->PendingSlots[slot].DeviceGeneration == completion->Generation) {
+            controllerContext->PendingSlots[slot].DeviceGeneration == completion->Generation &&
+            controllerContext->PendingSlots[slot].EndpointGeneration ==
+                completion->EndpointGeneration) {
             urbRequest = controllerContext->PendingSlots[slot].Request;
             controllerContext->PendingSlots[slot].State = ViiperUdePendingCompleting;
             WdfObjectReference(urbRequest);
@@ -2525,6 +2635,10 @@ ViiperCompleteOperation(
             ViiperGetDeviceContext(ViiperGetEndpointContext(requestContext->Endpoint)->Device)->DeviceId ||
         completion->Generation !=
             ViiperGetDeviceContext(ViiperGetEndpointContext(requestContext->Endpoint)->Device)->Generation ||
+        completion->Generation != requestContext->DeviceGeneration ||
+        completion->EndpointGeneration != requestContext->EndpointGeneration ||
+        completion->EndpointGeneration !=
+            ViiperGetEndpointContext(requestContext->Endpoint)->Generation ||
         completion->TransferLength > requestContext->TransferLength) {
         status = STATUS_INVALID_PARAMETER;
         InterlockedIncrement64(&controllerContext->InvalidMessages);
@@ -2751,6 +2865,8 @@ ViiperAbortManagementOperationsMatching(
                         controllerContext->ManagementSlots[index].DeviceId;
                     controllerContext->ManagementSlots[index].RetiredDeviceGeneration =
                         controllerContext->ManagementSlots[index].DeviceGeneration;
+                    controllerContext->ManagementSlots[index].RetiredEndpointGeneration =
+                        controllerContext->ManagementSlots[index].EndpointGeneration;
                     controllerContext->ManagementSlots[index].RetiredOwnerFile =
                         controllerContext->ManagementSlots[index].OwnerFile;
                     controllerContext->ManagementSlots[index].RetiredNotificationPending =
@@ -2857,6 +2973,7 @@ ViiperRetireManagementTombstonesForOwner(
             pending->RetiredToken = 0;
             pending->RetiredDeviceId = 0;
             pending->RetiredDeviceGeneration = 0;
+            pending->RetiredEndpointGeneration = 0;
             pending->RetiredOwnerFile = WDF_NO_HANDLE;
             pending->RetiredNotificationPending = FALSE;
         }

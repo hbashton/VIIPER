@@ -91,6 +91,7 @@ $requiredContracts = [ordered]@{
         'self-test-pristine-runtime-stats'
     'loaded-kernel build identity negotiation' = 'response\.BuildIdentity'
     'exact negotiated capability identity' = 'response\.Capabilities == profile\.capabilities'
+    'explicit ABI 1.13 profile' = '\{13, 29, 152, true\}'
     'explicit ABI 1.12 profile' = '\{12, 29, 152, true\}'
     'explicit ABI 1.11 profile' = '\{11, 29, 144, false\}'
     'explicit ABI 1.10 profile' = '\{10, 13, 144, false\}'
@@ -172,40 +173,51 @@ $requiredContracts = [ordered]@{
     'same-handle manifest binding' = 'Sha256Handle\(manifest\.get\(\)'
     'final exact package enumeration' = 'ValidateExactPackageDirectory\('
     'reboot boundary rollback' = 'broker-reboot-boundary'
-    'remove rollback backup' = 'BackupPackages\('
+    'fixed remove recovery root' =
+        'kRemoveRecoveryRootDirectory\[\][\s\S]{0,60}L"VIIPER-UdeCx-RemoveTransactions"'
+    'single remove active identity' =
+        'kRemoveRecoveryActiveDirectory\[\] = L"active-v2"'
+    'remove protected prior backup' = 'BackupPackagesIntoDirectory\('
     'protected rollback directory' = 'kRollbackDirectorySecurity'
     'inherited rollback protection' = 'O:BAD:P\(A;OICI;FA;;;SY\)\(A;OICI;FA;;;BA\)'
-    'unpredictable rollback directory' = 'CryptGenRandom\('
     'verified protected rollback ACLs' = 'VerifyProtectedFileSystemSecurity\('
     'protected exact rollback file copy' = 'CopyProtectedBackupFile\('
     'exact rollback package tree' = 'ValidateExactPackageDirectory\(destination'
     'durable rollback package payloads' = 'rollback-backup-file-flush'
     'immutable rollback package files' = 'LockPackageFiles\(destination, &locks'
-    'pre-mutation rollback preservation' = 'ArmPreservation\('
     'protected recovery record' = 'kRecoveryRecordSecurity'
-    'private recovery record staging name' = 'kRecoveryRecordTemporaryName'
     'explicit recovery record flush' = 'FlushFileBuffers\(file\.get\(\)\)'
     'atomic recovery record publish' =
         'MoveFileExW\([\s\S]{0,180}MOVEFILE_WRITE_THROUGH'
-    'recovery record read-back verification' = 'recovery-record-verify'
-    'prepared write-ahead recovery state' =
-        '\\"state\\":\\"prepared-remove-transaction\\"'
-    'manual-only recovery policy' = '\\"automaticRestore\\":false'
-    'recovery signature and hash revalidation' =
-        '\\"requiredValidation\\":\[\\"inf-signature\\"[\s\S]{0,180}\\"cat-sha256\\"\]'
+    'remove record read-back verification' = 'remove-journal-readback'
+    'remove hash chain' = 'WriteRemoveJournalRecord\('
+    'remove automatic recovery' = 'ReconcileRemoveJournal\('
+    'remove legal transitions' = 'ValidateRemoveJournalTransition\('
+    'remove manual latch' = 'RemoveJournalPhase::ManualReconciliationRequired'
+    'remove deterministic model' = 'RunRemoveJournalModelSelfTest\('
     'recovery record path emission' = 'recoveryRecordWritten='
     'retained backup path emission' = 'recoveryBackupRetained='
-    'pre-journal retained backup reporting' = 'recovery-record-not-published'
     'recovery relative path confinement' = 'IsSafeRecoveryRelativePath\('
-    'unique devnode package recovery binding' = '\\"packageIndex\\":'
-    'checked rollback backup cleanup' = 'if \(!backupRoot\.Cleanup\(&backups'
+    'exact package cutpoint identity' = '\\"activePackageIndex\\":'
+    'atomic remove terminal retirement' = 'RetireRemoveRecoveryActiveDirectory\('
+    'loaded remove terminal retirement' = 'RetireLoadedRemoveJournal\('
+    'remove descendant lock release regression' =
+        'RunRemoveJournalRetirementSelfTest\('
+    'single captured remove target' = 'RemoveExactCapturedDevice\('
+    'remove rollback exact-absence restore policy' =
+        'RestorePriorBindingPolicy::RemoveJournalExactAbsence'
+    'fresh remove rollback deadline' = 'FreshRemoveRollbackDeadline\('
+    'crossed remove reboot manual latch' =
+        'CrossedRemoveRebootStillPendingRequiresManual\('
+    'retained settled tombstone warning' =
+        'warning=\\"remove-settled-cleanup-retained\\"'
     'top-level exception boundary' = 'catch \(\.\.\.\)'
     'exception-safe active recovery path' = 'gActiveRecoveryRecordWritten'
     'exception-safe mutation classification' = 'gTransactionMutationStarted'
     'remove deadline parser' = 'ParseRemoveOptions\('
-    'remove mutation deadline' = 'remove-deadline-before-device'
+    'remove mutation deadline' = 'remove-journal-package-deadline'
     'finite remove rollback ceiling' = 'kDriverRollbackCeilingMs'
-    'remove rollback deadline' = 'remove-rollback-deadline-package'
+    'remove rollback deadline' = 'remove-journal-restore-package-deadline'
     'transaction mutex' = 'VIIPER_UDE_DRIVER_TRANSACTION_V1'
     'protected private transaction namespace' = 'CreatePrivateNamespaceW\('
     'protected transaction object DACL' = 'D:P\(A;;GA;;;SY\)\(A;;GA;;;BA\)'
@@ -473,13 +485,225 @@ $removeEntrySource = Get-SourceContractRegion -Text $source `
 Assert-OrderedSourceFragments -Text $removeEntrySource -Name 'remove pre-mutation reconciliation' `
     -Fragments @(
         'mutex.Acquire(',
+        'ReconcileRemoveJournal(',
         'ReconcileInstallJournal(',
         'CaptureSnapshot(',
-        'BackupPackages('
+        'PrepareRemoveJournal(',
+        'ReconcileRemoveJournal('
     )
 
+$removePrepareSource = Get-SourceContractRegion -Text $source `
+    -Start 'bool PrepareRemoveJournal(' -End 'enum class RemoveRootShape' `
+    -Name 'remove journal preparation'
+Assert-OrderedSourceFragments -Text $removePrepareSource `
+    -Name 'remove evidence before Prepared' -Fragments @(
+        'OpenChain(true',
+        'PublishRemoveRecoveryEvidence(',
+        'BackupPackagesIntoDirectory(',
+        'ValidateRemoveJournalTransition(nullptr',
+        'WriteRemoveJournalRecord('
+    )
+
+$removeRecordSource = Get-SourceContractRegion -Text $source `
+    -Start 'bool AppendRemoveJournalRecord(' -End 'bool PrepareRemoveJournal(' `
+    -Name 'remove append-only record' -LastStart
+Assert-OrderedSourceFragments -Text $removeRecordSource `
+    -Name 'remove atomic state publication' -Fragments @(
+        'ValidateRemoveJournalTransition(',
+        'WriteRemoveJournalRecord(',
+        'loaded->state = std::move(next);',
+        'PublishRemoveRecoveryEvidence('
+    )
+if (-not $removeRecordSource.Contains('loaded->poisoned = true')) {
+    throw 'ViiperUdeCtl must poison remove recovery after an indeterminate append.'
+}
+
+$removeRetireSource = Get-SourceContractRegion -Text $source `
+    -Start 'bool RetireLoadedRemoveJournal(' -End 'bool AppendRemoveJournalRecord(' `
+    -Name 'loaded remove journal retirement'
+Assert-OrderedSourceFragments -Text $removeRetireSource `
+    -Name 'remove descendant evidence release immediately before rename' -Fragments @(
+        'RemoveJournalPhase::ForwardValidated',
+        'RemoveJournalPhase::ExactPriorRestored',
+        'const std::string transactionId',
+        'loaded->priorBackups.clear();',
+        'loaded->evidenceLocks.clear();',
+        'return RetireRemoveRecoveryActiveDirectory('
+    )
+
+$removeRawRetireSource = Get-SourceContractRegion -Text $source `
+    -Start 'bool RetireRemoveRecoveryActiveDirectory(' `
+    -End 'struct RemoveJournalStateData {' `
+    -Name 'raw remove terminal retirement'
+Assert-OrderedSourceFragments -Text $removeRawRetireSource `
+    -Name 'remove tombstone retirement evidence' -Fragments @(
+        'MoveFileExW(',
+        'error->recoveryBackup = tombstone.wstring();',
+        'ClearActiveRecoveryEvidence();',
+        'std::filesystem::remove_all(',
+        'gRetainedRemoveTombstoneError',
+        'OutputDebugStringW('
+    )
+
+$removePriorRetireSource = Get-SourceContractRegion -Text $source `
+    -Start 'bool RetireRemoveJournalAsPrior(' `
+    -End 'bool RetireRemoveJournalAsUninstalled(' `
+    -Name 'remove prior terminal retirement'
+Assert-OrderedSourceFragments -Text $removePriorRetireSource `
+    -Name 'remove prior terminal double validation' -Fragments @(
+        'CurrentRemoveStateMatchesPrior(',
+        'RemoveJournalPhase::ExactPriorRestored',
+        'RecordRemoveJournalPhase(',
+        'CurrentRemoveStateMatchesPrior(',
+        'RetireLoadedRemoveJournal('
+    )
+if (-not $removePriorRetireSource.Contains(
+        'if (outcome->error.recoveryBackup.empty())')) {
+    throw 'Prior retirement must preserve an exact tombstone failure path instead of overwriting it with absent active-v2.'
+}
+
+$removeForwardRetireSource = Get-SourceContractRegion -Text $source `
+    -Start 'bool RetireRemoveJournalAsUninstalled(' `
+    -End 'bool FailRemoveJournalManual(' `
+    -Name 'remove forward terminal retirement'
+Assert-OrderedSourceFragments -Text $removeForwardRetireSource `
+    -Name 'remove forward terminal double validation' -Fragments @(
+        'CurrentRemoveStateIsUninstalled(',
+        'RemoveJournalPhase::ForwardValidated',
+        'RecordRemoveJournalPhase(',
+        'CurrentRemoveStateIsUninstalled(',
+        'RetireLoadedRemoveJournal('
+    )
+if (-not $removeForwardRetireSource.Contains(
+        'if (outcome->error.recoveryBackup.empty())')) {
+    throw 'Forward retirement must preserve an exact tombstone failure path instead of overwriting it with absent active-v2.'
+}
+
+$removeManualSource = Get-SourceContractRegion -Text $source `
+    -Start 'bool FailRemoveJournalManual(' `
+    -End 'bool ReturnRemoveJournalRebootPending(' `
+    -Name 'remove manual evidence retention'
+if (-not $removeManualSource.Contains('!cause->recoveryBackup.empty()') -or
+    $removeManualSource.Contains('RetireLoadedRemoveJournal(')) {
+    throw 'Manual recovery must preserve callee tombstone evidence and must never release terminal evidence locks.'
+}
+
+$removeDeviceSource = Get-SourceContractRegion -Text $source `
+    -Start 'bool RemoveExactCapturedDevice(' -End 'bool RegisterRootDevice(' `
+    -Name 'single captured device removal'
+Assert-OrderedSourceFragments -Text $removeDeviceSource `
+    -Name 'single captured device immutable revalidation' -Fragments @(
+        'FindExactDevices(',
+        'LoadOwnedPackage(',
+        'IsExactCapturedRemoveTarget(',
+        'return RemoveDevice('
+    )
+
+$removeRollbackSource = Get-SourceContractRegion -Text $source `
+    -Start 'bool RunRemoveRollbackRecovery(' -End 'bool AdmitRemoveRollback(' `
+    -Name 'remove rollback recovery'
+Assert-OrderedSourceFragments -Text $removeRollbackSource `
+    -Name 'interrupted binding admission reuse' -Fragments @(
+        'ReusesInterruptedRemoveBindingAdmission(',
+        '!reusingInterruptedBindingAdmission',
+        'RemoveJournalPhase::RollbackBindingEntered',
+        'ObserveRemoveRootShape(',
+        'VerifyPackageInventory(',
+        'RestorePriorBinding('
+    )
+Assert-OrderedSourceFragments -Text $removeRollbackSource `
+    -Name 'remove rollback exact-absence binding authority' -Fragments @(
+        'ObserveRemoveRootShape(',
+        'root != RemoveRootShape::Absent',
+        'VerifyPackageInventory(',
+        'RestorePriorBinding(restorable,',
+        'RestorePriorBindingPolicy::RemoveJournalExactAbsence'
+    )
+
+$restoreBindingSource = Get-SourceContractRegion -Text $source `
+    -Start 'bool RestorePriorBinding(' -End 'bool RollbackInstall(' `
+    -Name 'prior binding restore policy'
+Assert-OrderedSourceFragments -Text $restoreBindingSource `
+    -Name 'remove exact-absence race fails before mutation' -Fragments @(
+        'CaptureSnapshot(',
+        'RestorePriorBindingTopologyAdmitsMutation(',
+        'RestorePriorBindingPolicy::InstallRollbackReconcile &&',
+        'RemoveDevice(',
+        'RegisterRootDeviceExact(',
+        'InstallPreinstalledDriverOnDevice('
+    )
+if (-not $restoreBindingSource.Contains(
+        'policy == RestorePriorBindingPolicy::RemoveJournalExactAbsence') -or
+    -not $source.Contains(
+        'self-test-remove-journal-binding-exact-absence-race')) {
+    throw 'Remove rollback must reject a concurrently appeared root before any restore mutation.'
+}
+
+$removeAdmissionSource = Get-SourceContractRegion -Text $source `
+    -Start 'bool AdmitRemoveRollback(' -End 'bool RunRemoveForwardRecovery(' `
+    -Name 'remove rollback admission'
+Assert-OrderedSourceFragments -Text $removeAdmissionSource `
+    -Name 'durable rollback admission and fresh deadline' -Fragments @(
+        'RemoveJournalPhase::RestoreRebootPending',
+        'RecordRemoveJournalPhase(',
+        'FreshRemoveRollbackDeadline();',
+        'RunRemoveRollbackRecovery('
+    )
+if ($removeAdmissionSource.Contains('deadlineUnixMs')) {
+    throw 'Forward-to-rollback admission must not accept or reuse the exhausted forward deadline.'
+}
+
+$removeForwardSource = Get-SourceContractRegion -Text $source `
+    -Start 'bool RunRemoveForwardRecovery(' -End 'bool ReconcileRemoveJournal(' `
+    -Name 'remove forward recovery'
+Assert-OrderedSourceFragments -Text $removeForwardSource `
+    -Name 'crossed reboot loop fails closed' -Fragments @(
+        'CrossedRemoveRebootStillPendingRequiresManual(',
+        'FailRemoveJournalManual(',
+        'ReturnRemoveJournalRebootPending('
+    )
+$crossedRebootSource = Get-SourceContractRegion -Text $source `
+    -Start 'bool CrossedRemoveRebootStillPendingRequiresManual(' `
+    -End 'bool ReusesInterruptedRemoveBindingAdmission(' `
+    -Name 'crossed remove reboot decision'
+foreach ($fragment in @(
+    'RemoveJournalPhase::DeviceRemovalReturned',
+    'callSucceeded',
+    'freshRebootRequired',
+    '!samePendingBoot'
+)) {
+    if (-not $crossedRebootSource.Contains($fragment)) {
+        throw "Returned-to-pending crossed reboot decision lost '$fragment'."
+    }
+}
+if (-not $source.Contains(
+        'self-test-remove-journal-device-returned-pending-cut')) {
+    throw 'ViiperUdeCtl lost the compiled DeviceRemovalReturned-to-pending crash cut test.'
+}
+if ($removeForwardSource.Contains('RemoveAllExactDevices(') -or
+    -not $removeForwardSource.Contains('RemoveExactCapturedDevice(')) {
+    throw 'Protected forward removal must target one immutable captured root and never call broad all-device removal.'
+}
+
+$removeReconcileSource = Get-SourceContractRegion -Text $source `
+    -Start 'bool ReconcileRemoveJournal(' -End 'struct RemoveOptions {' `
+    -Name 'remove startup reconciliation' -LastStart
+foreach ($fragment in @(
+    'LoadRemoveJournal(',
+    'InstallRecoveryDirectory installDirectory',
+    'installExists',
+    'ManualReconciliationRequired',
+    'GetBootIdentifier(',
+    'RunRemoveRollbackRecovery(',
+    'RunRemoveForwardRecovery('
+)) {
+    if (-not $removeReconcileSource.Contains($fragment)) {
+        throw "ViiperUdeCtl remove reconciliation lost '$fragment'."
+    }
+}
+
 $reconcileSource = Get-SourceContractRegion -Text $source `
-    -Start 'bool ReconcileInstallJournal(' -End 'bool RollbackRemove(' `
+    -Start 'bool ReconcileInstallJournal(' -End 'const char* RemoveJournalPhaseName(' `
     -Name 'startup journal reconciliation' -LastStart
 foreach ($fragment in @(
     'ForwardRebootPending && sameBoot',
@@ -659,16 +883,16 @@ $orderedMutationContracts = [ordered]@{
         'AbiHealthPurpose::RollbackHealth[\s\S]{0,400}RollbackLifecycleStateMatches\([\s\S]{0,300}rollback-stopped-state-verification'
     'broker handoff follows exact binding verification and precedes nested commit' =
         'VerifyInstalledBinding\([\s\S]{0,12000}SignalBrokerHandoff\([\s\S]{0,800}RunBrokerInstall\('
-    'recovery journal is published and preservation armed before mutation' =
-        'BuildRemoveRecoveryRecord\([\s\S]{0,300}WriteProtectedRecoveryRecord\([\s\S]{0,240}ArmPreservation\([\s\S]{0,700}RemoveAllExactDevices\('
-    'failed remove rollback preserves published evidence before return' =
-        'AttachRecoveryRecord\(&rollbackError\);[\s\S]{0,180}outcome\.rollback = L"failed";[\s\S]{0,300}return outcome;'
-    'verified rollback performs checked evidence cleanup' =
-        'outcome\.rollback = L"succeeded";[\s\S]{0,300}backupRoot\.Cleanup\(&backups, &cleanupError\)[\s\S]{0,300}return outcome;'
-    'committed removal performs checked evidence cleanup before success' =
-        'if \(!backupRoot\.Cleanup\(&backups, &cleanupError\)\)[\s\S]{0,240}ExitCode::RollbackFailed;[\s\S]{0,180}return outcome;[\s\S]{0,100}outcome\.success = true;'
-    'preservation disarms only after verified evidence absence' =
-        'std::filesystem::exists\(path_, presenceError\)[\s\S]{0,260}if \(removalError \|\| presenceError \|\| remains\)[\s\S]{0,900}preserve_ = false;[\s\S]{0,100}ClearActiveRecoveryEvidence\(\);'
+    'remove journal and exact backups precede first mutation' =
+        'Outcome Remove\([\s\S]{0,6000}PrepareRemoveJournal\([\s\S]{0,1400}ReconcileRemoveJournal\('
+    'remove package admission is revalidated before exact mutation' =
+        'PackageRemovalEntered[\s\S]{0,1200}ObserveRemovePackagePrefix\([\s\S]{0,1200}InvokeRemovePackageMutation\('
+    'rollback package admission is revalidated before exact restoration' =
+        'RollbackPackageEntered[\s\S]{0,1200}ObserveRemovePackageSubset\([\s\S]{0,1800}InvokeRestorePackageMutation\('
+    'forward removal retires only after double exact validation' =
+        'CurrentRemoveStateIsUninstalled\([\s\S]{0,800}ForwardValidated[\s\S]{0,800}CurrentRemoveStateIsUninstalled\([\s\S]{0,800}RetireLoadedRemoveJournal\('
+    'rollback retires only after double exact prior validation' =
+        'CurrentRemoveStateMatchesPrior\([\s\S]{0,800}ExactPriorRestored[\s\S]{0,800}CurrentRemoveStateMatchesPrior\([\s\S]{0,800}RetireLoadedRemoveJournal\('
     'exception outcome distinguishes preflight from mutation' =
         'const bool changed = gTransactionMutationStarted;[\s\S]{0,180}changed[\s\S]{0,100}ExitCode::RollbackFailed : ExitCode::PreflightRejected;'
 }
@@ -745,8 +969,8 @@ if ($source -match 'SetupDiCreateDeviceInfoW\([\s\S]{0,120}className\.c_str\(\)'
     throw 'Forward root creation must use the VIIPER-owned device-name namespace, not the INF class name.'
 }
 
-if ([regex]::Matches($source, '\bRemoveAllExactDevices\(').Count -ne 2) {
-    throw 'All-device removal is allowed only for explicit forward uninstall, never rollback.'
+if ($source -match '\bRemoveAllExactDevices\(') {
+    throw 'Protected removal must never retain broad all-device mutation plumbing.'
 }
 
 if ([regex]::Matches($source, 'VerifyDriverCatalogMember\(catalogPath').Count -ne 4) {

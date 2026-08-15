@@ -188,7 +188,7 @@ func TestDuplexWriterFramesSpeakerPCM(t *testing.T) {
 	assert.Equal(t, pcm, payload)
 
 	require.NoError(t, client.Close())
-	writer.Stop()
+	require.NoError(t, writer.Stop())
 }
 
 func TestAudioInterfaceTransitionsDropPreviousGeneration(t *testing.T) {
@@ -236,7 +236,7 @@ func TestAudioInterfaceTransitionsDropPreviousGeneration(t *testing.T) {
 	dev.SetSpeakerCallback(nil)
 	dev.SetSpeakerResetCallback(nil)
 	require.NoError(t, client.Close())
-	writer.Stop()
+	require.NoError(t, writer.Stop())
 }
 
 func TestEndpointResetDropsSpeakerAndMicrophoneWithoutChangingAlt(t *testing.T) {
@@ -283,7 +283,7 @@ func TestEndpointResetDropsSpeakerAndMicrophoneWithoutChangingAlt(t *testing.T) 
 	dev.SetSpeakerCallback(nil)
 	dev.SetSpeakerResetCallback(nil)
 	require.NoError(t, client.Close())
-	writer.Stop()
+	require.NoError(t, writer.Stop())
 }
 
 func TestSpeakerRejectsPublicationFromPreResetRevision(t *testing.T) {
@@ -345,8 +345,9 @@ func TestSpeakerResetWaitsForInFlightDevicePublication(t *testing.T) {
 	assert.Equal(t, 1, resetCalls)
 }
 
-func TestDualShock4WriterRetainsNewestFinalControlState(t *testing.T) {
-	writer := newDualShock4OutputWriter(nil, StreamFrameVersionV3)
+func TestDualShock4WriterFaultsOnOrderedSaturationWithoutEviction(t *testing.T) {
+	server, client := net.Pipe()
+	writer := newDualShock4OutputWriter(server, StreamFrameVersionV3)
 	for marker := 0; marker < cap(writer.control); marker++ {
 		writer.EnqueueControl(StreamFrameOutputState, []byte{byte(marker)})
 	}
@@ -355,12 +356,21 @@ func TestDualShock4WriterRetainsNewestFinalControlState(t *testing.T) {
 	require.Len(t, writer.control, depth)
 	for index := 0; index < depth; index++ {
 		frame := <-writer.control
-		want := byte(index + 1)
-		if index == depth-1 {
-			want = 0xFF
-		}
-		require.Equal(t, []byte{want}, frame.payload)
+		decrementDualShock4Uint64(&writer.telemetry.orderedQueueDepth)
+		require.Equal(t, []byte{byte(index)}, frame.payload)
 	}
+	state := writer.telemetry.snapshot()
+	assert.Equal(t, uint64(depth+1), state.OrderedReceived)
+	assert.Equal(t, uint64(depth), state.OrderedEnqueued)
+	assert.Equal(t, uint64(1), state.OrderedRejected)
+	assert.Equal(t, uint64(1), state.OrderedSaturations)
+	assert.False(t, state.Active)
+	assert.False(t, writer.accepting.Load())
+	buffer := make([]byte, 1)
+	count, err := client.Read(buffer)
+	assert.Zero(t, count)
+	assert.Error(t, err, "saturation must close the owning stream")
+	require.NoError(t, client.Close())
 }
 
 type dualShock4WriteGateConn struct {
@@ -409,7 +419,7 @@ func TestSpeakerResetWaitsForInFlightWrite(t *testing.T) {
 	}
 
 	require.NoError(t, client.Close())
-	writer.Stop()
+	require.NoError(t, writer.Stop())
 }
 
 type dualShock4DeadlineBlockConn struct {
@@ -467,14 +477,14 @@ func TestSpeakerResetBoundsBlockedWriteAndDropsQueuedGeneration(t *testing.T) {
 		Conn: server, started: make(chan struct{}), unblock: make(chan struct{}),
 	}
 	writer := newDualShock4OutputWriter(conn, StreamFrameVersionV3)
-	writer.EnqueueAudio(StreamFrameSpeakerPCM, []byte{0x11})
+	writer.EnqueueAudio(StreamFrameSpeakerPCM, []byte{0x11, 0x11, 0x11, 0x11})
 	go writer.Run()
 	select {
 	case <-conn.started:
 	case <-time.After(time.Second):
 		t.Fatal("speaker writer did not enter the blocked write")
 	}
-	writer.EnqueueAudio(StreamFrameSpeakerPCM, []byte{0x22})
+	writer.EnqueueAudio(StreamFrameSpeakerPCM, []byte{0x22, 0x22, 0x22, 0x22})
 
 	resetStarted := time.Now()
 	resetDone := make(chan struct{})
@@ -509,7 +519,9 @@ func TestSpeakerResetBoundsBlockedWriteAndDropsQueuedGeneration(t *testing.T) {
 	assert.GreaterOrEqual(t, closeCount, 1,
 		"timed-out stream was not closed for reconnect")
 	assert.Empty(t, writer.audio)
-	writer.EnqueueAudio(StreamFrameSpeakerPCM, []byte{0x33})
+	assert.Equal(t, uint64(1),
+		writer.telemetry.snapshot().MediaWriteFailures)
+	writer.EnqueueAudio(StreamFrameSpeakerPCM, []byte{0x33, 0x33, 0x33, 0x33})
 	assert.Empty(t, writer.audio,
 		"failed writer accepted audio instead of waiting for reconnect")
 

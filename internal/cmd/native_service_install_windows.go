@@ -390,9 +390,17 @@ type nativeInstallDependencies struct {
 	restartLegacy       func(context.Context, nativeLegacyState) error
 	verifyBroker        func(context.Context, string) error
 	wait                func(context.Context, time.Duration) error
+	brokerJournal       *nativeBrokerJournal
 }
 
 func productionNativeInstallDependencies(userSID string) nativeInstallDependencies {
+	return productionNativeInstallDependenciesWithJournal(userSID, nil)
+}
+
+func productionNativeInstallDependenciesWithJournal(
+	userSID string,
+	journal *nativeBrokerJournal,
+) nativeInstallDependencies {
 	return nativeInstallDependencies{
 		connectSCM: func() (nativeSCM, error) {
 			manager, err := mgr.Connect()
@@ -404,7 +412,7 @@ func productionNativeInstallDependencies(userSID string) nativeInstallDependenci
 		lockExecutable:      lockNativeServiceExecutable,
 		lockPriorExecutable: lockNativePriorServiceExecutable,
 		provisionCredential: func() (nativeCredential, error) {
-			return provisionNativeServiceCredential(userSID)
+			return provisionNativeServiceCredentialWithJournal(userSID, journal)
 		},
 		rollbackCredential: rollbackNativeServiceCredential,
 		preflightDriver:    requireNativeUDEBroker,
@@ -428,6 +436,7 @@ func productionNativeInstallDependencies(userSID string) nativeInstallDependenci
 				return nil
 			}
 		},
+		brokerJournal: journal,
 	}
 }
 
@@ -441,12 +450,15 @@ func installNativeBroker(logger *slog.Logger, explicitUserSID string) error {
 	if err != nil {
 		return err
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), nativeServiceInstallTimeout)
+	defer cancel()
+	if err := reconcileNativeBrokerJournalBeforeAdmission(ctx, logger, userSID); err != nil {
+		return err
+	}
 	executable, err := currentExecutable()
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), nativeServiceInstallTimeout)
-	defer cancel()
 	return installNativeBrokerTransaction(ctx, logger, executable, productionNativeInstallDependencies(userSID))
 }
 
@@ -472,12 +484,15 @@ func installNativeBrokerUntil(
 	if err != nil {
 		return err
 	}
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
+	defer cancel()
+	if err := reconcileNativeBrokerJournalBeforeAdmission(ctx, logger, userSID); err != nil {
+		return err
+	}
 	executable, err := currentExecutable()
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithDeadline(context.Background(), deadline)
-	defer cancel()
 	return installNativeBrokerTransaction(ctx, logger, executable, productionNativeInstallDependencies(userSID))
 }
 
@@ -515,6 +530,9 @@ func uninstallNativeBrokerTransaction(
 	if legacy.release != nil {
 		defer legacy.release()
 	}
+	if err := dependencies.brokerJournal.validatePriorOwnership(before, legacy); err != nil {
+		return fmt.Errorf("revalidate durable prior broker ownership: %w", err)
+	}
 
 	serviceChanged := false
 	legacyStopped := false
@@ -540,13 +558,13 @@ func uninstallNativeBrokerTransaction(
 		// trigger or StartWhenAvailable. Do not make any legacy registration live
 		// until the rejected service has been stopped/deleted or the prior service
 		// has been restored completely.
-		if registrationsMayHaveChanged && safeToRestartLegacy {
+		if dependencies.brokerJournal == nil && registrationsMayHaveChanged && safeToRestartLegacy {
 			if rollbackErr := dependencies.restoreLegacy(rollbackCtx, legacy); rollbackErr != nil {
 				safeToRestartLegacy = false
 				rollbackErrors = append(rollbackErrors, rollbackErr)
 			}
 		}
-		if legacyStopped && safeToRestartLegacy {
+		if dependencies.brokerJournal == nil && legacyStopped && safeToRestartLegacy {
 			if rollbackErr := dependencies.restartLegacy(rollbackCtx, legacy); rollbackErr != nil {
 				rollbackErrors = append(rollbackErrors, fmt.Errorf("restart legacy VIIPER after uninstall rollback: %w", rollbackErr))
 			}
@@ -693,6 +711,9 @@ func installNativeBrokerTransactionWithEvidence(
 	if legacy.release != nil {
 		defer legacy.release()
 	}
+	if err := dependencies.brokerJournal.validatePriorOwnership(before, legacy); err != nil {
+		return fmt.Errorf("revalidate durable prior broker ownership: %w", err)
+	}
 
 	serviceChanged := false
 	legacyStopped := false
@@ -707,11 +728,24 @@ func installNativeBrokerTransactionWithEvidence(
 		rollbackCtx, cancelRollback := context.WithTimeout(context.Background(), nativeServiceInstallTimeout)
 		defer cancelRollback()
 		var rollbackErrors []error
+		if err := dependencies.brokerJournal.appendPhase(
+			nativeBrokerPhaseRollbackIntent, "",
+		); err != nil {
+			rollbackFailed = true
+			rollbackErrors = append(rollbackErrors, fmt.Errorf("persist broker rollback intent: %w", err))
+		}
 		safeToRestartLegacy := true
 		if serviceChanged {
 			var rollbackErr error
+			rollbackBefore := before
+			if dependencies.brokerJournal != nil {
+				// The package layer restores the prior image atomically after this
+				// inner SCM/key rollback. Starting here could execute the candidate
+				// bytes under the restored prior credential.
+				rollbackBefore.status.State = svc.Stopped
+			}
 			safeToRestartLegacy, rollbackErr = rollbackNativeService(
-				rollbackCtx, manager, service, before, dependencies.wait, rollbackCredential,
+				rollbackCtx, manager, service, rollbackBefore, dependencies.wait, rollbackCredential,
 			)
 			if rollbackErr != nil {
 				rollbackFailed = true
@@ -719,6 +753,15 @@ func installNativeBrokerTransactionWithEvidence(
 			}
 			if !safeToRestartLegacy {
 				rollbackFailed = true
+			}
+			if rollbackErr == nil && safeToRestartLegacy {
+				if journalErr := dependencies.brokerJournal.appendPhase(
+					nativeBrokerPhaseRollbackService, "",
+				); journalErr != nil {
+					rollbackFailed = true
+					safeToRestartLegacy = false
+					rollbackErrors = append(rollbackErrors, journalErr)
+				}
 			}
 			if !safeToRestartLegacy && credentialProvisioned && !credentialFinalized {
 				// The replacement could still own the key path. Retain the new
@@ -734,6 +777,15 @@ func installNativeBrokerTransactionWithEvidence(
 			safeToRestartLegacy = false
 			rollbackErrors = append(rollbackErrors,
 				fmt.Errorf("restore native broker credential before legacy restart: %w", rollbackErr))
+		}
+		if safeToRestartLegacy && credentialFinalized {
+			if journalErr := dependencies.brokerJournal.appendPhase(
+				nativeBrokerPhaseRollbackCredential, "",
+			); journalErr != nil {
+				rollbackFailed = true
+				safeToRestartLegacy = false
+				rollbackErrors = append(rollbackErrors, journalErr)
+			}
 		}
 		// Restoring task XML can itself launch the legacy process. Keep legacy
 		// ownership absent until the service and credential rollback has made it
@@ -751,6 +803,22 @@ func installNativeBrokerTransactionWithEvidence(
 				rollbackErrors = append(rollbackErrors, fmt.Errorf("restart prior legacy VIIPER process: %w", rollbackErr))
 			}
 		}
+		if dependencies.brokerJournal == nil && safeToRestartLegacy {
+			if journalErr := dependencies.brokerJournal.appendPhase(
+				nativeBrokerPhaseRollbackLegacy, "",
+			); journalErr != nil {
+				rollbackFailed = true
+				rollbackErrors = append(rollbackErrors, journalErr)
+			}
+		}
+		if rollbackFailed && dependencies.brokerJournal != nil &&
+			dependencies.brokerJournal.lastPhase() != nativeBrokerPhaseManual {
+			if journalErr := dependencies.brokerJournal.appendPhase(
+				nativeBrokerPhaseManual, "",
+			); journalErr != nil {
+				rollbackErrors = append(rollbackErrors, journalErr)
+			}
+		}
 		if len(rollbackErrors) != 0 {
 			resultErr = errors.Join(resultErr, errors.Join(rollbackErrors...))
 		}
@@ -761,18 +829,38 @@ func installNativeBrokerTransactionWithEvidence(
 		// status query fails, rollback must reconcile the snapshotted state.
 		serviceChanged = true
 		markMutation()
+		if err := dependencies.brokerJournal.appendPhase(
+			nativeBrokerPhaseServiceStopIntent, "",
+		); err != nil {
+			return fmt.Errorf("journal broker service stop intent: %w", err)
+		}
 		if err := stopNativeService(ctx, service, dependencies.wait); err != nil {
 			return fmt.Errorf("stop previous %s service: %w", NativeBrokerServiceName, err)
+		}
+		if err := dependencies.brokerJournal.appendPhase(
+			nativeBrokerPhaseServiceStopped, "",
+		); err != nil {
+			return fmt.Errorf("journal broker service stopped state: %w", err)
 		}
 	}
 	legacyStopped = true
 	markMutation()
+	if err := dependencies.brokerJournal.appendPhase(
+		nativeBrokerPhaseLegacyStopIntent, "",
+	); err != nil {
+		return fmt.Errorf("journal legacy stop intent: %w", err)
+	}
 	stopLegacyErr := dependencies.stopLegacy(ctx, &legacy, logger)
 	registrationsMayHaveChanged = legacy.scheduledDisabled
 	if stopLegacyErr != nil {
 		return fmt.Errorf("stop legacy VIIPER process: %w", stopLegacyErr)
 	}
 	legacyStopped = hasRunningLegacyCommand(legacy)
+	if err := dependencies.brokerJournal.appendPhase(
+		nativeBrokerPhaseLegacyStopped, "",
+	); err != nil {
+		return fmt.Errorf("journal legacy stopped state: %w", err)
+	}
 
 	if err := dependencies.preflightDriver(); err != nil {
 		return err
@@ -801,6 +889,11 @@ func installNativeBrokerTransactionWithEvidence(
 		// configuration failure can occur after the base configuration changed.
 		serviceChanged = true
 		markMutation()
+		if err := dependencies.brokerJournal.appendPhase(
+			nativeBrokerPhaseServiceConfigIntent, "",
+		); err != nil {
+			return fmt.Errorf("journal broker service configuration intent: %w", err)
+		}
 		if err := service.UpdateConfig(config); err != nil {
 			return fmt.Errorf("update %s service: %w", NativeBrokerServiceName, err)
 		}
@@ -814,6 +907,11 @@ func installNativeBrokerTransactionWithEvidence(
 		baseConfig.SidType = windows.SERVICE_SID_TYPE_NONE
 		baseConfig.DelayedAutoStart = false
 		markMutation()
+		if err := dependencies.brokerJournal.appendPhase(
+			nativeBrokerPhaseServiceConfigIntent, "",
+		); err != nil {
+			return fmt.Errorf("journal broker service creation intent: %w", err)
+		}
 		service, err = manager.CreateService(NativeBrokerServiceName, executable, baseConfig, arguments...)
 		if err != nil {
 			return fmt.Errorf("create %s service: %w", NativeBrokerServiceName, err)
@@ -832,11 +930,26 @@ func installNativeBrokerTransactionWithEvidence(
 	if err := verifyConfiguredNativeService(service, config); err != nil {
 		return err
 	}
+	if err := dependencies.brokerJournal.appendPhase(
+		nativeBrokerPhaseServiceConfigured, "",
+	); err != nil {
+		return fmt.Errorf("journal configured broker service: %w", err)
+	}
+	if err := dependencies.brokerJournal.appendPhase(
+		nativeBrokerPhaseServiceStartIntent, "",
+	); err != nil {
+		return fmt.Errorf("journal broker service start intent: %w", err)
+	}
 	if err := service.Start(); err != nil && !errors.Is(err, windows.ERROR_SERVICE_ALREADY_RUNNING) {
 		return fmt.Errorf("start %s service: %w", NativeBrokerServiceName, err)
 	}
 	if err := waitForNativeServiceState(ctx, service, svc.Running, dependencies.wait); err != nil {
 		return fmt.Errorf("wait for %s service readiness: %w", NativeBrokerServiceName, err)
+	}
+	if err := dependencies.brokerJournal.appendPhase(
+		nativeBrokerPhaseServiceStarted, "",
+	); err != nil {
+		return fmt.Errorf("journal broker service running state: %w", err)
 	}
 	servicePID, err := requireNativeServiceProcess(service, 0)
 	if err != nil {
@@ -848,14 +961,29 @@ func installNativeBrokerTransactionWithEvidence(
 	if _, err := requireNativeServiceProcess(service, servicePID); err != nil {
 		return fmt.Errorf("revalidate %s after authenticated ping: %w", NativeBrokerServiceName, err)
 	}
+	if err := dependencies.brokerJournal.appendPhase(
+		nativeBrokerPhaseAuthenticated, "",
+	); err != nil {
+		return fmt.Errorf("journal authenticated broker state: %w", err)
+	}
 
 	// Legacy registrations remain intact through authenticated readiness. They
 	// are removed last so a failed native migration can still restart the exact
 	// legacy command without reconstructing startup ownership.
 	registrationsMayHaveChanged = true
 	markMutation()
+	if err := dependencies.brokerJournal.appendPhase(
+		nativeBrokerPhaseLegacyRemoveIntent, "",
+	); err != nil {
+		return fmt.Errorf("journal legacy ownership removal intent: %w", err)
+	}
 	if err := dependencies.removeLegacy(ctx, legacy); err != nil {
 		return fmt.Errorf("remove legacy VIIPER startup after native verification: %w", err)
+	}
+	if err := dependencies.brokerJournal.appendPhase(
+		nativeBrokerPhaseLegacyRemoved, "",
+	); err != nil {
+		return fmt.Errorf("journal removed legacy ownership: %w", err)
 	}
 	// Re-authenticate after removing the legacy owner. A task trigger or restart
 	// policy can race the earlier stop; the migration is committed only while the
@@ -865,6 +993,11 @@ func installNativeBrokerTransactionWithEvidence(
 	}
 	if _, err := requireNativeServiceProcess(service, servicePID); err != nil {
 		return fmt.Errorf("revalidate %s after legacy removal: %w", NativeBrokerServiceName, err)
+	}
+	if err := dependencies.brokerJournal.appendPhase(
+		nativeBrokerPhaseReauthenticated, "",
+	); err != nil {
+		return fmt.Errorf("journal final authenticated broker state: %w", err)
 	}
 	credentialFinalized = true
 	logger.Info("VIIPER native broker service installed and authenticated",
@@ -1666,6 +1799,13 @@ func serviceWasOperational(state svc.State) bool {
 }
 
 func provisionNativeServiceCredential(userSID string) (nativeCredential, error) {
+	return provisionNativeServiceCredentialWithJournal(userSID, nil)
+}
+
+func provisionNativeServiceCredentialWithJournal(
+	userSID string,
+	journal *nativeBrokerJournal,
+) (nativeCredential, error) {
 	path, err := nativeServiceKeyFilePath()
 	if err != nil {
 		return nativeCredential{}, err
@@ -1684,11 +1824,21 @@ func provisionNativeServiceCredential(userSID string) (nativeCredential, error) 
 	if err != nil {
 		return nativeCredential{}, fmt.Errorf("read credential: %w", err)
 	}
+	if err := journal.validatePriorCredential(existed, prior); err != nil {
+		return nativeCredential{}, err
+	}
 	password, err := rotatedNativeServiceKey(prior, auth.GenerateKey)
 	if err != nil {
 		return nativeCredential{}, fmt.Errorf("generate credential: %w", err)
 	}
+	candidateDigest := nativeBrokerJournalHash([]byte(password))
+	if err := journal.appendPhase(nativeBrokerPhaseCredentialWriteIntent, candidateDigest); err != nil {
+		return nativeCredential{}, err
+	}
 	if err := writeNativeCredentialAtomically(path, []byte(password), userSID); err != nil {
+		return nativeCredential{}, err
+	}
+	if err := journal.appendPhase(nativeBrokerPhaseCredentialWritten, candidateDigest); err != nil {
 		return nativeCredential{}, err
 	}
 	return nativeCredential{

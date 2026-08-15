@@ -3,6 +3,7 @@ package dualsense
 import (
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash/crc32"
 	"io"
@@ -162,13 +163,12 @@ func dualSenseV5StreamHandler(deviceName string) api.StreamHandlerFunc {
 		}
 		dse.setV5MediaCallbacks(atomicAudioHapticsCallback,
 			realtimeHapticsCallback, writer.ResetSpeaker)
-		defer func() {
-			dse.setV5MediaCallbacks(nil, nil, nil)
-			dse.SetOutputCallback(nil)
-			writer.Stop()
-		}()
-
-		return readDualSenseV5InputStream(conn, dse, logger)
+		streamErr := readDualSenseV5InputStream(conn, dse, logger)
+		// Remove every producer before writer rundown. A join timeout is joined
+		// into the owning handler result rather than reported as clean shutdown.
+		dse.detachV5MediaStreamCallbacks()
+		dse.SetOutputCallback(nil)
+		return errors.Join(streamErr, writer.Stop())
 	}
 }
 

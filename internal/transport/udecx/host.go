@@ -67,31 +67,38 @@ type OperationProcessor interface {
 }
 
 type registeredDevice struct {
-	identity          DeviceIdentity
-	device            usb.Device
-	sequence          *deviceSequenceBarrier
-	ctx               context.Context
-	cancel            context.CancelFunc
-	stopping          bool
-	publisherStopping bool
-	fastInput         map[uint8]fastInputEndpoint
-	publishers        map[uint8]*inputPublisher
-	activeInput       map[uint8]bool
-	resettingInput    map[uint8]bool
-	inputSequences    map[uint8]*atomic.Uint64
-	inD0              bool
-	resetting         bool
-	powerSequence     uint64
+	identity           DeviceIdentity
+	device             usb.Device
+	sequence           *deviceSequenceBarrier
+	ctx                context.Context
+	cancel             context.CancelFunc
+	stopping           bool
+	publisherStopping  bool
+	fastInput          map[uint8]fastInputEndpoint
+	publishers         map[uint8]*inputPublisher
+	activeInput        map[uint8]uint32
+	resettingInput     map[uint8]uint32
+	endpointGeneration map[uint8]uint32
+	inputSequences     map[endpointIdentity]*atomic.Uint64
+	inD0               bool
+	resetting          bool
+	powerSequence      uint64
 }
 
 type inputPublisher struct {
-	endpoint   uint8
-	reportSize int
-	interval   time.Duration
-	sequence   *atomic.Uint64
-	submitCtx  context.Context
-	cancel     context.CancelFunc
-	done       chan struct{}
+	endpoint           uint8
+	endpointGeneration uint32
+	reportSize         int
+	interval           time.Duration
+	sequence           *atomic.Uint64
+	submitCtx          context.Context
+	cancel             context.CancelFunc
+	done               chan struct{}
+}
+
+type endpointIdentity struct {
+	address    uint8
+	generation uint32
 }
 
 type fastInputEndpoint struct {
@@ -100,9 +107,10 @@ type fastInputEndpoint struct {
 }
 
 type laneKey struct {
-	deviceID   uint64
-	generation uint32
-	endpoint   uint8
+	deviceID           uint64
+	generation         uint32
+	endpoint           uint8
+	endpointGeneration uint32
 }
 
 type operationLane struct {
@@ -116,18 +124,29 @@ type operationLane struct {
 }
 
 type operationState struct {
-	deviceID   uint64
-	generation uint32
-	cancel     context.CancelFunc
-	cancelled  bool
-	received   bool
-	processing bool
-	done       bool
+	deviceID           uint64
+	generation         uint32
+	endpoint           uint8
+	endpointGeneration uint32
+	cancel             context.CancelFunc
+	cancelled          bool
+	received           bool
+	processing         bool
+	done               bool
 }
 
 type deviceLifecycleGate struct {
 	mu         sync.Mutex
 	references int
+}
+
+// InputPathDiagnostics makes every slower compatibility path observable.
+// These counters are publisher-lifetime events rather than per-report events,
+// so collecting them adds no atomic operation to the interrupt-input hot path.
+type InputPathDiagnostics struct {
+	PublisherStarts               uint64
+	LegacyTransferFallbackStarts  uint64
+	DeadlineContextFallbackStarts uint64
 }
 
 // Host owns one exclusive driver session and routes operations concurrently
@@ -155,9 +174,27 @@ type Host struct {
 	operations  map[uint64]*operationState
 	completed   []uint64
 
+	inputPublisherStarts          atomic.Uint64
+	legacyTransferFallbackStarts  atomic.Uint64
+	deadlineContextFallbackStarts atomic.Uint64
+
 	// inputAttemptContext is a deterministic deadline seam for host tests.
 	// Production hosts leave it nil and use context.WithTimeout.
 	inputAttemptContext func(context.Context, time.Duration) (context.Context, context.CancelFunc)
+}
+
+// InputDiagnostics returns a lock-free snapshot of input-publisher path
+// selection. A nonzero fallback count is deliberately visible to release
+// telemetry instead of silently trading latency for compatibility.
+func (h *Host) InputDiagnostics() InputPathDiagnostics {
+	if h == nil {
+		return InputPathDiagnostics{}
+	}
+	return InputPathDiagnostics{
+		PublisherStarts:               h.inputPublisherStarts.Load(),
+		LegacyTransferFallbackStarts:  h.legacyTransferFallbackStarts.Load(),
+		DeadlineContextFallbackStarts: h.deadlineContextFallbackStarts.Load(),
+	}
 }
 
 func NewHost(driver Driver, processor OperationProcessor, workers int) (*Host, error) {
@@ -279,18 +316,21 @@ func (h *Host) Register(ctx context.Context, deviceID uint64, dev usb.Device) (D
 		h.mu.Unlock()
 		return DeviceIdentity{}, fmt.Errorf("native UDE device %d is already registered", deviceID)
 	}
-	generation := h.generations[deviceID] + 1
-	if generation == 0 {
-		generation = 1
+	if h.generations[deviceID] == math.MaxUint32 {
+		h.mu.Unlock()
+		return DeviceIdentity{}, fmt.Errorf(
+			"native UDE device %d exhausted its generation space", deviceID)
 	}
+	generation := h.generations[deviceID] + 1
 	identity := DeviceIdentity{DeviceID: deviceID, Generation: generation}
 	deviceCtx, cancel := context.WithCancel(context.Background())
 	entry := &registeredDevice{
 		identity: identity, device: dev, sequence: newDeviceSequenceBarrier(),
 		ctx: deviceCtx, cancel: cancel,
 		fastInput: fastInputEndpoints(dev), publishers: make(map[uint8]*inputPublisher),
-		activeInput: make(map[uint8]bool), resettingInput: make(map[uint8]bool),
-		inputSequences: make(map[uint8]*atomic.Uint64), inD0: true,
+		activeInput: make(map[uint8]uint32), resettingInput: make(map[uint8]uint32),
+		endpointGeneration: make(map[uint8]uint32),
+		inputSequences:     make(map[endpointIdentity]*atomic.Uint64), inD0: true,
 	}
 	h.devices[deviceID] = entry
 	h.generations[deviceID] = generation
@@ -375,7 +415,7 @@ func (h *Host) Unregister(ctx context.Context, identity DeviceIdentity) error {
 		entry.publisherStopping = false
 		h.mu.Unlock()
 		for _, endpoint := range activePublishers {
-			h.startInputPublisher(entry, endpoint)
+			h.startInputPublisher(entry, endpoint.address, endpoint.generation)
 		}
 		return err
 	}
@@ -433,6 +473,7 @@ func (h *Host) observeLifecycleRemoval(identity DeviceIdentity) {
 		return
 	}
 	seen := make(map[uint64]struct{}, LifecycleTraceCapacity)
+	statusReported := false
 	for _, delay := range []time.Duration{0, 100 * time.Millisecond, 500 * time.Millisecond, 2 * time.Second, 5 * time.Second} {
 		if delay != 0 {
 			timer := time.NewTimer(delay)
@@ -446,6 +487,13 @@ func (h *Host) observeLifecycleRemoval(identity DeviceIdentity) {
 				"device_id", identity.DeviceID, "generation", identity.Generation,
 				"error", err)
 			return
+		}
+		if trace.StatusFlags != 0 && !statusReported {
+			statusReported = true
+			slog.Error("native UDE lifecycle recorder reported sticky failure state",
+				"device_id", identity.DeviceID, "generation", identity.Generation,
+				"status_flags", fmt.Sprintf("%#08x", uint32(trace.StatusFlags)),
+				"latest_sequence", trace.LatestSequence)
 		}
 		for _, record := range trace.Records {
 			if record.DeviceID != identity.DeviceID || record.Generation != identity.Generation {
@@ -502,6 +550,9 @@ func lifecycleTraceEventName(event uint16) string {
 		"endpoint-purge-complete-begin", "endpoint-purge-complete-end",
 		"endpoint-cleanup-begin", "endpoint-cleanup-end", "device-cleanup-begin",
 		"device-cleanup-end", "controller-shutdown-begin", "controller-shutdown-end",
+		"endpoint-quiescence-watchdog",
+		"completion-rundown-watchdog", "controller-rundown-watchdog",
+		"owner-rundown-watchdog",
 	}
 	if int(event) < len(names) && names[event] != "" {
 		return names[event]
@@ -509,13 +560,17 @@ func lifecycleTraceEventName(event uint16) string {
 	return fmt.Sprintf("event-%d", event)
 }
 
-func (h *Host) startInputPublisher(entry *registeredDevice, endpoint uint8) {
-	if h.input == nil {
+func (h *Host) startInputPublisher(
+	entry *registeredDevice, endpoint uint8, endpointGeneration uint32,
+) {
+	if h.input == nil || endpointGeneration == 0 {
 		return
 	}
 	h.mu.Lock()
 	if !h.running || entry.stopping || entry.publisherStopping || !entry.inD0 || entry.resetting ||
-		entry.resettingInput[endpoint] ||
+		entry.activeInput[endpoint] != endpointGeneration ||
+		entry.endpointGeneration[endpoint] != endpointGeneration ||
+		entry.resettingInput[endpoint] == endpointGeneration ||
 		h.devices[entry.identity.DeviceID] != entry {
 		h.mu.Unlock()
 		return
@@ -525,15 +580,17 @@ func (h *Host) startInputPublisher(entry *registeredDevice, endpoint uint8) {
 		h.mu.Unlock()
 		return
 	}
-	sequence := entry.inputSequences[endpoint]
+	identity := endpointIdentity{address: endpoint, generation: endpointGeneration}
+	sequence := entry.inputSequences[identity]
 	if sequence == nil {
 		sequence = &atomic.Uint64{}
-		entry.inputSequences[endpoint] = sequence
+		entry.inputSequences[identity] = sequence
 	}
 	ctx, cancel := context.WithCancel(entry.ctx)
 	publisher := &inputPublisher{
-		endpoint: endpoint, reportSize: endpointContract.reportSize,
-		interval: endpointContract.interval, sequence: sequence,
+		endpoint: endpoint, endpointGeneration: endpointGeneration,
+		reportSize: endpointContract.reportSize,
+		interval:   endpointContract.interval, sequence: sequence,
 		submitCtx: h.runCtx,
 		cancel:    cancel, done: make(chan struct{}),
 	}
@@ -543,12 +600,16 @@ func (h *Host) startInputPublisher(entry *registeredDevice, endpoint uint8) {
 	go h.runInputPublisher(ctx, entry, publisher)
 }
 
-func (h *Host) stopInputPublisher(entry *registeredDevice, endpoint uint8) bool {
+func (h *Host) stopInputPublisher(
+	entry *registeredDevice, endpoint uint8, endpointGeneration uint32,
+) bool {
 	h.mu.Lock()
 	publisher := entry.publishers[endpoint]
-	if publisher != nil {
+	if publisher != nil && publisher.endpointGeneration == endpointGeneration {
 		delete(entry.publishers, endpoint)
 		publisher.cancel()
+	} else {
+		publisher = nil
 	}
 	h.mu.Unlock()
 	if publisher == nil {
@@ -558,26 +619,30 @@ func (h *Host) stopInputPublisher(entry *registeredDevice, endpoint uint8) bool 
 	return true
 }
 
-func (h *Host) stopAllInputPublishers(entry *registeredDevice) []uint8 {
+func (h *Host) stopAllInputPublishers(entry *registeredDevice) []endpointIdentity {
 	h.mu.RLock()
-	endpoints := make([]uint8, 0, len(entry.publishers))
-	for endpoint := range entry.publishers {
-		endpoints = append(endpoints, endpoint)
+	endpoints := make([]endpointIdentity, 0, len(entry.publishers))
+	for endpoint, publisher := range entry.publishers {
+		endpoints = append(endpoints, endpointIdentity{
+			address: endpoint, generation: publisher.endpointGeneration,
+		})
 	}
 	h.mu.RUnlock()
 	for _, endpoint := range endpoints {
-		h.stopInputPublisher(entry, endpoint)
+		h.stopInputPublisher(entry, endpoint.address, endpoint.generation)
 	}
 	return endpoints
 }
 
-func (h *Host) activeInputEndpoints(entry *registeredDevice) []uint8 {
+func (h *Host) activeInputEndpoints(entry *registeredDevice) []endpointIdentity {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
-	endpoints := make([]uint8, 0, len(entry.activeInput))
-	for endpoint, active := range entry.activeInput {
-		if active {
-			endpoints = append(endpoints, endpoint)
+	endpoints := make([]endpointIdentity, 0, len(entry.activeInput))
+	for endpoint, generation := range entry.activeInput {
+		if generation != 0 {
+			endpoints = append(endpoints, endpointIdentity{
+				address: endpoint, generation: generation,
+			})
 		}
 	}
 	return endpoints
@@ -621,6 +686,26 @@ func (h *Host) runInputPublisher(ctx context.Context, entry *registeredDevice, p
 	reader, direct := entry.device.(usb.InterruptInputDevice)
 	scheduledReader, scheduled := entry.device.(usb.ScheduledInterruptInputDevice)
 	classifiedReader, classified := entry.device.(usb.ClassifiedScheduledInterruptInputDevice)
+	h.inputPublisherStarts.Add(1)
+	if !direct {
+		h.legacyTransferFallbackStarts.Add(1)
+		slog.Warn("native UDE interrupt input compatibility fallback activated",
+			"device_id", entry.identity.DeviceID,
+			"generation", entry.identity.Generation,
+			"endpoint", fmt.Sprintf("%#02x", publisher.endpoint),
+			"endpoint_generation", publisher.endpointGeneration,
+			"fallback", "legacy-handle-transfer",
+			"reason", "device does not implement InterruptInputDevice")
+	} else if publisher.interval > 0 && !scheduled {
+		h.deadlineContextFallbackStarts.Add(1)
+		slog.Warn("native UDE interrupt input compatibility fallback activated",
+			"device_id", entry.identity.DeviceID,
+			"generation", entry.identity.Generation,
+			"endpoint", fmt.Sprintf("%#02x", publisher.endpoint),
+			"endpoint_generation", publisher.endpointGeneration,
+			"fallback", "per-report-deadline-context",
+			"reason", "device does not implement ScheduledInterruptInputDevice")
+	}
 	var reportBuffer []byte
 	var deadlineTimer *time.Timer
 	var retryTimer *time.Timer
@@ -727,7 +812,8 @@ func (h *Host) runInputPublisher(ctx context.Context, entry *registeredDevice, p
 		}
 		report := InputReport{
 			DeviceID: entry.identity.DeviceID, Generation: entry.identity.Generation,
-			EndpointAddress: publisher.endpoint, Transition: transition,
+			EndpointGeneration: publisher.endpointGeneration,
+			EndpointAddress:    publisher.endpoint, Transition: transition,
 			Sequence: sequence, Payload: payload,
 		}
 		for {
@@ -798,7 +884,7 @@ func (h *Host) Serve(ctx context.Context) error {
 	h.mu.Unlock()
 	for _, entry := range entries {
 		for _, endpoint := range h.activeInputEndpoints(entry) {
-			h.startInputPublisher(entry, endpoint)
+			h.startInputPublisher(entry, endpoint.address, endpoint.generation)
 		}
 	}
 	defer func() {
@@ -891,6 +977,13 @@ func (h *Host) Serve(ctx context.Context) error {
 				continue
 			}
 			if result.op.Kind == OperationCancel {
+				// A management-token cancel is a teardown tombstone for a held
+				// lifecycle request which the kernel already retired. It has no
+				// future ordinary operation to match, so accepting it must not
+				// retain an unbounded cancellation entry in the session map.
+				if isManagementToken(result.op.Token) {
+					continue
+				}
 				h.cancelOperation(result.op)
 				continue
 			}
@@ -941,7 +1034,10 @@ func (h *Host) dispatch(ctx context.Context, op Operation) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	key := laneKey{deviceID: op.DeviceID, generation: op.Generation, endpoint: op.EndpointAddress}
+	key := laneKey{
+		deviceID: op.DeviceID, generation: op.Generation,
+		endpoint: op.EndpointAddress, endpointGeneration: op.EndpointGeneration,
+	}
 
 	h.mu.Lock()
 	entry := h.devices[op.DeviceID]
@@ -1007,8 +1103,8 @@ func (h *Host) dispatch(ctx context.Context, op Operation) error {
 		return nil
 	default:
 		err := fmt.Errorf(
-			"native UDE device %d generation %d endpoint 0x%02x lane is saturated at the %d-operation pending contract",
-			key.deviceID, key.generation, key.endpoint, laneQueueDepth)
+			"native UDE device %d generation %d endpoint 0x%02x generation %d lane is saturated at the %d-operation pending contract",
+			key.deviceID, key.generation, key.endpoint, key.endpointGeneration, laneQueueDepth)
 		lane.terminalErr = err
 		lane.cancel()
 		lane.stateMu.Unlock()
@@ -1133,6 +1229,40 @@ func isLifecycleOperation(kind OperationKind) bool {
 	}
 }
 
+// admitEndpointGeneration establishes the endpoint incarnation before any
+// controller callback or direct-input publisher can observe it. Device-wide
+// lifecycle operations carry generation zero and deliberately bypass this
+// endpoint fence. A higher generation permanently retires the prior address
+// incarnation; a lower generation is stale even if its endpoint sequence is
+// otherwise locally valid.
+func (h *Host) admitEndpointGeneration(entry *registeredDevice, op Operation) bool {
+	if op.EndpointGeneration == 0 {
+		return false
+	}
+	h.mu.Lock()
+	current := entry.endpointGeneration[op.EndpointAddress]
+	if current > op.EndpointGeneration {
+		h.mu.Unlock()
+		return true
+	}
+	retired := uint32(0)
+	if current < op.EndpointGeneration {
+		retired = current
+		entry.endpointGeneration[op.EndpointAddress] = op.EndpointGeneration
+		if entry.activeInput[op.EndpointAddress] != op.EndpointGeneration {
+			delete(entry.activeInput, op.EndpointAddress)
+		}
+		if entry.resettingInput[op.EndpointAddress] != op.EndpointGeneration {
+			delete(entry.resettingInput, op.EndpointAddress)
+		}
+	}
+	h.mu.Unlock()
+	if retired != 0 {
+		h.stopInputPublisher(entry, op.EndpointAddress, retired)
+	}
+	return false
+}
+
 func (h *Host) processLifecycle(ctx context.Context, entry *registeredDevice, op Operation) error {
 	gateCtx, lease, superseded, err := entry.sequence.enter(ctx, op)
 	if err != nil {
@@ -1140,6 +1270,13 @@ func (h *Host) processLifecycle(ctx context.Context, entry *registeredDevice, op
 			return nil
 		}
 		return err
+	}
+	if h.admitEndpointGeneration(entry, op) {
+		defer lease.finish()
+		if op.Token == 0 {
+			return nil
+		}
+		return h.completeLifecycle(ctx, op, statusUnsuccessful)
 	}
 	if superseded {
 		defer lease.finish()
@@ -1150,16 +1287,24 @@ func (h *Host) processLifecycle(ctx context.Context, entry *registeredDevice, op
 		switch op.Kind {
 		case OperationEndpointStart:
 			h.mu.Lock()
-			entry.activeInput[op.EndpointAddress] = true
+			if entry.endpointGeneration[op.EndpointAddress] == op.EndpointGeneration {
+				entry.activeInput[op.EndpointAddress] = op.EndpointGeneration
+			}
 			h.mu.Unlock()
 		case OperationEndpointPurge:
 			h.mu.Lock()
-			entry.activeInput[op.EndpointAddress] = false
-			delete(entry.resettingInput, op.EndpointAddress)
+			if entry.activeInput[op.EndpointAddress] == op.EndpointGeneration {
+				delete(entry.activeInput, op.EndpointAddress)
+			}
+			if entry.resettingInput[op.EndpointAddress] == op.EndpointGeneration {
+				delete(entry.resettingInput, op.EndpointAddress)
+			}
 			h.mu.Unlock()
 		case OperationEndpointReset:
 			h.mu.Lock()
-			delete(entry.resettingInput, op.EndpointAddress)
+			if entry.resettingInput[op.EndpointAddress] == op.EndpointGeneration {
+				delete(entry.resettingInput, op.EndpointAddress)
+			}
 			h.mu.Unlock()
 		}
 		return h.completeSupersededLifecycle(ctx, entry, op)
@@ -1171,15 +1316,21 @@ func (h *Host) processLifecycle(ctx context.Context, entry *registeredDevice, op
 	switch op.Kind {
 	case OperationEndpointPurge:
 		h.mu.Lock()
-		entry.activeInput[op.EndpointAddress] = false
-		delete(entry.resettingInput, op.EndpointAddress)
+		if entry.activeInput[op.EndpointAddress] == op.EndpointGeneration {
+			delete(entry.activeInput, op.EndpointAddress)
+		}
+		if entry.resettingInput[op.EndpointAddress] == op.EndpointGeneration {
+			delete(entry.resettingInput, op.EndpointAddress)
+		}
 		h.mu.Unlock()
-		h.stopInputPublisher(entry, op.EndpointAddress)
+		h.stopInputPublisher(entry, op.EndpointAddress, op.EndpointGeneration)
 	case OperationEndpointReset:
 		h.mu.Lock()
-		entry.resettingInput[op.EndpointAddress] = true
+		if entry.endpointGeneration[op.EndpointAddress] == op.EndpointGeneration {
+			entry.resettingInput[op.EndpointAddress] = op.EndpointGeneration
+		}
 		h.mu.Unlock()
-		h.stopInputPublisher(entry, op.EndpointAddress)
+		h.stopInputPublisher(entry, op.EndpointAddress, op.EndpointGeneration)
 	case OperationDeviceD0Exit:
 		h.mu.Lock()
 		if op.DeviceSequence > entry.powerSequence {
@@ -1195,7 +1346,7 @@ func (h *Host) processLifecycle(ctx context.Context, entry *registeredDevice, op
 		h.mu.Lock()
 		if !entry.resetting {
 			entry.resetting = true
-			entry.resettingInput = make(map[uint8]bool)
+			entry.resettingInput = make(map[uint8]uint32)
 			applyDeviceReset = true
 		}
 		h.mu.Unlock()
@@ -1231,16 +1382,21 @@ func (h *Host) processLifecycle(ctx context.Context, entry *registeredDevice, op
 	switch op.Kind {
 	case OperationEndpointStart:
 		h.mu.Lock()
-		entry.activeInput[op.EndpointAddress] = true
+		if entry.endpointGeneration[op.EndpointAddress] == op.EndpointGeneration {
+			entry.activeInput[op.EndpointAddress] = op.EndpointGeneration
+		}
 		h.mu.Unlock()
-		h.startInputPublisher(entry, op.EndpointAddress)
+		h.startInputPublisher(entry, op.EndpointAddress, op.EndpointGeneration)
 	case OperationEndpointReset:
 		h.mu.Lock()
-		delete(entry.resettingInput, op.EndpointAddress)
-		restart := entry.activeInput[op.EndpointAddress]
+		if entry.resettingInput[op.EndpointAddress] == op.EndpointGeneration {
+			delete(entry.resettingInput, op.EndpointAddress)
+		}
+		restart := entry.activeInput[op.EndpointAddress] == op.EndpointGeneration &&
+			entry.endpointGeneration[op.EndpointAddress] == op.EndpointGeneration
 		h.mu.Unlock()
 		if restart {
-			h.startInputPublisher(entry, op.EndpointAddress)
+			h.startInputPublisher(entry, op.EndpointAddress, op.EndpointGeneration)
 		}
 	case OperationDeviceD0Entry:
 		h.mu.Lock()
@@ -1252,7 +1408,7 @@ func (h *Host) processLifecycle(ctx context.Context, entry *registeredDevice, op
 		h.mu.Unlock()
 		if applyPowerTransition {
 			for _, endpoint := range h.activeInputEndpoints(entry) {
-				h.startInputPublisher(entry, endpoint)
+				h.startInputPublisher(entry, endpoint.address, endpoint.generation)
 			}
 		}
 	case OperationDeviceReset:
@@ -1261,7 +1417,7 @@ func (h *Host) processLifecycle(ctx context.Context, entry *registeredDevice, op
 			entry.resetting = false
 			h.mu.Unlock()
 			for _, endpoint := range h.activeInputEndpoints(entry) {
-				h.startInputPublisher(entry, endpoint)
+				h.startInputPublisher(entry, endpoint.address, endpoint.generation)
 			}
 		}
 	}
@@ -1273,7 +1429,9 @@ func (h *Host) discardSupersededLifecycle(entry *registeredDevice, op Operation)
 		return
 	}
 	h.mu.Lock()
-	delete(entry.resettingInput, op.EndpointAddress)
+	if entry.resettingInput[op.EndpointAddress] == op.EndpointGeneration {
+		delete(entry.resettingInput, op.EndpointAddress)
+	}
 	h.mu.Unlock()
 }
 
@@ -1300,7 +1458,8 @@ func (h *Host) completeLifecycle(ctx context.Context, op Operation, status int32
 	completionCtx, cancel := context.WithTimeout(ctx, completionTimeout)
 	defer cancel()
 	return h.driver.Complete(completionCtx, Completion{
-		Token: op.Token, DeviceID: op.DeviceID, Generation: op.Generation, Status: status,
+		Token: op.Token, DeviceID: op.DeviceID, Generation: op.Generation,
+		EndpointGeneration: op.EndpointGeneration, Status: status,
 	})
 }
 
@@ -1314,6 +1473,10 @@ func (h *Host) process(ctx context.Context, entry *registeredDevice, op Operatio
 		}
 		h.finishOperation(op.Token)
 		return err
+	}
+	if h.admitEndpointGeneration(entry, op) {
+		defer lease.finish()
+		return h.completeFailure(ctx, op)
 	}
 	if superseded {
 		defer lease.finish()
@@ -1341,7 +1504,7 @@ func (h *Host) process(ctx context.Context, entry *registeredDevice, op Operatio
 				entry.resetting = false
 				h.mu.Unlock()
 				for _, endpoint := range h.activeInputEndpoints(entry) {
-					h.startInputPublisher(entry, endpoint)
+					h.startInputPublisher(entry, endpoint.address, endpoint.generation)
 				}
 			}()
 		}
@@ -1370,6 +1533,7 @@ func (h *Host) process(ctx context.Context, entry *registeredDevice, op Operatio
 	completion.Token = op.Token
 	completion.DeviceID = op.DeviceID
 	completion.Generation = op.Generation
+	completion.EndpointGeneration = op.EndpointGeneration
 	// Keep the completion inside the same cancellable device-sequence lease as
 	// the controller callback. A reset announced after Process returns must be
 	// able to cancel a blocked driver completion and join it before the reset is
@@ -1408,11 +1572,15 @@ func (h *Host) trackOperation(op Operation) error {
 	state := h.operations[op.Token]
 	if state == nil {
 		h.operations[op.Token] = &operationState{
-			deviceID: op.DeviceID, generation: op.Generation, received: true,
+			deviceID: op.DeviceID, generation: op.Generation,
+			endpoint: op.EndpointAddress, endpointGeneration: op.EndpointGeneration,
+			received: true,
 		}
 		return nil
 	}
-	if state.done || state.received || state.deviceID != op.DeviceID || state.generation != op.Generation {
+	if state.done || state.received || state.deviceID != op.DeviceID ||
+		state.generation != op.Generation || state.endpoint != op.EndpointAddress ||
+		state.endpointGeneration != op.EndpointGeneration {
 		return errors.New("native UDE operation reuses a completed or mismatched token")
 	}
 	state.received = true
@@ -1455,7 +1623,9 @@ func (h *Host) beginOperation(parent context.Context, op Operation) (context.Con
 	h.operationMu.Lock()
 	defer h.operationMu.Unlock()
 	state := h.operations[op.Token]
-	if state == nil || state.done || state.cancelled {
+	if state == nil || state.done || state.cancelled || state.deviceID != op.DeviceID ||
+		state.generation != op.Generation || state.endpoint != op.EndpointAddress ||
+		state.endpointGeneration != op.EndpointGeneration {
 		return parent, func() {}, false
 	}
 	opCtx, cancel := context.WithCancel(parent)
@@ -1479,11 +1649,18 @@ func (h *Host) cancelOperation(op Operation) {
 	state := h.operations[op.Token]
 	if state == nil {
 		state = &operationState{
-			deviceID: op.DeviceID, generation: op.Generation, cancelled: true,
+			deviceID: op.DeviceID, generation: op.Generation,
+			endpoint: op.EndpointAddress, endpointGeneration: op.EndpointGeneration,
+			cancelled: true,
 		}
 		h.operations[op.Token] = state
-	} else if !state.done && state.deviceID == op.DeviceID && state.generation == op.Generation {
+	} else if !state.done && state.deviceID == op.DeviceID && state.generation == op.Generation &&
+		state.endpoint == op.EndpointAddress &&
+		state.endpointGeneration == op.EndpointGeneration {
 		state.cancelled = true
+	} else {
+		h.operationMu.Unlock()
+		return
 	}
 	cancel := state.cancel
 	h.operationMu.Unlock()
@@ -1542,7 +1719,8 @@ func (h *Host) finishOperation(token uint64) {
 func failureCompletion(op Operation) Completion {
 	return Completion{
 		Token: op.Token, DeviceID: op.DeviceID, Generation: op.Generation,
-		Status: statusUnsuccessful,
+		EndpointGeneration: op.EndpointGeneration,
+		Status:             statusUnsuccessful,
 	}
 }
 
@@ -1567,7 +1745,8 @@ func processorErrorCompletion(op Operation, err error) Completion {
 			}
 			return Completion{
 				Token: op.Token, DeviceID: op.DeviceID, Generation: op.Generation,
-				USBDStatus: status, IsoPackets: packets,
+				EndpointGeneration: op.EndpointGeneration,
+				USBDStatus:         status, IsoPackets: packets,
 			}
 		}
 	}

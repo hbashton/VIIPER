@@ -526,6 +526,7 @@ func TestNativeDeviceDestroyAbortsPinnedManagementBeforeConsumingUdeHandle(t *te
 		"RetiredToken = token;",
 		"RetiredDeviceId =",
 		"RetiredDeviceGeneration =",
+		"RetiredEndpointGeneration =",
 		"RetiredNotificationPending =",
 		"ViiperUdePendingQueued;",
 		"State = ViiperUdePendingCompleting;",
@@ -545,6 +546,7 @@ func TestNativeDeviceDestroyAbortsPinnedManagementBeforeConsumingUdeHandle(t *te
 		"RetiredToken != event.Token",
 		"RetiredDeviceId != event.DeviceId",
 		"RetiredDeviceGeneration != event.Generation",
+		"RetiredEndpointGeneration != event.EndpointGeneration",
 		"RetiredNotificationPending = FALSE;",
 		"RetiredToken = 0;",
 		"event.Kind = ViiperUdeOperationCancel;",
@@ -556,9 +558,11 @@ func TestNativeDeviceDestroyAbortsPinnedManagementBeforeConsumingUdeHandle(t *te
 		"RetiredToken == Completion->Token",
 		"RetiredDeviceId == Completion->DeviceId",
 		"RetiredDeviceGeneration == Completion->Generation",
+		"RetiredEndpointGeneration == Completion->EndpointGeneration",
 		"RetiredToken = 0;",
 		"RetiredDeviceId = 0;",
 		"RetiredDeviceGeneration = 0;",
+		"RetiredEndpointGeneration = 0;",
 		"RetiredOwnerFile = WDF_NO_HANDLE;",
 		"retiredCompletion = TRUE;",
 		"return retiredCompletion ? STATUS_SUCCESS : STATUS_NOT_FOUND;")
@@ -581,6 +585,7 @@ func TestNativeDeviceDestroyAbortsPinnedManagementBeforeConsumingUdeHandle(t *te
 		"pending->RetiredToken = 0;",
 		"pending->RetiredDeviceId = 0;",
 		"pending->RetiredDeviceGeneration = 0;",
+		"pending->RetiredEndpointGeneration = 0;",
 		"pending->RetiredOwnerFile = WDF_NO_HANDLE;",
 		"pending->RetiredNotificationPending = FALSE;",
 		"WdfSpinLockRelease(controllerContext->BrokerLock);")
@@ -1035,5 +1040,44 @@ func TestNativeResetPublicationRejectsConcurrentRemoval(t *testing.T) {
 	live := resetBoundary{resetting: true, present: true}
 	if !publish(&live) || !live.published {
 		t.Fatal("live exact reset identity did not publish after quiescence")
+	}
+}
+
+func TestNativeDuplicateEndpointAddCannotRetireLiveIncarnation(t *testing.T) {
+	add := normalizedContract(nativeCFunction(t,
+		nativeContractSource(t, "native", "udecx", "driver", "Device.c"),
+		"ViiperEvtEndpointAdd"))
+
+	requireContractOrder(t, add,
+		"deviceContext->Endpoints[descriptor.bEndpointAddress] != WDF_NO_HANDLE",
+		"status = STATUS_OBJECT_NAME_COLLISION;",
+		"deviceContext->EndpointGenerations[ descriptor.bEndpointAddress] == MAXULONG",
+		"deviceContext->EndpointGenerations[descriptor.bEndpointAddress] = generation;")
+	if !strings.Contains(add,
+		"descriptor.bEndpointAddress == 0 && deviceContext->DefaultEndpoint != WDF_NO_HANDLE") {
+		t.Fatal("endpoint-add can advance endpoint zero while a default endpoint is live")
+	}
+
+	type endpointSlot struct {
+		generation uint32
+		live       bool
+	}
+	allocate := func(slot *endpointSlot) (uint32, bool) {
+		if slot.live || slot.generation == ^uint32(0) {
+			return 0, false
+		}
+		slot.generation++
+		return slot.generation, true
+	}
+	slot := endpointSlot{generation: 1, live: true}
+	if generation, admitted := allocate(&slot); admitted || generation != 0 || slot.generation != 1 {
+		t.Fatalf("duplicate add retired live generation: admitted=%t result=%d slot=%+v",
+			admitted, generation, slot)
+	}
+	// Once cleanup retires the exact live object, the successor gets a fresh
+	// incarnation; the failed duplicate did not create an unobservable hole.
+	slot.live = false
+	if generation, admitted := allocate(&slot); !admitted || generation != 2 {
+		t.Fatalf("successor allocation=(%d,%t) want generation 2", generation, admitted)
 	}
 }

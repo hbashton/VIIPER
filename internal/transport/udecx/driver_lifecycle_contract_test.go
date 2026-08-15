@@ -113,10 +113,17 @@ func TestKernelOwnerCleanupJoinsFiniteMutationRundown(t *testing.T) {
 	finish := normalizedContract(nativeCFunction(t, controller, "ViiperFinishOwnerCleanup"))
 	requireContractOrder(t, finish,
 		"WdfWaitLockRelease(context->OwnerLock);",
-		"KeWaitForSingleObject( &context->OwnerAdmissionsDrained",
+		"ViiperWaitForControllerRundown( Device, &context->OwnerAdmissionsDrained",
 		"ViiperDestroyOwnedDevices(Device, OwnerFile)",
 		"context->OwnerFile = WDF_NO_HANDLE;",
 		"WdfObjectDereference(OwnerFile);")
+	wait := normalizedContract(controller)
+	requireContractOrder(t, wait,
+		"VIIPER_UDE_RUNDOWN_WATCHDOG_INTERVAL_100NS",
+		"KeWaitForSingleObject( Event",
+		"if (waitStatus != STATUS_TIMEOUT)",
+		"STATUS_IO_TIMEOUT",
+		"InterlockedCompareExchange(ActiveCounter, 0, 0)")
 
 	for _, name := range []string{"ViiperCreateVirtualDevice", "ViiperDestroyVirtualDevice"} {
 		mutation := normalizedContract(nativeCFunction(t, device, name))

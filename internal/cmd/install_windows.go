@@ -30,6 +30,9 @@ const (
 
 func install(logger *slog.Logger, transport, targetUserSID string) error {
 	if transport == "native-ude" {
+		if err := requireDeveloperStandaloneNativeInstall(); err != nil {
+			return err
+		}
 		release, err := acquireNamedNativePackageMutex(
 			nativePackageMutexName, nativePackageTransactionTimeout,
 		)
@@ -109,6 +112,13 @@ func install(logger *slog.Logger, transport, targetUserSID string) error {
 
 	logger.Info("VIIPER install completed for Windows autorun", "exe", exePath,
 		"transport", transport, "logFile", logFile)
+	return nil
+}
+
+func requireDeveloperStandaloneNativeInstall() error {
+	if os.Getenv("VIIPER_DEVELOPER_STANDALONE") != "1" {
+		return errors.New("standalone native UDE installation is developer-only on Windows; use the signed package installer or set VIIPER_DEVELOPER_STANDALONE=1 for an explicitly unsupported test machine")
+	}
 	return nil
 }
 

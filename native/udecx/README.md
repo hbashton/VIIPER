@@ -21,12 +21,16 @@ never accepted by a Release recipe or production workflow.
   controller as a driver-store transaction. Installation requires the
   source-revision submission manifest, verifies the catalog signature and
   four-part `DriverVer`, rejects same-version replacement and implicit
-  downgrade, records the prior published INF, and negotiates the ABI plus the
+  downgrade, add-only stages and verifies a missing candidate before
+  quiescence, records the prior published INF, and negotiates the ABI plus the
   source-bound identity embedded in the currently loaded kernel image after
-  start. A stale same-ABI driver cannot satisfy health. The helper restores the
-  prior binding on failure. Removal backs up every
-  exact signed VIIPER package before deleting only exact owned devnodes and
-  packages; unrelated driver-store entries are never force-deleted.
+  start. A stale same-ABI driver cannot satisfy health. Fixed protected,
+  write-through install and remove journals record exact identities, backups,
+  mutation receipts, reboot epochs, and hash-chained cut points before each
+  boundary, so restart reconciliation can finish forward or restore narrowly
+  without adopting concurrent state. Removal backs up every exact signed
+  VIIPER package before deleting only the captured owned devnode and packages;
+  unrelated driver-store entries are never force-deleted.
 - `tools/Test-ViiperUdeCtlTransaction.ps1` deterministically guards the
   transaction, rollback, ownership, downgrade, and structured-reboot source
   contracts. Passing a compiled tool through `-BinaryPath` also runs its pure
@@ -111,14 +115,37 @@ capacity never causes an adaptive long packet to be consumed and truncated.
 can coalesce into one latest state before Windows polls, but one publication can
 never manufacture multiple completions.
 
+Input path selection is observable at publisher activation. `Host.InputDiagnostics`
+counts publisher starts, legacy transfer fallbacks, and per-report deadline-context
+fallbacks without adding per-report atomics. Either compatibility path also emits
+a structured warning containing the device, device generation, endpoint, endpoint
+generation, fallback name, and reason, so a production run cannot silently claim
+the scheduled direct-input path.
+
+The kernel lifecycle recorder uses bounded nonpaged, cache-isolated shards and
+retains the globally latest 512 stable records whenever its sticky status is
+clean, without locks, allocation, or waits on the trace hot path. Monotonic
+slot claims prevent a preempted writer from
+overwriting a newer wrap; any active-slot collision is dropped and made sticky.
+Two-second endpoint, completion, controller, and owner rundown watchdog records
+preserve the active count and queue state while the driver continues the
+safety-required join. Sticky drop/watchdog status survives record-window rollover,
+and the signed live teardown audit treats either status as a failure.
+
 The design and release gates are in
 `docs/architecture/native-udecx.md`. The Microsoft signing boundary is in
 `docs/architecture/native-udecx-signing.md`.
 
 Production installation is intentionally available only through the signed
 package orchestrator, which binds the broker/helper/manifest hashes and keeps
-the driver rollback snapshot alive through authenticated broker health. An
-operator can run the same read-only production preflight without mutation:
+the driver rollback snapshot alive through authenticated broker health. Driver
+and broker recovery are separately journaled under protected fixed ProgramData
+roots. A two-phase receipt binds both transaction IDs, both pending and final
+journal digests, the package token, candidate identity, settlement nonce, and
+request hash before either side retires authoritative evidence. An interrupted
+`nested-ready`, pending acknowledgement, or final settlement is replayed
+idempotently before any new package child may start. An operator can run the
+same read-only production preflight without mutation:
 
 ```powershell
 $manifest = 'C:\ViiperUde\ViiperUde.cab.sha256.json'

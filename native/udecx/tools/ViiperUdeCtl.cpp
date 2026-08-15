@@ -103,7 +103,8 @@ struct AbiCompatibilityProfile {
     bool hasReservedPortFields;
 };
 
-constexpr std::array<AbiCompatibilityProfile, 3> kAbiCompatibilityProfiles{{
+constexpr std::array<AbiCompatibilityProfile, 4> kAbiCompatibilityProfiles{{
+    {13, 29, 152, true},
     {12, 29, 152, true},
     {11, 29, 144, false},
     {10, 13, 144, false},
@@ -114,20 +115,25 @@ constexpr bool AbiCompatibilityProfilesAreValid() noexcept {
         kAbiCompatibilityProfiles[0].capabilities == VIIPER_UDE_ADVERTISED_CAPABILITIES &&
         kAbiCompatibilityProfiles[0].statsSize == sizeof(VIIPER_UDE_STATS) &&
         kAbiCompatibilityProfiles[0].hasReservedPortFields &&
-        kAbiCompatibilityProfiles[1].minor == 11 &&
+        kAbiCompatibilityProfiles[1].minor == 12 &&
         kAbiCompatibilityProfiles[1].capabilities == 29 &&
-        kAbiCompatibilityProfiles[1].statsSize == 144 &&
-        !kAbiCompatibilityProfiles[1].hasReservedPortFields &&
-        kAbiCompatibilityProfiles[2].minor == 10 &&
-        kAbiCompatibilityProfiles[2].capabilities == 13 &&
+        kAbiCompatibilityProfiles[1].statsSize == 152 &&
+        kAbiCompatibilityProfiles[1].hasReservedPortFields &&
+        kAbiCompatibilityProfiles[2].minor == 11 &&
+        kAbiCompatibilityProfiles[2].capabilities == 29 &&
         kAbiCompatibilityProfiles[2].statsSize == 144 &&
         !kAbiCompatibilityProfiles[2].hasReservedPortFields &&
+        kAbiCompatibilityProfiles[3].minor == 10 &&
+        kAbiCompatibilityProfiles[3].capabilities == 13 &&
+        kAbiCompatibilityProfiles[3].statsSize == 144 &&
+        !kAbiCompatibilityProfiles[3].hasReservedPortFields &&
         kAbiCompatibilityProfiles[0].minor == kAbiCompatibilityProfiles[1].minor + 1 &&
-        kAbiCompatibilityProfiles[1].minor == kAbiCompatibilityProfiles[2].minor + 1;
+        kAbiCompatibilityProfiles[1].minor == kAbiCompatibilityProfiles[2].minor + 1 &&
+        kAbiCompatibilityProfiles[2].minor == kAbiCompatibilityProfiles[3].minor + 1;
 }
 
 static_assert(VIIPER_UDE_ABI_MAJOR == 1, "ABI compatibility table major drift");
-static_assert(VIIPER_UDE_ABI_MINOR == 12, "ABI compatibility table current minor drift");
+static_assert(VIIPER_UDE_ABI_MINOR == 13, "ABI compatibility table current minor drift");
 static_assert(VIIPER_UDE_ADVERTISED_CAPABILITIES == 29,
     "ABI compatibility table current capabilities drift");
 static_assert(sizeof(VIIPER_UDE_STATS) == 152,
@@ -176,24 +182,43 @@ constexpr wchar_t kRollbackDirectorySecurity[] =
     L"O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)";
 constexpr wchar_t kRecoveryRecordSecurity[] =
     L"O:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)";
-constexpr wchar_t kRecoveryRecordName[] = L"recovery-v1.json";
-constexpr wchar_t kRecoveryRecordTemporaryName[] = L"recovery-v1.json.tmp";
 constexpr size_t kMaximumRecoveryRecordBytes = 256U * 1024U;
 constexpr wchar_t kInstallRecoveryProductDirectory[] = L"VIIPER";
 constexpr wchar_t kInstallRecoveryComponentDirectory[] = L"UdeCx";
 constexpr wchar_t kInstallRecoveryTransactionsDirectory[] = L"Transactions";
 constexpr wchar_t kInstallRecoveryActiveDirectory[] = L"active-v2";
 constexpr wchar_t kInstallRecoverySettledPrefix[] = L"settled-v2-";
+constexpr wchar_t kInstallRecoveryDiscardPrefix[] = L"discarding-v2-";
 constexpr wchar_t kInstallRecoveryJournalPrefix[] = L"journal-";
 constexpr wchar_t kInstallRecoveryJournalSuffix[] = L".json";
 constexpr wchar_t kInstallRecoveryTemporarySuffix[] = L".tmp";
 constexpr wchar_t kInstallRecoveryPriorDirectory[] = L"prior";
 constexpr wchar_t kInstallRecoveryCandidateDirectory[] = L"candidate";
+constexpr wchar_t kInstallRecoveryBrokerDirectory[] = L"broker";
+constexpr wchar_t kInstallRecoveryBrokerExecutable[] = L"viiper.exe";
 constexpr size_t kMaximumInstallRecoveryRecords = 96;
 constexpr std::string_view kInstallRecoveryKind =
     "VIIPER-UDE-install-switch-recovery";
+constexpr wchar_t kRemoveRecoveryRootDirectory[] =
+    L"VIIPER-UdeCx-RemoveTransactions";
+constexpr wchar_t kRemoveRecoveryActiveDirectory[] = L"active-v2";
+constexpr wchar_t kRemoveRecoverySettledPrefix[] = L"settled-v2-";
+constexpr wchar_t kRemoveRecoveryPriorDirectory[] = L"prior";
+constexpr size_t kMaximumRemoveRecoveryRecords = 256;
+constexpr std::string_view kRemoveRecoveryKind =
+    "VIIPER-UDE-remove-transaction-recovery";
 constexpr std::string_view kZeroSha256 =
     "0000000000000000000000000000000000000000000000000000000000000000";
+constexpr wchar_t kBrokerSettlementRequestFile[] = L"outer-settlement.json";
+constexpr wchar_t kBrokerSettlementFinalFile[] = L"outer-settled.json";
+constexpr wchar_t kBrokerTransactionDirectory[] = L"BrokerTransactions";
+constexpr wchar_t kBrokerTransactionActiveDirectory[] = L"active-v1";
+constexpr size_t kMaximumBrokerSettlementRequestBytes = 16U * 1024U;
+constexpr wchar_t kNativeInstallMutexNamespace[] =
+    L"VIIPER_NATIVE_INSTALL_NAMESPACE_V1";
+constexpr wchar_t kNativeInstallMutexBoundary[] =
+    L"VIIPER_NATIVE_INSTALL_ADMIN_BOUNDARY_V1";
+constexpr wchar_t kNativePackageInstallMutex[] = L"VIIPER.NativePackage.Install.v1";
 constexpr std::string_view kHardwareVerificationOid = "1.3.6.1.4.1.311.10.3.5";
 constexpr std::string_view kAttestationVerificationOid = "1.3.6.1.4.1.311.10.3.5.1";
 
@@ -206,6 +231,8 @@ std::array<wchar_t, MAX_PATH> gActiveRecoveryRecord{};
 bool gActiveRecoveryRecordWritten = false;
 std::array<wchar_t, MAX_PATH> gActiveBackupRoot{};
 bool gActiveBackupRootRetained = false;
+std::array<wchar_t, MAX_PATH> gRetainedRemoveTombstone{};
+DWORD gRetainedRemoveTombstoneError = ERROR_SUCCESS;
 bool gTransactionMutationStarted = false;
 bool gLastSynchronousMutationTimedOut = false;
 
@@ -218,6 +245,11 @@ void ClearActiveRecoveryEvidence() noexcept {
     gActiveRecoveryRecordWritten = false;
     gActiveBackupRoot.fill(L'\0');
     gActiveBackupRootRetained = false;
+}
+
+void ClearRemoveRetirementWarning() noexcept {
+    gRetainedRemoveTombstone.fill(L'\0');
+    gRetainedRemoveTombstoneError = ERROR_SUCCESS;
 }
 
 constexpr GUID kViiperInterfaceGuid = {
@@ -251,6 +283,19 @@ bool IsGeneratedRootInstanceIdForDeviceName(
     const std::wstring& instanceId, const wchar_t* deviceName);
 bool IsOwnedGeneratedRootInstanceId(const std::wstring& instanceId);
 
+struct BrokerJournalBinding {
+    bool present = false;
+    std::string transactionId;
+    std::string outerTransactionId;
+    std::string candidateSha256;
+    std::string state;
+    std::string digest;
+    std::string driverTransactionId;
+    std::string driverDigest;
+    std::string settlementNonce;
+    std::string recovery;
+};
+
 struct Outcome {
     bool success = false;
     bool changed = false;
@@ -258,6 +303,7 @@ struct Outcome {
     ExitCode exitCode = ExitCode::Failure;
     Error error;
     std::wstring rollback = L"not-needed";
+    BrokerJournalBinding brokerBinding;
 };
 
 std::wstring FormatError(DWORD error) {
@@ -346,7 +392,36 @@ void EmitOutcome(const wchar_t* operation, const Outcome& outcome) {
                            : gActiveBackupRootRetained) ? 1 : 0);
         }
     }
+    if (gRetainedRemoveTombstone[0] != L'\0') {
+        stream << L" warning=\"remove-settled-cleanup-retained\""
+               << L" warningWin32Error="
+               << gRetainedRemoveTombstoneError
+               << L" retainedTombstone="
+               << std::quoted(gRetainedRemoveTombstone.data());
+    }
     stream << L"\n";
+    if (outcome.success && outcome.brokerBinding.present) {
+        const auto wide = [](const std::string& value) {
+            return std::wstring(value.begin(), value.end());
+        };
+        stream << L"journal-binding operation=install transactionId="
+               << wide(outcome.brokerBinding.transactionId)
+               << L" outerTransactionId="
+               << wide(outcome.brokerBinding.outerTransactionId)
+               << L" candidateSha256="
+               << wide(outcome.brokerBinding.candidateSha256)
+               << L" state=" << wide(outcome.brokerBinding.state)
+               << L" digest=" << wide(outcome.brokerBinding.digest)
+               << L" driverTransactionId="
+               << wide(outcome.brokerBinding.driverTransactionId)
+               << L" driverDigest="
+               << wide(outcome.brokerBinding.driverDigest)
+               << L" settlementNonce="
+               << wide(outcome.brokerBinding.settlementNonce)
+               << L" recovery=" << wide(outcome.brokerBinding.recovery)
+               << L"\n";
+    }
+    stream.flush();
 }
 
 class WinHandle final {
@@ -588,6 +663,71 @@ private:
     WinHandle mutex_;
     bool owned_ = false;
     bool abandoned_ = false;
+};
+
+class OuterPackageMutexWitness final {
+public:
+    ~OuterPackageMutexWitness() {
+        mutex_.reset();
+        if (namespace_ != nullptr) {
+            ClosePrivateNamespace(namespace_, 0);
+        }
+        if (boundary_ != nullptr) {
+            DeleteBoundaryDescriptor(boundary_);
+        }
+    }
+
+    bool VerifyHeldByOuterOwner(Error* error) {
+        BYTE administratorsBuffer[SECURITY_MAX_SID_SIZE]{};
+        DWORD administratorsSize = sizeof(administratorsBuffer);
+        if (!CreateWellKnownSid(WinBuiltinAdministratorsSid, nullptr,
+                administratorsBuffer, &administratorsSize)) {
+            return SetLastErrorDetail(error,
+                L"broker-settlement-outer-mutex-sid");
+        }
+        boundary_ = CreateBoundaryDescriptorW(
+            kNativeInstallMutexBoundary, 0);
+        if (boundary_ == nullptr ||
+            !AddSIDToBoundaryDescriptor(
+                &boundary_, administratorsBuffer)) {
+            return SetLastErrorDetail(error,
+                L"broker-settlement-outer-mutex-boundary");
+        }
+        namespace_ = OpenPrivateNamespaceW(
+            boundary_, kNativeInstallMutexNamespace);
+        if (namespace_ == nullptr) {
+            return SetLastErrorDetail(error,
+                L"broker-settlement-outer-mutex-namespace",
+                L"the authenticated outer package mutex namespace is absent");
+        }
+        const std::wstring name =
+            std::wstring(kNativeInstallMutexNamespace) + L"\\" +
+            kNativePackageInstallMutex;
+        mutex_.reset(OpenMutexW(
+            SYNCHRONIZE | MUTEX_MODIFY_STATE, FALSE, name.c_str()));
+        if (!mutex_) {
+            return SetLastErrorDetail(error,
+                L"broker-settlement-outer-mutex-open");
+        }
+        const DWORD wait = WaitForSingleObject(mutex_.get(), 0);
+        if (wait == WAIT_TIMEOUT) {
+            return true;
+        }
+        if (wait == WAIT_OBJECT_0 || wait == WAIT_ABANDONED) {
+            ReleaseMutex(mutex_.get());
+            return SetError(error,
+                L"broker-settlement-outer-mutex-owner",
+                ERROR_ACCESS_DENIED,
+                L"outer settlement requires a different process to retain the package mutex");
+        }
+        return SetLastErrorDetail(error,
+            L"broker-settlement-outer-mutex-wait");
+    }
+
+private:
+    HANDLE namespace_ = nullptr;
+    HANDLE boundary_ = nullptr;
+    WinHandle mutex_;
 };
 
 bool IsElevated() {
@@ -2203,6 +2343,8 @@ enum class InstallJournalPhase {
     BrokerHandoffReturned,
     BrokerChildEntered,
     BrokerChildSettled,
+    BrokerOuterSettlementPending,
+    BrokerOuterSettled,
     RollbackBindingEntered,
     PartialRootRemovalEntered,
     PartialRootRemovalReturned,
@@ -2218,6 +2360,32 @@ enum class InstallJournalPhase {
 };
 
 enum class InstallJournalDirection {
+    Forward,
+    Rollback,
+};
+
+enum class RemoveJournalPhase {
+    Prepared,
+    DeviceRemovalEntered,
+    DeviceRemovalReturned,
+    DeviceRemovalCommitted,
+    PackageRemovalEntered,
+    PackageRemovalReturned,
+    PackageRemovalCommitted,
+    RollbackAdmitted,
+    RollbackPackageEntered,
+    RollbackPackageReturned,
+    RollbackPackageCommitted,
+    RollbackBindingEntered,
+    RollbackBindingReturned,
+    ForwardValidated,
+    ExactPriorRestored,
+    ForwardRebootPending,
+    RestoreRebootPending,
+    ManualReconciliationRequired,
+};
+
+enum class RemoveJournalDirection {
     Forward,
     Rollback,
 };
@@ -2645,46 +2813,64 @@ bool RemoveDevice(
     return true;
 }
 
-bool RemoveAllExactDevices(
+bool IsExactCapturedRemoveTarget(
+    const DeviceState& expected,
+    const std::vector<DeviceState>& observed) noexcept {
+    return observed.size() == 1U &&
+        IsOwnedGeneratedRootInstanceId(observed[0].instanceId) &&
+        _wcsicmp(observed[0].service.c_str(), kServiceName) == 0 &&
+        IsSafePublishedInfName(observed[0].publishedInf) &&
+        SameRootBinding(expected, observed[0]);
+}
+
+bool RemoveExactCapturedDevice(
+    const DeviceState& expected,
     uint64_t transactionDeadlineUnixMs,
     bool* mutationStarted,
     bool* rebootRequired,
     Error* error) {
     DeviceInfoSet set = OpenRootDevices();
     if (!set) {
-        return SetLastErrorDetail(error, L"open-root-devices");
+        return SetLastErrorDetail(error,
+            L"remove-journal-open-captured-root");
     }
     std::vector<std::pair<SP_DEVINFO_DATA, DeviceState>> matches;
-    if (!FindExactDevices(set.get(), &matches, error)) {
-        return false;
-    }
+    if (!FindExactDevices(set.get(), &matches, error)) return false;
+
     std::filesystem::path infDirectory;
-    if (!GetSystemInfDirectory(&infDirectory, error)) {
-        return false;
-    }
+    if (!GetSystemInfDirectory(&infDirectory, error)) return false;
+    std::vector<DeviceState> observed;
+    observed.reserve(matches.size());
     for (auto& match : matches) {
         DeviceState& device = match.second;
-        if (!IsOwnedGeneratedRootInstanceId(device.instanceId) ||
-            _wcsicmp(device.service.c_str(), kServiceName) != 0 ||
-            !IsSafePublishedInfName(device.publishedInf)) {
-            return SetError(error, L"remove-ownership", ERROR_ACCESS_DENIED,
-                L"refusing to remove an exact hardware ID not owned by the signed VIIPER package");
-        }
         PackageInfo package;
         bool owned = false;
-        if (!LoadOwnedPackage(infDirectory / device.publishedInf, true, false,
-                &package, &owned, error) || !owned) {
+        if (!IsOwnedGeneratedRootInstanceId(device.instanceId) ||
+            _wcsicmp(device.service.c_str(), kServiceName) != 0 ||
+            !IsSafePublishedInfName(device.publishedInf) ||
+            !LoadOwnedPackage(infDirectory / device.publishedInf,
+                true, false, &package, &owned, error) || !owned ||
+            !(device.version == package.version)) {
+            if (error == nullptr || error->code == ERROR_SUCCESS) {
+                SetError(error, L"remove-journal-captured-root-identity",
+                    ERROR_REVISION_MISMATCH,
+                    L"the admitted root no longer has its exact captured package identity");
+            }
             return false;
         }
+        package.publishedName = device.publishedInf;
+        device.package = std::move(package);
+        observed.push_back(device);
     }
-    for (auto& match : matches) {
-        if (!RemoveDevice(set.get(), match.first, transactionDeadlineUnixMs,
-                L"remove-deadline-before-device-mutation", mutationStarted,
-                rebootRequired, error)) {
-            return false;
-        }
+    if (!IsExactCapturedRemoveTarget(expected, observed)) {
+        return SetError(error, L"remove-journal-captured-root-authority",
+            ERROR_REVISION_MISMATCH,
+            L"device removal requires exactly one root with the immutable captured instance, service, published INF, version, and package bytes");
     }
-    return true;
+    return RemoveDevice(set.get(), matches[0].first,
+        transactionDeadlineUnixMs,
+        L"remove-deadline-before-device-mutation", mutationStarted,
+        rebootRequired, error);
 }
 
 bool RegisterRootDevice(
@@ -3694,8 +3880,24 @@ bool RemoveStagedCandidateExact(
     return true;
 }
 
+enum class RestorePriorBindingPolicy {
+    InstallRollbackReconcile,
+    RemoveJournalExactAbsence,
+};
+
+bool RestorePriorBindingTopologyAdmitsMutation(
+    RestorePriorBindingPolicy policy,
+    size_t priorDeviceCount,
+    size_t currentDeviceCount) noexcept {
+    if (policy == RestorePriorBindingPolicy::RemoveJournalExactAbsence) {
+        return priorDeviceCount == 1U && currentDeviceCount == 0U;
+    }
+    return priorDeviceCount <= 1U && currentDeviceCount <= 1U;
+}
+
 bool RestorePriorBinding(
     const Snapshot& prior,
+    RestorePriorBindingPolicy policy,
     uint64_t transactionDeadlineUnixMs,
     bool* rebootRequired,
     Error* error) {
@@ -3712,13 +3914,27 @@ bool RestorePriorBinding(
         }
         return false;
     }
+    if (!RestorePriorBindingTopologyAdmitsMutation(
+            policy, prior.devices.size(), current.devices.size())) {
+        return SetError(error,
+            policy == RestorePriorBindingPolicy::RemoveJournalExactAbsence
+                ? L"remove-rollback-exact-absence-raced"
+                : L"rollback-topology",
+            current.devices.empty()
+                ? ERROR_INVALID_DATA
+                : ERROR_REVISION_MISMATCH,
+            policy == RestorePriorBindingPolicy::RemoveJournalExactAbsence
+                ? L"remove rollback requires one captured prior root and a fresh exact-absence observation; a concurrent root forbids all binding mutation"
+                : L"rollback observed an unsupported native topology");
+    }
     const auto sameIdentity = [](const std::wstring& left, const std::wstring& right) {
         return _wcsicmp(left.c_str(), right.c_str()) == 0;
     };
     const bool keepCurrent = !prior.devices.empty() && !current.devices.empty() &&
         sameIdentity(prior.devices[0].instanceId, current.devices[0].instanceId);
 
-    if (!current.devices.empty() && !keepCurrent) {
+    if (policy == RestorePriorBindingPolicy::InstallRollbackReconcile &&
+        !current.devices.empty() && !keepCurrent) {
         DeviceInfoSet set = OpenRootDevices();
         if (!set) {
             return SetLastErrorDetail(error, L"rollback-open-root-devices");
@@ -3814,8 +4030,9 @@ bool RollbackInstall(
         return false;
     }
     if (bindingMutationStarted) {
-        if (!RestorePriorBinding(
-                prior, rollbackDeadlineUnixMs, rebootRequired, error)) {
+        if (!RestorePriorBinding(prior,
+                RestorePriorBindingPolicy::InstallRollbackReconcile,
+                rollbackDeadlineUnixMs, rebootRequired, error)) {
             return false;
         }
     } else if (!CaptureAndVerifyRootUnchanged(
@@ -4015,6 +4232,8 @@ public:
         const std::wstring& publishedName,
         bool rebootRequired,
         uint64_t deadlineUnixMs,
+        BrokerJournalBinding* binding,
+        std::string_view recovery,
         Error* error);
     bool RetireAfterPriorValidation(
         bool rebootRequired,
@@ -4067,6 +4286,17 @@ bool ReconcileInstallJournal(
     uint64_t deadlineUnixMs,
     Outcome* outcome);
 
+bool ReconcileSettledBrokerOuterSettlement(
+    uint64_t deadlineUnixMs,
+    bool* handled,
+    Outcome* outcome,
+    Error* error);
+
+bool ReconcileRemoveJournal(
+    bool explicitRecovery,
+    uint64_t deadlineUnixMs,
+    Outcome* outcome);
+
 uint64_t CurrentUnixMilliseconds() {
     FILETIME now{};
     GetSystemTimeAsFileTime(&now);
@@ -4076,6 +4306,19 @@ uint64_t CurrentUnixMilliseconds() {
     constexpr uint64_t windowsToUnixEpochTicks = 116444736000000000ULL;
     return ticks.QuadPart <= windowsToUnixEpochTicks
         ? 0 : (ticks.QuadPart - windowsToUnixEpochTicks) / 10000ULL;
+}
+
+uint64_t SaturatingDeadlineAfter(
+    uint64_t nowUnixMs,
+    uint64_t durationMs) noexcept {
+    const uint64_t maximum = std::numeric_limits<uint64_t>::max();
+    return nowUnixMs > maximum - durationMs
+        ? maximum : nowUnixMs + durationMs;
+}
+
+uint64_t FreshRemoveRollbackDeadline() {
+    return SaturatingDeadlineAfter(
+        CurrentUnixMilliseconds(), kDriverRollbackCeilingMs);
 }
 
 bool CheckTransactionDeadline(const InstallOptions& options, const wchar_t* phase, Error* error) {
@@ -4317,7 +4560,9 @@ std::wstring QuoteWindowsArgument(const std::wstring& value) {
     return quoted;
 }
 
-std::wstring BuildBrokerCommitCommandLine(const InstallOptions& options) {
+std::wstring BuildBrokerCommitCommandLine(
+    const InstallOptions& options,
+    bool recoveryOnly = false) {
     return QuoteWindowsArgument(options.brokerExecutable.wstring()) +
         L" native-package-broker-commit --token-file " +
         QuoteWindowsArgument(options.brokerToken.wstring()) +
@@ -4330,7 +4575,8 @@ std::wstring BuildBrokerCommitCommandLine(const InstallOptions& options) {
         L" --target-user-sid " +
         QuoteWindowsArgument(options.targetUserSid) +
         L" --transaction-deadline-unix-ms " +
-        QuoteWindowsArgument(std::to_wstring(options.transactionDeadlineUnixMs));
+        QuoteWindowsArgument(std::to_wstring(options.transactionDeadlineUnixMs)) +
+        (recoveryOnly ? L" --recovery-only" : L"");
 }
 
 struct BrokerCommitProof {
@@ -4340,7 +4586,65 @@ struct BrokerCommitProof {
     DWORD exitCode = ERROR_GEN_FAILURE;
     bool driverRollbackAuthorized = false;
     std::wstring diagnostic;
+    bool hasJournalProof = false;
+    std::string journalTransactionId;
+    std::string journalOuterTransactionId;
+    std::string journalCandidateSha256;
+    std::string journalState;
+    std::string journalDigest;
 };
+
+bool IsCanonicalLowerHex(std::string_view value, size_t length) noexcept {
+    return value.size() == length &&
+        std::all_of(value.begin(), value.end(), [](unsigned char character) {
+            return (character >= '0' && character <= '9') ||
+                (character >= 'a' && character <= 'f');
+        });
+}
+
+bool ParseBrokerJournalProofLine(
+    const std::string& line,
+    BrokerCommitProof* proof) {
+    std::istringstream stream(line);
+    std::array<std::string, 7> fields{};
+    for (std::string& field : fields) {
+        if (!(stream >> field)) return false;
+    }
+    std::string extra;
+    if (stream >> extra || fields[0] != "journal-proof" ||
+        fields[1] != "operation=native-package-broker-commit") {
+        return false;
+    }
+    const auto value = [&](size_t index, std::string_view prefix) {
+        return fields[index].starts_with(prefix)
+            ? fields[index].substr(prefix.size()) : std::string{};
+    };
+    BrokerCommitProof parsed = *proof;
+    parsed.journalTransactionId = value(2, "transactionId=");
+    parsed.journalOuterTransactionId = value(3, "outerTransactionId=");
+    parsed.journalCandidateSha256 = value(4, "candidateSha256=");
+    parsed.journalState = value(5, "state=");
+    parsed.journalDigest = value(6, "digest=");
+    std::string canonical =
+        "journal-proof operation=native-package-broker-commit transactionId=" +
+        parsed.journalTransactionId + " outerTransactionId=" +
+        parsed.journalOuterTransactionId + " candidateSha256=" +
+        parsed.journalCandidateSha256 + " state=" + parsed.journalState +
+        " digest=" + parsed.journalDigest;
+    if (canonical != line ||
+        !IsCanonicalLowerHex(parsed.journalTransactionId, 32U) ||
+        !IsCanonicalLowerHex(parsed.journalOuterTransactionId, 64U) ||
+        !IsCanonicalLowerHex(parsed.journalCandidateSha256, 64U) ||
+        !IsCanonicalLowerHex(parsed.journalDigest, 64U) ||
+        (parsed.journalState != "nested-ready" &&
+            parsed.journalState != "rollback-settled" &&
+            parsed.journalState != "manual")) {
+        return false;
+    }
+    parsed.hasJournalProof = true;
+    *proof = std::move(parsed);
+    return true;
+}
 
 bool BrokerProofFieldsAreCanonical(
     bool success,
@@ -4425,6 +4729,7 @@ bool ParseBrokerCommitProof(
             false, true, "failed", 3, false},
     }};
     std::optional<BrokerCommitProof> parsed;
+    std::optional<BrokerCommitProof> journalProof;
     std::optional<std::wstring> diagnostic;
     bool diagnosticSeen = false;
     bool diagnosticRejected = false;
@@ -4459,6 +4764,15 @@ bool ParseBrokerCommitProof(
                 match->driverRollbackAuthorized,
             };
         }
+        if (line.starts_with("journal-proof")) {
+            BrokerCommitProof candidate;
+            if (!terminated || journalProof ||
+                !ParseBrokerJournalProofLine(line, &candidate)) {
+                return SetError(error, L"broker-proof", ERROR_INVALID_DATA,
+                    L"nested broker journal proof is not one canonical newline-terminated binding");
+            }
+            journalProof = std::move(candidate);
+        }
         if (line.starts_with(kBrokerDiagnosticPrefix)) {
             if (!terminated || diagnosticSeen) {
                 diagnosticRejected = true;
@@ -4483,6 +4797,26 @@ bool ParseBrokerCommitProof(
     if (!parsed || parsed->exitCode != processExitCode) {
         return SetError(error, L"broker-proof", ERROR_INVALID_DATA,
             L"nested broker process exit and structured outcome are missing or inconsistent");
+    }
+    const bool journalRequired = parsed->changed;
+    if (journalRequired != journalProof.has_value()) {
+        return SetError(error, L"broker-proof", ERROR_INVALID_DATA,
+            L"nested broker changed ownership without exactly one durable journal proof");
+    }
+    if (journalProof) {
+        const std::string expectedState = parsed->success
+            ? "nested-ready"
+            : parsed->driverRollbackAuthorized ? "rollback-settled" : "manual";
+        if (journalProof->journalState != expectedState) {
+            return SetError(error, L"broker-proof", ERROR_INVALID_DATA,
+                L"nested broker outcome and durable journal state disagree");
+        }
+        parsed->hasJournalProof = true;
+        parsed->journalTransactionId = journalProof->journalTransactionId;
+        parsed->journalOuterTransactionId = journalProof->journalOuterTransactionId;
+        parsed->journalCandidateSha256 = journalProof->journalCandidateSha256;
+        parsed->journalState = journalProof->journalState;
+        parsed->journalDigest = journalProof->journalDigest;
     }
     // Diagnostics are never transaction authority. Ambiguous, malformed,
     // unterminated, or success-adjacent text is discarded; only the exact
@@ -4552,11 +4886,16 @@ bool RunBrokerInstall(
     const InstallOptions& options,
     bool* driverRollbackAuthorized,
     bool* brokerChanged,
+    BrokerCommitProof* durableProof,
+    bool recoveryOnly,
     Error* error) {
-    // Until CreateProcess succeeds, no nested SCM/image mutation can have
-    // started, so the caller may safely restore its captured driver snapshot.
-    *driverRollbackAuthorized = true;
+    // Published ownership remains fail-closed until the exact child result and
+    // journal binding have both survived a write-through/readback append.
+    *driverRollbackAuthorized = false;
     *brokerChanged = false;
+    if (durableProof != nullptr) {
+        *durableProof = {};
+    }
     if (options.brokerExecutable.empty() || !options.brokerExecutable.is_absolute() ||
         options.brokerExecutable.filename().wstring() != L"viiper.exe" ||
         options.brokerToken.empty() || !options.brokerToken.is_absolute() ||
@@ -4599,7 +4938,8 @@ bool RunBrokerInstall(
             L"staged native broker does not match the installer-bound SHA-256");
     }
 
-    std::wstring commandLine = BuildBrokerCommitCommandLine(options);
+    std::wstring commandLine =
+        BuildBrokerCommitCommandLine(options, recoveryOnly);
     std::vector<wchar_t> mutableCommand(commandLine.begin(), commandLine.end());
     mutableCommand.push_back(L'\0');
     SECURITY_ATTRIBUTES inheritedSecurity{};
@@ -4673,6 +5013,7 @@ bool RunBrokerInstall(
             *error = std::move(journalError);
             return false;
         }
+        *driverRollbackAuthorized = true;
         return SetError(error, L"broker-start", code);
     }
     MarkTransactionMutationStarted();
@@ -4766,11 +5107,14 @@ bool RunBrokerInstall(
     if (!ParseBrokerCommitProof(brokerOutput, exitCode, &proof, error)) {
         return false;
     }
-    *driverRollbackAuthorized = proof.driverRollbackAuthorized;
-    *brokerChanged = proof.changed;
     if (gActiveInstallJournal != nullptr &&
         !gActiveInstallJournal->RecordBrokerProof(proof, error)) {
         return false;
+    }
+    *driverRollbackAuthorized = proof.driverRollbackAuthorized;
+    *brokerChanged = proof.changed;
+    if (durableProof != nullptr) {
+        *durableProof = proof;
     }
     if (!proof.success) {
         return SetBrokerCommitFailure(proof, error);
@@ -4791,7 +5135,9 @@ Outcome Install(const InstallOptions& options) {
         return outcome;
     }
     Outcome recoveryOutcome;
-    if (!ReconcileInstallJournal(
+    if (!ReconcileRemoveJournal(
+            false, options.transactionDeadlineUnixMs, &recoveryOutcome) ||
+        !ReconcileInstallJournal(
             false, options.transactionDeadlineUnixMs, &recoveryOutcome)) {
         return recoveryOutcome;
     }
@@ -5292,7 +5638,8 @@ Outcome Install(const InstallOptions& options) {
                 options, L"transaction-deadline-before-broker", &brokerError) ||
             !SignalBrokerHandoff(options, &brokerError) ||
             !RunBrokerInstall(
-                options, &driverRollbackAuthorized, &brokerChanged, &brokerError)) {
+                options, &driverRollbackAuthorized, &brokerChanged,
+                nullptr, false, &brokerError)) {
             // The broker command includes authenticated health verification and
             // rolls back its own SCM/credential/legacy transaction. Keep the
             // driver snapshot alive in this process until that proof succeeds.
@@ -5449,14 +5796,32 @@ Outcome Install(const InstallOptions& options) {
     if (!installJournal.RetireAfterForwardValidation(
             candidate, publishedCandidate.publishedName,
             outcome.rebootRequired, options.transactionDeadlineUnixMs,
-            &outcome.error)) {
+            &outcome.brokerBinding, "fresh", &outcome.error)) {
         outcome.rollback = L"failed";
         outcome.exitCode = ExitCode::RollbackFailed;
         return outcome;
     }
+    if (outcome.rebootRequired) {
+        outcome.success = false;
+        if (outcome.changed) {
+            outcome.rollback = L"failed";
+            SetError(&outcome.error,
+                L"install-forward-reboot-unsettled",
+                ERROR_INSTALL_SUSPEND,
+                L"forward mutation remains journaled across a required restart and is not yet a settled success");
+            installJournal.AttachEvidence(&outcome.error);
+            outcome.exitCode = ExitCode::RollbackFailed;
+        } else {
+            outcome.rollback = L"not-needed";
+            SetError(&outcome.error, L"install-reboot-boundary",
+                ERROR_SUCCESS_REBOOT_REQUIRED);
+            outcome.exitCode = ExitCode::RebootRequired;
+        }
+        return outcome;
+    }
     outcome.success = true;
     outcome.rollback = L"not-needed";
-    outcome.exitCode = outcome.rebootRequired ? ExitCode::RebootRequired : ExitCode::Success;
+    outcome.exitCode = ExitCode::Success;
     return outcome;
 }
 
@@ -5859,264 +6224,6 @@ bool CopyProtectedBackupFile(
     return true;
 }
 
-class BackupDirectory final {
-public:
-    ~BackupDirectory() noexcept {
-        try {
-            if (!path_.empty() && !preserve_) {
-                root_.reset();
-                std::error_code removalError;
-                std::filesystem::remove_all(path_, removalError);
-                std::error_code presenceError;
-                const bool remains = std::filesystem::exists(path_, presenceError);
-                if (!removalError && !presenceError && !remains) {
-                    path_.clear();
-                    ClearActiveRecoveryEvidence();
-                }
-            }
-        } catch (...) {
-            // The top-level boundary must remain able to emit the fixed active
-            // evidence path after unwinding; a destructor must never terminate it.
-        }
-    }
-
-    bool Create(Error* error) {
-        std::vector<wchar_t> windowsDirectory(MAX_PATH);
-        const UINT length = GetWindowsDirectoryW(
-            windowsDirectory.data(), static_cast<UINT>(windowsDirectory.size()));
-        if (length == 0 || static_cast<size_t>(length) >= windowsDirectory.size()) {
-            return SetLastErrorDetail(error, L"rollback-backup-root");
-        }
-        const std::filesystem::path parent =
-            std::filesystem::path(windowsDirectory.data()) / L"Temp";
-        parent_.reset(CreateFileW(
-            parent.c_str(), FILE_READ_ATTRIBUTES,
-            FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
-            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT |
-                FILE_FLAG_BACKUP_SEMANTICS,
-            nullptr));
-        if (!parent_) {
-            return SetLastErrorDetail(error, L"rollback-backup-parent");
-        }
-        FILE_ATTRIBUTE_TAG_INFO parentAttributes{};
-        if (!GetFileInformationByHandleEx(
-                parent_.get(), FileAttributeTagInfo, &parentAttributes,
-                sizeof(parentAttributes)) ||
-            (parentAttributes.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0 ||
-            (parentAttributes.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
-            return SetError(error, L"rollback-backup-parent",
-                ERROR_REPARSE_TAG_MISMATCH,
-                L"Windows temporary directory must be a regular non-reparse directory");
-        }
-
-        PSECURITY_DESCRIPTOR descriptor = nullptr;
-        if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
-                kRollbackDirectorySecurity, SDDL_REVISION_1, &descriptor, nullptr)) {
-            return SetLastErrorDetail(error, L"rollback-backup-security");
-        }
-        SECURITY_ATTRIBUTES security{};
-        security.nLength = sizeof(security);
-        security.lpSecurityDescriptor = descriptor;
-        security.bInheritHandle = FALSE;
-
-        HCRYPTPROV provider = 0;
-        if (!CryptAcquireContextW(
-                &provider, nullptr, nullptr, PROV_RSA_AES,
-                CRYPT_VERIFYCONTEXT | CRYPT_SILENT)) {
-            const DWORD code = GetLastError();
-            LocalFree(descriptor);
-            return SetError(error, L"rollback-backup-random", code);
-        }
-        static constexpr wchar_t digits[] = L"0123456789abcdef";
-        for (size_t attempt = 0; attempt < 32; ++attempt) {
-            std::array<BYTE, 16> random{};
-            if (!CryptGenRandom(provider, static_cast<DWORD>(random.size()), random.data())) {
-                const DWORD code = GetLastError();
-                CryptReleaseContext(provider, 0);
-                LocalFree(descriptor);
-                return SetError(error, L"rollback-backup-random", code);
-            }
-            std::wstring suffix;
-            suffix.reserve(random.size() * 2);
-            for (BYTE value : random) {
-                suffix.push_back(digits[value >> 4U]);
-                suffix.push_back(digits[value & 0x0fU]);
-            }
-            const std::filesystem::path candidate =
-                parent / (L"VIIPER-UDE-rollback-" + suffix);
-            if (!CreateDirectoryW(candidate.c_str(), &security)) {
-                if (GetLastError() == ERROR_ALREADY_EXISTS) {
-                    continue;
-                }
-                const DWORD code = GetLastError();
-                CryptReleaseContext(provider, 0);
-                LocalFree(descriptor);
-                return SetError(error, L"rollback-backup-root", code);
-            }
-            try {
-                path_ = candidate;
-            } catch (...) {
-                RemoveDirectoryW(candidate.c_str());
-                CryptReleaseContext(provider, 0);
-                LocalFree(descriptor);
-                throw;
-            }
-            const std::wstring& rootValue = path_.native();
-            constexpr size_t recordNameLength = std::size(kRecoveryRecordName) - 1;
-            const size_t recordLength = rootValue.size() + 1 + recordNameLength;
-            if (rootValue.empty() || rootValue.size() >= gActiveBackupRoot.size() ||
-                recordLength >= gActiveRecoveryRecord.size()) {
-                if (RemoveDirectoryW(candidate.c_str())) {
-                    path_.clear();
-                }
-                CryptReleaseContext(provider, 0);
-                LocalFree(descriptor);
-                return SetError(error, L"rollback-backup-root",
-                    ERROR_FILENAME_EXCED_RANGE,
-                    L"protected rollback paths exceed the exception-safe reporting bound");
-            }
-            ClearActiveRecoveryEvidence();
-            std::copy(rootValue.begin(), rootValue.end(), gActiveBackupRoot.begin());
-            gActiveBackupRootRetained = true;
-            std::copy(rootValue.begin(), rootValue.end(), gActiveRecoveryRecord.begin());
-            gActiveRecoveryRecord[rootValue.size()] = L'\\';
-            std::copy_n(kRecoveryRecordName, recordNameLength,
-                gActiveRecoveryRecord.begin() + rootValue.size() + 1);
-            root_.reset(CreateFileW(
-                candidate.c_str(), FILE_READ_ATTRIBUTES | READ_CONTROL,
-                FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
-                FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT |
-                    FILE_FLAG_BACKUP_SEMANTICS,
-                nullptr));
-            if (!root_) {
-                const DWORD code = GetLastError();
-                if (RemoveDirectoryW(candidate.c_str())) {
-                    path_.clear();
-                    ClearActiveRecoveryEvidence();
-                }
-                CryptReleaseContext(provider, 0);
-                LocalFree(descriptor);
-                return SetError(error, L"rollback-backup-root-lock", code);
-            }
-            FILE_ATTRIBUTE_TAG_INFO rootAttributes{};
-            if (!GetFileInformationByHandleEx(
-                    root_.get(), FileAttributeTagInfo, &rootAttributes,
-                    sizeof(rootAttributes)) ||
-                (rootAttributes.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0 ||
-                (rootAttributes.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
-                root_.reset();
-                if (RemoveDirectoryW(candidate.c_str())) {
-                    path_.clear();
-                    ClearActiveRecoveryEvidence();
-                }
-                CryptReleaseContext(provider, 0);
-                LocalFree(descriptor);
-                return SetError(error, L"rollback-backup-root-lock",
-                    ERROR_REPARSE_TAG_MISMATCH);
-            }
-            if (!VerifyProtectedFileSystemSecurity(
-                    root_.get(), true, L"rollback-backup-root-security", error)) {
-                root_.reset();
-                if (RemoveDirectoryW(candidate.c_str())) {
-                    path_.clear();
-                    ClearActiveRecoveryEvidence();
-                }
-                CryptReleaseContext(provider, 0);
-                LocalFree(descriptor);
-                return false;
-            }
-            CryptReleaseContext(provider, 0);
-            LocalFree(descriptor);
-            return true;
-        }
-        CryptReleaseContext(provider, 0);
-        LocalFree(descriptor);
-        return SetError(error, L"rollback-backup-root", ERROR_ALREADY_EXISTS,
-            L"could not allocate a unique protected rollback directory");
-    }
-
-    const std::filesystem::path& path() const noexcept { return path_; }
-
-    std::filesystem::path RecoveryRecordPath() const {
-        return path_ / kRecoveryRecordName;
-    }
-
-    bool ArmPreservation(const std::filesystem::path& recoveryPath, Error* error) {
-        const std::wstring& value = recoveryPath.native();
-        if (!gActiveBackupRootRetained || gActiveRecoveryRecord[0] == L'\0' ||
-            value != gActiveRecoveryRecord.data()) {
-            return SetError(error, L"recovery-record-path", ERROR_INVALID_DATA,
-                L"published recovery record does not match the tracked protected backup root");
-        }
-        gActiveRecoveryRecordWritten = true;
-        preserve_ = true;
-        return true;
-    }
-
-    void AttachRecoveryRecord(Error* error) const {
-        if (error == nullptr) {
-            return;
-        }
-        if (gActiveBackupRootRetained && gActiveBackupRoot[0] != L'\0') {
-            error->recoveryBackup = gActiveBackupRoot.data();
-            error->recoveryBackupRetained = true;
-        } else if (!path_.empty()) {
-            error->recoveryBackup = path_.wstring();
-            error->recoveryBackupRetained = true;
-        }
-        if (gActiveRecoveryRecord[0] != L'\0') {
-            error->recoveryRecord = gActiveRecoveryRecord.data();
-            error->recoveryRecordWritten = gActiveRecoveryRecordWritten;
-        } else if (!path_.empty()) {
-            error->recoveryRecord = RecoveryRecordPath().wstring();
-            error->recoveryRecordWritten = false;
-        }
-        if (!error->recoveryRecord.empty() && !error->recoveryRecordWritten) {
-            error->recoveryRecordError = ERROR_FILE_NOT_FOUND;
-            error->recoveryRecordPhase = L"recovery-record-not-published";
-            error->recoveryRecordMessage =
-                L"the retained backup predates a verified write-ahead recovery record";
-        }
-    }
-
-    bool Cleanup(std::vector<PackageBackup>* backups, Error* error) {
-        if (backups != nullptr) {
-            backups->clear();
-        }
-        root_.reset();
-        if (path_.empty()) {
-            preserve_ = false;
-            ClearActiveRecoveryEvidence();
-            return true;
-        }
-        std::error_code removalError;
-        std::filesystem::remove_all(path_, removalError);
-        std::error_code presenceError;
-        const bool remains = std::filesystem::exists(path_, presenceError);
-        if (removalError || presenceError || remains) {
-            preserve_ = true;
-            const DWORD code = removalError
-                ? static_cast<DWORD>(removalError.value())
-                : presenceError ? static_cast<DWORD>(presenceError.value())
-                                : ERROR_DIR_NOT_EMPTY;
-            SetError(error, L"rollback-backup-cleanup", code,
-                L"protected rollback backup cleanup could not be verified");
-            AttachRecoveryRecord(error);
-            return false;
-        }
-        path_.clear();
-        preserve_ = false;
-        ClearActiveRecoveryEvidence();
-        return true;
-    }
-
-private:
-    std::filesystem::path path_;
-    WinHandle parent_;
-    WinHandle root_;
-    bool preserve_ = false;
-};
-
 bool BackupPackagesIntoDirectory(
     const std::vector<PackageInfo>& packages,
     const std::filesystem::path& baseDirectory,
@@ -6180,15 +6287,6 @@ bool BackupPackagesIntoDirectory(
             packages[index], destination, backupInf, std::move(locks)});
     }
     return true;
-}
-
-bool BackupPackages(
-    const std::vector<PackageInfo>& packages,
-    BackupDirectory* root,
-    std::vector<PackageBackup>* backups,
-    Error* error) {
-    return root->Create(error) &&
-        BackupPackagesIntoDirectory(packages, root->path(), backups, error);
 }
 
 bool IsSha256Digest(std::string_view value) {
@@ -6259,289 +6357,6 @@ bool IsSafeRecoveryRelativePath(const std::filesystem::path& path) {
     return components != 0;
 }
 
-bool RecoveryRelativePath(
-    const std::filesystem::path& root,
-    const std::filesystem::path& target,
-    std::wstring* relative,
-    Error* error) {
-    const std::filesystem::path candidate = target.lexically_relative(root);
-    if (!IsSafeRecoveryRelativePath(candidate) ||
-        (root / candidate).lexically_normal() != target.lexically_normal()) {
-        return SetError(error, L"recovery-record-path", ERROR_INVALID_NAME,
-            L"rollback recovery paths must remain relative to the protected backup root");
-    }
-    *relative = candidate.generic_wstring();
-    return true;
-}
-
-bool BuildRemoveRecoveryRecord(
-    const Snapshot& prior,
-    const std::vector<PackageBackup>& backups,
-    const std::filesystem::path& root,
-    std::string* record,
-    Error* error) {
-    if (backups.size() != prior.packages.size()) {
-        return SetError(error, L"recovery-record-binding", ERROR_INVALID_DATA,
-            L"rollback backup count does not match the captured package inventory");
-    }
-    record->clear();
-    record->append(
-        "{\"schema\":1,\"kind\":\"VIIPER-UDE-remove-rollback-recovery\","
-        "\"state\":\"prepared-remove-transaction\","
-        "\"hardwareId\":\"ROOT\\\\VIIPER\\\\UDE\",\"automaticRestore\":false,"
-        "\"requiredValidation\":[\"inf-signature\",\"inf-catalog-membership\","
-        "\"sys-catalog-membership\",\"inf-sha256\",\"sys-sha256\",\"cat-sha256\"],"
-        "\"devices\":[");
-    for (size_t index = 0; index < prior.devices.size(); ++index) {
-        const DeviceState& device = prior.devices[index];
-        size_t packageIndex = prior.packages.size();
-        size_t packageMatches = 0;
-        for (size_t candidate = 0; candidate < prior.packages.size(); ++candidate) {
-            const PackageInfo& package = prior.packages[candidate];
-            if (_wcsicmp(package.publishedName.c_str(), device.publishedInf.c_str()) == 0 &&
-                package.version == device.version &&
-                SamePackageBytes(package, device.package)) {
-                packageIndex = candidate;
-                ++packageMatches;
-            }
-        }
-        if (!IsOwnedGeneratedRootInstanceId(device.instanceId) ||
-            !IsSafePublishedInfName(device.publishedInf) ||
-            _wcsicmp(device.service.c_str(), kServiceName) != 0 ||
-            !(device.version == device.package.version) ||
-            _wcsicmp(device.package.publishedName.c_str(), device.publishedInf.c_str()) != 0 ||
-            packageMatches != 1 || packageIndex >= backups.size() ||
-            _wcsicmp(backups[packageIndex].original.publishedName.c_str(),
-                device.publishedInf.c_str()) != 0 ||
-            !(backups[packageIndex].original.version == device.version) ||
-            !SamePackageBytes(backups[packageIndex].original, device.package) ||
-            !IsSha256Digest(device.package.infSha256) ||
-            !IsSha256Digest(device.package.sysSha256) ||
-            !IsSha256Digest(device.package.catSha256)) {
-            return SetError(error, L"recovery-record-device", ERROR_INVALID_DATA,
-                L"captured devnode identity is not safe for a recovery record");
-        }
-        if (index != 0) record->push_back(',');
-        record->append("{\"instanceId\":");
-        AppendJsonString(record, device.instanceId);
-        record->append(",\"present\":");
-        record->append(device.present ? "true" : "false");
-        record->append(",\"started\":");
-        record->append(device.started ? "true" : "false");
-        record->append(",\"problem\":");
-        record->append(std::to_string(device.problem));
-        record->append(",\"service\":");
-        AppendJsonString(record, device.service);
-        record->append(",\"publishedInf\":");
-        AppendJsonString(record, device.publishedInf);
-        record->append(",\"packageIndex\":");
-        record->append(std::to_string(packageIndex));
-        record->append(",\"version\":");
-        AppendJsonString(record, VersionToString(device.version));
-        record->append(",\"infSha256\":");
-        AppendJsonAsciiString(record, LowerAscii(device.package.infSha256));
-        record->append(",\"sysSha256\":");
-        AppendJsonAsciiString(record, LowerAscii(device.package.sysSha256));
-        record->append(",\"catSha256\":");
-        AppendJsonAsciiString(record, LowerAscii(device.package.catSha256));
-        record->push_back('}');
-    }
-    record->append("],\"packages\":[");
-    for (size_t index = 0; index < prior.packages.size(); ++index) {
-        const PackageInfo& package = prior.packages[index];
-        const PackageBackup& backup = backups[index];
-        const bool duplicatePublishedName = std::any_of(
-            prior.packages.begin(), prior.packages.end(), [&](const PackageInfo& candidate) {
-                return &candidate != &package &&
-                    _wcsicmp(candidate.publishedName.c_str(), package.publishedName.c_str()) == 0;
-            });
-        if (!IsSafePublishedInfName(package.publishedName) ||
-            duplicatePublishedName ||
-            !(backup.original.version == package.version) ||
-            _wcsicmp(backup.original.publishedName.c_str(), package.publishedName.c_str()) != 0 ||
-            backup.infPath.parent_path() != backup.directory ||
-            _wcsicmp(backup.infPath.filename().c_str(), L"ViiperUde.inf") != 0 ||
-            !SamePackageBytes(backup.original, package) ||
-            !IsSha256Digest(package.infSha256) ||
-            !IsSha256Digest(package.sysSha256) ||
-            !IsSha256Digest(package.catSha256)) {
-            return SetError(error, L"recovery-record-package", ERROR_INVALID_DATA,
-                L"protected rollback package does not match the captured inventory");
-        }
-        std::wstring relativeDirectory;
-        std::wstring relativeInf;
-        std::wstring relativeSys;
-        std::wstring relativeCat;
-        if (!RecoveryRelativePath(root, backup.directory, &relativeDirectory, error) ||
-            relativeDirectory != std::to_wstring(index) ||
-            !RecoveryRelativePath(root, backup.infPath, &relativeInf, error) ||
-            !RecoveryRelativePath(root, backup.directory / kDriverFileName, &relativeSys, error) ||
-            !RecoveryRelativePath(root, backup.directory / kCatalogName, &relativeCat, error)) {
-            if (error->code == ERROR_SUCCESS) {
-                SetError(error, L"recovery-record-path", ERROR_INVALID_NAME);
-            }
-            return false;
-        }
-        if (index != 0) record->push_back(',');
-        record->append("{\"publishedInf\":");
-        AppendJsonString(record, package.publishedName);
-        record->append(",\"version\":");
-        AppendJsonString(record, VersionToString(package.version));
-        record->append(",\"infSha256\":");
-        AppendJsonAsciiString(record, LowerAscii(package.infSha256));
-        record->append(",\"sysSha256\":");
-        AppendJsonAsciiString(record, LowerAscii(package.sysSha256));
-        record->append(",\"catSha256\":");
-        AppendJsonAsciiString(record, LowerAscii(package.catSha256));
-        record->append(",\"backupInf\":");
-        AppendJsonString(record, relativeInf);
-        record->append(",\"backupSys\":");
-        AppendJsonString(record, relativeSys);
-        record->append(",\"backupCat\":");
-        AppendJsonString(record, relativeCat);
-        record->push_back('}');
-    }
-    record->append("]}\n");
-    if (record->size() > kMaximumRecoveryRecordBytes) {
-        return SetError(error, L"recovery-record-size", ERROR_FILE_TOO_LARGE);
-    }
-    return true;
-}
-
-bool WriteProtectedRecoveryRecord(
-    const std::filesystem::path& path,
-    std::string_view record,
-    Error* error) {
-    if (path.filename() != kRecoveryRecordName ||
-        record.empty() || record.size() > kMaximumRecoveryRecordBytes) {
-        return SetError(error, L"recovery-record-create", ERROR_INVALID_PARAMETER);
-    }
-    const std::filesystem::path temporaryPath =
-        path.parent_path() / kRecoveryRecordTemporaryName;
-    LocalSecurityDescriptor security;
-    if (!security.Initialize(
-            kRecoveryRecordSecurity, L"recovery-record-security", error)) {
-        return false;
-    }
-    WinHandle file(CreateFileW(temporaryPath.c_str(),
-        GENERIC_READ | GENERIC_WRITE | FILE_READ_ATTRIBUTES | READ_CONTROL,
-        FILE_SHARE_READ, security.attributes(), CREATE_NEW,
-        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH |
-            FILE_FLAG_OPEN_REPARSE_POINT,
-        nullptr));
-    const DWORD createError = GetLastError();
-    if (!file) {
-        return SetError(error, L"recovery-record-create", createError);
-    }
-    const auto discardTemporary = [&]() noexcept {
-        file.reset();
-        DeleteFileW(temporaryPath.c_str());
-    };
-    FILE_ATTRIBUTE_TAG_INFO attributes{};
-    const BOOL queriedAttributes = GetFileInformationByHandleEx(
-        file.get(), FileAttributeTagInfo, &attributes, sizeof(attributes));
-    const DWORD attributeError = queriedAttributes ? ERROR_SUCCESS : GetLastError();
-    if (!queriedAttributes ||
-        (attributes.FileAttributes &
-            (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0) {
-        const DWORD code = queriedAttributes
-            ? ERROR_REPARSE_TAG_MISMATCH : attributeError;
-        SetError(error, L"recovery-record-create", code,
-            L"recovery record must be a regular non-reparse file");
-        discardTemporary();
-        return false;
-    }
-    if (!VerifyProtectedFileSystemSecurity(
-            file.get(), false, L"recovery-record-security", error)) {
-        discardTemporary();
-        return false;
-    }
-    size_t offset = 0;
-    while (offset < record.size()) {
-        const DWORD requested = static_cast<DWORD>(std::min<size_t>(
-            record.size() - offset, MAXDWORD));
-        DWORD written = 0;
-        if (!WriteFile(file.get(), record.data() + offset, requested,
-                &written, nullptr) || written == 0) {
-            const DWORD writeError = GetLastError();
-            const DWORD code = writeError == ERROR_SUCCESS
-                ? ERROR_WRITE_FAULT : writeError;
-            SetError(error, L"recovery-record-write", code);
-            discardTemporary();
-            return false;
-        }
-        offset += written;
-    }
-    if (!FlushFileBuffers(file.get())) {
-        SetLastErrorDetail(error, L"recovery-record-flush");
-        discardTemporary();
-        return false;
-    }
-    file.reset();
-    if (!MoveFileExW(
-            temporaryPath.c_str(), path.c_str(), MOVEFILE_WRITE_THROUGH)) {
-        const DWORD code = GetLastError();
-        DeleteFileW(temporaryPath.c_str());
-        return SetError(error, L"recovery-record-publish", code);
-    }
-
-    file.reset(CreateFileW(path.c_str(),
-        GENERIC_READ | GENERIC_WRITE | FILE_READ_ATTRIBUTES | READ_CONTROL,
-        FILE_SHARE_READ, nullptr, OPEN_EXISTING,
-        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH |
-            FILE_FLAG_OPEN_REPARSE_POINT,
-        nullptr));
-    if (!file) {
-        return SetLastErrorDetail(error, L"recovery-record-reopen");
-    }
-    attributes = {};
-    const BOOL queriedPublished = GetFileInformationByHandleEx(
-        file.get(), FileAttributeTagInfo, &attributes, sizeof(attributes));
-    const DWORD publishedQueryError = queriedPublished
-        ? ERROR_SUCCESS : GetLastError();
-    if (!queriedPublished ||
-        (attributes.FileAttributes &
-            (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0) {
-        const DWORD code = queriedPublished
-            ? ERROR_REPARSE_TAG_MISMATCH : publishedQueryError;
-        return SetError(error, L"recovery-record-reopen", code,
-            L"published recovery record must be a regular non-reparse file");
-    }
-    if (!VerifyProtectedFileSystemSecurity(
-            file.get(), false, L"recovery-record-security", error)) {
-        return false;
-    }
-    offset = 0;
-    std::array<char, 4096> verification{};
-    while (offset < record.size()) {
-        const DWORD requested = static_cast<DWORD>(std::min<size_t>(
-            verification.size(), record.size() - offset));
-        DWORD read = 0;
-        if (!ReadFile(file.get(), verification.data(), requested, &read, nullptr)) {
-            return SetLastErrorDetail(error, L"recovery-record-verify");
-        }
-        if (read != requested ||
-            std::memcmp(verification.data(), record.data() + offset, read) != 0) {
-            return SetError(error, L"recovery-record-verify", ERROR_CRC,
-                L"published recovery record bytes do not match the flushed transaction journal");
-        }
-        offset += read;
-    }
-    char trailing = 0;
-    DWORD trailingRead = 0;
-    if (!ReadFile(file.get(), &trailing, 1, &trailingRead, nullptr)) {
-        return SetLastErrorDetail(error, L"recovery-record-verify");
-    }
-    if (trailingRead != 0) {
-        return SetError(error, L"recovery-record-verify", ERROR_FILE_INVALID,
-            L"published recovery record contains trailing bytes");
-    }
-    if (!FlushFileBuffers(file.get())) {
-        return SetLastErrorDetail(error, L"recovery-record-published-flush");
-    }
-    return true;
-}
-
 const char* InstallJournalPhaseName(InstallJournalPhase phase) noexcept {
     switch (phase) {
     case InstallJournalPhase::Prepared: return "Prepared";
@@ -6564,6 +6379,10 @@ const char* InstallJournalPhaseName(InstallJournalPhase phase) noexcept {
     case InstallJournalPhase::BrokerHandoffReturned: return "BrokerHandoffReturned";
     case InstallJournalPhase::BrokerChildEntered: return "BrokerChildEntered";
     case InstallJournalPhase::BrokerChildSettled: return "BrokerChildSettled";
+    case InstallJournalPhase::BrokerOuterSettlementPending:
+        return "BrokerOuterSettlementPending";
+    case InstallJournalPhase::BrokerOuterSettled:
+        return "BrokerOuterSettled";
     case InstallJournalPhase::RollbackBindingEntered: return "RollbackBindingEntered";
     case InstallJournalPhase::PartialRootRemovalEntered:
         return "PartialRootRemovalEntered";
@@ -6604,6 +6423,10 @@ std::optional<InstallJournalPhase> ParseInstallJournalPhase(
             InstallJournalPhase::BrokerHandoffReturned,
             InstallJournalPhase::BrokerChildEntered,
             InstallJournalPhase::BrokerChildSettled,
+            InstallJournalPhase::BrokerOuterSettlementPending,
+            InstallJournalPhase::BrokerOuterSettled,
+            InstallJournalPhase::BrokerOuterSettlementPending,
+            InstallJournalPhase::BrokerOuterSettled,
             InstallJournalPhase::RollbackBindingEntered,
             InstallJournalPhase::PartialRootRemovalEntered,
             InstallJournalPhase::PartialRootRemovalReturned,
@@ -6940,7 +6763,9 @@ struct InstallRecoveryDirectory {
 bool RetireInstallRecoveryActiveDirectory(
     InstallRecoveryDirectory* directory,
     std::string_view transactionId,
-    Error* error) {
+    Error* error,
+    bool retainTombstone = false,
+    std::filesystem::path* retiredPath = nullptr) {
     if (directory == nullptr || !IsSha256Digest(transactionId) ||
         directory->active.filename() != kInstallRecoveryActiveDirectory) {
         return SetError(error, L"install-journal-retire-identity",
@@ -6982,7 +6807,14 @@ bool RetireInstallRecoveryActiveDirectory(
         return false;
     }
     ClearActiveRecoveryEvidence();
+    if (retiredPath != nullptr) {
+        *retiredPath = tombstone;
+    }
     tombstoneHandle.reset();
+
+    if (retainTombstone) {
+        return true;
+    }
 
     // Once active-v2 is atomically absent, cleanup is intentionally
     // best-effort. A power loss may leave a settled-v2-* tombstone, but it is
@@ -7089,6 +6921,9 @@ struct InstallJournalStateData {
     bool production = true;
     bool localTest = false;
     bool brokerRequired = false;
+    std::string brokerExecutableSha256;
+    std::filesystem::path brokerTokenPath;
+    std::wstring brokerTargetUserSid;
     bool brokerEntered = false;
     bool brokerSettled = false;
     bool hasBrokerProof = false;
@@ -7097,6 +6932,15 @@ struct InstallJournalStateData {
     bool brokerDriverRollbackAuthorized = false;
     std::string brokerProofRollback;
     DWORD brokerProofExitCode = ERROR_SUCCESS;
+    std::string brokerJournalTransactionId;
+    std::string brokerJournalOuterTransactionId;
+    std::string brokerJournalCandidateSha256;
+    std::string brokerJournalState;
+    std::string brokerJournalDigest;
+    std::string brokerSettlementNonce;
+    std::string brokerDriverPendingDigest;
+    std::string brokerSettlementRequestSha256;
+    std::string brokerGoPendingDigest;
     bool hasPriorAbiProfile = false;
     AbiCompatibilityProfile priorAbiProfile{};
     bool hasRootRegistrationIntent = false;
@@ -7177,6 +7021,56 @@ bool BuildInstallJournalPayload(
     const bool rebootPendingPhase =
         state.phase == InstallJournalPhase::ForwardRebootPending ||
         state.phase == InstallJournalPhase::RestoreRebootPending;
+    const bool brokerInvocationCanonical = state.brokerRequired
+        ? IsCanonicalLowerHex(state.brokerExecutableSha256, 64U) &&
+            state.brokerTokenPath.is_absolute() &&
+            state.brokerTokenPath.extension() == L".token" &&
+            IsSafeTargetUserSid(state.brokerTargetUserSid)
+        : state.brokerExecutableSha256.empty() &&
+            state.brokerTokenPath.empty() &&
+            state.brokerTargetUserSid.empty();
+    const bool brokerJournalCanonical = state.hasBrokerProof &&
+        state.brokerProofChanged
+        ? IsCanonicalLowerHex(state.brokerJournalTransactionId, 32U) &&
+            IsCanonicalLowerHex(state.brokerJournalOuterTransactionId, 64U) &&
+            IsCanonicalLowerHex(state.brokerJournalCandidateSha256, 64U) &&
+            IsCanonicalLowerHex(state.brokerJournalDigest, 64U) &&
+            state.brokerJournalOuterTransactionId == state.transactionId &&
+            state.brokerJournalCandidateSha256 ==
+                state.brokerExecutableSha256 &&
+            ((state.brokerProofSuccess &&
+                 state.brokerJournalState == "nested-ready") ||
+                (!state.brokerProofSuccess &&
+                    state.brokerDriverRollbackAuthorized &&
+                    state.brokerJournalState == "rollback-settled") ||
+                (!state.brokerProofSuccess &&
+                    !state.brokerDriverRollbackAuthorized &&
+                    state.brokerJournalState == "manual"))
+        : state.brokerJournalTransactionId.empty() &&
+            state.brokerJournalOuterTransactionId.empty() &&
+            state.brokerJournalCandidateSha256.empty() &&
+            state.brokerJournalState.empty() &&
+            state.brokerJournalDigest.empty();
+    const bool settlementPending =
+        state.phase == InstallJournalPhase::BrokerOuterSettlementPending;
+    const bool settlementFinal =
+        state.phase == InstallJournalPhase::BrokerOuterSettled;
+    const bool brokerSettlementCanonical = settlementPending
+        ? IsCanonicalLowerHex(state.brokerSettlementNonce, 64U) &&
+            state.brokerDriverPendingDigest.empty() &&
+            state.brokerSettlementRequestSha256.empty() &&
+            state.brokerGoPendingDigest.empty()
+        : settlementFinal
+            ? IsCanonicalLowerHex(state.brokerSettlementNonce, 64U) &&
+                IsCanonicalLowerHex(
+                    state.brokerDriverPendingDigest, 64U) &&
+                IsCanonicalLowerHex(
+                    state.brokerSettlementRequestSha256, 64U) &&
+                IsCanonicalLowerHex(state.brokerGoPendingDigest, 64U)
+            : state.brokerSettlementNonce.empty() &&
+                state.brokerDriverPendingDigest.empty() &&
+                state.brokerSettlementRequestSha256.empty() &&
+                state.brokerGoPendingDigest.empty();
     if (!IsSha256Digest(state.previousDigest) ||
         !IsCanonicalBootIdentifier(state.bootIdentifier) ||
         (!state.pendingRebootBootIdentifier.empty() &&
@@ -7230,6 +7124,15 @@ bool BuildInstallJournalPayload(
                 state.brokerProofRollback,
                 state.brokerProofExitCode,
                 state.brokerDriverRollbackAuthorized)) ||
+        !brokerInvocationCanonical || !brokerJournalCanonical ||
+        !brokerSettlementCanonical ||
+        ((settlementPending || settlementFinal) &&
+            (!state.brokerRequired || !state.hasBrokerProof ||
+                !state.brokerProofSuccess ||
+                !state.brokerProofChanged ||
+                state.brokerDriverRollbackAuthorized ||
+                state.direction != InstallJournalDirection::Forward ||
+                state.rollbackAuthorized)) ||
         (state.hasBrokerProof &&
             state.brokerDriverRollbackAuthorized !=
                 state.rollbackAuthorized) ||
@@ -7275,6 +7178,18 @@ bool BuildInstallJournalPayload(
     payload->append(state.localTest ? "true" : "false");
     payload->append(",\"brokerRequired\":");
     payload->append(state.brokerRequired ? "true" : "false");
+    payload->append(",\"brokerInvocation\":");
+    if (state.brokerRequired) {
+        payload->append("{\"executableSha256\":");
+        AppendJsonAsciiString(payload, state.brokerExecutableSha256);
+        payload->append(",\"tokenPath\":");
+        AppendJsonString(payload, state.brokerTokenPath.wstring());
+        payload->append(",\"targetUserSid\":");
+        AppendJsonString(payload, state.brokerTargetUserSid);
+        payload->push_back('}');
+    } else {
+        payload->append("null");
+    }
     payload->append(",\"brokerEntered\":");
     payload->append(state.brokerEntered ? "true" : "false");
     payload->append(",\"brokerSettled\":");
@@ -7292,6 +7207,54 @@ bool BuildInstallJournalPayload(
         payload->append(",\"driverRollbackAuthorized\":");
         payload->append(state.brokerDriverRollbackAuthorized
             ? "true" : "false");
+        payload->append(",\"journal\":");
+        if (state.brokerProofChanged) {
+            payload->append("{\"transactionId\":");
+            AppendJsonAsciiString(payload,
+                state.brokerJournalTransactionId);
+            payload->append(",\"outerTransactionId\":");
+            AppendJsonAsciiString(payload,
+                state.brokerJournalOuterTransactionId);
+            payload->append(",\"candidateSha256\":");
+            AppendJsonAsciiString(payload,
+                state.brokerJournalCandidateSha256);
+            payload->append(",\"state\":");
+            AppendJsonAsciiString(payload, state.brokerJournalState);
+            payload->append(",\"digest\":");
+            AppendJsonAsciiString(payload, state.brokerJournalDigest);
+            payload->push_back('}');
+        } else {
+            payload->append("null");
+        }
+        payload->push_back('}');
+    } else {
+        payload->append("null");
+    }
+    payload->append(",\"brokerSettlement\":");
+    if (settlementPending || settlementFinal) {
+        payload->append("{\"nonce\":");
+        AppendJsonAsciiString(payload, state.brokerSettlementNonce);
+        payload->append(",\"driverPendingDigest\":");
+        if (settlementFinal) {
+            AppendJsonAsciiString(payload,
+                state.brokerDriverPendingDigest);
+        } else {
+            payload->append("null");
+        }
+        payload->append(",\"requestSha256\":");
+        if (settlementFinal) {
+            AppendJsonAsciiString(payload,
+                state.brokerSettlementRequestSha256);
+        } else {
+            payload->append("null");
+        }
+        payload->append(",\"brokerPendingDigest\":");
+        if (settlementFinal) {
+            AppendJsonAsciiString(payload,
+                state.brokerGoPendingDigest);
+        } else {
+            payload->append("null");
+        }
         payload->push_back('}');
     } else {
         payload->append("null");
@@ -7586,11 +7549,94 @@ bool CopyCandidateIntoInstallJournal(
     return LockPackageFiles(destinationDirectory, locks, error);
 }
 
+bool LockProtectedBrokerImage(
+    const std::filesystem::path& image,
+    std::string_view expectedSha256,
+    WinHandle* lock,
+    Error* error) {
+    if (!IsCanonicalLowerHex(expectedSha256, 64U)) {
+        return SetError(error, L"install-journal-broker-image",
+            ERROR_INVALID_PARAMETER);
+    }
+    lock->reset(CreateFileW(
+        image.c_str(), GENERIC_READ | FILE_READ_ATTRIBUTES | READ_CONTROL,
+        FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT |
+            FILE_FLAG_SEQUENTIAL_SCAN,
+        nullptr));
+    if (!*lock) {
+        return SetLastErrorDetail(error, L"install-journal-broker-image-open");
+    }
+    FILE_ATTRIBUTE_TAG_INFO attributes{};
+    BY_HANDLE_FILE_INFORMATION identity{};
+    std::array<unsigned char, 2> header{};
+    DWORD read = 0;
+    if (!GetFileInformationByHandleEx(
+            lock->get(), FileAttributeTagInfo, &attributes,
+            sizeof(attributes)) ||
+        (attributes.FileAttributes &
+            (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0 ||
+        !GetFileInformationByHandle(lock->get(), &identity) ||
+        identity.nNumberOfLinks != 1U ||
+        !VerifyProtectedFileSystemSecurity(
+            lock->get(), false,
+            L"install-journal-broker-image-security", error) ||
+        !ReadFile(lock->get(), header.data(),
+            static_cast<DWORD>(header.size()), &read, nullptr) ||
+        read != header.size() || header[0] != 'M' || header[1] != 'Z') {
+        if (error->code == ERROR_SUCCESS) {
+            SetError(error, L"install-journal-broker-image",
+                ERROR_BAD_EXE_FORMAT,
+                L"protected broker evidence must be one single-link non-reparse PE image");
+        }
+        return false;
+    }
+    std::string observed;
+    if (!Sha256Handle(lock->get(), &observed, error)) {
+        error->phase = L"install-journal-broker-image-hash";
+        return false;
+    }
+    if (observed != expectedSha256) {
+        return SetError(error, L"install-journal-broker-image-hash",
+            ERROR_CRC,
+            L"protected broker evidence differs from its immutable digest");
+    }
+    return true;
+}
+
+bool ValidateExactBrokerEvidenceDirectory(
+    const std::filesystem::path& directory,
+    Error* error) {
+    size_t entries = 0;
+    std::error_code enumerationError;
+    for (std::filesystem::directory_iterator iterator(
+             directory, enumerationError), end;
+         !enumerationError && iterator != end;
+         iterator.increment(enumerationError)) {
+        ++entries;
+        if (iterator->path().filename() !=
+                kInstallRecoveryBrokerExecutable) {
+            return SetError(error, L"install-journal-broker-evidence",
+                ERROR_INVALID_DATA,
+                L"protected broker evidence directory contains an unexpected entry");
+        }
+    }
+    if (enumerationError || entries != 1U) {
+        return SetError(error, L"install-journal-broker-evidence",
+            enumerationError
+                ? static_cast<DWORD>(enumerationError.value())
+                : ERROR_FILE_NOT_FOUND,
+            L"protected broker evidence directory is incomplete");
+    }
+    return true;
+}
+
 struct InstallJournal::Impl {
     InstallRecoveryDirectory directory;
     InstallJournalStateData state;
     std::vector<PackageBackup> priorBackups;
     std::vector<WinHandle> candidateLocks;
+    WinHandle brokerLock;
     bool preparedRecord = false;
     bool retired = false;
     bool poisoned = false;
@@ -7606,6 +7652,7 @@ struct InstallJournal::Impl {
             return;
         }
         candidateLocks.clear();
+        brokerLock.reset();
         priorBackups.clear();
         directory.activeHandle.reset();
         std::error_code ignored;
@@ -7660,12 +7707,36 @@ bool InstallJournal::Prepare(
         return false;
     }
 
+    if (!options.brokerExecutable.empty()) {
+        WinHandle brokerDirectoryHandle;
+        const std::filesystem::path brokerDirectory =
+            impl_->directory.active / kInstallRecoveryBrokerDirectory;
+        const std::filesystem::path brokerImage =
+            brokerDirectory / kInstallRecoveryBrokerExecutable;
+        if (!CreateOrOpenInstallRecoveryDirectory(
+                brokerDirectory, false, true, &brokerDirectoryHandle,
+                &created, error) ||
+            !CopyProtectedBackupFile(
+                options.brokerExecutable, brokerImage, error) ||
+            !LockProtectedBrokerImage(
+                brokerImage, LowerAscii(options.brokerSha256),
+                &impl_->brokerLock, error)) {
+            return false;
+        }
+    }
+
     impl_->state.prior = prior;
     impl_->state.candidate = candidate;
     impl_->state.expectedInventory = expectedInventory;
     impl_->state.production = options.production;
     impl_->state.localTest = options.localTest;
     impl_->state.brokerRequired = !options.brokerExecutable.empty();
+    if (impl_->state.brokerRequired) {
+        impl_->state.brokerExecutableSha256 =
+            LowerAscii(options.brokerSha256);
+        impl_->state.brokerTokenPath = options.brokerToken;
+        impl_->state.brokerTargetUserSid = options.targetUserSid;
+    }
     impl_->state.sourceRevision = options.sourceRevision;
     if (!GetBootIdentifier(&impl_->state.bootIdentifier, error)) {
         return false;
@@ -7937,7 +8008,15 @@ bool InstallJournal::RecordBrokerProof(
     Error* error) {
     if (!impl_ || !BrokerProofFieldsAreCanonical(
             proof.success, proof.changed, proof.rollback,
-            proof.exitCode, proof.driverRollbackAuthorized)) {
+            proof.exitCode, proof.driverRollbackAuthorized) ||
+        (proof.changed != proof.hasJournalProof) ||
+        (proof.changed &&
+            (!IsCanonicalLowerHex(proof.journalTransactionId, 32U) ||
+                !IsCanonicalLowerHex(
+                    proof.journalOuterTransactionId, 64U) ||
+                !IsCanonicalLowerHex(
+                    proof.journalCandidateSha256, 64U) ||
+                !IsCanonicalLowerHex(proof.journalDigest, 64U)))) {
         return SetError(error, L"install-journal-broker-proof",
             ERROR_INVALID_DATA);
     }
@@ -7947,7 +8026,15 @@ bool InstallJournal::RecordBrokerProof(
             impl_->state.brokerProofRollback != proof.rollback ||
             impl_->state.brokerProofExitCode != proof.exitCode ||
             impl_->state.brokerDriverRollbackAuthorized !=
-                proof.driverRollbackAuthorized)) {
+                proof.driverRollbackAuthorized ||
+            impl_->state.brokerJournalTransactionId !=
+                proof.journalTransactionId ||
+            impl_->state.brokerJournalOuterTransactionId !=
+                proof.journalOuterTransactionId ||
+            impl_->state.brokerJournalCandidateSha256 !=
+                proof.journalCandidateSha256 ||
+            impl_->state.brokerJournalState != proof.journalState ||
+            impl_->state.brokerJournalDigest != proof.journalDigest)) {
         return SetError(error, L"install-journal-broker-proof",
             ERROR_REVISION_MISMATCH,
             L"settled broker proof changed within one transaction");
@@ -7962,6 +8049,13 @@ bool InstallJournal::RecordBrokerProof(
     next.brokerProofExitCode = proof.exitCode;
     next.brokerDriverRollbackAuthorized =
         proof.driverRollbackAuthorized;
+    next.brokerJournalTransactionId = proof.journalTransactionId;
+    next.brokerJournalOuterTransactionId =
+        proof.journalOuterTransactionId;
+    next.brokerJournalCandidateSha256 =
+        proof.journalCandidateSha256;
+    next.brokerJournalState = proof.journalState;
+    next.brokerJournalDigest = proof.journalDigest;
     if (proof.driverRollbackAuthorized) {
         next.direction = InstallJournalDirection::Rollback;
         next.rollbackAuthorized = true;
@@ -8058,11 +8152,19 @@ bool InstallJournal::RetireAfterForwardValidation(
     const std::wstring& publishedName,
     bool rebootRequired,
     uint64_t deadlineUnixMs,
+    BrokerJournalBinding* binding,
+    std::string_view recovery,
     Error* error) {
     if (!impl_ || !impl_->preparedRecord || impl_->retired ||
         impl_->poisoned) {
         return SetError(error, L"install-journal-retire", ERROR_INVALID_STATE);
     }
+    if (binding == nullptr ||
+        (recovery != "fresh" && recovery != "replayed")) {
+        return SetError(error, L"install-journal-retire",
+            ERROR_INVALID_PARAMETER);
+    }
+    *binding = {};
     if (rebootRequired) {
         if (impl_->state.pendingRebootBootIdentifier.empty()) {
             return SetError(error, L"install-journal-forward-reboot-epoch",
@@ -8097,10 +8199,43 @@ bool InstallJournal::RetireAfterForwardValidation(
             L"install-journal-retire-revalidation", error)) {
         return false;
     }
+    if (impl_->state.brokerRequired &&
+        impl_->state.hasBrokerProof &&
+        impl_->state.brokerProofSuccess &&
+        impl_->state.brokerProofChanged) {
+        InstallJournalStateData pending = impl_->state;
+        if (!GenerateInstallTransactionId(
+                &pending.brokerSettlementNonce, error) ||
+            !RecordNext(std::move(pending),
+                InstallJournalPhase::BrokerOuterSettlementPending,
+                &impl_->state.publishedCandidate,
+                impl_->state.packageStagedHere,
+                impl_->state.bindingMutationStarted,
+                false, true, ERROR_SUCCESS, false, false, error)) {
+            return false;
+        }
+        binding->present = true;
+        binding->transactionId =
+            impl_->state.brokerJournalTransactionId;
+        binding->outerTransactionId =
+            impl_->state.brokerJournalOuterTransactionId;
+        binding->candidateSha256 =
+            impl_->state.brokerJournalCandidateSha256;
+        binding->state = impl_->state.brokerJournalState;
+        binding->digest = impl_->state.brokerJournalDigest;
+        binding->driverTransactionId = impl_->state.transactionId;
+        binding->driverDigest = impl_->state.lastDigest;
+        binding->settlementNonce =
+            impl_->state.brokerSettlementNonce;
+        binding->recovery = std::string(recovery);
+        return true;
+    }
     impl_->candidateLocks.clear();
+    impl_->brokerLock.reset();
     impl_->priorBackups.clear();
     if (!RetireInstallRecoveryActiveDirectory(
-            &impl_->directory, impl_->state.transactionId, error)) {
+            &impl_->directory, impl_->state.transactionId,
+            error, false, nullptr)) {
         return false;
     }
     impl_->retired = true;
@@ -8170,7 +8305,8 @@ bool InstallJournal::RetireAfterPriorValidation(
     impl_->candidateLocks.clear();
     impl_->priorBackups.clear();
     if (!RetireInstallRecoveryActiveDirectory(
-            &impl_->directory, impl_->state.transactionId, error)) {
+            &impl_->directory, impl_->state.transactionId,
+            error, false, nullptr)) {
         return false;
     }
     impl_->retired = true;
@@ -8378,6 +8514,48 @@ bool ParseInstallJournalPayload(
         }
         state->pendingRebootBootIdentifier = *pendingBoot;
     }
+    const JsonValue* brokerInvocationNode =
+        ObjectField(*object, "brokerInvocation");
+    if (brokerInvocationNode == nullptr) {
+        return SetError(error, L"install-journal-broker-invocation",
+            ERROR_INVALID_DATA);
+    }
+    if (state->brokerRequired) {
+        const JsonValue::Object* invocationObject = nullptr;
+        std::string tokenPath;
+        std::string targetUserSid;
+        std::wstring tokenPathWide;
+        if (!RequireJournalObject(
+                *brokerInvocationNode, &invocationObject, error) ||
+            invocationObject->size() != 3U ||
+            !RequireJournalString(*invocationObject,
+                "executableSha256", &state->brokerExecutableSha256,
+                error) ||
+            !RequireJournalString(*invocationObject,
+                "tokenPath", &tokenPath, error) ||
+            !RequireJournalString(*invocationObject,
+                "targetUserSid", &targetUserSid, error) ||
+            !Utf8ToWide(tokenPath, &tokenPathWide, error) ||
+            !Utf8ToWide(targetUserSid, &state->brokerTargetUserSid,
+                error)) {
+            return false;
+        }
+        state->brokerTokenPath = tokenPathWide;
+        if (!IsCanonicalLowerHex(
+                state->brokerExecutableSha256, 64U) ||
+            !state->brokerTokenPath.is_absolute() ||
+            state->brokerTokenPath.extension() != L".token" ||
+            !IsSafeTargetUserSid(state->brokerTargetUserSid)) {
+            return SetError(error, L"install-journal-broker-invocation",
+                ERROR_INVALID_DATA,
+                L"durable broker recovery invocation is not canonical");
+        }
+    } else if (!std::holds_alternative<std::nullptr_t>(
+            brokerInvocationNode->value)) {
+        return SetError(error, L"install-journal-broker-invocation",
+            ERROR_INVALID_DATA,
+            L"non-broker transaction carried recovery invocation state");
+    }
     const JsonValue* brokerProofNode = ObjectField(*object, "brokerProof");
     if (brokerProofNode == nullptr) {
         return SetError(error, L"install-journal-broker-proof",
@@ -8390,7 +8568,7 @@ bool ParseInstallJournalPayload(
         uint64_t exitCode = 0;
         if (!RequireJournalObject(
                 *brokerProofNode, &brokerProofObject, error) ||
-            brokerProofObject->size() != 5U ||
+            brokerProofObject->size() != 6U ||
             !RequireJournalBool(*brokerProofObject, "success",
                 &state->brokerProofSuccess, error) ||
             !RequireJournalBool(*brokerProofObject, "changed",
@@ -8404,6 +8582,38 @@ bool ParseInstallJournalPayload(
                 &state->brokerDriverRollbackAuthorized, error)) {
             return false;
         }
+        const JsonValue* journalNode =
+            ObjectField(*brokerProofObject, "journal");
+        if (journalNode == nullptr) {
+            return SetError(error, L"install-journal-broker-proof",
+                ERROR_INVALID_DATA);
+        }
+        if (state->brokerProofChanged) {
+            const JsonValue::Object* journalObject = nullptr;
+            if (!RequireJournalObject(
+                    *journalNode, &journalObject, error) ||
+                journalObject->size() != 5U ||
+                !RequireJournalString(*journalObject,
+                    "transactionId",
+                    &state->brokerJournalTransactionId, error) ||
+                !RequireJournalString(*journalObject,
+                    "outerTransactionId",
+                    &state->brokerJournalOuterTransactionId, error) ||
+                !RequireJournalString(*journalObject,
+                    "candidateSha256",
+                    &state->brokerJournalCandidateSha256, error) ||
+                !RequireJournalString(*journalObject, "state",
+                    &state->brokerJournalState, error) ||
+                !RequireJournalString(*journalObject, "digest",
+                    &state->brokerJournalDigest, error)) {
+                return false;
+            }
+        } else if (!std::holds_alternative<std::nullptr_t>(
+                journalNode->value)) {
+            return SetError(error, L"install-journal-broker-proof",
+                ERROR_INVALID_DATA,
+                L"unchanged child proof carried a journal identity");
+        }
         state->brokerProofExitCode = static_cast<DWORD>(exitCode);
         if (!BrokerProofFieldsAreCanonical(
                 state->brokerProofSuccess,
@@ -8416,6 +8626,63 @@ bool ParseInstallJournalPayload(
                 L"durable child proof is not a canonical settled outcome");
         }
         state->hasBrokerProof = true;
+    }
+    const JsonValue* brokerSettlementNode =
+        ObjectField(*object, "brokerSettlement");
+    if (brokerSettlementNode == nullptr) {
+        return SetError(error, L"install-journal-broker-settlement",
+            ERROR_INVALID_DATA);
+    }
+    if (!std::holds_alternative<std::nullptr_t>(
+            brokerSettlementNode->value)) {
+        const JsonValue::Object* settlementObject = nullptr;
+        const JsonValue* driverPendingNode = nullptr;
+        const JsonValue* requestNode = nullptr;
+        const JsonValue* pendingNode = nullptr;
+        if (!RequireJournalObject(
+                *brokerSettlementNode, &settlementObject, error) ||
+            settlementObject->size() != 4U ||
+            !RequireJournalString(*settlementObject, "nonce",
+                &state->brokerSettlementNonce, error) ||
+            (driverPendingNode = ObjectField(
+                *settlementObject, "driverPendingDigest")) == nullptr ||
+            (requestNode = ObjectField(
+                *settlementObject, "requestSha256")) == nullptr ||
+            (pendingNode = ObjectField(
+                *settlementObject, "brokerPendingDigest")) == nullptr) {
+            return false;
+        }
+        const auto* requestDigest =
+            std::get_if<std::string>(&requestNode->value);
+        const auto* pendingDigest =
+            std::get_if<std::string>(&pendingNode->value);
+        const auto* driverPendingDigest =
+            std::get_if<std::string>(&driverPendingNode->value);
+        if (driverPendingDigest != nullptr) {
+            state->brokerDriverPendingDigest =
+                *driverPendingDigest;
+        } else if (!std::holds_alternative<std::nullptr_t>(
+                driverPendingNode->value)) {
+            return SetError(error,
+                L"install-journal-broker-settlement",
+                ERROR_INVALID_DATA);
+        }
+        if (requestDigest != nullptr) {
+            state->brokerSettlementRequestSha256 = *requestDigest;
+        } else if (!std::holds_alternative<std::nullptr_t>(
+                requestNode->value)) {
+            return SetError(error,
+                L"install-journal-broker-settlement",
+                ERROR_INVALID_DATA);
+        }
+        if (pendingDigest != nullptr) {
+            state->brokerGoPendingDigest = *pendingDigest;
+        } else if (!std::holds_alternative<std::nullptr_t>(
+                pendingNode->value)) {
+            return SetError(error,
+                L"install-journal-broker-settlement",
+                ERROR_INVALID_DATA);
+        }
     }
     const JsonValue* profileNode = ObjectField(*object, "priorAbiProfile");
     if (profileNode == nullptr) {
@@ -8861,6 +9128,10 @@ bool SameInstallJournalImmutableState(
         left.production != right.production ||
         left.localTest != right.localTest ||
         left.brokerRequired != right.brokerRequired ||
+        left.brokerExecutableSha256 != right.brokerExecutableSha256 ||
+        left.brokerTokenPath != right.brokerTokenPath ||
+        _wcsicmp(left.brokerTargetUserSid.c_str(),
+            right.brokerTargetUserSid.c_str()) != 0 ||
         !SameJournalPackageIdentity(left.candidate, right.candidate) ||
         !SamePackageInventory(left.prior.packages, right.prior.packages) ||
         left.prior.devices.size() != right.prior.devices.size()) {
@@ -8882,7 +9153,15 @@ bool SameDurableBrokerProof(
                 left.brokerDriverRollbackAuthorized ==
                     right.brokerDriverRollbackAuthorized &&
                 left.brokerProofRollback == right.brokerProofRollback &&
-                left.brokerProofExitCode == right.brokerProofExitCode));
+                left.brokerProofExitCode == right.brokerProofExitCode &&
+                left.brokerJournalTransactionId ==
+                    right.brokerJournalTransactionId &&
+                left.brokerJournalOuterTransactionId ==
+                    right.brokerJournalOuterTransactionId &&
+                left.brokerJournalCandidateSha256 ==
+                    right.brokerJournalCandidateSha256 &&
+                left.brokerJournalState == right.brokerJournalState &&
+                left.brokerJournalDigest == right.brokerJournalDigest));
 }
 
 int ForwardInstallJournalPhaseRank(
@@ -8905,6 +9184,8 @@ int ForwardInstallJournalPhaseRank(
     case InstallJournalPhase::BrokerHandoffReturned: return 71;
     case InstallJournalPhase::BrokerChildEntered: return 80;
     case InstallJournalPhase::BrokerChildSettled: return 81;
+    case InstallJournalPhase::BrokerOuterSettlementPending: return 91;
+    case InstallJournalPhase::BrokerOuterSettled: return 92;
     case InstallJournalPhase::PartialRootRemovalEntered: return 82;
     case InstallJournalPhase::PartialRootRemovalReturned: return 83;
     case InstallJournalPhase::PartialRootRemovalRebootPending: return 84;
@@ -8918,7 +9199,7 @@ int ForwardInstallJournalPhaseRank(
 }
 
 bool IsInstallJournalTerminalPhase(InstallJournalPhase phase) noexcept {
-    return phase == InstallJournalPhase::ForwardValidated ||
+    return phase == InstallJournalPhase::BrokerOuterSettled ||
         phase == InstallJournalPhase::ExactPriorRestored ||
         phase == InstallJournalPhase::ForwardRebootPending ||
         phase == InstallJournalPhase::RestoreRebootPending ||
@@ -9002,6 +9283,11 @@ bool LegalForwardInstallJournalPhaseTransition(
     case InstallJournalPhase::ForwardRebootPending:
         return previous == InstallJournalPhase::DriverValidated ||
             previous == InstallJournalPhase::BrokerChildSettled;
+    case InstallJournalPhase::BrokerOuterSettlementPending:
+        return previous == InstallJournalPhase::ForwardValidated;
+    case InstallJournalPhase::BrokerOuterSettled:
+        return previous ==
+            InstallJournalPhase::BrokerOuterSettlementPending;
     default:
         return false;
     }
@@ -9078,6 +9364,10 @@ bool ValidateInstallJournalTransition(
             next.direction != InstallJournalDirection::Forward ||
             next.rollbackAuthorized || next.brokerEntered ||
             next.brokerSettled || next.hasBrokerProof ||
+            !next.brokerSettlementNonce.empty() ||
+            !next.brokerDriverPendingDigest.empty() ||
+            !next.brokerSettlementRequestSha256.empty() ||
+            !next.brokerGoPendingDigest.empty() ||
             next.hasPriorAbiProfile ||
             next.hasRootRegistrationIntent ||
             !next.rootRegistrationInstanceId.empty() ||
@@ -9117,7 +9407,19 @@ bool ValidateInstallJournalTransition(
                 InstallJournalStateData::PartialRootRemovalBinding::None) ||
         (!prior.partialRootRemovalBootIdentifier.empty() &&
             next.partialRootRemovalBootIdentifier.empty()) ||
-        (prior.hasBrokerProof && !next.hasBrokerProof)) {
+        (prior.hasBrokerProof && !next.hasBrokerProof) ||
+        (!prior.brokerSettlementNonce.empty() &&
+            prior.brokerSettlementNonce !=
+                next.brokerSettlementNonce) ||
+        (!prior.brokerDriverPendingDigest.empty() &&
+            prior.brokerDriverPendingDigest !=
+                next.brokerDriverPendingDigest) ||
+        (!prior.brokerSettlementRequestSha256.empty() &&
+            prior.brokerSettlementRequestSha256 !=
+                next.brokerSettlementRequestSha256) ||
+        (!prior.brokerGoPendingDigest.empty() &&
+            prior.brokerGoPendingDigest !=
+                next.brokerGoPendingDigest)) {
         return SetError(error, L"install-journal-monotonic-state",
             ERROR_INVALID_DATA,
             L"terminal, direction, ownership, or diagnostic state regressed");
@@ -9266,6 +9568,30 @@ bool ValidateInstallJournalTransition(
             ERROR_INVALID_DATA,
             L"durable broker proof first appeared outside child settlement");
     }
+    const bool settlementNonceAppeared =
+        prior.brokerSettlementNonce.empty() &&
+        !next.brokerSettlementNonce.empty();
+    const bool settlementReceiptAppeared =
+        prior.brokerSettlementRequestSha256.empty() &&
+        !next.brokerSettlementRequestSha256.empty();
+    const bool brokerPendingDigestAppeared =
+        prior.brokerGoPendingDigest.empty() &&
+        !next.brokerGoPendingDigest.empty();
+    const bool driverPendingDigestAppeared =
+        prior.brokerDriverPendingDigest.empty() &&
+        !next.brokerDriverPendingDigest.empty();
+    if ((settlementNonceAppeared &&
+            next.phase !=
+                InstallJournalPhase::BrokerOuterSettlementPending) ||
+        ((settlementReceiptAppeared || brokerPendingDigestAppeared ||
+             driverPendingDigestAppeared) &&
+            next.phase != InstallJournalPhase::BrokerOuterSettled) ||
+        (settlementReceiptAppeared != brokerPendingDigestAppeared) ||
+        (settlementReceiptAppeared != driverPendingDigestAppeared)) {
+        return SetError(error, L"install-journal-broker-settlement-chain",
+            ERROR_INVALID_DATA,
+            L"outer settlement identity appeared outside its exact durable phase");
+    }
     if (!prior.brokerEntered && next.brokerEntered &&
         next.phase != InstallJournalPhase::BrokerHandoffEntered) {
         return SetError(error, L"install-journal-broker-chain",
@@ -9297,7 +9623,10 @@ bool ValidateInstallJournalTransition(
             L"prior terminal phase lacks durable broker-safe rollback authority");
     }
     if ((next.phase == InstallJournalPhase::ForwardValidated ||
-            next.phase == InstallJournalPhase::ForwardRebootPending) &&
+            next.phase == InstallJournalPhase::ForwardRebootPending ||
+            next.phase ==
+                InstallJournalPhase::BrokerOuterSettlementPending ||
+            next.phase == InstallJournalPhase::BrokerOuterSettled) &&
         next.brokerRequired &&
         (!next.brokerEntered || !next.brokerSettled ||
             !next.hasBrokerProof || !next.brokerProofSuccess ||
@@ -9483,6 +9812,38 @@ bool ValidateLoadedInstallJournalEvidence(
     loaded->evidenceLocks.push_back(std::move(priorHandle));
     loaded->evidenceLocks.push_back(std::move(candidateHandle));
 
+    const std::filesystem::path brokerDirectory =
+        loaded->directory.active / kInstallRecoveryBrokerDirectory;
+    const DWORD brokerDirectoryAttributes =
+        GetFileAttributesW(brokerDirectory.c_str());
+    if (loaded->state.brokerRequired) {
+        WinHandle brokerDirectoryHandle;
+        WinHandle brokerImage;
+        if (!OpenStableDirectory(
+                brokerDirectory, true, &brokerDirectoryHandle, error) ||
+            !ValidateExactBrokerEvidenceDirectory(
+                brokerDirectory, error) ||
+            !LockProtectedBrokerImage(
+                brokerDirectory / kInstallRecoveryBrokerExecutable,
+                loaded->state.brokerExecutableSha256,
+                &brokerImage, error)) {
+            return false;
+        }
+        loaded->evidenceLocks.push_back(std::move(brokerDirectoryHandle));
+        loaded->evidenceLocks.push_back(std::move(brokerImage));
+    } else if (brokerDirectoryAttributes != INVALID_FILE_ATTRIBUTES) {
+        return SetError(error, L"install-journal-broker-evidence",
+            ERROR_INVALID_DATA,
+            L"non-broker transaction contains unexpected broker evidence");
+    } else {
+        const DWORD absenceError = GetLastError();
+        if (absenceError != ERROR_FILE_NOT_FOUND &&
+            absenceError != ERROR_PATH_NOT_FOUND) {
+            return SetError(error, L"install-journal-broker-evidence",
+                absenceError);
+        }
+    }
+
     const std::filesystem::path candidateDirectory =
         loaded->directory.active / kInstallRecoveryCandidateDirectory;
     PackageInfo candidateCopy;
@@ -9579,7 +9940,8 @@ bool LoadInstallJournal(
         }
         if ((attributes & FILE_ATTRIBUTE_DIRECTORY) != 0 &&
             (name == kInstallRecoveryPriorDirectory ||
-                name == kInstallRecoveryCandidateDirectory)) {
+                name == kInstallRecoveryCandidateDirectory ||
+                name == kInstallRecoveryBrokerDirectory)) {
             continue;
         }
         uint64_t sequence = 0;
@@ -9705,7 +10067,8 @@ bool RetireLoadedInstallJournal(
     Error* error) {
     loaded->evidenceLocks.clear();
     return RetireInstallRecoveryActiveDirectory(
-        &loaded->directory, loaded->state.transactionId, error);
+        &loaded->directory, loaded->state.transactionId,
+        error, false, nullptr);
 }
 
 bool CurrentStateMatchesPrior(
@@ -10653,6 +11016,20 @@ ClassifyPartialRootRemovalJournalRecovery(
     return PartialRootRemovalRecoveryDisposition::ContinueRollback;
 }
 
+bool IsBrokerOuterSettlementContinuationPhase(
+    InstallJournalPhase phase) noexcept {
+    return phase == InstallJournalPhase::BrokerChildSettled ||
+        phase == InstallJournalPhase::ForwardValidated ||
+        phase == InstallJournalPhase::BrokerOuterSettlementPending ||
+        phase == InstallJournalPhase::BrokerOuterSettled;
+}
+
+const std::string& BrokerOuterSettlementPendingDriverDigest(
+    const InstallJournalStateData& state) noexcept {
+    return state.phase == InstallJournalPhase::BrokerOuterSettled
+        ? state.brokerDriverPendingDigest : state.lastDigest;
+}
+
 bool ReconcileInstallJournal(
     bool explicitRecovery,
     uint64_t deadlineUnixMs,
@@ -10671,6 +11048,17 @@ bool ReconcileInstallJournal(
         return false;
     }
     if (!exists) {
+        bool handled = false;
+        Error settledError;
+        if (!ReconcileSettledBrokerOuterSettlement(
+                deadlineUnixMs, &handled, outcome, &settledError)) {
+            outcome->error = std::move(settledError);
+            outcome->exitCode = ExitCode::RollbackFailed;
+            return false;
+        }
+        if (handled) {
+            return false;
+        }
         outcome->success = true;
         outcome->exitCode = ExitCode::Success;
         return true;
@@ -10787,6 +11175,88 @@ bool ReconcileInstallJournal(
                 InstallJournalStateData::PartialRootRemovalBinding::None,
                 error);
         };
+    const auto appendBrokerProof =
+        [&](const BrokerCommitProof& proof, Error* error) {
+            if (!BrokerProofFieldsAreCanonical(
+                    proof.success, proof.changed, proof.rollback,
+                    proof.exitCode, proof.driverRollbackAuthorized) ||
+                proof.changed != proof.hasJournalProof ||
+                (proof.changed &&
+                    (proof.journalOuterTransactionId !=
+                            loaded.state.transactionId ||
+                        proof.journalCandidateSha256 !=
+                            loaded.state.brokerExecutableSha256))) {
+                return SetError(error,
+                    L"install-journal-broker-replay-proof",
+                    ERROR_REVISION_MISMATCH,
+                    L"replayed child proof is not bound to the retained outer token and protected image");
+            }
+            InstallJournalStateData next = loaded.state;
+            next.phase = InstallJournalPhase::BrokerChildSettled;
+            next.brokerEntered = true;
+            next.brokerSettled = true;
+            next.hasBrokerProof = true;
+            next.brokerProofSuccess = proof.success;
+            next.brokerProofChanged = proof.changed;
+            next.brokerProofRollback = proof.rollback;
+            next.brokerProofExitCode = proof.exitCode;
+            next.brokerDriverRollbackAuthorized =
+                proof.driverRollbackAuthorized;
+            next.brokerJournalTransactionId =
+                proof.journalTransactionId;
+            next.brokerJournalOuterTransactionId =
+                proof.journalOuterTransactionId;
+            next.brokerJournalCandidateSha256 =
+                proof.journalCandidateSha256;
+            next.brokerJournalState = proof.journalState;
+            next.brokerJournalDigest = proof.journalDigest;
+            next.callSucceeded = proof.success;
+            next.callError = proof.exitCode;
+            if (proof.driverRollbackAuthorized) {
+                next.direction = InstallJournalDirection::Rollback;
+                next.rollbackAuthorized = true;
+            }
+            if (!ValidateInstallJournalTransition(
+                    &loaded.state, next, error) ||
+                !WriteInstallJournalRecord(
+                    loaded.directory.active, &next, error)) {
+                return false;
+            }
+            loaded.state = std::move(next);
+            if (!PublishInstallRecoveryEvidence(
+                    loaded.directory.active,
+                    loaded.state.sequence - 1U, error)) {
+                return false;
+            }
+            gActiveRecoveryRecordWritten = true;
+            return true;
+        };
+    const auto appendOuterSettlementPending =
+        [&](Error* error) {
+            InstallJournalStateData next = loaded.state;
+            if (!GenerateInstallTransactionId(
+                    &next.brokerSettlementNonce, error)) {
+                return false;
+            }
+            next.phase =
+                InstallJournalPhase::BrokerOuterSettlementPending;
+            next.callSucceeded = true;
+            next.callError = ERROR_SUCCESS;
+            if (!ValidateInstallJournalTransition(
+                    &loaded.state, next, error) ||
+                !WriteInstallJournalRecord(
+                    loaded.directory.active, &next, error)) {
+                return false;
+            }
+            loaded.state = std::move(next);
+            if (!PublishInstallRecoveryEvidence(
+                    loaded.directory.active,
+                    loaded.state.sequence - 1U, error)) {
+                return false;
+            }
+            gActiveRecoveryRecordWritten = true;
+            return true;
+        };
     const auto appendPartialRootRemovalEntered =
         [&](InstallJournalStateData::PartialRootRemovalBinding binding,
             Error* error) {
@@ -10844,6 +11314,31 @@ bool ReconcileInstallJournal(
             ExitCode::RebootRequired, outcome);
         return false;
     };
+    const auto returnPendingBinding = [&]() {
+        BrokerJournalBinding binding;
+        binding.present = true;
+        binding.transactionId =
+            loaded.state.brokerJournalTransactionId;
+        binding.outerTransactionId =
+            loaded.state.brokerJournalOuterTransactionId;
+        binding.candidateSha256 =
+            loaded.state.brokerJournalCandidateSha256;
+        binding.state = loaded.state.brokerJournalState;
+        binding.digest = loaded.state.brokerJournalDigest;
+        binding.driverTransactionId = loaded.state.transactionId;
+        binding.driverDigest =
+            BrokerOuterSettlementPendingDriverDigest(loaded.state);
+        binding.settlementNonce =
+            loaded.state.brokerSettlementNonce;
+        binding.recovery = "replayed";
+        outcome->success = true;
+        outcome->changed = true;
+        outcome->exitCode = ExitCode::Success;
+        outcome->rollback = L"not-needed";
+        outcome->brokerBinding = std::move(binding);
+        // Stop this invocation before it can admit a new package identity.
+        return false;
+    };
 
     std::string currentBoot;
     Error bootError;
@@ -10858,6 +11353,95 @@ bool ReconcileInstallJournal(
         currentBoot == loaded.state.partialRootRemovalBootIdentifier;
     if (loaded.state.phase == InstallJournalPhase::ManualReconciliationRequired) {
         return manual(L"a prior authoritative owner retained the transaction for manual reconciliation");
+    }
+    if (loaded.state.phase == InstallJournalPhase::BrokerChildEntered &&
+        loaded.state.direction == InstallJournalDirection::Forward &&
+        !loaded.state.rollbackAuthorized &&
+        !loaded.state.hasBrokerProof) {
+        InstallOptions recoveryOptions;
+        recoveryOptions.brokerExecutable =
+            loaded.directory.active /
+            kInstallRecoveryBrokerDirectory /
+            kInstallRecoveryBrokerExecutable;
+        recoveryOptions.brokerSha256 =
+            loaded.state.brokerExecutableSha256;
+        recoveryOptions.brokerToken = loaded.state.brokerTokenPath;
+        recoveryOptions.brokerTokenSha256 = loaded.state.transactionId;
+        recoveryOptions.targetUserSid =
+            loaded.state.brokerTargetUserSid;
+        recoveryOptions.transactionDeadlineUnixMs = deadlineUnixMs;
+        bool rollbackAuthorized = false;
+        bool brokerChanged = false;
+        BrokerCommitProof replayedProof;
+        Error replayError;
+        const bool replaySucceeded = RunBrokerInstall(
+            recoveryOptions, &rollbackAuthorized, &brokerChanged,
+            &replayedProof, true, &replayError);
+        if (!replayedProof.hasJournalProof || !brokerChanged ||
+            rollbackAuthorized !=
+                replayedProof.driverRollbackAuthorized) {
+            return manual(
+                L"the retained child recovery invocation did not return one authoritative journal-bound outcome",
+                &replayError);
+        }
+        Error appendError;
+        if (!appendBrokerProof(replayedProof, &appendError)) {
+            return manual(
+                L"the recovered child proof could not be durably bound to the driver journal",
+                &appendError);
+        }
+        if (!replaySucceeded &&
+            !replayedProof.driverRollbackAuthorized) {
+            return manual(
+                L"the recovered child state is indeterminate and does not authorize driver rollback",
+                &replayError);
+        }
+    }
+    const bool exactChangedBrokerCommit =
+        loaded.state.brokerRequired && loaded.state.brokerEntered &&
+        loaded.state.brokerSettled && loaded.state.hasBrokerProof &&
+        loaded.state.brokerProofSuccess &&
+        loaded.state.brokerProofChanged &&
+        !loaded.state.brokerDriverRollbackAuthorized &&
+        loaded.state.brokerJournalState == "nested-ready" &&
+        loaded.state.direction == InstallJournalDirection::Forward &&
+        !loaded.state.rollbackAuthorized;
+    const bool brokerSettlementContinuation =
+        IsBrokerOuterSettlementContinuationPhase(loaded.state.phase);
+    if (exactChangedBrokerCommit && brokerSettlementContinuation) {
+        Error validationError;
+        if (!RecoveryStateMatchesForward(
+                loaded, deadlineUnixMs, &validationError)) {
+            return manual(
+                L"the journal-bound child committed but the exact forward driver state did not revalidate",
+                &validationError);
+        }
+        if (loaded.state.phase ==
+            InstallJournalPhase::BrokerChildSettled) {
+            Error appendError;
+            if (!appendPhase(InstallJournalPhase::ForwardValidated,
+                    true, ERROR_SUCCESS, false, &appendError) ||
+                !RecoveryStateMatchesForward(
+                    loaded, deadlineUnixMs, &appendError)) {
+                return manual(
+                    L"the replayed forward state could not be durably validated",
+                    &appendError);
+            }
+        }
+        if (loaded.state.phase == InstallJournalPhase::ForwardValidated) {
+            Error appendError;
+            if (!appendOuterSettlementPending(&appendError)) {
+                return manual(
+                    L"the replayed forward state could not enter durable outer settlement",
+                    &appendError);
+            }
+        }
+        if (loaded.state.phase ==
+                InstallJournalPhase::BrokerOuterSettlementPending ||
+            loaded.state.phase ==
+                InstallJournalPhase::BrokerOuterSettled) {
+            return returnPendingBinding();
+        }
     }
     const bool partialRootRemovalPhase =
         loaded.state.phase ==
@@ -11030,14 +11614,6 @@ bool ReconcileInstallJournal(
                 &authorizationError);
         }
     }
-    if (loaded.state.phase == InstallJournalPhase::BrokerChildEntered &&
-        loaded.state.direction == InstallJournalDirection::Forward &&
-        !loaded.state.rollbackAuthorized &&
-        !loaded.state.hasBrokerProof) {
-        return manual(
-            L"broker child creation was admitted without a durable canonical settlement proof; driver evidence was retained and no mutation was attempted");
-    }
-
     const bool priorRequiresAbiProfile =
         loaded.state.bindingMutationStarted &&
         loaded.state.prior.devices.size() == 1U &&
@@ -11448,90 +12024,3628 @@ bool ReconcileInstallJournal(
     return finishSuccess(true);
 }
 
-bool RollbackRemove(
-    const Snapshot& prior,
-    const std::vector<PackageBackup>& backups,
-    uint64_t rollbackDeadlineUnixMs,
-    bool* rebootRequired,
+struct BrokerSettlementBindingData {
+    std::string brokerTransactionId;
+    std::string brokerOuterTransactionId;
+    std::string brokerCandidateSha256;
+    std::string brokerNestedDigest;
+    std::string driverTransactionId;
+    std::string driverPendingDigest;
+    std::string settlementNonce;
+};
+
+struct BrokerSettlementRequestData {
+    std::string payloadSha256;
+    std::string bindingSha256;
+    std::string brokerPendingDigest;
+    BrokerSettlementBindingData binding;
+    std::string requestSha256;
+};
+
+struct BrokerSettlementFinalData {
+    std::string payloadSha256;
+    std::string brokerTransactionId;
+    std::string brokerPendingDigest;
+    std::string brokerSettledDigest;
+    std::string driverTransactionId;
+    std::string driverPendingDigest;
+    std::string driverSettledDigest;
+    std::string settlementNonce;
+    std::string requestSha256;
+    std::string state;
+    std::string receiptSha256;
+};
+
+struct BrokerSettlementAckOptions {
+    std::filesystem::path requestPath;
+    std::string requestSha256;
+    uint64_t transactionDeadlineUnixMs = 0;
+};
+
+struct BrokerSettlementDiscardOptions {
+    std::string brokerTransactionId;
+    std::string brokerDigest;
+    std::string driverTransactionId;
+    std::string driverDigest;
+    std::string settlementNonce;
+    std::string requestSha256;
+    std::filesystem::path brokerFinalReceiptPath;
+    std::string brokerFinalReceiptSha256;
+    uint64_t transactionDeadlineUnixMs = 0;
+};
+
+void AppendBrokerSettlementBindingJson(
+    std::string* output,
+    const BrokerSettlementBindingData& binding) {
+    output->append("{\"schema\":1,\"brokerTransactionId\":");
+    AppendJsonAsciiString(output, binding.brokerTransactionId);
+    output->append(",\"brokerOuterTransactionId\":");
+    AppendJsonAsciiString(output, binding.brokerOuterTransactionId);
+    output->append(",\"brokerCandidateSha256\":");
+    AppendJsonAsciiString(output, binding.brokerCandidateSha256);
+    output->append(",\"brokerNestedDigest\":");
+    AppendJsonAsciiString(output, binding.brokerNestedDigest);
+    output->append(",\"driverTransactionId\":");
+    AppendJsonAsciiString(output, binding.driverTransactionId);
+    output->append(",\"driverPendingDigest\":");
+    AppendJsonAsciiString(output, binding.driverPendingDigest);
+    output->append(",\"settlementNonce\":");
+    AppendJsonAsciiString(output, binding.settlementNonce);
+    output->push_back('}');
+}
+
+bool BuildBrokerSettlementRequestJson(
+    const BrokerSettlementRequestData& request,
+    std::string* payload,
+    std::string* envelope,
     Error* error) {
-    for (const PackageBackup& backup : backups) {
-        if (!CheckTransactionDeadline(
-                rollbackDeadlineUnixMs, L"remove-rollback-deadline-package", error)) {
+    std::string binding;
+    AppendBrokerSettlementBindingJson(&binding, request.binding);
+    std::string observedBindingDigest;
+    if (!Sha256Data(binding, &observedBindingDigest, error) ||
+        observedBindingDigest != request.bindingSha256) {
+        if (error->code == ERROR_SUCCESS) {
+            SetError(error, L"broker-settlement-binding-digest",
+                ERROR_CRC);
+        }
+        return false;
+    }
+    payload->assign("{\"schema\":1,\"bindingSha256\":");
+    AppendJsonAsciiString(payload, request.bindingSha256);
+    payload->append(",\"brokerPendingDigest\":");
+    AppendJsonAsciiString(payload, request.brokerPendingDigest);
+    payload->append(",\"binding\":");
+    payload->append(binding);
+    payload->push_back('}');
+    std::string observedPayloadDigest;
+    if (!Sha256Data(*payload, &observedPayloadDigest, error) ||
+        observedPayloadDigest != request.payloadSha256) {
+        if (error->code == ERROR_SUCCESS) {
+            SetError(error, L"broker-settlement-payload-digest",
+                ERROR_CRC);
+        }
+        return false;
+    }
+    envelope->assign("{\"schema\":1,\"payloadSha256\":");
+    AppendJsonAsciiString(envelope, request.payloadSha256);
+    envelope->append(",\"payload\":");
+    envelope->append(*payload);
+    envelope->push_back('}');
+    return true;
+}
+
+bool ParseBrokerSettlementRequest(
+    std::string_view contents,
+    BrokerSettlementRequestData* request,
+    Error* error) {
+    if (contents.empty() ||
+        contents.size() > kMaximumBrokerSettlementRequestBytes ||
+        contents.find('\n') != std::string_view::npos ||
+        contents.find('\r') != std::string_view::npos) {
+        return SetError(error, L"broker-settlement-request-framing",
+            ERROR_INVALID_DATA);
+    }
+    JsonValue root;
+    std::string parseMessage;
+    if (!JsonParser(contents).Parse(&root, &parseMessage)) {
+        return SetError(error, L"broker-settlement-request-parse",
+            ERROR_INVALID_DATA);
+    }
+    const JsonValue::Object* envelopeObject = nullptr;
+    const JsonValue::Object* payloadObject = nullptr;
+    const JsonValue::Object* bindingObject = nullptr;
+    const JsonValue* payloadNode = nullptr;
+    const JsonValue* bindingNode = nullptr;
+    uint64_t envelopeSchema = 0;
+    uint64_t payloadSchema = 0;
+    uint64_t bindingSchema = 0;
+    if (!RequireJournalObject(root, &envelopeObject, error) ||
+        envelopeObject->size() != 3U ||
+        !RequireJournalUnsigned(*envelopeObject, "schema", 1U,
+            &envelopeSchema, error) || envelopeSchema != 1U ||
+        !RequireJournalString(*envelopeObject, "payloadSha256",
+            &request->payloadSha256, error) ||
+        (payloadNode = ObjectField(*envelopeObject, "payload")) == nullptr ||
+        !RequireJournalObject(*payloadNode, &payloadObject, error) ||
+        payloadObject->size() != 4U ||
+        !RequireJournalUnsigned(*payloadObject, "schema", 1U,
+            &payloadSchema, error) || payloadSchema != 1U ||
+        !RequireJournalString(*payloadObject, "bindingSha256",
+            &request->bindingSha256, error) ||
+        !RequireJournalString(*payloadObject, "brokerPendingDigest",
+            &request->brokerPendingDigest, error) ||
+        (bindingNode = ObjectField(*payloadObject, "binding")) == nullptr ||
+        !RequireJournalObject(*bindingNode, &bindingObject, error) ||
+        bindingObject->size() != 8U ||
+        !RequireJournalUnsigned(*bindingObject, "schema", 1U,
+            &bindingSchema, error) || bindingSchema != 1U ||
+        !RequireJournalString(*bindingObject, "brokerTransactionId",
+            &request->binding.brokerTransactionId, error) ||
+        !RequireJournalString(*bindingObject, "brokerOuterTransactionId",
+            &request->binding.brokerOuterTransactionId, error) ||
+        !RequireJournalString(*bindingObject, "brokerCandidateSha256",
+            &request->binding.brokerCandidateSha256, error) ||
+        !RequireJournalString(*bindingObject, "brokerNestedDigest",
+            &request->binding.brokerNestedDigest, error) ||
+        !RequireJournalString(*bindingObject, "driverTransactionId",
+            &request->binding.driverTransactionId, error) ||
+        !RequireJournalString(*bindingObject, "driverPendingDigest",
+            &request->binding.driverPendingDigest, error) ||
+        !RequireJournalString(*bindingObject, "settlementNonce",
+            &request->binding.settlementNonce, error)) {
+        return false;
+    }
+    if (!IsCanonicalLowerHex(
+            request->binding.brokerTransactionId, 32U) ||
+        !IsCanonicalLowerHex(
+            request->binding.brokerOuterTransactionId, 64U) ||
+        !IsCanonicalLowerHex(
+            request->binding.brokerCandidateSha256, 64U) ||
+        !IsCanonicalLowerHex(
+            request->binding.brokerNestedDigest, 64U) ||
+        !IsCanonicalLowerHex(
+            request->binding.driverTransactionId, 64U) ||
+        !IsCanonicalLowerHex(
+            request->binding.driverPendingDigest, 64U) ||
+        !IsCanonicalLowerHex(
+            request->binding.settlementNonce, 64U) ||
+        !IsCanonicalLowerHex(request->payloadSha256, 64U) ||
+        !IsCanonicalLowerHex(request->bindingSha256, 64U) ||
+        !IsCanonicalLowerHex(request->brokerPendingDigest, 64U)) {
+        return SetError(error, L"broker-settlement-request-identity",
+            ERROR_INVALID_DATA);
+    }
+    std::string canonicalPayload;
+    std::string canonicalEnvelope;
+    if (!BuildBrokerSettlementRequestJson(
+            *request, &canonicalPayload, &canonicalEnvelope, error) ||
+        canonicalEnvelope != contents ||
+        !Sha256Data(canonicalEnvelope, &request->requestSha256,
+            error)) {
+        if (error->code == ERROR_SUCCESS) {
+            SetError(error, L"broker-settlement-request-canonical",
+                ERROR_INVALID_DATA);
+        }
+        return false;
+    }
+    return true;
+}
+
+bool BuildBrokerSettlementFinalJson(
+    const BrokerSettlementFinalData& receipt,
+    std::string* payload,
+    std::string* envelope,
+    Error* error) {
+    payload->assign("{\"schema\":1,\"brokerTransactionId\":");
+    AppendJsonAsciiString(payload, receipt.brokerTransactionId);
+    payload->append(",\"brokerPendingDigest\":");
+    AppendJsonAsciiString(payload, receipt.brokerPendingDigest);
+    payload->append(",\"brokerSettledDigest\":");
+    AppendJsonAsciiString(payload, receipt.brokerSettledDigest);
+    payload->append(",\"driverTransactionId\":");
+    AppendJsonAsciiString(payload, receipt.driverTransactionId);
+    payload->append(",\"driverPendingDigest\":");
+    AppendJsonAsciiString(payload, receipt.driverPendingDigest);
+    payload->append(",\"driverSettledDigest\":");
+    AppendJsonAsciiString(payload, receipt.driverSettledDigest);
+    payload->append(",\"settlementNonce\":");
+    AppendJsonAsciiString(payload, receipt.settlementNonce);
+    payload->append(",\"requestSha256\":");
+    AppendJsonAsciiString(payload, receipt.requestSha256);
+    payload->append(",\"state\":");
+    AppendJsonAsciiString(payload, receipt.state);
+    payload->push_back('}');
+    std::string observedPayloadDigest;
+    if (!Sha256Data(*payload, &observedPayloadDigest, error) ||
+        observedPayloadDigest != receipt.payloadSha256) {
+        if (error->code == ERROR_SUCCESS) {
+            SetError(error, L"broker-settlement-final-payload-digest",
+                ERROR_CRC);
+        }
+        return false;
+    }
+    envelope->assign("{\"schema\":1,\"payloadSha256\":");
+    AppendJsonAsciiString(envelope, receipt.payloadSha256);
+    envelope->append(",\"payload\":");
+    envelope->append(*payload);
+    envelope->push_back('}');
+    return true;
+}
+
+bool ParseBrokerSettlementFinal(
+    std::string_view contents,
+    BrokerSettlementFinalData* receipt,
+    Error* error) {
+    if (contents.empty() ||
+        contents.size() > kMaximumBrokerSettlementRequestBytes ||
+        contents.find('\n') != std::string_view::npos ||
+        contents.find('\r') != std::string_view::npos) {
+        return SetError(error, L"broker-settlement-final-framing",
+            ERROR_INVALID_DATA);
+    }
+    JsonValue root;
+    std::string parseMessage;
+    if (!JsonParser(contents).Parse(&root, &parseMessage)) {
+        return SetError(error, L"broker-settlement-final-parse",
+            ERROR_INVALID_DATA);
+    }
+    const JsonValue::Object* envelopeObject = nullptr;
+    const JsonValue::Object* payloadObject = nullptr;
+    const JsonValue* payloadNode = nullptr;
+    uint64_t envelopeSchema = 0;
+    uint64_t payloadSchema = 0;
+    if (!RequireJournalObject(root, &envelopeObject, error) ||
+        envelopeObject->size() != 3U ||
+        !RequireJournalUnsigned(*envelopeObject, "schema", 1U,
+            &envelopeSchema, error) || envelopeSchema != 1U ||
+        !RequireJournalString(*envelopeObject, "payloadSha256",
+            &receipt->payloadSha256, error) ||
+        (payloadNode = ObjectField(*envelopeObject, "payload")) == nullptr ||
+        !RequireJournalObject(*payloadNode, &payloadObject, error) ||
+        payloadObject->size() != 10U ||
+        !RequireJournalUnsigned(*payloadObject, "schema", 1U,
+            &payloadSchema, error) || payloadSchema != 1U ||
+        !RequireJournalString(*payloadObject, "brokerTransactionId",
+            &receipt->brokerTransactionId, error) ||
+        !RequireJournalString(*payloadObject, "brokerPendingDigest",
+            &receipt->brokerPendingDigest, error) ||
+        !RequireJournalString(*payloadObject, "brokerSettledDigest",
+            &receipt->brokerSettledDigest, error) ||
+        !RequireJournalString(*payloadObject, "driverTransactionId",
+            &receipt->driverTransactionId, error) ||
+        !RequireJournalString(*payloadObject, "driverPendingDigest",
+            &receipt->driverPendingDigest, error) ||
+        !RequireJournalString(*payloadObject, "driverSettledDigest",
+            &receipt->driverSettledDigest, error) ||
+        !RequireJournalString(*payloadObject, "settlementNonce",
+            &receipt->settlementNonce, error) ||
+        !RequireJournalString(*payloadObject, "requestSha256",
+            &receipt->requestSha256, error) ||
+        !RequireJournalString(*payloadObject, "state",
+            &receipt->state, error)) {
+        return false;
+    }
+    if (!IsCanonicalLowerHex(receipt->payloadSha256, 64U) ||
+        !IsCanonicalLowerHex(receipt->brokerTransactionId, 32U) ||
+        !IsCanonicalLowerHex(receipt->brokerPendingDigest, 64U) ||
+        !IsCanonicalLowerHex(receipt->brokerSettledDigest, 64U) ||
+        !IsCanonicalLowerHex(receipt->driverTransactionId, 64U) ||
+        !IsCanonicalLowerHex(receipt->driverPendingDigest, 64U) ||
+        !IsCanonicalLowerHex(receipt->driverSettledDigest, 64U) ||
+        !IsCanonicalLowerHex(receipt->settlementNonce, 64U) ||
+        !IsCanonicalLowerHex(receipt->requestSha256, 64U) ||
+        receipt->state != "outer-settled") {
+        return SetError(error, L"broker-settlement-final-identity",
+            ERROR_INVALID_DATA);
+    }
+    std::string canonicalPayload;
+    std::string canonicalEnvelope;
+    if (!BuildBrokerSettlementFinalJson(
+            *receipt, &canonicalPayload, &canonicalEnvelope, error) ||
+        canonicalEnvelope != contents ||
+        !Sha256Data(canonicalEnvelope, &receipt->receiptSha256, error)) {
+        if (error->code == ERROR_SUCCESS) {
+            SetError(error, L"broker-settlement-final-canonical",
+                ERROR_INVALID_DATA);
+        }
+        return false;
+    }
+    return true;
+}
+
+bool ResolveBrokerSettlementRequestPath(
+    std::filesystem::path* product,
+    std::filesystem::path* journalRoot,
+    std::filesystem::path* active,
+    std::filesystem::path* request,
+    Error* error) {
+    std::filesystem::path programData;
+    std::filesystem::path ignoredComponent;
+    std::filesystem::path ignoredTransactions;
+    std::filesystem::path ignoredActive;
+    if (!ResolveInstallRecoveryPaths(&programData, product,
+            &ignoredComponent, &ignoredTransactions, &ignoredActive,
+            error)) {
+        return false;
+    }
+    *journalRoot = *product / kBrokerTransactionDirectory;
+    *active = *journalRoot / kBrokerTransactionActiveDirectory;
+    *request = *active / kBrokerSettlementRequestFile;
+    if (!request->is_absolute() ||
+        request->lexically_relative(programData).empty()) {
+        return SetError(error, L"broker-settlement-request-path",
+            ERROR_INVALID_NAME);
+    }
+    return true;
+}
+
+bool ReadProtectedBrokerSettlementArtifact(
+    const std::filesystem::path& suppliedPath,
+    const wchar_t* expectedLeaf,
+    std::string* contents,
+    Error* error) {
+    std::filesystem::path product;
+    std::filesystem::path journalRoot;
+    std::filesystem::path active;
+    std::filesystem::path request;
+    if (!ResolveBrokerSettlementRequestPath(
+            &product, &journalRoot, &active, &request, error)) {
+        return false;
+    }
+    if (expectedLeaf == nullptr) {
+        return SetError(error, L"broker-settlement-request-path",
+            ERROR_INVALID_PARAMETER);
+    }
+    const std::filesystem::path expected =
+        std::wcscmp(expectedLeaf, kBrokerSettlementRequestFile) == 0
+        ? request : active / expectedLeaf;
+    if (expected.filename() != expectedLeaf ||
+        _wcsicmp(suppliedPath.lexically_normal().c_str(),
+            expected.lexically_normal().c_str()) != 0) {
+        if (error->code == ERROR_SUCCESS) {
+            SetError(error, L"broker-settlement-request-path",
+                ERROR_INVALID_NAME,
+                L"settlement request is not the fixed protected active-journal path");
+        }
+        return false;
+    }
+    WinHandle productHandle;
+    WinHandle rootHandle;
+    WinHandle activeHandle;
+    if (!OpenStableDirectory(product, false, &productHandle, error) ||
+        !VerifyProtectedProductDirectorySecurity(
+            productHandle.get(), nullptr, error) ||
+        !OpenStableDirectory(journalRoot, true, &rootHandle, error) ||
+        !OpenStableDirectory(active, true, &activeHandle, error)) {
+        return false;
+    }
+    WinHandle file(CreateFileW(
+        expected.c_str(), GENERIC_READ | FILE_READ_ATTRIBUTES | READ_CONTROL,
+        FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT |
+            FILE_FLAG_SEQUENTIAL_SCAN,
+        nullptr));
+    if (!file) {
+        return SetLastErrorDetail(error,
+            L"broker-settlement-request-open");
+    }
+    FILE_ATTRIBUTE_TAG_INFO attributes{};
+    BY_HANDLE_FILE_INFORMATION identity{};
+    LARGE_INTEGER size{};
+    if (!GetFileInformationByHandleEx(file.get(), FileAttributeTagInfo,
+            &attributes, sizeof(attributes)) ||
+        (attributes.FileAttributes &
+            (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0 ||
+        !GetFileInformationByHandle(file.get(), &identity) ||
+        identity.nNumberOfLinks != 1U ||
+        !GetFileSizeEx(file.get(), &size) || size.QuadPart <= 0 ||
+        static_cast<uint64_t>(size.QuadPart) >
+            kMaximumBrokerSettlementRequestBytes ||
+        !VerifyProtectedFileSystemSecurity(file.get(), false,
+            L"broker-settlement-request-security", error)) {
+        if (error->code == ERROR_SUCCESS) {
+            SetError(error, L"broker-settlement-request-identity",
+                ERROR_INVALID_DATA,
+                L"settlement request must be one bounded protected single-link regular file");
+        }
+        return false;
+    }
+    contents->assign(static_cast<size_t>(size.QuadPart), '\0');
+    DWORD read = 0;
+    if (!ReadFile(file.get(), contents->data(),
+            static_cast<DWORD>(contents->size()), &read, nullptr) ||
+        static_cast<size_t>(read) != contents->size()) {
+        return SetLastErrorDetail(error,
+            L"broker-settlement-request-read");
+    }
+    char trailing = 0;
+    DWORD trailingRead = 0;
+    if (!ReadFile(file.get(), &trailing, 1, &trailingRead, nullptr) ||
+        trailingRead != 0) {
+        return SetError(error, L"broker-settlement-request-read",
+            ERROR_FILE_INVALID);
+    }
+    return true;
+}
+
+bool ReadProtectedBrokerSettlementRequest(
+    const std::filesystem::path& suppliedPath,
+    std::string* contents,
+    Error* error) {
+    return ReadProtectedBrokerSettlementArtifact(
+        suppliedPath, kBrokerSettlementRequestFile, contents, error);
+}
+
+bool ReadProtectedBrokerSettlementFinal(
+    const std::filesystem::path& suppliedPath,
+    std::string* contents,
+    Error* error) {
+    return ReadProtectedBrokerSettlementArtifact(
+        suppliedPath, kBrokerSettlementFinalFile, contents, error);
+}
+
+bool OpenInstallJournalTransactionDirectory(
+    std::string_view driverTransactionId,
+    const wchar_t* prefix,
+    InstallRecoveryDirectory* directory,
+    bool* exists,
+    Error* error) {
+    *exists = false;
+    if (!IsCanonicalLowerHex(driverTransactionId, 64U) ||
+        (prefix != kInstallRecoverySettledPrefix &&
+            prefix != kInstallRecoveryDiscardPrefix) ||
+        !ResolveInstallRecoveryPaths(&directory->programData,
+            &directory->product, &directory->component,
+            &directory->transactions, &directory->active, error) ||
+        !OpenStableDirectory(directory->programData, false,
+            &directory->programDataHandle, error)) {
+        return false;
+    }
+    bool productExists = false;
+    bool componentExists = false;
+    bool transactionsExists = false;
+    if (!OpenExistingInstallRecoveryDirectory(directory->product, false,
+            &directory->productHandle, &productExists, error)) {
+        return false;
+    }
+    if (!productExists) return true;
+    if (!VerifyProtectedProductDirectorySecurity(
+            directory->productHandle.get(), nullptr, error) ||
+        !OpenExistingInstallRecoveryDirectory(directory->component, true,
+            &directory->componentHandle, &componentExists, error)) {
+        return false;
+    }
+    if (!componentExists) return true;
+    if (!OpenExistingInstallRecoveryDirectory(directory->transactions, true,
+            &directory->transactionsHandle, &transactionsExists, error)) {
+        return false;
+    }
+    if (!transactionsExists) return true;
+    const std::wstring transactionWide(
+        driverTransactionId.begin(), driverTransactionId.end());
+    directory->active = directory->transactions /
+        (std::wstring(prefix) + transactionWide);
+    return OpenExistingInstallRecoveryDirectory(directory->active, true,
+        &directory->activeHandle, exists, error);
+}
+
+bool OpenSettledInstallJournalDirectory(
+    std::string_view driverTransactionId,
+    InstallRecoveryDirectory* directory,
+    bool* exists,
+    Error* error) {
+    return OpenInstallJournalTransactionDirectory(
+        driverTransactionId, kInstallRecoverySettledPrefix,
+        directory, exists, error);
+}
+
+bool OpenDiscardingInstallJournalDirectory(
+    std::string_view driverTransactionId,
+    InstallRecoveryDirectory* directory,
+    bool* exists,
+    Error* error) {
+    return OpenInstallJournalTransactionDirectory(
+        driverTransactionId, kInstallRecoveryDiscardPrefix,
+        directory, exists, error);
+}
+
+bool LoadSettlementInstallJournal(
+    std::string_view driverTransactionId,
+    LoadedInstallJournal* loaded,
+    bool* tombstone,
+    bool* exists,
+    Error* error) {
+    *tombstone = false;
+    *exists = false;
+    InstallRecoveryDirectory activeDirectory;
+    bool activeExists = false;
+    if (!activeDirectory.OpenChain(
+            false, nullptr, &activeExists, error)) {
+        return false;
+    }
+    if (activeExists) {
+        if (!LoadInstallJournal(
+                std::move(activeDirectory), loaded, error) ||
+            !loaded->hasRecord ||
+            loaded->state.transactionId != driverTransactionId) {
+            if (error->code == ERROR_SUCCESS) {
+                SetError(error, L"broker-settlement-driver-identity",
+                    ERROR_REVISION_MISMATCH,
+                    L"active driver journal belongs to a different transaction");
+            }
             return false;
         }
-        BOOL reboot = FALSE;
-        MarkTransactionMutationStarted();
-        if (!DiInstallDriverW(nullptr, backup.infPath.c_str(), 0, &reboot)) {
-            return SetLastErrorDetail(error, L"remove-rollback-package");
-        }
-        *rebootRequired = *rebootRequired || reboot != FALSE;
+        *exists = true;
+        return true;
     }
-    if (!CheckTransactionDeadline(
-            rollbackDeadlineUnixMs, L"remove-rollback-deadline-binding", error)) {
+    InstallRecoveryDirectory settledDirectory;
+    bool settledExists = false;
+    if (!OpenSettledInstallJournalDirectory(
+            driverTransactionId, &settledDirectory,
+            &settledExists, error)) {
         return false;
     }
-    Snapshot restorablePrior = prior;
-    std::vector<PackageInfo> reinstalledPackages;
-    if (!EnumerateOwnedPackages(&reinstalledPackages, error)) {
+    if (!settledExists) {
+        return true;
+    }
+    if (!LoadInstallJournal(
+            std::move(settledDirectory), loaded, error) ||
+        !loaded->hasRecord ||
+        loaded->state.transactionId != driverTransactionId) {
         return false;
     }
-    for (DeviceState& device : restorablePrior.devices) {
-        const auto package = std::find_if(reinstalledPackages.begin(), reinstalledPackages.end(),
-            [&](const PackageInfo& candidate) {
-                return SamePackageBytes(candidate, device.package) &&
-                    candidate.version == device.package.version;
-            });
-        if (package == reinstalledPackages.end()) {
-            return SetError(error, L"remove-rollback-package-identity", ERROR_NOT_FOUND,
-                L"the exact captured package was not republished for devnode restoration");
-        }
-        device.package = *package;
-        device.publishedInf = package->publishedName;
+    *tombstone = true;
+    *exists = true;
+    return true;
+}
+
+bool ValidateBrokerSettlementJournalBinding(
+    const InstallJournalStateData& state,
+    const BrokerSettlementRequestData& request,
+    bool final,
+    Error* error) {
+    const BrokerSettlementBindingData& binding = request.binding;
+    const std::string& expectedDriverPending = final
+        ? state.brokerDriverPendingDigest : state.lastDigest;
+    if (!state.brokerRequired || !state.hasBrokerProof ||
+        !state.brokerProofSuccess || !state.brokerProofChanged ||
+        state.brokerDriverRollbackAuthorized ||
+        state.brokerJournalState != "nested-ready" ||
+        state.direction != InstallJournalDirection::Forward ||
+        state.rollbackAuthorized ||
+        binding.brokerTransactionId !=
+            state.brokerJournalTransactionId ||
+        binding.brokerOuterTransactionId !=
+            state.brokerJournalOuterTransactionId ||
+        binding.brokerCandidateSha256 !=
+            state.brokerJournalCandidateSha256 ||
+        binding.brokerNestedDigest != state.brokerJournalDigest ||
+        binding.driverTransactionId != state.transactionId ||
+        binding.driverPendingDigest != expectedDriverPending ||
+        binding.settlementNonce != state.brokerSettlementNonce ||
+        (final &&
+            (request.requestSha256 !=
+                    state.brokerSettlementRequestSha256 ||
+                request.brokerPendingDigest !=
+                    state.brokerGoPendingDigest))) {
+        return SetError(error, L"broker-settlement-journal-binding",
+            ERROR_REVISION_MISMATCH,
+            L"settlement request does not bind both exact pending journal identities");
     }
-    if (!RestorePriorBinding(
-            restorablePrior, rollbackDeadlineUnixMs, rebootRequired, error)) {
+    return true;
+}
+
+bool ValidateBrokerSettlementFinalBinding(
+    const BrokerSettlementRequestData& request,
+    const BrokerSettlementFinalData& receipt,
+    Error* error) {
+    if (receipt.brokerTransactionId !=
+            request.binding.brokerTransactionId ||
+        receipt.brokerPendingDigest != request.brokerPendingDigest ||
+        receipt.driverTransactionId !=
+            request.binding.driverTransactionId ||
+        receipt.driverPendingDigest !=
+            request.binding.driverPendingDigest ||
+        receipt.settlementNonce != request.binding.settlementNonce ||
+        receipt.requestSha256 != request.requestSha256 ||
+        receipt.state != "outer-settled" ||
+        receipt.brokerSettledDigest == receipt.brokerPendingDigest ||
+        receipt.driverSettledDigest == receipt.driverPendingDigest) {
+        return SetError(error, L"broker-settlement-final-binding",
+            ERROR_REVISION_MISMATCH,
+            L"protected final receipt does not bind the exact pending request");
+    }
+    return true;
+}
+
+bool ValidateBrokerSettlementFinalJournal(
+    const InstallJournalStateData& state,
+    const BrokerSettlementFinalData& receipt,
+    Error* error) {
+    if (state.phase != InstallJournalPhase::BrokerOuterSettled ||
+        state.transactionId != receipt.driverTransactionId ||
+        state.lastDigest != receipt.driverSettledDigest ||
+        state.brokerJournalTransactionId !=
+            receipt.brokerTransactionId ||
+        state.brokerDriverPendingDigest !=
+            receipt.driverPendingDigest ||
+        state.brokerGoPendingDigest !=
+            receipt.brokerPendingDigest ||
+        state.brokerSettlementNonce != receipt.settlementNonce ||
+        state.brokerSettlementRequestSha256 != receipt.requestSha256) {
+        return SetError(error, L"broker-settlement-final-journal",
+            ERROR_REVISION_MISMATCH,
+            L"protected final receipt does not bind the exact terminal driver journal");
+    }
+    return true;
+}
+
+bool ReconcileSettledBrokerOuterSettlement(
+    uint64_t deadlineUnixMs,
+    bool* handled,
+    Outcome* outcome,
+    Error* error) {
+    *handled = false;
+    std::filesystem::path product;
+    std::filesystem::path journalRoot;
+    std::filesystem::path active;
+    std::filesystem::path requestPath;
+    if (!ResolveBrokerSettlementRequestPath(
+            &product, &journalRoot, &active, &requestPath, error)) {
+        return false;
+    }
+    const DWORD attributes = GetFileAttributesW(requestPath.c_str());
+    if (attributes == INVALID_FILE_ATTRIBUTES) {
+        const DWORD code = GetLastError();
+        if (code == ERROR_FILE_NOT_FOUND || code == ERROR_PATH_NOT_FOUND) {
+            return true;
+        }
+        return SetError(error,
+            L"broker-settlement-replay-request-discovery", code);
+    }
+    OuterPackageMutexWitness outerMutex;
+    if (!outerMutex.VerifyHeldByOuterOwner(error)) {
+        return false;
+    }
+    std::string contents;
+    BrokerSettlementRequestData request;
+    if (!ReadProtectedBrokerSettlementRequest(
+            requestPath, &contents, error) ||
+        !ParseBrokerSettlementRequest(contents, &request, error)) {
+        return false;
+    }
+    const std::filesystem::path finalPath =
+        active / kBrokerSettlementFinalFile;
+    std::optional<BrokerSettlementFinalData> finalReceipt;
+    const DWORD finalAttributes = GetFileAttributesW(finalPath.c_str());
+    if (finalAttributes != INVALID_FILE_ATTRIBUTES) {
+        std::string finalContents;
+        BrokerSettlementFinalData parsedFinal;
+        if (!ReadProtectedBrokerSettlementFinal(
+                finalPath, &finalContents, error) ||
+            !ParseBrokerSettlementFinal(
+                finalContents, &parsedFinal, error) ||
+            !ValidateBrokerSettlementFinalBinding(
+                request, parsedFinal, error)) {
+            return false;
+        }
+        finalReceipt = std::move(parsedFinal);
+    } else {
+        const DWORD finalError = GetLastError();
+        if (finalError != ERROR_FILE_NOT_FOUND &&
+            finalError != ERROR_PATH_NOT_FOUND) {
+            return SetError(error,
+                L"broker-settlement-replay-final-discovery",
+                finalError);
+        }
+    }
+    InstallRecoveryDirectory settledDirectory;
+    bool settledExists = false;
+    if (!OpenSettledInstallJournalDirectory(
+            request.binding.driverTransactionId,
+            &settledDirectory, &settledExists, error)) {
+        return false;
+    }
+    if (settledExists) {
+        LoadedInstallJournal loaded;
+        if (!LoadInstallJournal(std::move(settledDirectory),
+                &loaded, error) || !loaded.hasRecord ||
+            loaded.state.phase !=
+                InstallJournalPhase::BrokerOuterSettled ||
+            !ValidateBrokerSettlementJournalBinding(
+                loaded.state, request, true, error) ||
+            (finalReceipt &&
+                !ValidateBrokerSettlementFinalJournal(
+                    loaded.state, *finalReceipt, error)) ||
+            !RecoveryStateMatchesForward(
+                loaded, deadlineUnixMs, error)) {
+            if (error->code == ERROR_SUCCESS) {
+                SetError(error, L"broker-settlement-replay-tombstone",
+                    ERROR_REVISION_MISMATCH);
+            }
+            return false;
+        }
+    } else if (!finalReceipt) {
+        return SetError(error, L"broker-settlement-replay-tombstone",
+            ERROR_FILE_NOT_FOUND,
+            L"published pending request has neither an exact settled driver journal nor a protected final receipt");
+    }
+    outcome->success = true;
+    outcome->changed = true;
+    outcome->exitCode = ExitCode::Success;
+    outcome->rollback = L"not-needed";
+    outcome->brokerBinding.present = true;
+    outcome->brokerBinding.transactionId =
+        request.binding.brokerTransactionId;
+    outcome->brokerBinding.outerTransactionId =
+        request.binding.brokerOuterTransactionId;
+    outcome->brokerBinding.candidateSha256 =
+        request.binding.brokerCandidateSha256;
+    outcome->brokerBinding.state = "nested-ready";
+    outcome->brokerBinding.digest =
+        request.binding.brokerNestedDigest;
+    outcome->brokerBinding.driverTransactionId =
+        request.binding.driverTransactionId;
+    outcome->brokerBinding.driverDigest =
+        request.binding.driverPendingDigest;
+    outcome->brokerBinding.settlementNonce =
+        request.binding.settlementNonce;
+    outcome->brokerBinding.recovery = "replayed";
+    *handled = true;
+    return true;
+}
+
+bool AppendBrokerOuterSettled(
+    LoadedInstallJournal* loaded,
+    const BrokerSettlementRequestData& request,
+    Error* error) {
+    InstallJournalStateData next = loaded->state;
+    next.phase = InstallJournalPhase::BrokerOuterSettled;
+    next.brokerDriverPendingDigest =
+        request.binding.driverPendingDigest;
+    next.brokerSettlementRequestSha256 = request.requestSha256;
+    next.brokerGoPendingDigest = request.brokerPendingDigest;
+    next.callSucceeded = true;
+    next.callError = ERROR_SUCCESS;
+    if (!ValidateInstallJournalTransition(
+            &loaded->state, next, error) ||
+        !WriteInstallJournalRecord(
+            loaded->directory.active, &next, error)) {
+        return false;
+    }
+    loaded->state = std::move(next);
+    MarkTransactionMutationStarted();
+    if (!PublishInstallRecoveryEvidence(loaded->directory.active,
+            loaded->state.sequence - 1U, error)) {
+        return false;
+    }
+    gActiveRecoveryRecordWritten = true;
+    return true;
+}
+
+bool AcknowledgeBrokerOuterSettlement(
+    const BrokerSettlementAckOptions& options,
+    BrokerSettlementRequestData* receipt,
+    std::string* driverFinalDigest,
+    Error* error) {
+    if (!IsElevated()) {
+        return SetError(error, L"elevation", ERROR_ELEVATION_REQUIRED);
+    }
+    OuterPackageMutexWitness outerMutex;
+    if (!outerMutex.VerifyHeldByOuterOwner(error)) {
+        return false;
+    }
+    TransactionMutex transactionMutex;
+    if (!transactionMutex.Acquire(error) ||
+        !CheckTransactionDeadline(options.transactionDeadlineUnixMs,
+            L"broker-settlement-deadline", error)) {
+        return false;
+    }
+    std::string contents;
+    if (!ReadProtectedBrokerSettlementRequest(
+            options.requestPath, &contents, error) ||
+        !ParseBrokerSettlementRequest(contents, receipt, error) ||
+        receipt->requestSha256 != options.requestSha256) {
+        if (error->code == ERROR_SUCCESS) {
+            SetError(error, L"broker-settlement-request-hash",
+                ERROR_CRC);
+        }
+        return false;
+    }
+    LoadedInstallJournal loaded;
+    bool tombstone = false;
+    bool exists = false;
+    if (!LoadSettlementInstallJournal(
+            receipt->binding.driverTransactionId, &loaded,
+            &tombstone, &exists, error) || !exists) {
+        if (error->code == ERROR_SUCCESS) {
+            SetError(error, L"broker-settlement-driver-journal",
+                ERROR_FILE_NOT_FOUND);
+        }
+        return false;
+    }
+    const bool final =
+        loaded.state.phase == InstallJournalPhase::BrokerOuterSettled;
+    if ((!final && loaded.state.phase !=
+            InstallJournalPhase::BrokerOuterSettlementPending) ||
+        (tombstone && !final) ||
+        !ValidateBrokerSettlementJournalBinding(
+            loaded.state, *receipt, final, error) ||
+        !RecoveryStateMatchesForward(
+            loaded, options.transactionDeadlineUnixMs, error)) {
+        if (error->code == ERROR_SUCCESS) {
+            SetError(error, L"broker-settlement-driver-journal",
+                ERROR_INVALID_STATE);
+        }
+        return false;
+    }
+    if (!final && !AppendBrokerOuterSettled(
+            &loaded, *receipt, error)) {
+        return false;
+    }
+    *driverFinalDigest = loaded.state.lastDigest;
+    if (!tombstone) {
+        loaded.evidenceLocks.clear();
+        std::filesystem::path retiredPath;
+        if (!RetireInstallRecoveryActiveDirectory(
+                &loaded.directory, loaded.state.transactionId,
+                error, true, &retiredPath)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool DiscardBrokerSettlementTombstone(
+    const BrokerSettlementDiscardOptions& options,
+    bool* discarded,
+    bool* retained,
+    Error* error) {
+    *discarded = false;
+    *retained = false;
+    if (!IsElevated()) {
+        return SetError(error, L"elevation", ERROR_ELEVATION_REQUIRED);
+    }
+    OuterPackageMutexWitness outerMutex;
+    if (!outerMutex.VerifyHeldByOuterOwner(error)) {
+        return false;
+    }
+    TransactionMutex transactionMutex;
+    if (!transactionMutex.Acquire(error) ||
+        !CheckTransactionDeadline(options.transactionDeadlineUnixMs,
+            L"broker-settlement-discard-deadline", error)) {
+        return false;
+    }
+    std::string finalContents;
+    BrokerSettlementFinalData finalReceipt;
+    if (!ReadProtectedBrokerSettlementFinal(
+            options.brokerFinalReceiptPath, &finalContents, error) ||
+        !ParseBrokerSettlementFinal(
+            finalContents, &finalReceipt, error) ||
+        finalReceipt.receiptSha256 !=
+            options.brokerFinalReceiptSha256 ||
+        finalReceipt.brokerTransactionId !=
+            options.brokerTransactionId ||
+        finalReceipt.brokerSettledDigest != options.brokerDigest ||
+        finalReceipt.driverTransactionId !=
+            options.driverTransactionId ||
+        finalReceipt.driverSettledDigest != options.driverDigest ||
+        finalReceipt.settlementNonce != options.settlementNonce ||
+        finalReceipt.requestSha256 != options.requestSha256) {
+        if (error->code == ERROR_SUCCESS) {
+            SetError(error, L"broker-settlement-discard-final-receipt",
+                ERROR_REVISION_MISMATCH,
+                L"discard request does not match the protected broker-final receipt");
+        }
+        return false;
+    }
+    std::filesystem::path brokerProduct;
+    std::filesystem::path brokerRoot;
+    std::filesystem::path brokerActive;
+    std::filesystem::path requestPath;
+    std::string requestContents;
+    BrokerSettlementRequestData request;
+    if (!ResolveBrokerSettlementRequestPath(
+            &brokerProduct, &brokerRoot, &brokerActive,
+            &requestPath, error) ||
+        !ReadProtectedBrokerSettlementRequest(
+            requestPath, &requestContents, error) ||
+        !ParseBrokerSettlementRequest(
+            requestContents, &request, error) ||
+        !ValidateBrokerSettlementFinalBinding(
+            request, finalReceipt, error)) {
+        return false;
+    }
+    InstallRecoveryDirectory activeDirectory;
+    bool activeExists = false;
+    if (!activeDirectory.OpenChain(
+            false, nullptr, &activeExists, error)) {
+        return false;
+    }
+    if (activeExists) {
+        return SetError(error, L"broker-settlement-discard-active",
+            ERROR_INSTALL_ALREADY_RUNNING,
+            L"an active driver journal blocks inert tombstone cleanup");
+    }
+    InstallRecoveryDirectory settledDirectory;
+    bool settledExists = false;
+    if (!OpenSettledInstallJournalDirectory(
+            options.driverTransactionId, &settledDirectory,
+            &settledExists, error)) {
+        return false;
+    }
+    InstallRecoveryDirectory discardingDirectory;
+    bool discardingExists = false;
+    if (!OpenDiscardingInstallJournalDirectory(
+            options.driverTransactionId, &discardingDirectory,
+            &discardingExists, error) ||
+        (settledExists && discardingExists)) {
+        if (error->code == ERROR_SUCCESS) {
+            SetError(error, L"broker-settlement-discard-identity",
+                ERROR_ALREADY_EXISTS,
+                L"settled and discarding driver tombstones cannot coexist");
+        }
+        return false;
+    }
+    if (!settledExists) {
+        if (discardingExists) {
+            const std::filesystem::path inert =
+                discardingDirectory.active;
+            discardingDirectory.activeHandle.reset();
+            std::error_code ignored;
+            std::filesystem::remove_all(inert, ignored);
+            if (ignored) {
+                *retained = true;
+                std::wstring diagnostic =
+                    L"VIIPER: inert driver settlement cleanup retained after error ";
+                diagnostic += std::to_wstring(ignored.value());
+                diagnostic += L".\n";
+                OutputDebugStringW(diagnostic.c_str());
+            }
+        }
+        return true;
+    }
+    LoadedInstallJournal loaded;
+    if (!LoadInstallJournal(std::move(settledDirectory),
+            &loaded, error) || !loaded.hasRecord ||
+        !ValidateBrokerSettlementFinalJournal(
+            loaded.state, finalReceipt, error) ||
+        !RecoveryStateMatchesForward(
+            loaded, options.transactionDeadlineUnixMs, error)) {
+        if (error->code == ERROR_SUCCESS) {
+            SetError(error, L"broker-settlement-discard-binding",
+                ERROR_REVISION_MISMATCH);
+        }
+        return false;
+    }
+    const std::filesystem::path settled = loaded.directory.active;
+    const std::filesystem::path discarding =
+        loaded.directory.transactions /
+        (std::wstring(kInstallRecoveryDiscardPrefix) +
+            std::wstring(options.driverTransactionId.begin(),
+                options.driverTransactionId.end()));
+    loaded.evidenceLocks.clear();
+    loaded.directory.activeHandle.reset();
+    if (!MoveFileExW(settled.c_str(), discarding.c_str(),
+            MOVEFILE_WRITE_THROUGH)) {
+        return SetLastErrorDetail(error,
+            L"broker-settlement-discard-rename",
+            L"settled driver tombstone could not be atomically made inert");
+    }
+    const DWORD settledAttributes = GetFileAttributesW(settled.c_str());
+    const DWORD settledError = settledAttributes == INVALID_FILE_ATTRIBUTES
+        ? GetLastError() : ERROR_SUCCESS;
+    if (settledAttributes != INVALID_FILE_ATTRIBUTES ||
+        (settledError != ERROR_FILE_NOT_FOUND &&
+            settledError != ERROR_PATH_NOT_FOUND)) {
+        return SetError(error, L"broker-settlement-discard-absence",
+            settledAttributes != INVALID_FILE_ATTRIBUTES
+                ? ERROR_ALREADY_EXISTS : settledError);
+    }
+    WinHandle discardingHandle;
+    if (!OpenStableDirectory(
+            discarding, true, &discardingHandle, error)) {
+        return false;
+    }
+    *discarded = true;
+    discardingHandle.reset();
+    // The atomic rename is the authoritative discard. Recursive cleanup is
+    // inert and retryable from the exact transaction-bound discarding name.
+    std::error_code removalError;
+    std::filesystem::remove_all(discarding, removalError);
+    if (removalError) {
+        *retained = true;
+        std::wstring diagnostic =
+            L"VIIPER: inert driver settlement cleanup retained after error ";
+        diagnostic += std::to_wstring(removalError.value());
+        diagnostic += L".\n";
+        OutputDebugStringW(diagnostic.c_str());
+    }
+    return true;
+}
+
+void EmitBrokerSettlementAck(
+    const BrokerSettlementRequestData& request,
+    std::string_view driverFinalDigest) {
+    std::cout
+        << "journal-settlement operation=broker-settlement-ack "
+        << "brokerTransactionId="
+        << request.binding.brokerTransactionId
+        << " brokerPendingDigest=" << request.brokerPendingDigest
+        << " driverTransactionId="
+        << request.binding.driverTransactionId
+        << " driverPendingDigest="
+        << request.binding.driverPendingDigest
+        << " settlementNonce=" << request.binding.settlementNonce
+        << " requestSha256=" << request.requestSha256
+        << " state=outer-settled digest=" << driverFinalDigest
+        << "\n";
+    std::cout.flush();
+}
+
+void EmitBrokerSettlementDiscard(
+    const BrokerSettlementDiscardOptions& options,
+    bool discarded,
+    bool retained) {
+    std::cout
+        << "journal-discard operation=broker-settlement-discard "
+        << "brokerTransactionId=" << options.brokerTransactionId
+        << " brokerDigest=" << options.brokerDigest
+        << " driverTransactionId=" << options.driverTransactionId
+        << " driverDigest=" << options.driverDigest
+        << " settlementNonce=" << options.settlementNonce
+        << " requestSha256=" << options.requestSha256
+        << " discarded=" << (discarded ? 1 : 0)
+        << " retained=" << (retained ? 1 : 0) << "\n";
+    std::cout.flush();
+}
+
+const char* RemoveJournalPhaseName(RemoveJournalPhase phase) noexcept {
+    switch (phase) {
+    case RemoveJournalPhase::Prepared: return "Prepared";
+    case RemoveJournalPhase::DeviceRemovalEntered: return "DeviceRemovalEntered";
+    case RemoveJournalPhase::DeviceRemovalReturned: return "DeviceRemovalReturned";
+    case RemoveJournalPhase::DeviceRemovalCommitted: return "DeviceRemovalCommitted";
+    case RemoveJournalPhase::PackageRemovalEntered: return "PackageRemovalEntered";
+    case RemoveJournalPhase::PackageRemovalReturned: return "PackageRemovalReturned";
+    case RemoveJournalPhase::PackageRemovalCommitted: return "PackageRemovalCommitted";
+    case RemoveJournalPhase::RollbackAdmitted: return "RollbackAdmitted";
+    case RemoveJournalPhase::RollbackPackageEntered: return "RollbackPackageEntered";
+    case RemoveJournalPhase::RollbackPackageReturned: return "RollbackPackageReturned";
+    case RemoveJournalPhase::RollbackPackageCommitted: return "RollbackPackageCommitted";
+    case RemoveJournalPhase::RollbackBindingEntered: return "RollbackBindingEntered";
+    case RemoveJournalPhase::RollbackBindingReturned: return "RollbackBindingReturned";
+    case RemoveJournalPhase::ForwardValidated: return "ForwardValidated";
+    case RemoveJournalPhase::ExactPriorRestored: return "ExactPriorRestored";
+    case RemoveJournalPhase::ForwardRebootPending: return "ForwardRebootPending";
+    case RemoveJournalPhase::RestoreRebootPending: return "RestoreRebootPending";
+    case RemoveJournalPhase::ManualReconciliationRequired:
+        return "ManualReconciliationRequired";
+    }
+    return "ManualReconciliationRequired";
+}
+
+std::optional<RemoveJournalPhase> ParseRemoveJournalPhase(
+    std::string_view value) noexcept {
+    for (RemoveJournalPhase phase : {
+            RemoveJournalPhase::Prepared,
+            RemoveJournalPhase::DeviceRemovalEntered,
+            RemoveJournalPhase::DeviceRemovalReturned,
+            RemoveJournalPhase::DeviceRemovalCommitted,
+            RemoveJournalPhase::PackageRemovalEntered,
+            RemoveJournalPhase::PackageRemovalReturned,
+            RemoveJournalPhase::PackageRemovalCommitted,
+            RemoveJournalPhase::RollbackAdmitted,
+            RemoveJournalPhase::RollbackPackageEntered,
+            RemoveJournalPhase::RollbackPackageReturned,
+            RemoveJournalPhase::RollbackPackageCommitted,
+            RemoveJournalPhase::RollbackBindingEntered,
+            RemoveJournalPhase::RollbackBindingReturned,
+            RemoveJournalPhase::ForwardValidated,
+            RemoveJournalPhase::ExactPriorRestored,
+            RemoveJournalPhase::ForwardRebootPending,
+            RemoveJournalPhase::RestoreRebootPending,
+            RemoveJournalPhase::ManualReconciliationRequired}) {
+        if (value == RemoveJournalPhaseName(phase)) return phase;
+    }
+    return std::nullopt;
+}
+
+const char* RemoveJournalDirectionName(
+    RemoveJournalDirection direction) noexcept {
+    return direction == RemoveJournalDirection::Rollback
+        ? "rollback" : "forward";
+}
+
+std::optional<RemoveJournalDirection> ParseRemoveJournalDirection(
+    std::string_view value) noexcept {
+    if (value == "forward") return RemoveJournalDirection::Forward;
+    if (value == "rollback") return RemoveJournalDirection::Rollback;
+    return std::nullopt;
+}
+
+struct RemoveRecoveryDirectory {
+    std::filesystem::path programData;
+    std::filesystem::path root;
+    std::filesystem::path active;
+    WinHandle programDataHandle;
+    WinHandle rootHandle;
+    WinHandle activeHandle;
+    bool activeCreated = false;
+
+    bool OpenChain(bool createActive, bool* exists, Error* error) {
+        *exists = false;
+        std::filesystem::path ignoredProduct;
+        std::filesystem::path ignoredComponent;
+        std::filesystem::path ignoredTransactions;
+        std::filesystem::path ignoredActive;
+        if (!ResolveInstallRecoveryPaths(
+                &programData, &ignoredProduct, &ignoredComponent,
+                &ignoredTransactions, &ignoredActive, error)) {
+            return false;
+        }
+        root = programData / kRemoveRecoveryRootDirectory;
+        active = root / kRemoveRecoveryActiveDirectory;
+        if (!OpenStableDirectory(
+                programData, false, &programDataHandle, error)) {
+            return false;
+        }
+        if (!createActive) {
+            bool rootExists = false;
+            bool activeExists = false;
+            if (!OpenExistingInstallRecoveryDirectory(
+                    root, true, &rootHandle, &rootExists, error)) {
+                return false;
+            }
+            if (!rootExists) return true;
+            if (!OpenExistingInstallRecoveryDirectory(
+                    active, true, &activeHandle, &activeExists, error)) {
+                return false;
+            }
+            *exists = activeExists;
+            return true;
+        }
+        bool created = false;
+        if (!CreateOrOpenInstallRecoveryDirectory(
+                root, true, true, &rootHandle, &created, error)) {
+            return false;
+        }
+        const bool opened = CreateOrOpenInstallRecoveryDirectory(
+            active, false, true, &activeHandle, &created, error);
+        activeCreated = created;
+        if (!opened) return false;
+        *exists = true;
+        return true;
+    }
+};
+
+bool PublishRemoveRecoveryEvidence(
+    const std::filesystem::path& active,
+    uint64_t sequence,
+    Error* error) {
+    std::wostringstream name;
+    name << kInstallRecoveryJournalPrefix << std::setw(8)
+         << std::setfill(L'0') << sequence
+         << kInstallRecoveryJournalSuffix;
+    const std::filesystem::path record = active / name.str();
+    const std::wstring activeValue = active.wstring();
+    const std::wstring recordValue = record.wstring();
+    if (activeValue.empty() || recordValue.empty() ||
+        activeValue.size() >= gActiveBackupRoot.size() ||
+        recordValue.size() >= gActiveRecoveryRecord.size()) {
+        return SetError(error, L"remove-journal-evidence",
+            ERROR_FILENAME_EXCED_RANGE);
+    }
+    ClearActiveRecoveryEvidence();
+    std::copy(activeValue.begin(), activeValue.end(),
+        gActiveBackupRoot.begin());
+    std::copy(recordValue.begin(), recordValue.end(),
+        gActiveRecoveryRecord.begin());
+    gActiveBackupRootRetained = true;
+    return true;
+}
+
+enum class RemoveRetirementTestFault {
+    None,
+    TemporaryTree,
+    TemporaryTreeActiveAbsencePostcheck,
+    TemporaryTreeRetainSettledTombstone,
+};
+
+bool RetireRemoveRecoveryActiveDirectory(
+    RemoveRecoveryDirectory* directory,
+    std::string_view transactionId,
+    Error* error,
+    RemoveRetirementTestFault testFault =
+        RemoveRetirementTestFault::None) {
+    if (directory == nullptr || !IsSha256Digest(transactionId) ||
+        directory->active.filename() != kRemoveRecoveryActiveDirectory) {
+        return SetError(error, L"remove-journal-retire-identity",
+            ERROR_INVALID_PARAMETER);
+    }
+    const std::wstring transactionIdWide(
+        transactionId.begin(), transactionId.end());
+    const std::filesystem::path tombstone = directory->root /
+        (std::wstring(kRemoveRecoverySettledPrefix) + transactionIdWide);
+    directory->activeHandle.reset();
+    if (!MoveFileExW(directory->active.c_str(), tombstone.c_str(),
+            MOVEFILE_WRITE_THROUGH)) {
+        if (error != nullptr) {
+            error->recoveryBackup = directory->active.wstring();
+            error->recoveryBackupRetained = true;
+        }
+        return SetLastErrorDetail(error, L"remove-journal-retire-rename",
+            L"terminal remove journal could not be atomically moved out of admission");
+    }
+    const DWORD activeAttributes = testFault ==
+            RemoveRetirementTestFault::
+                TemporaryTreeActiveAbsencePostcheck
+        ? FILE_ATTRIBUTE_DIRECTORY
+        : GetFileAttributesW(directory->active.c_str());
+    const DWORD activeError = activeAttributes == INVALID_FILE_ATTRIBUTES
+        ? GetLastError() : ERROR_SUCCESS;
+    if (activeAttributes != INVALID_FILE_ATTRIBUTES ||
+        (activeError != ERROR_FILE_NOT_FOUND &&
+            activeError != ERROR_PATH_NOT_FOUND)) {
+        if (error != nullptr) {
+            error->recoveryBackup = tombstone.wstring();
+            error->recoveryBackupRetained = true;
+        }
+        return SetError(error, L"remove-journal-retire-active-absence",
+            activeAttributes != INVALID_FILE_ATTRIBUTES
+                ? ERROR_ALREADY_EXISTS : activeError,
+            L"atomic retirement did not prove remove active-v2 absent");
+    }
+    WinHandle tombstoneHandle;
+    bool tombstoneVerified = false;
+    if (testFault == RemoveRetirementTestFault::None) {
+        tombstoneVerified = OpenStableDirectory(
+            tombstone, true, &tombstoneHandle, error);
+    } else {
+        tombstoneHandle.reset(CreateFileW(tombstone.c_str(),
+            FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE |
+                FILE_SHARE_DELETE,
+            nullptr, OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+            nullptr));
+        FILE_ATTRIBUTE_TAG_INFO attributes{};
+        tombstoneVerified = tombstoneHandle &&
+            GetFileInformationByHandleEx(tombstoneHandle.get(),
+                FileAttributeTagInfo, &attributes, sizeof(attributes)) &&
+            (attributes.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0 &&
+            (attributes.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0;
+        if (!tombstoneVerified) {
+            SetLastErrorDetail(error,
+                L"self-test-remove-journal-retire-tombstone");
+        }
+    }
+    if (!tombstoneVerified) {
+        if (error != nullptr) {
+            error->recoveryBackup = tombstone.wstring();
+            error->recoveryBackupRetained = true;
+        }
+        return false;
+    }
+    ClearActiveRecoveryEvidence();
+    tombstoneHandle.reset();
+
+    // The write-through rename plus the verified absence/open checks above are
+    // the authoritative retirement boundary. Cleanup is best-effort and must
+    // never re-admit a terminal transaction or convert it into rollback.
+    std::error_code removalError;
+    if (testFault == RemoveRetirementTestFault::
+            TemporaryTreeRetainSettledTombstone) {
+        removalError = std::make_error_code(std::errc::permission_denied);
+    } else {
+        std::filesystem::remove_all(tombstone, removalError);
+    }
+    if (removalError) {
+        const std::wstring retained = tombstone.wstring();
+        if (!retained.empty() &&
+            retained.size() < gRetainedRemoveTombstone.size()) {
+            std::copy(retained.begin(), retained.end(),
+                gRetainedRemoveTombstone.begin());
+            gRetainedRemoveTombstoneError =
+                static_cast<DWORD>(removalError.value());
+        }
+        std::wstring diagnostic =
+            L"VIIPER: settled remove journal tombstone retained at \"";
+        diagnostic += retained;
+        diagnostic += L"\" after cleanup error ";
+        diagnostic += std::to_wstring(removalError.value());
+        diagnostic += L"; active admission remains retired.\n";
+        OutputDebugStringW(diagnostic.c_str());
+    }
+    return true;
+}
+
+struct RemoveJournalStateData {
+    RemoveJournalPhase phase = RemoveJournalPhase::Prepared;
+    RemoveJournalDirection direction = RemoveJournalDirection::Forward;
+    uint64_t sequence = 0;
+    std::string previousDigest = std::string(kZeroSha256);
+    std::string lastDigest;
+    std::string transactionId;
+    std::string bootIdentifier;
+    std::string pendingRebootBootIdentifier;
+    Snapshot prior;
+    bool hasPriorAbiProfile = false;
+    AbiCompatibilityProfile priorAbiProfile{};
+    uint32_t packageCursor = 0;
+    uint32_t activePackageIndex = UINT32_MAX;
+    bool deviceMutationEntered = false;
+    bool bindingMutationEntered = false;
+    bool rebootRequired = false;
+    bool freshRebootRequired = false;
+    bool callSucceeded = true;
+    DWORD callError = ERROR_SUCCESS;
+    bool deadlineOverrun = false;
+};
+
+bool RemoveJournalPhaseIsPackageCall(
+    RemoveJournalPhase phase) noexcept {
+    return phase == RemoveJournalPhase::PackageRemovalEntered ||
+        phase == RemoveJournalPhase::PackageRemovalReturned ||
+        phase == RemoveJournalPhase::RollbackPackageEntered ||
+        phase == RemoveJournalPhase::RollbackPackageReturned;
+}
+
+bool RemoveJournalPhaseIsAuthoritativeReturn(
+    RemoveJournalPhase phase) noexcept {
+    return phase == RemoveJournalPhase::DeviceRemovalReturned ||
+        phase == RemoveJournalPhase::PackageRemovalReturned ||
+        phase == RemoveJournalPhase::RollbackPackageReturned ||
+        phase == RemoveJournalPhase::RollbackBindingReturned;
+}
+
+bool ValidateRemoveJournalStateShape(
+    const RemoveJournalStateData& state,
+    Error* error) {
+    const bool pending =
+        state.phase == RemoveJournalPhase::ForwardRebootPending ||
+        state.phase == RemoveJournalPhase::RestoreRebootPending;
+    const bool packageCall =
+        RemoveJournalPhaseIsPackageCall(state.phase);
+    const bool priorNeedsProfile = state.prior.devices.size() == 1U &&
+        state.prior.devices[0].started &&
+        state.prior.devices[0].problem == 0;
+    if (!IsSha256Digest(state.previousDigest) ||
+        !IsSha256Digest(state.transactionId) ||
+        !IsCanonicalBootIdentifier(state.bootIdentifier) ||
+        (!state.pendingRebootBootIdentifier.empty() &&
+            !IsCanonicalBootIdentifier(
+                state.pendingRebootBootIdentifier)) ||
+        state.sequence >= kMaximumRemoveRecoveryRecords ||
+        state.prior.packages.size() > 32U ||
+        state.prior.devices.size() > 1U ||
+        state.packageCursor > state.prior.packages.size() ||
+        (packageCall &&
+            state.activePackageIndex >= state.prior.packages.size()) ||
+        (!packageCall && state.activePackageIndex != UINT32_MAX) ||
+        (state.direction == RemoveJournalDirection::Forward &&
+            (state.phase == RemoveJournalPhase::RollbackAdmitted ||
+                state.phase == RemoveJournalPhase::RollbackPackageEntered ||
+                state.phase == RemoveJournalPhase::RollbackPackageReturned ||
+                state.phase == RemoveJournalPhase::RollbackPackageCommitted ||
+                state.phase == RemoveJournalPhase::RollbackBindingEntered ||
+                state.phase == RemoveJournalPhase::RollbackBindingReturned ||
+                state.phase == RemoveJournalPhase::ExactPriorRestored ||
+                state.phase == RemoveJournalPhase::RestoreRebootPending)) ||
+        (state.direction == RemoveJournalDirection::Rollback &&
+            (state.phase == RemoveJournalPhase::DeviceRemovalEntered ||
+                state.phase == RemoveJournalPhase::DeviceRemovalReturned ||
+                state.phase == RemoveJournalPhase::DeviceRemovalCommitted ||
+                state.phase == RemoveJournalPhase::PackageRemovalEntered ||
+                state.phase == RemoveJournalPhase::PackageRemovalReturned ||
+                state.phase == RemoveJournalPhase::PackageRemovalCommitted ||
+                state.phase == RemoveJournalPhase::ForwardValidated ||
+                state.phase == RemoveJournalPhase::ForwardRebootPending)) ||
+        (state.prior.devices.empty() &&
+            (state.deviceMutationEntered ||
+                state.bindingMutationEntered ||
+                state.phase == RemoveJournalPhase::DeviceRemovalEntered ||
+                state.phase == RemoveJournalPhase::DeviceRemovalReturned ||
+                state.phase == RemoveJournalPhase::DeviceRemovalCommitted ||
+                state.phase == RemoveJournalPhase::RollbackBindingEntered ||
+                state.phase == RemoveJournalPhase::RollbackBindingReturned)) ||
+        (pending && state.pendingRebootBootIdentifier.empty()) ||
+        (!state.rebootRequired &&
+            !state.pendingRebootBootIdentifier.empty()) ||
+        (state.freshRebootRequired &&
+            (!state.rebootRequired ||
+                state.pendingRebootBootIdentifier.empty() ||
+                !RemoveJournalPhaseIsAuthoritativeReturn(state.phase))) ||
+        (state.hasPriorAbiProfile != priorNeedsProfile) ||
+        (state.hasPriorAbiProfile &&
+            !IsKnownAbiCompatibilityProfile(state.priorAbiProfile))) {
+        return SetError(error, L"remove-journal-state",
+            ERROR_INVALID_DATA);
+    }
+    for (size_t index = 0; index < state.prior.packages.size(); ++index) {
+        const PackageInfo& package = state.prior.packages[index];
+        if (!IsSafePublishedInfName(package.publishedName) ||
+            !IsSha256Digest(package.infSha256) ||
+            !IsSha256Digest(package.sysSha256) ||
+            !IsSha256Digest(package.catSha256) ||
+            std::any_of(state.prior.packages.begin(),
+                state.prior.packages.begin() +
+                    static_cast<std::ptrdiff_t>(index),
+                [&](const PackageInfo& earlier) {
+                    return _wcsicmp(earlier.publishedName.c_str(),
+                        package.publishedName.c_str()) == 0;
+                })) {
+            return SetError(error, L"remove-journal-prior-package",
+                ERROR_INVALID_DATA);
+        }
+    }
+    if (!state.prior.devices.empty()) {
+        const DeviceState& device = state.prior.devices[0];
+        const size_t matches = static_cast<size_t>(std::count_if(
+            state.prior.packages.begin(), state.prior.packages.end(),
+            [&](const PackageInfo& package) {
+                return _wcsicmp(package.publishedName.c_str(),
+                           device.publishedInf.c_str()) == 0 &&
+                    package.version == device.version &&
+                    SamePackageBytes(package, device.package);
+            }));
+        if (!device.present ||
+            !IsOwnedGeneratedRootInstanceId(device.instanceId) ||
+            _wcsicmp(device.service.c_str(), kServiceName) != 0 ||
+            matches != 1U) {
+            return SetError(error, L"remove-journal-prior-device",
+                ERROR_INVALID_DATA);
+        }
+    }
+    return true;
+}
+
+void AppendRemoveJournalSnapshot(
+    std::string* payload,
+    const RemoveJournalStateData& state) {
+    payload->append(",\"priorAbiProfile\":");
+    if (state.hasPriorAbiProfile) {
+        payload->append("{\"minor\":");
+        payload->append(std::to_string(state.priorAbiProfile.minor));
+        payload->append(",\"capabilities\":");
+        payload->append(std::to_string(
+            state.priorAbiProfile.capabilities));
+        payload->append(",\"statsSize\":");
+        payload->append(std::to_string(state.priorAbiProfile.statsSize));
+        payload->append(",\"hasReservedPortFields\":");
+        payload->append(state.priorAbiProfile.hasReservedPortFields
+            ? "true}" : "false}");
+    } else {
+        payload->append("null");
+    }
+    payload->append(",\"priorPackages\":[");
+    for (size_t index = 0; index < state.prior.packages.size(); ++index) {
+        if (index != 0) payload->push_back(',');
+        AppendPackageIdentityJson(payload, state.prior.packages[index],
+            std::wstring(kRemoveRecoveryPriorDirectory) + L"/" +
+                std::to_wstring(index) + L"/ViiperUde.inf");
+    }
+    payload->append("],\"priorDevices\":[");
+    for (size_t index = 0; index < state.prior.devices.size(); ++index) {
+        if (index != 0) payload->push_back(',');
+        const DeviceState& device = state.prior.devices[index];
+        payload->append("{\"instanceId\":");
+        AppendJsonString(payload, device.instanceId);
+        payload->append(",\"present\":");
+        payload->append(device.present ? "true" : "false");
+        payload->append(",\"started\":");
+        payload->append(device.started ? "true" : "false");
+        payload->append(",\"problem\":");
+        payload->append(std::to_string(device.problem));
+        payload->append(",\"service\":");
+        AppendJsonString(payload, device.service);
+        payload->append(",\"publishedInf\":");
+        AppendJsonString(payload, device.publishedInf);
+        payload->append(",\"version\":");
+        AppendJsonString(payload, VersionToString(device.version));
+        payload->append(",\"packageInfSha256\":");
+        AppendJsonAsciiString(payload,
+            LowerAscii(device.package.infSha256));
+        payload->append(",\"packageSysSha256\":");
+        AppendJsonAsciiString(payload,
+            LowerAscii(device.package.sysSha256));
+        payload->append(",\"packageCatSha256\":");
+        AppendJsonAsciiString(payload,
+            LowerAscii(device.package.catSha256));
+        payload->push_back('}');
+    }
+    payload->push_back(']');
+}
+
+bool BuildRemoveJournalPayload(
+    const RemoveJournalStateData& state,
+    std::string* payload,
+    Error* error) {
+    if (!ValidateRemoveJournalStateShape(state, error)) return false;
+    payload->clear();
+    payload->append("{\"sequence\":");
+    payload->append(std::to_string(state.sequence));
+    payload->append(",\"previousSha256\":");
+    AppendJsonAsciiString(payload, LowerAscii(state.previousDigest));
+    payload->append(",\"phase\":");
+    AppendJsonAsciiString(payload, RemoveJournalPhaseName(state.phase));
+    payload->append(",\"direction\":");
+    AppendJsonAsciiString(payload,
+        RemoveJournalDirectionName(state.direction));
+    payload->append(",\"transactionId\":");
+    AppendJsonAsciiString(payload, state.transactionId);
+    payload->append(",\"bootIdentifier\":");
+    AppendJsonAsciiString(payload, state.bootIdentifier);
+    payload->append(",\"pendingRebootBootIdentifier\":");
+    if (state.pendingRebootBootIdentifier.empty()) {
+        payload->append("null");
+    } else {
+        AppendJsonAsciiString(payload,
+            state.pendingRebootBootIdentifier);
+    }
+    payload->append(",\"packageCursor\":");
+    payload->append(std::to_string(state.packageCursor));
+    payload->append(",\"activePackageIndex\":");
+    if (state.activePackageIndex == UINT32_MAX) {
+        payload->append("null");
+    } else {
+        payload->append(std::to_string(state.activePackageIndex));
+    }
+    payload->append(",\"deviceMutationEntered\":");
+    payload->append(state.deviceMutationEntered ? "true" : "false");
+    payload->append(",\"bindingMutationEntered\":");
+    payload->append(state.bindingMutationEntered ? "true" : "false");
+    payload->append(",\"rebootRequired\":");
+    payload->append(state.rebootRequired ? "true" : "false");
+    payload->append(",\"freshRebootRequired\":");
+    payload->append(state.freshRebootRequired ? "true" : "false");
+    payload->append(",\"callSucceeded\":");
+    payload->append(state.callSucceeded ? "true" : "false");
+    payload->append(",\"callError\":");
+    payload->append(std::to_string(state.callError));
+    payload->append(",\"deadlineOverrun\":");
+    payload->append(state.deadlineOverrun ? "true" : "false");
+    AppendRemoveJournalSnapshot(payload, state);
+    payload->push_back('}');
+    if (payload->size() > kMaximumRecoveryRecordBytes) {
+        return SetError(error, L"remove-journal-size",
+            ERROR_FILE_TOO_LARGE);
+    }
+    return true;
+}
+
+bool WriteRemoveJournalRecord(
+    const std::filesystem::path& active,
+    RemoveJournalStateData* state,
+    Error* error) {
+    std::string payload;
+    std::string digest;
+    if (!BuildRemoveJournalPayload(*state, &payload, error) ||
+        !Sha256Data(payload, &digest, error)) {
+        return false;
+    }
+    std::string record = "{\"schema\":2,\"kind\":";
+    AppendJsonAsciiString(&record, kRemoveRecoveryKind);
+    record.append(",\"payloadSha256\":");
+    AppendJsonAsciiString(&record, digest);
+    record.append(",\"payload\":");
+    AppendJsonUtf8String(&record, payload);
+    record.append("}\n");
+    if (record.size() > kMaximumRecoveryRecordBytes) {
+        return SetError(error, L"remove-journal-size",
+            ERROR_FILE_TOO_LARGE);
+    }
+    std::wostringstream finalName;
+    finalName << kInstallRecoveryJournalPrefix << std::setw(8)
+              << std::setfill(L'0') << state->sequence
+              << kInstallRecoveryJournalSuffix;
+    const std::filesystem::path finalPath = active / finalName.str();
+    const std::filesystem::path temporaryPath = active /
+        (finalName.str() + kInstallRecoveryTemporarySuffix);
+    LocalSecurityDescriptor security;
+    if (!security.Initialize(kRecoveryRecordSecurity,
+            L"remove-journal-file-security", error)) {
+        return false;
+    }
+    WinHandle file(CreateFileW(temporaryPath.c_str(),
+        GENERIC_READ | GENERIC_WRITE | FILE_READ_ATTRIBUTES | READ_CONTROL,
+        FILE_SHARE_READ, security.attributes(), CREATE_NEW,
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT |
+            FILE_FLAG_WRITE_THROUGH,
+        nullptr));
+    if (!file) return SetLastErrorDetail(error, L"remove-journal-create");
+    const auto discard = [&]() noexcept {
+        file.reset();
+        DeleteFileW(temporaryPath.c_str());
+    };
+    FILE_ATTRIBUTE_TAG_INFO attributes{};
+    if (!GetFileInformationByHandleEx(file.get(), FileAttributeTagInfo,
+            &attributes, sizeof(attributes)) ||
+        (attributes.FileAttributes &
+            (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0 ||
+        !VerifyProtectedFileSystemSecurity(file.get(), false,
+            L"remove-journal-file-security", error)) {
+        if (error->code == ERROR_SUCCESS) {
+            SetError(error, L"remove-journal-create",
+                ERROR_REPARSE_TAG_MISMATCH);
+        }
+        discard();
+        return false;
+    }
+    size_t offset = 0;
+    while (offset < record.size()) {
+        DWORD written = 0;
+        const DWORD requested = static_cast<DWORD>(std::min<size_t>(
+            record.size() - offset, MAXDWORD));
+        if (!WriteFile(file.get(), record.data() + offset, requested,
+                &written, nullptr) || written == 0) {
+            const DWORD code = GetLastError() == ERROR_SUCCESS
+                ? ERROR_WRITE_FAULT : GetLastError();
+            SetError(error, L"remove-journal-write", code);
+            discard();
+            return false;
+        }
+        offset += written;
+    }
+    if (!FlushFileBuffers(file.get())) {
+        SetLastErrorDetail(error, L"remove-journal-flush");
+        discard();
+        return false;
+    }
+    file.reset();
+    if (!MoveFileExW(temporaryPath.c_str(), finalPath.c_str(),
+            MOVEFILE_WRITE_THROUGH)) {
+        const DWORD code = GetLastError();
+        DeleteFileW(temporaryPath.c_str());
+        return SetError(error, L"remove-journal-publish", code);
+    }
+    file.reset(CreateFileW(finalPath.c_str(),
+        GENERIC_READ | FILE_READ_ATTRIBUTES | READ_CONTROL,
+        FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT |
+            FILE_FLAG_SEQUENTIAL_SCAN,
+        nullptr));
+    if (!file || !VerifyProtectedFileSystemSecurity(file.get(), false,
+            L"remove-journal-file-security", error)) {
+        if (!file) SetLastErrorDetail(error, L"remove-journal-reopen");
+        return false;
+    }
+    std::string observed(record.size(), '\0');
+    DWORD read = 0;
+    if (!ReadFile(file.get(), observed.data(),
+            static_cast<DWORD>(observed.size()), &read, nullptr) ||
+        read != observed.size() || observed != record) {
+        return SetError(error, L"remove-journal-readback", ERROR_CRC,
+            L"published remove record differs from flushed bytes");
+    }
+    char trailing = 0;
+    DWORD trailingRead = 0;
+    if (!ReadFile(file.get(), &trailing, 1, &trailingRead, nullptr) ||
+        trailingRead != 0) {
+        return SetError(error, L"remove-journal-readback",
+            ERROR_FILE_INVALID);
+    }
+    state->lastDigest = digest;
+    state->previousDigest = digest;
+    ++state->sequence;
+    gActiveRecoveryRecordWritten = true;
+    return true;
+}
+
+struct LoadedRemoveJournal {
+    RemoveRecoveryDirectory directory;
+    RemoveJournalStateData state;
+    std::vector<PackageBackup> priorBackups;
+    std::vector<WinHandle> evidenceLocks;
+    bool hasRecord = false;
+    bool poisoned = false;
+};
+
+bool RetireLoadedRemoveJournal(
+    LoadedRemoveJournal* loaded,
+    Error* error,
+    RemoveRetirementTestFault testFault =
+        RemoveRetirementTestFault::None) {
+    if (loaded == nullptr || !loaded->hasRecord || loaded->poisoned ||
+        loaded->state.sequence == 0U ||
+        !IsSha256Digest(loaded->state.transactionId) ||
+        !IsSha256Digest(loaded->state.lastDigest) ||
+        _stricmp(loaded->state.lastDigest.c_str(),
+            loaded->state.previousDigest.c_str()) != 0 ||
+        loaded->state.rebootRequired ||
+        loaded->state.freshRebootRequired ||
+        !loaded->state.pendingRebootBootIdentifier.empty() ||
+        !loaded->state.callSucceeded ||
+        !((loaded->state.phase == RemoveJournalPhase::ForwardValidated &&
+                loaded->state.direction == RemoveJournalDirection::Forward) ||
+            (loaded->state.phase == RemoveJournalPhase::ExactPriorRestored &&
+                loaded->state.direction ==
+                    RemoveJournalDirection::Rollback))) {
+        return SetError(error, L"remove-journal-retire-state",
+            ERROR_INVALID_STATE,
+            L"only a durable terminal remove record may release protected evidence locks");
+    }
+    if (!ValidateRemoveJournalStateShape(loaded->state, error)) {
         return false;
     }
 
-    if (!CheckTransactionDeadline(
-            rollbackDeadlineUnixMs, L"remove-rollback-deadline-verify", error)) {
+    const std::string transactionId = loaded->state.transactionId;
+    loaded->priorBackups.clear();
+    loaded->evidenceLocks.clear();
+    return RetireRemoveRecoveryActiveDirectory(
+        &loaded->directory, transactionId, error, testFault);
+}
+
+bool AppendRemoveJournalRecord(
+    LoadedRemoveJournal* loaded,
+    RemoveJournalStateData next,
+    Error* error);
+
+bool ParseRemoveJournalPayload(
+    std::string_view payload,
+    const std::filesystem::path& active,
+    RemoveJournalStateData* state,
+    Error* error) {
+    JsonValue root;
+    std::string parseMessage;
+    if (!JsonParser(payload).Parse(&root, &parseMessage)) {
+        std::wstring message;
+        Utf8ToWide(parseMessage, &message, nullptr);
+        return SetError(error, L"remove-journal-parse",
+            ERROR_INVALID_DATA,
+            L"remove payload is malformed: " + message);
+    }
+    const JsonValue::Object* object = nullptr;
+    uint64_t sequence = 0;
+    uint64_t packageCursor = 0;
+    uint64_t callError = 0;
+    std::string previous;
+    std::string phase;
+    std::string direction;
+    if (!RequireJournalObject(root, &object, error) ||
+        !RequireJournalUnsigned(*object, "sequence",
+            kMaximumRemoveRecoveryRecords - 1U, &sequence, error) ||
+        !RequireJournalString(*object, "previousSha256",
+            &previous, error) ||
+        !RequireJournalString(*object, "phase", &phase, error) ||
+        !RequireJournalString(*object, "direction", &direction, error) ||
+        !RequireJournalString(*object, "transactionId",
+            &state->transactionId, error) ||
+        !RequireJournalString(*object, "bootIdentifier",
+            &state->bootIdentifier, error) ||
+        !RequireJournalUnsigned(*object, "packageCursor", UINT32_MAX,
+            &packageCursor, error) ||
+        !RequireJournalBool(*object, "deviceMutationEntered",
+            &state->deviceMutationEntered, error) ||
+        !RequireJournalBool(*object, "bindingMutationEntered",
+            &state->bindingMutationEntered, error) ||
+        !RequireJournalBool(*object, "rebootRequired",
+            &state->rebootRequired, error) ||
+        !RequireJournalBool(*object, "freshRebootRequired",
+            &state->freshRebootRequired, error) ||
+        !RequireJournalBool(*object, "callSucceeded",
+            &state->callSucceeded, error) ||
+        !RequireJournalUnsigned(*object, "callError", MAXDWORD,
+            &callError, error) ||
+        !RequireJournalBool(*object, "deadlineOverrun",
+            &state->deadlineOverrun, error)) {
         return false;
     }
-    Snapshot restored;
-    if (!CaptureSnapshot(&restored, error)) {
-        return false;
+    const auto parsedPhase = ParseRemoveJournalPhase(phase);
+    const auto parsedDirection = ParseRemoveJournalDirection(direction);
+    if (!parsedPhase || !parsedDirection ||
+        !IsSha256Digest(previous)) {
+        return SetError(error, L"remove-journal-state",
+            ERROR_INVALID_DATA);
     }
-    std::multiset<std::pair<Version, std::string>> expectedPackages;
-    std::multiset<std::pair<Version, std::string>> actualPackages;
-    for (const PackageInfo& package : prior.packages) {
-        expectedPackages.emplace(package.version, PackageBytesKey(package));
+    state->phase = *parsedPhase;
+    state->direction = *parsedDirection;
+    state->sequence = sequence;
+    state->previousDigest = LowerAscii(std::move(previous));
+    state->packageCursor = static_cast<uint32_t>(packageCursor);
+    state->callError = static_cast<DWORD>(callError);
+
+    const JsonValue* pendingNode = ObjectField(
+        *object, "pendingRebootBootIdentifier");
+    if (pendingNode == nullptr) {
+        return SetError(error, L"remove-journal-reboot-epoch",
+            ERROR_INVALID_DATA);
     }
-    for (const PackageInfo& package : restored.packages) {
-        actualPackages.emplace(package.version, PackageBytesKey(package));
-    }
-    if (expectedPackages != actualPackages || restored.devices.size() != prior.devices.size()) {
-        return SetError(error, L"remove-rollback-verification", ERROR_REVISION_MISMATCH,
-            L"rollback did not restore the exact prior package and devnode topology");
-    }
-    if (!prior.devices.empty()) {
-        if (_wcsicmp(restored.devices[0].instanceId.c_str(), prior.devices[0].instanceId.c_str()) != 0 ||
-            !SamePackageBytes(restored.devices[0].package, prior.devices[0].package)) {
-            return SetError(error, L"remove-rollback-verification", ERROR_REVISION_MISMATCH,
-                L"rollback restored a different devnode identity or active package");
+    if (std::holds_alternative<std::nullptr_t>(pendingNode->value)) {
+        state->pendingRebootBootIdentifier.clear();
+    } else {
+        const auto* value = std::get_if<std::string>(
+            &pendingNode->value);
+        if (value == nullptr || !IsCanonicalBootIdentifier(*value)) {
+            return SetError(error, L"remove-journal-reboot-epoch",
+                ERROR_INVALID_DATA);
         }
-        if (!*rebootRequired && prior.devices[0].started) {
-            if (!CheckTransactionDeadline(
-                    rollbackDeadlineUnixMs, L"remove-rollback-deadline-health", error)) {
-                return false;
+        state->pendingRebootBootIdentifier = *value;
+    }
+    const JsonValue* activeIndexNode = ObjectField(
+        *object, "activePackageIndex");
+    if (activeIndexNode == nullptr) {
+        return SetError(error, L"remove-journal-package-index",
+            ERROR_INVALID_DATA);
+    }
+    if (std::holds_alternative<std::nullptr_t>(
+            activeIndexNode->value)) {
+        state->activePackageIndex = UINT32_MAX;
+    } else {
+        const int64_t* value = std::get_if<int64_t>(
+            &activeIndexNode->value);
+        if (value == nullptr || *value < 0 ||
+            static_cast<uint64_t>(*value) > UINT32_MAX) {
+            return SetError(error, L"remove-journal-package-index",
+                ERROR_INVALID_DATA);
+        }
+        state->activePackageIndex = static_cast<uint32_t>(*value);
+    }
+
+    const JsonValue* profileNode = ObjectField(
+        *object, "priorAbiProfile");
+    if (profileNode == nullptr) {
+        return SetError(error, L"remove-journal-prior-abi-profile",
+            ERROR_INVALID_DATA);
+    }
+    if (std::holds_alternative<std::nullptr_t>(profileNode->value)) {
+        state->hasPriorAbiProfile = false;
+    } else {
+        const JsonValue::Object* profile = nullptr;
+        uint64_t minor = 0;
+        uint64_t capabilities = 0;
+        uint64_t statsSize = 0;
+        if (!RequireJournalObject(*profileNode, &profile, error) ||
+            profile->size() != 4U ||
+            !RequireJournalUnsigned(*profile, "minor", UINT16_MAX,
+                &minor, error) ||
+            !RequireJournalUnsigned(*profile, "capabilities", UINT32_MAX,
+                &capabilities, error) ||
+            !RequireJournalUnsigned(*profile, "statsSize", MAXDWORD,
+                &statsSize, error) ||
+            !RequireJournalBool(*profile, "hasReservedPortFields",
+                &state->priorAbiProfile.hasReservedPortFields, error)) {
+            return false;
+        }
+        state->priorAbiProfile.minor =
+            static_cast<VIIPER_UDE_UINT16>(minor);
+        state->priorAbiProfile.capabilities =
+            static_cast<VIIPER_UDE_UINT32>(capabilities);
+        state->priorAbiProfile.statsSize =
+            static_cast<DWORD>(statsSize);
+        state->hasPriorAbiProfile = true;
+    }
+
+    const JsonValue::Array* packages = nullptr;
+    const JsonValue::Array* devices = nullptr;
+    if (!RequireJournalArray(*object, "priorPackages", &packages, error) ||
+        !RequireJournalArray(*object, "priorDevices", &devices, error) ||
+        packages->size() > 32U || devices->size() > 1U) {
+        return SetError(error, L"remove-journal-prior",
+            ERROR_INVALID_DATA);
+    }
+    state->prior.packages.clear();
+    for (size_t index = 0; index < packages->size(); ++index) {
+        PackageInfo package;
+        std::filesystem::path backupInf;
+        const std::filesystem::path expected = active /
+            kRemoveRecoveryPriorDirectory / std::to_wstring(index) /
+            L"ViiperUde.inf";
+        if (!ParseJournalPackageIdentity((*packages)[index], active,
+                true, &package, &backupInf, error) ||
+            backupInf != expected) {
+            if (error->code == ERROR_SUCCESS) {
+                SetError(error, L"remove-journal-prior-package-path",
+                    ERROR_INVALID_NAME);
             }
-            const uint64_t healthDeadline = std::min(
-                rollbackDeadlineUnixMs, CurrentUnixMilliseconds() + 15000);
-            if (!VerifyAbiHealth(healthDeadline, nullptr, error)) {
-                return false;
+            return false;
+        }
+        state->prior.packages.push_back(std::move(package));
+    }
+    state->prior.devices.clear();
+    for (const JsonValue& value : *devices) {
+        const JsonValue::Object* deviceObject = nullptr;
+        std::string instanceId;
+        std::string service;
+        std::string publishedInf;
+        std::string version;
+        std::string infSha;
+        std::string sysSha;
+        std::string catSha;
+        uint64_t problem = 0;
+        DeviceState device;
+        if (!RequireJournalObject(value, &deviceObject, error) ||
+            !RequireJournalString(*deviceObject, "instanceId",
+                &instanceId, error) ||
+            !RequireJournalBool(*deviceObject, "present",
+                &device.present, error) ||
+            !RequireJournalBool(*deviceObject, "started",
+                &device.started, error) ||
+            !RequireJournalUnsigned(*deviceObject, "problem", MAXDWORD,
+                &problem, error) ||
+            !RequireJournalString(*deviceObject, "service",
+                &service, error) ||
+            !RequireJournalString(*deviceObject, "publishedInf",
+                &publishedInf, error) ||
+            !RequireJournalString(*deviceObject, "version",
+                &version, error) ||
+            !RequireJournalString(*deviceObject, "packageInfSha256",
+                &infSha, error) ||
+            !RequireJournalString(*deviceObject, "packageSysSha256",
+                &sysSha, error) ||
+            !RequireJournalString(*deviceObject, "packageCatSha256",
+                &catSha, error) ||
+            !Utf8ToWide(instanceId, &device.instanceId, error) ||
+            !Utf8ToWide(service, &device.service, error) ||
+            !Utf8ToWide(publishedInf, &device.publishedInf, error)) {
+            return false;
+        }
+        std::wstring wideVersion;
+        if (!Utf8ToWide(version, &wideVersion, error) ||
+            !ParseVersion(wideVersion, &device.version) ||
+            !IsSha256Digest(infSha) || !IsSha256Digest(sysSha) ||
+            !IsSha256Digest(catSha)) {
+            return SetError(error, L"remove-journal-prior-device",
+                ERROR_INVALID_DATA);
+        }
+        device.problem = static_cast<ULONG>(problem);
+        size_t matches = 0;
+        for (const PackageInfo& package : state->prior.packages) {
+            if (_wcsicmp(package.publishedName.c_str(),
+                    device.publishedInf.c_str()) == 0 &&
+                package.version == device.version &&
+                _stricmp(package.infSha256.c_str(), infSha.c_str()) == 0 &&
+                _stricmp(package.sysSha256.c_str(), sysSha.c_str()) == 0 &&
+                _stricmp(package.catSha256.c_str(), catSha.c_str()) == 0) {
+                device.package = package;
+                ++matches;
+            }
+        }
+        if (matches != 1U) {
+            return SetError(error,
+                L"remove-journal-prior-device-package",
+                ERROR_REVISION_MISMATCH);
+        }
+        state->prior.devices.push_back(std::move(device));
+    }
+    std::string canonical;
+    if (!BuildRemoveJournalPayload(*state, &canonical, error) ||
+        canonical != payload) {
+        if (error->code == ERROR_SUCCESS) {
+            SetError(error, L"remove-journal-canonical-payload",
+                ERROR_INVALID_DATA);
+        }
+        return false;
+    }
+    return true;
+}
+
+bool ParseRemoveJournalEnvelope(
+    std::string_view record,
+    const std::filesystem::path& active,
+    RemoveJournalStateData* state,
+    std::string* digest,
+    Error* error) {
+    JsonValue root;
+    std::string message;
+    if (!JsonParser(record).Parse(&root, &message)) {
+        return SetError(error, L"remove-journal-chain",
+            ERROR_INVALID_DATA,
+            L"remove journal envelope is truncated or malformed");
+    }
+    const JsonValue::Object* object = nullptr;
+    uint64_t schema = 0;
+    std::string kind;
+    std::string payloadDigest;
+    std::string payload;
+    if (!RequireJournalObject(root, &object, error) ||
+        object->size() != 4U ||
+        !RequireJournalUnsigned(*object, "schema", 2U,
+            &schema, error) || schema != 2U ||
+        !RequireJournalString(*object, "kind", &kind, error) ||
+        kind != kRemoveRecoveryKind ||
+        !RequireJournalString(*object, "payloadSha256",
+            &payloadDigest, error) ||
+        !RequireJournalString(*object, "payload", &payload, error) ||
+        !IsSha256Digest(payloadDigest)) {
+        if (error->code == ERROR_SUCCESS) {
+            SetError(error, L"remove-journal-chain",
+                ERROR_INVALID_DATA);
+        }
+        return false;
+    }
+    std::string canonical = "{\"schema\":2,\"kind\":";
+    AppendJsonAsciiString(&canonical, kRemoveRecoveryKind);
+    canonical.append(",\"payloadSha256\":");
+    AppendJsonAsciiString(&canonical, LowerAscii(payloadDigest));
+    canonical.append(",\"payload\":");
+    AppendJsonUtf8String(&canonical, payload);
+    canonical.append("}\n");
+    std::string observed;
+    if (record != canonical ||
+        !Sha256Data(payload, &observed, error) ||
+        _stricmp(observed.c_str(), payloadDigest.c_str()) != 0 ||
+        !ParseRemoveJournalPayload(payload, active, state, error)) {
+        if (error->code == ERROR_SUCCESS) {
+            SetError(error, L"remove-journal-chain", ERROR_CRC);
+        }
+        return false;
+    }
+    *digest = LowerAscii(std::move(payloadDigest));
+    return true;
+}
+
+bool SameRemoveJournalImmutableState(
+    const RemoveJournalStateData& left,
+    const RemoveJournalStateData& right) noexcept {
+    if (left.transactionId != right.transactionId ||
+        left.bootIdentifier != right.bootIdentifier ||
+        left.hasPriorAbiProfile != right.hasPriorAbiProfile ||
+        (left.hasPriorAbiProfile &&
+            !SameAbiCompatibilityProfile(left.priorAbiProfile,
+                right.priorAbiProfile)) ||
+        !SamePackageInventory(left.prior.packages,
+            right.prior.packages) ||
+        left.prior.devices.size() != right.prior.devices.size()) {
+        return false;
+    }
+    return left.prior.devices.empty() ||
+        (SameRootBinding(left.prior.devices[0], right.prior.devices[0]) &&
+            left.prior.devices[0].started ==
+                right.prior.devices[0].started &&
+            left.prior.devices[0].problem ==
+                right.prior.devices[0].problem);
+}
+
+bool LegalRemoveJournalTransition(
+    RemoveJournalPhase previous,
+    RemoveJournalPhase next,
+    RemoveJournalDirection direction) noexcept {
+    if (next == RemoveJournalPhase::ManualReconciliationRequired) {
+        return true;
+    }
+    if (direction == RemoveJournalDirection::Forward) {
+        switch (previous) {
+        case RemoveJournalPhase::Prepared:
+            return next == RemoveJournalPhase::DeviceRemovalEntered ||
+                next == RemoveJournalPhase::PackageRemovalEntered ||
+                next == RemoveJournalPhase::ForwardValidated;
+        case RemoveJournalPhase::DeviceRemovalEntered:
+            return next == RemoveJournalPhase::DeviceRemovalReturned ||
+                next == RemoveJournalPhase::DeviceRemovalCommitted ||
+                next == RemoveJournalPhase::ForwardRebootPending;
+        case RemoveJournalPhase::DeviceRemovalReturned:
+            return next == RemoveJournalPhase::DeviceRemovalCommitted ||
+                next == RemoveJournalPhase::ForwardRebootPending;
+        case RemoveJournalPhase::DeviceRemovalCommitted:
+            return next == RemoveJournalPhase::PackageRemovalEntered ||
+                next == RemoveJournalPhase::ForwardValidated;
+        case RemoveJournalPhase::PackageRemovalEntered:
+            return next == RemoveJournalPhase::PackageRemovalReturned ||
+                next == RemoveJournalPhase::PackageRemovalCommitted ||
+                next == RemoveJournalPhase::ForwardRebootPending;
+        case RemoveJournalPhase::PackageRemovalReturned:
+            return next == RemoveJournalPhase::PackageRemovalCommitted ||
+                next == RemoveJournalPhase::ForwardRebootPending;
+        case RemoveJournalPhase::PackageRemovalCommitted:
+            return next == RemoveJournalPhase::PackageRemovalEntered ||
+                next == RemoveJournalPhase::ForwardValidated;
+        case RemoveJournalPhase::ForwardRebootPending:
+            return next == RemoveJournalPhase::DeviceRemovalEntered ||
+                next == RemoveJournalPhase::DeviceRemovalCommitted ||
+                next == RemoveJournalPhase::PackageRemovalCommitted ||
+                next == RemoveJournalPhase::PackageRemovalEntered ||
+                next == RemoveJournalPhase::ForwardValidated;
+        default:
+            return false;
+        }
+    }
+    switch (previous) {
+    case RemoveJournalPhase::RollbackAdmitted:
+        return next == RemoveJournalPhase::RestoreRebootPending ||
+            next == RemoveJournalPhase::RollbackPackageEntered ||
+            next == RemoveJournalPhase::RollbackBindingEntered ||
+            next == RemoveJournalPhase::ExactPriorRestored;
+    case RemoveJournalPhase::RollbackPackageCommitted:
+    case RemoveJournalPhase::RestoreRebootPending:
+        return next == RemoveJournalPhase::RollbackPackageEntered ||
+            next == RemoveJournalPhase::RollbackBindingEntered ||
+            next == RemoveJournalPhase::ExactPriorRestored;
+    case RemoveJournalPhase::RollbackPackageEntered:
+        return next == RemoveJournalPhase::RollbackPackageReturned ||
+            next == RemoveJournalPhase::RollbackPackageCommitted;
+    case RemoveJournalPhase::RollbackPackageReturned:
+        return next == RemoveJournalPhase::RollbackPackageCommitted ||
+            next == RemoveJournalPhase::RestoreRebootPending;
+    case RemoveJournalPhase::RollbackBindingEntered:
+        return next == RemoveJournalPhase::RollbackBindingReturned ||
+            next == RemoveJournalPhase::ExactPriorRestored;
+    case RemoveJournalPhase::RollbackBindingReturned:
+        return next == RemoveJournalPhase::ExactPriorRestored ||
+            next == RemoveJournalPhase::RestoreRebootPending;
+    default:
+        return false;
+    }
+}
+
+bool ValidateRemoveJournalTransition(
+    const RemoveJournalStateData* previous,
+    const RemoveJournalStateData& next,
+    Error* error) {
+    if (!ValidateRemoveJournalStateShape(next, error)) return false;
+    if (previous == nullptr) {
+        return (next.phase == RemoveJournalPhase::Prepared &&
+                next.direction == RemoveJournalDirection::Forward &&
+                next.sequence == 0U &&
+                next.previousDigest == kZeroSha256 &&
+                !next.deviceMutationEntered &&
+                !next.bindingMutationEntered &&
+                next.packageCursor == 0U) ||
+            SetError(error, L"remove-journal-initial-state",
+                ERROR_INVALID_DATA);
+    }
+    const RemoveJournalStateData& prior = *previous;
+    const bool packageCursorAdvanced =
+        next.packageCursor != prior.packageCursor;
+    if (!SameRemoveJournalImmutableState(prior, next) ||
+        next.packageCursor < prior.packageCursor ||
+        (packageCursorAdvanced &&
+            (next.phase != RemoveJournalPhase::PackageRemovalCommitted ||
+                next.packageCursor != prior.packageCursor + 1U)) ||
+        (prior.deviceMutationEntered && !next.deviceMutationEntered) ||
+        (prior.bindingMutationEntered && !next.bindingMutationEntered) ||
+        (!prior.deviceMutationEntered && next.deviceMutationEntered &&
+            next.phase != RemoveJournalPhase::DeviceRemovalEntered) ||
+        (!prior.bindingMutationEntered && next.bindingMutationEntered &&
+            next.phase != RemoveJournalPhase::RollbackBindingEntered) ||
+        (prior.direction == RemoveJournalDirection::Rollback &&
+            next.direction != RemoveJournalDirection::Rollback)) {
+        return SetError(error, L"remove-journal-transition",
+            ERROR_INVALID_DATA,
+            L"remove journal immutable or sticky authority changed");
+    }
+    const bool consumesCrossedRebootEpoch =
+        !prior.pendingRebootBootIdentifier.empty() &&
+        prior.rebootRequired && !next.rebootRequired &&
+        next.pendingRebootBootIdentifier.empty() &&
+        (prior.phase == RemoveJournalPhase::ForwardRebootPending ||
+            prior.phase == RemoveJournalPhase::RestoreRebootPending ||
+            (prior.phase == RemoveJournalPhase::RollbackAdmitted &&
+                prior.direction == RemoveJournalDirection::Rollback) ||
+            RemoveJournalPhaseIsAuthoritativeReturn(prior.phase));
+    if (!prior.pendingRebootBootIdentifier.empty() &&
+        next.pendingRebootBootIdentifier !=
+            prior.pendingRebootBootIdentifier &&
+        !next.freshRebootRequired && !consumesCrossedRebootEpoch) {
+        return SetError(error, L"remove-journal-reboot-epoch-chain",
+            ERROR_INVALID_DATA);
+    }
+    if (prior.direction == RemoveJournalDirection::Forward &&
+        next.direction == RemoveJournalDirection::Rollback) {
+        const bool directPendingAdmission =
+            next.phase == RemoveJournalPhase::RestoreRebootPending &&
+            prior.rebootRequired && next.rebootRequired &&
+            !prior.pendingRebootBootIdentifier.empty() &&
+            next.pendingRebootBootIdentifier ==
+                prior.pendingRebootBootIdentifier &&
+            !next.freshRebootRequired;
+        return ((next.phase == RemoveJournalPhase::RollbackAdmitted ||
+                    directPendingAdmission) &&
+                next.packageCursor == prior.packageCursor) ||
+            SetError(error, L"remove-journal-direction-chain",
+                ERROR_INVALID_DATA);
+    }
+    if (!LegalRemoveJournalTransition(
+            prior.phase, next.phase, next.direction)) {
+        return SetError(error, L"remove-journal-phase-chain",
+            ERROR_INVALID_DATA);
+    }
+    if (next.phase == RemoveJournalPhase::PackageRemovalEntered &&
+        (next.activePackageIndex != next.packageCursor ||
+            next.packageCursor != prior.packageCursor)) {
+        return SetError(error, L"remove-journal-package-chain",
+            ERROR_INVALID_DATA);
+    }
+    if (next.phase == RemoveJournalPhase::PackageRemovalCommitted &&
+        next.packageCursor != prior.packageCursor + 1U) {
+        return SetError(error, L"remove-journal-package-chain",
+            ERROR_INVALID_DATA);
+    }
+    if ((next.phase == RemoveJournalPhase::PackageRemovalReturned ||
+            next.phase == RemoveJournalPhase::RollbackPackageReturned) &&
+        (prior.activePackageIndex == UINT32_MAX ||
+            next.activePackageIndex != prior.activePackageIndex)) {
+        return SetError(error, L"remove-journal-package-return-chain",
+            ERROR_INVALID_DATA);
+    }
+    if (next.phase == RemoveJournalPhase::RollbackPackageEntered &&
+        next.activePackageIndex == UINT32_MAX) {
+        return SetError(error, L"remove-journal-package-admission-chain",
+            ERROR_INVALID_DATA);
+    }
+    return true;
+}
+
+bool ValidateLoadedRemoveJournalEvidence(
+    LoadedRemoveJournal* loaded,
+    Error* error) {
+    WinHandle priorHandle;
+    const std::filesystem::path priorRoot =
+        loaded->directory.active / kRemoveRecoveryPriorDirectory;
+    if (!OpenStableDirectory(
+            priorRoot, true, &priorHandle, error)) {
+        return false;
+    }
+    loaded->evidenceLocks.push_back(std::move(priorHandle));
+    loaded->priorBackups.clear();
+    for (size_t index = 0;
+         index < loaded->state.prior.packages.size(); ++index) {
+        PackageInfo& expected = loaded->state.prior.packages[index];
+        const std::filesystem::path directory =
+            priorRoot / std::to_wstring(index);
+        WinHandle directoryHandle;
+        PackageInfo copy;
+        bool owned = false;
+        if (!OpenStableDirectory(directory, true,
+                &directoryHandle, error) ||
+            !ValidateExactPackageDirectory(directory, error) ||
+            !LoadOwnedPackage(directory / L"ViiperUde.inf", true,
+                false, &copy, &owned, error) || !owned ||
+            !(copy.version == expected.version) ||
+            !SamePackageBytes(copy, expected)) {
+            if (error->code == ERROR_SUCCESS) {
+                SetError(error, L"remove-journal-prior-evidence",
+                    ERROR_REVISION_MISMATCH);
+            }
+            return false;
+        }
+        loaded->evidenceLocks.push_back(std::move(directoryHandle));
+        std::vector<WinHandle> locks;
+        if (!LockPackageFiles(directory, &locks, error)) return false;
+        for (WinHandle& lock : locks) {
+            loaded->evidenceLocks.push_back(std::move(lock));
+        }
+        expected.infPath = directory / L"ViiperUde.inf";
+        loaded->priorBackups.push_back(PackageBackup{
+            expected, directory, expected.infPath, {}});
+    }
+    for (DeviceState& device : loaded->state.prior.devices) {
+        for (const PackageInfo& package :
+                loaded->state.prior.packages) {
+            if (_wcsicmp(package.publishedName.c_str(),
+                    device.publishedInf.c_str()) == 0) {
+                device.package = package;
             }
         }
     }
     return true;
+}
+
+bool LoadRemoveJournal(
+    RemoveRecoveryDirectory&& directory,
+    LoadedRemoveJournal* loaded,
+    Error* error) {
+    loaded->directory = std::move(directory);
+    std::map<uint64_t, std::filesystem::path> records;
+    std::optional<std::pair<uint64_t, std::filesystem::path>> temporary;
+    std::error_code enumerationError;
+    for (std::filesystem::directory_iterator iterator(
+             loaded->directory.active, enumerationError), end;
+         !enumerationError && iterator != end;
+         iterator.increment(enumerationError)) {
+        const std::wstring name = iterator->path().filename().wstring();
+        const DWORD attributes = GetFileAttributesW(
+            iterator->path().c_str());
+        if (attributes == INVALID_FILE_ATTRIBUTES ||
+            (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+            return SetError(error, L"remove-journal-discovery",
+                ERROR_REPARSE_TAG_MISMATCH);
+        }
+        if ((attributes & FILE_ATTRIBUTE_DIRECTORY) != 0 &&
+            name == kRemoveRecoveryPriorDirectory) {
+            continue;
+        }
+        uint64_t sequence = 0;
+        if ((attributes & FILE_ATTRIBUTE_DIRECTORY) == 0 &&
+            ParseJournalRecordFileName(name, &sequence)) {
+            if (sequence >= kMaximumRemoveRecoveryRecords ||
+                !records.emplace(sequence, iterator->path()).second) {
+                return SetError(error, L"remove-journal-chain",
+                    ERROR_DUPLICATE_SERVICE_NAME);
+            }
+            continue;
+        }
+        if ((attributes & FILE_ATTRIBUTE_DIRECTORY) == 0 &&
+            ParseJournalTemporaryFileName(name, &sequence)) {
+            if (sequence >= kMaximumRemoveRecoveryRecords || temporary) {
+                return SetError(error, L"remove-journal-temp-chain",
+                    ERROR_INVALID_DATA);
+            }
+            temporary.emplace(sequence, iterator->path());
+            continue;
+        }
+        return SetError(error, L"remove-journal-discovery",
+            ERROR_INVALID_DATA,
+            L"protected remove transaction has an unexpected entry");
+    }
+    if (enumerationError) {
+        return SetError(error, L"remove-journal-discovery",
+            static_cast<DWORD>(enumerationError.value()));
+    }
+    if ((!records.empty() &&
+            (records.begin()->first != 0U ||
+                records.rbegin()->first + 1U != records.size())) ||
+        (temporary && temporary->first != records.size())) {
+        return SetError(error, L"remove-journal-chain",
+            ERROR_INVALID_DATA,
+            L"remove journal sequence is absent or non-contiguous");
+    }
+    if (temporary &&
+        !ValidateAndDiscardInstallJournalTemporaryFile(
+            temporary->second, error)) {
+        return false;
+    }
+    if (records.empty()) {
+        loaded->hasRecord = false;
+        return true;
+    }
+    std::string priorDigest(kZeroSha256);
+    std::optional<RemoveJournalStateData> immutable;
+    std::optional<RemoveJournalStateData> previousState;
+    for (const auto& [expectedSequence, path] : records) {
+        std::string record;
+        std::string digest;
+        RemoveJournalStateData parsed;
+        if (!ReadInstallJournalFile(path, &record, error) ||
+            !ParseRemoveJournalEnvelope(record,
+                loaded->directory.active, &parsed, &digest, error) ||
+            parsed.sequence != expectedSequence ||
+            _stricmp(parsed.previousDigest.c_str(),
+                priorDigest.c_str()) != 0 ||
+            (immutable && !SameRemoveJournalImmutableState(
+                *immutable, parsed)) ||
+            !ValidateRemoveJournalTransition(
+                previousState ? &*previousState : nullptr,
+                parsed, error)) {
+            if (error->code == ERROR_SUCCESS) {
+                SetError(error, L"remove-journal-chain", ERROR_CRC);
+            }
+            return false;
+        }
+        if (!immutable) immutable = parsed;
+        previousState = parsed;
+        priorDigest = digest;
+        loaded->state = std::move(parsed);
+        loaded->state.lastDigest = digest;
+    }
+    loaded->state.previousDigest = priorDigest;
+    loaded->state.sequence = records.size();
+    loaded->hasRecord = true;
+    return ValidateLoadedRemoveJournalEvidence(loaded, error);
+}
+
+bool AppendRemoveJournalRecord(
+    LoadedRemoveJournal* loaded,
+    RemoveJournalStateData next,
+    Error* error) {
+    if (loaded == nullptr || !loaded->hasRecord || loaded->poisoned) {
+        return SetError(error, L"remove-journal-record",
+            ERROR_INVALID_STATE);
+    }
+    next.sequence = loaded->state.sequence;
+    next.previousDigest = loaded->state.previousDigest;
+    next.lastDigest = loaded->state.lastDigest;
+    if (!ValidateRemoveJournalTransition(
+            &loaded->state, next, error)) {
+        return false;
+    }
+    if (!WriteRemoveJournalRecord(
+            loaded->directory.active, &next, error)) {
+        loaded->poisoned = true;
+        return false;
+    }
+    loaded->state = std::move(next);
+    if (!PublishRemoveRecoveryEvidence(
+            loaded->directory.active,
+            loaded->state.sequence - 1U, error)) {
+        loaded->poisoned = true;
+        return false;
+    }
+    return true;
+}
+
+bool PrepareRemoveJournal(
+    const Snapshot& capturedPrior,
+    const AbiCompatibilityProfile* priorAbiProfile,
+    LoadedRemoveJournal* loaded,
+    Error* error) {
+    bool exists = false;
+    if (!loaded->directory.OpenChain(true, &exists, error) || !exists ||
+        !PublishRemoveRecoveryEvidence(
+            loaded->directory.active, 0U, error)) {
+        return false;
+    }
+    const std::filesystem::path priorRoot =
+        loaded->directory.active / kRemoveRecoveryPriorDirectory;
+    WinHandle priorHandle;
+    bool created = false;
+    if (!CreateOrOpenInstallRecoveryDirectory(
+            priorRoot, false, true, &priorHandle, &created, error) ||
+        !created ||
+        !BackupPackagesIntoDirectory(capturedPrior.packages,
+            priorRoot, &loaded->priorBackups, error)) {
+        return false;
+    }
+    loaded->evidenceLocks.push_back(std::move(priorHandle));
+    loaded->state = RemoveJournalStateData{};
+    loaded->state.prior = capturedPrior;
+    for (size_t index = 0;
+         index < loaded->state.prior.packages.size(); ++index) {
+        loaded->state.prior.packages[index].infPath =
+            loaded->priorBackups[index].infPath;
+    }
+    for (DeviceState& device : loaded->state.prior.devices) {
+        for (const PackageInfo& package :
+                loaded->state.prior.packages) {
+            if (_wcsicmp(package.publishedName.c_str(),
+                    device.publishedInf.c_str()) == 0) {
+                device.package = package;
+            }
+        }
+    }
+    if (priorAbiProfile != nullptr) {
+        loaded->state.hasPriorAbiProfile = true;
+        loaded->state.priorAbiProfile = *priorAbiProfile;
+    }
+    if (!GenerateInstallTransactionId(
+            &loaded->state.transactionId, error) ||
+        !GetBootIdentifier(&loaded->state.bootIdentifier, error) ||
+        !ValidateRemoveJournalTransition(nullptr,
+            loaded->state, error) ||
+        !WriteRemoveJournalRecord(loaded->directory.active,
+            &loaded->state, error)) {
+        loaded->poisoned = gActiveRecoveryRecordWritten;
+        return false;
+    }
+    loaded->hasRecord = true;
+    return PublishRemoveRecoveryEvidence(
+        loaded->directory.active,
+        loaded->state.sequence - 1U, error);
+}
+
+enum class RemoveRootShape {
+    ExactPrior,
+    Absent,
+    PendingRemoval,
+    Manual,
+};
+
+bool CrossedRemoveRebootStillPendingRequiresManual(
+    RemoveJournalPhase phase,
+    bool callSucceeded,
+    bool rebootRequired,
+    bool freshRebootRequired,
+    bool samePendingBoot,
+    RemoveRootShape root) noexcept {
+    const bool crossedAuthoritativeRebootBoundary =
+        phase == RemoveJournalPhase::ForwardRebootPending ||
+        (phase == RemoveJournalPhase::DeviceRemovalReturned &&
+            callSucceeded && freshRebootRequired);
+    return root == RemoveRootShape::PendingRemoval &&
+        crossedAuthoritativeRebootBoundary &&
+        rebootRequired && !samePendingBoot;
+}
+
+bool ReusesInterruptedRemoveBindingAdmission(
+    RemoveJournalPhase phase) noexcept {
+    return phase == RemoveJournalPhase::RollbackBindingEntered;
+}
+
+bool ObserveRemoveRootShape(
+    const RemoveJournalStateData& state,
+    RemoveRootShape* shape,
+    Error* error) {
+    *shape = RemoveRootShape::Manual;
+    DeviceInfoSet set = OpenRootDevices();
+    if (!set) {
+        return SetLastErrorDetail(error,
+            L"remove-journal-raw-root-open");
+    }
+    struct RelatedRoot {
+        SP_DEVINFO_DATA data{};
+        std::wstring instanceId;
+        InstallRecoveryHardwareIdObservation hardwareIds;
+    };
+    std::vector<RelatedRoot> related;
+    for (DWORD index = 0;; ++index) {
+        SP_DEVINFO_DATA data{};
+        data.cbSize = sizeof(data);
+        if (!SetupDiEnumDeviceInfo(set.get(), index, &data)) {
+            if (GetLastError() != ERROR_NO_MORE_ITEMS) {
+                return SetLastErrorDetail(error,
+                    L"remove-journal-raw-root-enumeration");
+            }
+            break;
+        }
+        std::wstring instanceId;
+        InstallRecoveryHardwareIdObservation hardwareIds;
+        if (!ReadInstallRecoveryRootInstanceId(
+                set.get(), data, &instanceId, error) ||
+            !ReadInstallRecoveryHardwareIds(
+                set.get(), data, &hardwareIds, error)) {
+            return false;
+        }
+        const bool transactionNamespace =
+            IsInGeneratedRootDeviceNamespace(
+                instanceId, kRootDeviceName);
+        const bool exactPriorInstance =
+            state.prior.devices.size() == 1U &&
+            _wcsicmp(instanceId.c_str(),
+                state.prior.devices[0].instanceId.c_str()) == 0;
+        if (!hardwareIds.containsExpected && !transactionNamespace &&
+            !exactPriorInstance) {
+            continue;
+        }
+        related.push_back(RelatedRoot{
+            data, std::move(instanceId), hardwareIds});
+    }
+    if (related.empty()) {
+        *shape = RemoveRootShape::Absent;
+        return true;
+    }
+    if (related.size() != 1U || state.prior.devices.empty()) {
+        return SetError(error, L"remove-journal-raw-root-authority",
+            related.size() > 1U
+                ? ERROR_DUPLICATE_SERVICE_NAME
+                : ERROR_REVISION_MISMATCH,
+            L"remove recovery found a foreign or ambiguous related root");
+    }
+    RelatedRoot& root = related[0];
+    const DeviceState& prior = state.prior.devices[0];
+    bool present = false;
+    if (_wcsicmp(root.instanceId.c_str(), prior.instanceId.c_str()) != 0 ||
+        IsEqualGUID(root.data.ClassGuid, GUID_DEVCLASS_USB) == FALSE ||
+        !ReadDevicePresence(set.get(), root.data, &present, error)) {
+        return SetError(error, L"remove-journal-raw-root-authority",
+            ERROR_REVISION_MISMATCH,
+            L"related root does not match the captured exact instance and class");
+    }
+    ULONG status = 0;
+    ULONG problem = 0;
+    const CONFIGRET configuration = CM_Get_DevNode_Status(
+        &status, &problem, root.data.DevInst, 0);
+    if (present && configuration != CR_SUCCESS) {
+        return SetError(error, L"remove-journal-raw-root-lifecycle",
+            ERROR_INVALID_DATA);
+    }
+    std::wstring service;
+    std::wstring publishedInf;
+    std::wstring driverVersion;
+    if (!ReadCanonicalInstallRecoveryService(
+            set.get(), root.data, &service, error) ||
+        !ReadCanonicalInstallRecoveryDevicePropertyString(
+            set.get(), root.data, DEVPKEY_Device_DriverInfPath,
+            L"remove-journal-raw-root-driver-inf",
+            &publishedInf, error) ||
+        !ReadCanonicalInstallRecoveryDevicePropertyString(
+            set.get(), root.data, DEVPKEY_Device_DriverVersion,
+            L"remove-journal-raw-root-driver-version",
+            &driverVersion, error)) {
+        return false;
+    }
+    Version observedVersion{};
+    const bool exactBinding =
+        root.hardwareIds.exact && present &&
+        _wcsicmp(service.c_str(), prior.service.c_str()) == 0 &&
+        _wcsicmp(publishedInf.c_str(), prior.publishedInf.c_str()) == 0 &&
+        ParseVersion(driverVersion, &observedVersion) &&
+        observedVersion == prior.version;
+    if (exactBinding) {
+        *shape = RemoveRootShape::ExactPrior;
+        return true;
+    }
+    const bool removalWasAdmitted = state.deviceMutationEntered;
+    const bool pendingLifecycle = !present ||
+        (configuration == CR_SUCCESS && problem == CM_PROB_WILL_BE_REMOVED);
+    const bool canonicalBindingFragment =
+        (service.empty() ||
+            _wcsicmp(service.c_str(), prior.service.c_str()) == 0) &&
+        (publishedInf.empty() ||
+            _wcsicmp(publishedInf.c_str(), prior.publishedInf.c_str()) == 0) &&
+        (driverVersion.empty() ||
+            (ParseVersion(driverVersion, &observedVersion) &&
+                observedVersion == prior.version));
+    if (removalWasAdmitted && pendingLifecycle &&
+        (root.hardwareIds.absent || root.hardwareIds.exact) &&
+        canonicalBindingFragment) {
+        *shape = RemoveRootShape::PendingRemoval;
+        return true;
+    }
+    return SetError(error, L"remove-journal-raw-root-authority",
+        ERROR_REVISION_MISMATCH,
+        L"related root is outside exact prior, absent, or admitted-pending authority");
+}
+
+bool ObserveRemovePackagePrefix(
+    const RemoveJournalStateData& state,
+    uint32_t* removedPrefix,
+    std::vector<PackageInfo>* observed,
+    Error* error) {
+    if (!EnumerateOwnedPackages(observed, error)) return false;
+    for (const PackageInfo& current : *observed) {
+        const size_t matches = static_cast<size_t>(std::count_if(
+            state.prior.packages.begin(), state.prior.packages.end(),
+            [&](const PackageInfo& prior) {
+                return SameJournalPackageIdentity(current, prior);
+            }));
+        if (matches != 1U) {
+            return SetError(error,
+                L"remove-journal-package-authority",
+                ERROR_REVISION_MISMATCH,
+                L"current Driver Store contains an identity outside the captured remove inventory");
+        }
+    }
+    uint32_t prefix = 0;
+    while (prefix < state.prior.packages.size() &&
+        std::none_of(observed->begin(), observed->end(),
+            [&](const PackageInfo& current) {
+                return SameJournalPackageIdentity(
+                    current, state.prior.packages[prefix]);
+            })) {
+        ++prefix;
+    }
+    for (size_t index = prefix;
+         index < state.prior.packages.size(); ++index) {
+        const size_t matches = static_cast<size_t>(std::count_if(
+            observed->begin(), observed->end(),
+            [&](const PackageInfo& current) {
+                return SameJournalPackageIdentity(
+                    current, state.prior.packages[index]);
+            }));
+        if (matches != 1U) {
+            return SetError(error,
+                L"remove-journal-package-authority",
+                ERROR_REVISION_MISMATCH,
+                L"current Driver Store is not one exact captured suffix");
+        }
+    }
+    *removedPrefix = prefix;
+    return true;
+}
+
+bool CurrentRemoveStateMatchesPrior(
+    const RemoveJournalStateData& state,
+    uint64_t deadlineUnixMs,
+    Error* error) {
+    RemoveRootShape root = RemoveRootShape::Manual;
+    Snapshot observed;
+    if (!ObserveRemoveRootShape(state, &root, error) ||
+        root != (state.prior.devices.empty()
+            ? RemoveRootShape::Absent
+            : RemoveRootShape::ExactPrior) ||
+        !CaptureSnapshot(&observed, error) ||
+        !SameCapturedRootState(state.prior, observed) ||
+        !SamePackageInventory(state.prior.packages,
+            observed.packages)) {
+        if (error->code == ERROR_SUCCESS) {
+            SetError(error, L"remove-journal-prior-state",
+                ERROR_REVISION_MISMATCH);
+        }
+        return false;
+    }
+    if (state.hasPriorAbiProfile &&
+        !VerifyAbiHealth(deadlineUnixMs, nullptr, error,
+            AbiHealthPurpose::RollbackHealth,
+            &state.priorAbiProfile, nullptr)) {
+        return false;
+    }
+    return true;
+}
+
+bool CurrentRemoveStateIsUninstalled(
+    const RemoveJournalStateData& state,
+    Error* error) {
+    RemoveRootShape root = RemoveRootShape::Manual;
+    std::vector<PackageInfo> packages;
+    uint32_t removedPrefix = 0;
+    return ObserveRemoveRootShape(state, &root, error) &&
+        root == RemoveRootShape::Absent &&
+        ObserveRemovePackagePrefix(
+            state, &removedPrefix, &packages, error) &&
+        removedPrefix == state.prior.packages.size() &&
+        packages.empty();
+}
+
+bool RecordRemoveJournalPhase(
+    LoadedRemoveJournal* loaded,
+    RemoveJournalPhase phase,
+    bool callSucceeded,
+    DWORD callError,
+    bool rebootRequired,
+    bool freshRebootRequired,
+    bool deadlineOverrun,
+    Error* error,
+    std::optional<uint32_t> activePackageIndex = std::nullopt,
+    std::optional<uint32_t> packageCursor = std::nullopt) {
+    RemoveJournalStateData next = loaded->state;
+    next.phase = phase;
+    next.callSucceeded = callSucceeded;
+    next.callError = callError;
+    next.deadlineOverrun = deadlineOverrun;
+    next.freshRebootRequired = freshRebootRequired;
+    next.rebootRequired = rebootRequired;
+    next.activePackageIndex = activePackageIndex.value_or(UINT32_MAX);
+    if (packageCursor) next.packageCursor = *packageCursor;
+    if (phase == RemoveJournalPhase::DeviceRemovalEntered) {
+        next.deviceMutationEntered = true;
+    }
+    if (phase == RemoveJournalPhase::RollbackAdmitted ||
+        phase == RemoveJournalPhase::RestoreRebootPending) {
+        next.direction = RemoveJournalDirection::Rollback;
+    }
+    if (phase == RemoveJournalPhase::RollbackBindingEntered) {
+        next.bindingMutationEntered = true;
+    }
+    if (freshRebootRequired) {
+        if (!GetBootIdentifier(
+                &next.pendingRebootBootIdentifier, error)) {
+            return false;
+        }
+    }
+    if (!rebootRequired) {
+        next.pendingRebootBootIdentifier.clear();
+    }
+    return AppendRemoveJournalRecord(
+        loaded, std::move(next), error);
+}
+
+void SetRemoveJournalRecoveryOutcome(
+    LoadedRemoveJournal* loaded,
+    const wchar_t* phase,
+    DWORD code,
+    std::wstring message,
+    ExitCode exitCode,
+    Outcome* outcome) {
+    SetError(&outcome->error, phase, code, std::move(message));
+    outcome->exitCode = exitCode;
+    outcome->rebootRequired = exitCode == ExitCode::RebootRequired;
+    if (outcome->error.recoveryBackup.empty()) {
+        outcome->error.recoveryBackup =
+            loaded->directory.active.wstring();
+        outcome->error.recoveryBackupRetained = true;
+    }
+    if (gActiveRecoveryRecord[0] != L'\0') {
+        outcome->error.recoveryRecord =
+            gActiveRecoveryRecord.data();
+        outcome->error.recoveryRecordWritten =
+            gActiveRecoveryRecordWritten;
+    }
+}
+
+bool ObserveRemovePackageSubset(
+    const RemoveJournalStateData& state,
+    std::vector<bool>* present,
+    std::vector<PackageInfo>* observed,
+    Error* error) {
+    if (!EnumerateOwnedPackages(observed, error)) return false;
+    present->assign(state.prior.packages.size(), false);
+    for (const PackageInfo& current : *observed) {
+        size_t matchedIndex = state.prior.packages.size();
+        size_t matches = 0;
+        for (size_t index = 0;
+             index < state.prior.packages.size(); ++index) {
+            if (SameJournalPackageIdentity(
+                    current, state.prior.packages[index])) {
+                matchedIndex = index;
+                ++matches;
+            }
+        }
+        if (matches != 1U || (*present)[matchedIndex]) {
+            return SetError(error,
+                L"remove-journal-package-subset",
+                ERROR_REVISION_MISMATCH,
+                L"current Driver Store is not an exact subset of captured identities");
+        }
+        (*present)[matchedIndex] = true;
+    }
+    return true;
+}
+
+bool InvokeRemovePackageMutation(
+    const PackageInfo& package,
+    uint64_t deadlineUnixMs,
+    bool* rebootRequired,
+    bool* freshRebootRequired,
+    Error* error) {
+    if (!CheckTransactionDeadline(deadlineUnixMs,
+            L"remove-journal-package-deadline", error)) {
+        return false;
+    }
+    BOOL reboot = FALSE;
+    MarkTransactionMutationStarted();
+    const BOOL removed = InvokeAuthoritativeSynchronousMutation(
+        deadlineUnixMs, L"DiUninstallDriverW", [&]() {
+            return DiUninstallDriverW(
+                nullptr, package.infPath.c_str(), 0, &reboot);
+        });
+    const DWORD code = removed ? ERROR_SUCCESS : GetLastError();
+    *freshRebootRequired = reboot != FALSE;
+    *rebootRequired = *rebootRequired || reboot != FALSE;
+    if (!removed) {
+        return SetError(error, L"remove-driver-package", code);
+    }
+    if (gLastSynchronousMutationTimedOut) {
+        return SetError(error, L"remove-driver-package-timeout",
+            ERROR_TIMEOUT,
+            L"package removal returned after its deadline; authoritative outcome is retained");
+    }
+    return true;
+}
+
+bool InvokeRestorePackageMutation(
+    const PackageInfo& package,
+    uint64_t deadlineUnixMs,
+    bool* rebootRequired,
+    bool* freshRebootRequired,
+    Error* error) {
+    if (!CheckTransactionDeadline(deadlineUnixMs,
+            L"remove-journal-restore-package-deadline", error)) {
+        return false;
+    }
+    BOOL reboot = FALSE;
+    MarkTransactionMutationStarted();
+    const BOOL installed = InvokeAuthoritativeSynchronousMutation(
+        deadlineUnixMs, L"DiInstallDriverW", [&]() {
+            return DiInstallDriverW(
+                nullptr, package.infPath.c_str(), 0, &reboot);
+        });
+    const DWORD code = installed ? ERROR_SUCCESS : GetLastError();
+    *freshRebootRequired = reboot != FALSE;
+    *rebootRequired = *rebootRequired || reboot != FALSE;
+    if (!installed) {
+        return SetError(error, L"remove-rollback-package", code);
+    }
+    if (gLastSynchronousMutationTimedOut) {
+        return SetError(error, L"remove-rollback-package-timeout",
+            ERROR_TIMEOUT,
+            L"package restoration returned after its deadline; authoritative outcome is retained");
+    }
+    return true;
+}
+
+bool RetireRemoveJournalAsPrior(
+    LoadedRemoveJournal* loaded,
+    uint64_t deadlineUnixMs,
+    Outcome* outcome) {
+    Error error;
+    if (!CurrentRemoveStateMatchesPrior(
+            loaded->state, deadlineUnixMs, &error) ||
+        (loaded->state.phase != RemoveJournalPhase::ExactPriorRestored &&
+            !RecordRemoveJournalPhase(loaded,
+                RemoveJournalPhase::ExactPriorRestored,
+                true, ERROR_SUCCESS, false, false, false, &error)) ||
+        !CurrentRemoveStateMatchesPrior(
+            loaded->state, deadlineUnixMs, &error) ||
+        !RetireLoadedRemoveJournal(loaded, &error)) {
+        SetRemoveJournalRecoveryOutcome(loaded,
+            L"remove-journal-prior-retire", error.code,
+            L"exact prior state could not be proven and atomically retired",
+            ExitCode::RollbackFailed, outcome);
+        if (error.code != ERROR_SUCCESS) {
+            outcome->error = std::move(error);
+            if (outcome->error.recoveryBackup.empty()) {
+                outcome->error.recoveryBackup =
+                    loaded->directory.active.wstring();
+                outcome->error.recoveryBackupRetained = true;
+            }
+            if (gActiveRecoveryRecord[0] != L'\0') {
+                outcome->error.recoveryRecord =
+                    gActiveRecoveryRecord.data();
+                outcome->error.recoveryRecordWritten =
+                    gActiveRecoveryRecordWritten;
+            }
+        }
+        return false;
+    }
+    outcome->success = true;
+    outcome->rollback = L"succeeded";
+    outcome->exitCode = ExitCode::Success;
+    return true;
+}
+
+bool RetireRemoveJournalAsUninstalled(
+    LoadedRemoveJournal* loaded,
+    Outcome* outcome) {
+    Error error;
+    if (!CurrentRemoveStateIsUninstalled(loaded->state, &error) ||
+        (loaded->state.phase != RemoveJournalPhase::ForwardValidated &&
+            !RecordRemoveJournalPhase(loaded,
+                RemoveJournalPhase::ForwardValidated,
+                true, ERROR_SUCCESS, false, false, false, &error)) ||
+        !CurrentRemoveStateIsUninstalled(loaded->state, &error) ||
+        !RetireLoadedRemoveJournal(loaded, &error)) {
+        SetRemoveJournalRecoveryOutcome(loaded,
+            L"remove-journal-forward-retire", error.code,
+            L"exact uninstalled state could not be proven and atomically retired",
+            ExitCode::RollbackFailed, outcome);
+        if (error.code != ERROR_SUCCESS) {
+            outcome->error = std::move(error);
+            if (outcome->error.recoveryBackup.empty()) {
+                outcome->error.recoveryBackup =
+                    loaded->directory.active.wstring();
+                outcome->error.recoveryBackupRetained = true;
+            }
+            if (gActiveRecoveryRecord[0] != L'\0') {
+                outcome->error.recoveryRecord =
+                    gActiveRecoveryRecord.data();
+                outcome->error.recoveryRecordWritten =
+                    gActiveRecoveryRecordWritten;
+            }
+        }
+        return false;
+    }
+    outcome->success = true;
+    outcome->changed = true;
+    outcome->exitCode = ExitCode::Success;
+    return true;
+}
+
+bool FailRemoveJournalManual(
+    LoadedRemoveJournal* loaded,
+    std::wstring message,
+    const Error* cause,
+    Outcome* outcome) {
+    Error appendError;
+    if (loaded->state.phase !=
+            RemoveJournalPhase::ManualReconciliationRequired) {
+        RecordRemoveJournalPhase(loaded,
+            RemoveJournalPhase::ManualReconciliationRequired,
+            false, cause != nullptr ? cause->code : ERROR_INVALID_DATA,
+            loaded->state.rebootRequired, false, false, &appendError);
+    }
+    SetRemoveJournalRecoveryOutcome(loaded,
+        L"remove-journal-manual-reconciliation",
+        cause != nullptr && cause->code != ERROR_SUCCESS
+            ? cause->code : ERROR_INVALID_DATA,
+        std::move(message), ExitCode::RollbackFailed, outcome);
+    if (cause != nullptr) {
+        const std::wstring backup = !cause->recoveryBackup.empty()
+            ? cause->recoveryBackup : outcome->error.recoveryBackup;
+        const std::wstring record = outcome->error.recoveryRecord;
+        const bool backupRetained = !cause->recoveryBackup.empty()
+            ? cause->recoveryBackupRetained
+            : outcome->error.recoveryBackupRetained;
+        const bool recordWritten =
+            outcome->error.recoveryRecordWritten;
+        outcome->error = *cause;
+        outcome->error.recoveryBackup = backup;
+        outcome->error.recoveryRecord = record;
+        outcome->error.recoveryBackupRetained = backupRetained;
+        outcome->error.recoveryRecordWritten = recordWritten;
+    }
+    return false;
+}
+
+bool ReturnRemoveJournalRebootPending(
+    LoadedRemoveJournal* loaded,
+    const std::string& currentBoot,
+    Outcome* outcome) {
+    const RemoveJournalPhase pendingPhase =
+        loaded->state.direction == RemoveJournalDirection::Rollback
+            ? RemoveJournalPhase::RestoreRebootPending
+            : RemoveJournalPhase::ForwardRebootPending;
+    Error error;
+    if (loaded->state.phase != pendingPhase) {
+        RemoveJournalStateData next = loaded->state;
+        next.phase = pendingPhase;
+        next.callSucceeded = true;
+        next.callError = ERROR_SUCCESS_REBOOT_REQUIRED;
+        next.deadlineOverrun = false;
+        next.freshRebootRequired = false;
+        next.rebootRequired = true;
+        next.activePackageIndex = UINT32_MAX;
+        if (next.pendingRebootBootIdentifier.empty()) {
+            next.pendingRebootBootIdentifier = currentBoot;
+        }
+        if (!AppendRemoveJournalRecord(
+                loaded, std::move(next), &error)) {
+            return FailRemoveJournalManual(loaded,
+                L"required restart boundary could not be published",
+                &error, outcome);
+        }
+    }
+    SetRemoveJournalRecoveryOutcome(loaded,
+        L"remove-journal-reboot-pending",
+        ERROR_SUCCESS_REBOOT_REQUIRED,
+        L"the protected remove transaction requires the recorded Windows restart before continuing",
+        ExitCode::RebootRequired, outcome);
+    return false;
+}
+
+bool RunRemoveRollbackRecovery(
+    LoadedRemoveJournal* loaded,
+    const std::string& currentBoot,
+    uint64_t deadlineUnixMs,
+    Outcome* outcome) {
+    const bool samePendingBoot =
+        !loaded->state.pendingRebootBootIdentifier.empty() &&
+        loaded->state.pendingRebootBootIdentifier == currentBoot;
+    if (loaded->state.rebootRequired && samePendingBoot) {
+        return ReturnRemoveJournalRebootPending(
+            loaded, currentBoot, outcome);
+    }
+    if (loaded->state.phase ==
+            RemoveJournalPhase::ExactPriorRestored) {
+        return RetireRemoveJournalAsPrior(
+            loaded, deadlineUnixMs, outcome);
+    }
+    RemoveRootShape root = RemoveRootShape::Manual;
+    std::vector<bool> packagePresent;
+    std::vector<PackageInfo> observedPackages;
+    Error observationError;
+    if (!ObserveRemoveRootShape(loaded->state, &root,
+            &observationError) ||
+        !ObserveRemovePackageSubset(loaded->state,
+            &packagePresent, &observedPackages, &observationError)) {
+        return FailRemoveJournalManual(loaded,
+            L"rollback admission observed topology outside the exact captured subset",
+            &observationError, outcome);
+    }
+    if (root == RemoveRootShape::PendingRemoval) {
+        return FailRemoveJournalManual(loaded,
+            L"captured root still has an indeterminate removal lifecycle after its recorded restart",
+            nullptr, outcome);
+    }
+    if (loaded->state.phase ==
+            RemoveJournalPhase::RollbackPackageReturned &&
+        !loaded->state.callSucceeded) {
+        return FailRemoveJournalManual(loaded,
+            L"authoritative protected-package restoration returned failure",
+            nullptr, outcome);
+    }
+    if (loaded->state.phase ==
+            RemoveJournalPhase::RollbackPackageEntered ||
+        loaded->state.phase ==
+            RemoveJournalPhase::RollbackPackageReturned) {
+        const uint32_t interruptedIndex =
+            loaded->state.activePackageIndex;
+        if (interruptedIndex >= packagePresent.size()) {
+            return FailRemoveJournalManual(loaded,
+                L"interrupted rollback package index is outside the immutable prior inventory",
+                nullptr, outcome);
+        }
+        if (packagePresent[interruptedIndex]) {
+            Error commitError;
+            if (!RecordRemoveJournalPhase(loaded,
+                    RemoveJournalPhase::RollbackPackageCommitted,
+                    true, ERROR_SUCCESS, false, false, false,
+                    &commitError)) {
+                return FailRemoveJournalManual(loaded,
+                    L"observable exact package restoration could not be durably committed",
+                    &commitError, outcome);
+            }
+        } else if (loaded->state.phase ==
+                RemoveJournalPhase::RollbackPackageReturned) {
+            return FailRemoveJournalManual(loaded,
+                L"successful rollback package return did not restore its exact published identity after the recorded restart",
+                nullptr, outcome);
+        }
+    }
+    for (size_t index = 0; index < packagePresent.size(); ++index) {
+        if (packagePresent[index]) continue;
+        bool reboot = false;
+        Error error;
+        const bool reusingInterruptedAdmission =
+            loaded->state.phase ==
+                RemoveJournalPhase::RollbackPackageEntered &&
+            loaded->state.activePackageIndex == index;
+        if ((!reusingInterruptedAdmission &&
+                !RecordRemoveJournalPhase(loaded,
+                    RemoveJournalPhase::RollbackPackageEntered,
+                    true, ERROR_SUCCESS, false, false, false, &error,
+                    static_cast<uint32_t>(index))) ||
+            !ObserveRemoveRootShape(loaded->state, &root, &error) ||
+            (root != RemoveRootShape::Absent &&
+                root != RemoveRootShape::ExactPrior) ||
+            !ObserveRemovePackageSubset(loaded->state,
+                &packagePresent, &observedPackages, &error) ||
+            packagePresent[index]) {
+            return FailRemoveJournalManual(loaded,
+                L"rollback package authority changed after durable admission",
+                &error, outcome);
+        }
+        bool freshReboot = false;
+        const bool installed = InvokeRestorePackageMutation(
+            loaded->state.prior.packages[index], deadlineUnixMs,
+            &reboot, &freshReboot, &error);
+        Error returnError;
+        if (!RecordRemoveJournalPhase(loaded,
+                RemoveJournalPhase::RollbackPackageReturned,
+                installed,
+                installed ? ERROR_SUCCESS : error.code,
+                reboot, freshReboot,
+                gLastSynchronousMutationTimedOut, &returnError,
+                static_cast<uint32_t>(index))) {
+            return FailRemoveJournalManual(loaded,
+                L"authoritative rollback package return could not be recorded",
+                &returnError, outcome);
+        }
+        if (!installed) {
+            return FailRemoveJournalManual(loaded,
+                L"exact protected package restoration failed",
+                &error, outcome);
+        }
+        if (reboot) {
+            return ReturnRemoveJournalRebootPending(
+                loaded, currentBoot, outcome);
+        }
+        if (!ObserveRemovePackageSubset(loaded->state,
+                &packagePresent, &observedPackages, &error) ||
+            !packagePresent[index]) {
+            return FailRemoveJournalManual(loaded,
+                L"restored bytes did not regain the exact captured published package identity",
+                &error, outcome);
+        }
+        if (!RecordRemoveJournalPhase(loaded,
+                RemoveJournalPhase::RollbackPackageCommitted,
+                true, ERROR_SUCCESS, reboot, false, false, &error)) {
+            return FailRemoveJournalManual(loaded,
+                L"exact package restoration commit could not be recorded",
+                &error, outcome);
+        }
+    }
+    Error error;
+    if (!ObserveRemovePackageSubset(loaded->state,
+            &packagePresent, &observedPackages, &error) ||
+        std::any_of(packagePresent.begin(), packagePresent.end(),
+            [](bool present) { return !present; })) {
+        return FailRemoveJournalManual(loaded,
+            L"exact prior package inventory is incomplete before binding restoration",
+            &error, outcome);
+    }
+    if (CurrentRemoveStateMatchesPrior(
+            loaded->state, deadlineUnixMs, &error)) {
+        return RetireRemoveJournalAsPrior(
+            loaded, deadlineUnixMs, outcome);
+    }
+    error = Error{};
+    if (!ObserveRemoveRootShape(loaded->state, &root, &error) ||
+        root != RemoveRootShape::Absent) {
+        return FailRemoveJournalManual(loaded,
+            L"root topology is not exactly absent or prior before binding rollback",
+            &error, outcome);
+    }
+    if (loaded->state.prior.devices.empty()) {
+        return RetireRemoveJournalAsPrior(
+            loaded, deadlineUnixMs, outcome);
+    }
+    const bool reusingInterruptedBindingAdmission =
+        ReusesInterruptedRemoveBindingAdmission(loaded->state.phase);
+    if ((!reusingInterruptedBindingAdmission &&
+            !RecordRemoveJournalPhase(loaded,
+                RemoveJournalPhase::RollbackBindingEntered,
+                true, ERROR_SUCCESS, false, false, false, &error)) ||
+        !ObserveRemoveRootShape(loaded->state, &root, &error) ||
+        root != RemoveRootShape::Absent ||
+        !VerifyPackageInventory(loaded->state.prior.packages,
+            L"remove-journal-pre-binding-inventory", &error)) {
+        return FailRemoveJournalManual(loaded,
+            L"binding rollback authority changed after durable admission",
+            &error, outcome);
+    }
+    Snapshot restorable = loaded->state.prior;
+    std::filesystem::path systemInf;
+    if (!GetSystemInfDirectory(&systemInf, &error)) {
+        return FailRemoveJournalManual(loaded,
+            L"system INF directory could not be resolved for exact binding rollback",
+            &error, outcome);
+    }
+    for (PackageInfo& package : restorable.packages) {
+        package.infPath = systemInf / package.publishedName;
+    }
+    for (DeviceState& device : restorable.devices) {
+        for (const PackageInfo& package : restorable.packages) {
+            if (_wcsicmp(package.publishedName.c_str(),
+                    device.publishedInf.c_str()) == 0) {
+                device.package = package;
+            }
+        }
+    }
+    bool reboot = false;
+    const bool authoritativeRestored =
+        InvokeAuthoritativeSynchronousMutation(
+            deadlineUnixMs, L"remove-rollback-binding", [&]() {
+                return RestorePriorBinding(restorable,
+                    RestorePriorBindingPolicy::RemoveJournalExactAbsence,
+                    deadlineUnixMs, &reboot, &error);
+            });
+    bool restored = authoritativeRestored;
+    if (restored && gLastSynchronousMutationTimedOut) {
+        restored = SetError(&error,
+            L"remove-rollback-binding-timeout", ERROR_TIMEOUT,
+            L"binding restoration returned after its deadline; authoritative outcome is retained");
+    }
+    const bool freshReboot = reboot;
+    Error returnError;
+    if (!RecordRemoveJournalPhase(loaded,
+            RemoveJournalPhase::RollbackBindingReturned,
+            restored, restored ? ERROR_SUCCESS : error.code,
+            reboot, freshReboot,
+            gLastSynchronousMutationTimedOut, &returnError)) {
+        return FailRemoveJournalManual(loaded,
+            L"authoritative binding rollback return could not be recorded",
+            &returnError, outcome);
+    }
+    if (!restored) {
+        return FailRemoveJournalManual(loaded,
+            L"exact captured root restoration failed",
+            &error, outcome);
+    }
+    if (reboot) {
+        return ReturnRemoveJournalRebootPending(
+            loaded, currentBoot, outcome);
+    }
+    return RetireRemoveJournalAsPrior(
+        loaded, deadlineUnixMs, outcome);
+}
+
+bool AdmitRemoveRollback(
+    LoadedRemoveJournal* loaded,
+    DWORD failureCode,
+    const std::string& currentBoot,
+    Outcome* outcome) {
+    Error error;
+    const RemoveJournalPhase admissionPhase = loaded->state.rebootRequired
+        ? RemoveJournalPhase::RestoreRebootPending
+        : RemoveJournalPhase::RollbackAdmitted;
+    if (!RecordRemoveJournalPhase(loaded,
+            admissionPhase,
+            false, failureCode,
+            loaded->state.rebootRequired, false, false, &error)) {
+        return FailRemoveJournalManual(loaded,
+            L"rollback authority could not be durably admitted",
+            &error, outcome);
+    }
+    const uint64_t rollbackDeadline = FreshRemoveRollbackDeadline();
+    return RunRemoveRollbackRecovery(
+        loaded, currentBoot, rollbackDeadline, outcome);
+}
+
+bool RunRemoveForwardRecovery(
+    LoadedRemoveJournal* loaded,
+    const std::string& currentBoot,
+    uint64_t deadlineUnixMs,
+    Outcome* outcome) {
+    const bool samePendingBoot =
+        !loaded->state.pendingRebootBootIdentifier.empty() &&
+        loaded->state.pendingRebootBootIdentifier == currentBoot;
+    if (loaded->state.rebootRequired && samePendingBoot) {
+        return ReturnRemoveJournalRebootPending(
+            loaded, currentBoot, outcome);
+    }
+    if (loaded->state.phase == RemoveJournalPhase::ForwardValidated) {
+        return RetireRemoveJournalAsUninstalled(loaded, outcome);
+    }
+    if ((loaded->state.phase ==
+            RemoveJournalPhase::DeviceRemovalReturned ||
+         loaded->state.phase ==
+            RemoveJournalPhase::PackageRemovalReturned) &&
+        !loaded->state.callSucceeded) {
+        return AdmitRemoveRollback(loaded,
+            loaded->state.callError, currentBoot, outcome);
+    }
+
+    RemoveRootShape root = RemoveRootShape::Manual;
+    std::vector<PackageInfo> packages;
+    uint32_t removedPrefix = 0;
+    Error error;
+    if (!ObserveRemoveRootShape(loaded->state, &root, &error) ||
+        !ObserveRemovePackagePrefix(loaded->state,
+            &removedPrefix, &packages, &error)) {
+        return FailRemoveJournalManual(loaded,
+            L"forward remove topology is outside the exact captured prefix authority",
+            &error, outcome);
+    }
+    if (removedPrefix < loaded->state.packageCursor ||
+        removedPrefix > loaded->state.packageCursor + 1U) {
+        return FailRemoveJournalManual(loaded,
+            L"Driver Store removal progress skipped an unadmitted package boundary",
+            nullptr, outcome);
+    }
+    const bool hadPriorRoot = !loaded->state.prior.devices.empty();
+    if (root == RemoveRootShape::PendingRemoval) {
+        if (CrossedRemoveRebootStillPendingRequiresManual(
+                loaded->state.phase, loaded->state.callSucceeded,
+                loaded->state.rebootRequired,
+                loaded->state.freshRebootRequired,
+                samePendingBoot, root)) {
+            return FailRemoveJournalManual(loaded,
+                L"the root remains pending removal after the recorded restart; no fresh authoritative reboot evidence permits another restart loop",
+                nullptr, outcome);
+        }
+        return ReturnRemoveJournalRebootPending(
+            loaded, currentBoot, outcome);
+    }
+    if (hadPriorRoot && root == RemoveRootShape::ExactPrior) {
+        if (loaded->state.phase ==
+                RemoveJournalPhase::DeviceRemovalReturned &&
+            loaded->state.callSucceeded) {
+            return FailRemoveJournalManual(loaded,
+                L"successful non-pending device removal left the exact prior root present",
+                nullptr, outcome);
+        }
+        if (loaded->state.phase != RemoveJournalPhase::Prepared &&
+            loaded->state.phase !=
+                RemoveJournalPhase::DeviceRemovalEntered &&
+            loaded->state.phase !=
+                RemoveJournalPhase::ForwardRebootPending) {
+            return FailRemoveJournalManual(loaded,
+                L"prior root reappeared after a committed removal boundary",
+                nullptr, outcome);
+        }
+        const bool reusingInterruptedDeviceAdmission =
+            loaded->state.phase ==
+                RemoveJournalPhase::DeviceRemovalEntered;
+        if ((!reusingInterruptedDeviceAdmission &&
+                !RecordRemoveJournalPhase(loaded,
+                    RemoveJournalPhase::DeviceRemovalEntered,
+                    true, ERROR_SUCCESS, false, false, false, &error)) ||
+            !VerifyPackageInventory(loaded->state.prior.packages,
+                L"remove-journal-device-post-admission-inventory",
+                &error) ||
+            !ObserveRemoveRootShape(loaded->state, &root, &error) ||
+            root != RemoveRootShape::ExactPrior) {
+            return FailRemoveJournalManual(loaded,
+                L"device removal authority changed after durable admission",
+                &error, outcome);
+        }
+        bool reboot = false;
+        bool mutationStarted = false;
+        const bool authoritativeRemoved =
+            InvokeAuthoritativeSynchronousMutation(
+                deadlineUnixMs, L"DiUninstallDevice", [&]() {
+                    return RemoveExactCapturedDevice(
+                        loaded->state.prior.devices[0], deadlineUnixMs,
+                        &mutationStarted, &reboot, &error);
+                });
+        bool removed = authoritativeRemoved;
+        if (removed && gLastSynchronousMutationTimedOut) {
+            removed = SetError(&error,
+                L"remove-devnode-timeout", ERROR_TIMEOUT,
+                L"device removal returned after its deadline; authoritative outcome is retained");
+        }
+        const bool freshReboot = reboot;
+        Error returnError;
+        if (!RecordRemoveJournalPhase(loaded,
+                RemoveJournalPhase::DeviceRemovalReturned,
+                removed, removed ? ERROR_SUCCESS : error.code,
+                reboot, freshReboot,
+                gLastSynchronousMutationTimedOut, &returnError)) {
+            return FailRemoveJournalManual(loaded,
+                L"authoritative device removal return could not be recorded",
+                &returnError, outcome);
+        }
+        if (!removed) {
+            return AdmitRemoveRollback(loaded, error.code,
+                currentBoot, outcome);
+        }
+        if (reboot) {
+            return ReturnRemoveJournalRebootPending(
+                loaded, currentBoot, outcome);
+        }
+        if (!ObserveRemoveRootShape(loaded->state, &root, &error) ||
+            root != RemoveRootShape::Absent ||
+            !VerifyPackageInventory(loaded->state.prior.packages,
+                L"remove-journal-device-commit-inventory", &error) ||
+            !RecordRemoveJournalPhase(loaded,
+                RemoveJournalPhase::DeviceRemovalCommitted,
+                true, ERROR_SUCCESS, false, false, false, &error)) {
+            return AdmitRemoveRollback(loaded,
+                error.code, currentBoot, outcome);
+        }
+    } else if (root == RemoveRootShape::Absent) {
+        if (hadPriorRoot &&
+            !loaded->state.deviceMutationEntered) {
+            return FailRemoveJournalManual(loaded,
+                L"captured root disappeared before durable device-removal admission",
+                nullptr, outcome);
+        }
+        if (hadPriorRoot &&
+            (loaded->state.phase ==
+                    RemoveJournalPhase::DeviceRemovalEntered ||
+                loaded->state.phase ==
+                    RemoveJournalPhase::DeviceRemovalReturned ||
+                loaded->state.phase ==
+                    RemoveJournalPhase::ForwardRebootPending)) {
+            if (!RecordRemoveJournalPhase(loaded,
+                    RemoveJournalPhase::DeviceRemovalCommitted,
+                    true, ERROR_SUCCESS, false, false, false, &error)) {
+                return FailRemoveJournalManual(loaded,
+                    L"observed device removal could not be durably committed",
+                    &error, outcome);
+            }
+        }
+    } else {
+        return FailRemoveJournalManual(loaded,
+            L"root topology is neither exact prior nor exact absent",
+            nullptr, outcome);
+    }
+
+    if (removedPrefix == loaded->state.packageCursor + 1U) {
+        const bool admissibleObservedEffect =
+            loaded->state.phase ==
+                RemoveJournalPhase::PackageRemovalEntered ||
+            (loaded->state.phase ==
+                    RemoveJournalPhase::PackageRemovalReturned &&
+                loaded->state.callSucceeded) ||
+            loaded->state.phase ==
+                RemoveJournalPhase::ForwardRebootPending;
+        if (!admissibleObservedEffect ||
+            !RecordRemoveJournalPhase(loaded,
+                RemoveJournalPhase::PackageRemovalCommitted,
+                true, ERROR_SUCCESS, false, false, false, &error,
+                std::nullopt, removedPrefix)) {
+            return FailRemoveJournalManual(loaded,
+                L"observed package removal lacks exact durable API authority",
+                &error, outcome);
+        }
+    }
+    while (loaded->state.packageCursor <
+            loaded->state.prior.packages.size()) {
+        const uint32_t index = loaded->state.packageCursor;
+        if (!ObserveRemoveRootShape(loaded->state, &root, &error) ||
+            root != RemoveRootShape::Absent ||
+            !ObserveRemovePackagePrefix(loaded->state,
+                &removedPrefix, &packages, &error) ||
+            removedPrefix != index) {
+            return FailRemoveJournalManual(loaded,
+                L"package removal precondition changed outside the exact captured suffix",
+                &error, outcome);
+        }
+        const PackageInfo* current = nullptr;
+        for (const PackageInfo& package : packages) {
+            if (SameJournalPackageIdentity(package,
+                    loaded->state.prior.packages[index])) {
+                current = &package;
+            }
+        }
+        const bool reusingInterruptedPackageAdmission =
+            loaded->state.phase ==
+                RemoveJournalPhase::PackageRemovalEntered &&
+            loaded->state.activePackageIndex == index;
+        if (current == nullptr ||
+            (!reusingInterruptedPackageAdmission &&
+                !RecordRemoveJournalPhase(loaded,
+                    RemoveJournalPhase::PackageRemovalEntered,
+                    true, ERROR_SUCCESS, false, false, false, &error,
+                    index)) ||
+            !ObserveRemoveRootShape(loaded->state, &root, &error) ||
+            root != RemoveRootShape::Absent ||
+            !ObserveRemovePackagePrefix(loaded->state,
+                &removedPrefix, &packages, &error) ||
+            removedPrefix != index) {
+            return FailRemoveJournalManual(loaded,
+                L"package removal authority changed after durable admission",
+                &error, outcome);
+        }
+        current = nullptr;
+        for (const PackageInfo& package : packages) {
+            if (SameJournalPackageIdentity(package,
+                    loaded->state.prior.packages[index])) {
+                current = &package;
+            }
+        }
+        if (current == nullptr) {
+            return FailRemoveJournalManual(loaded,
+                L"admitted exact package disappeared before its API call",
+                nullptr, outcome);
+        }
+        bool reboot = false;
+        bool freshReboot = false;
+        const bool removed = InvokeRemovePackageMutation(*current,
+            deadlineUnixMs, &reboot, &freshReboot, &error);
+        Error returnError;
+        if (!RecordRemoveJournalPhase(loaded,
+                RemoveJournalPhase::PackageRemovalReturned,
+                removed, removed ? ERROR_SUCCESS : error.code,
+                reboot, freshReboot,
+                gLastSynchronousMutationTimedOut, &returnError, index)) {
+            return FailRemoveJournalManual(loaded,
+                L"authoritative package removal return could not be recorded",
+                &returnError, outcome);
+        }
+        if (!removed) {
+            return AdmitRemoveRollback(loaded, error.code,
+                currentBoot, outcome);
+        }
+        if (reboot) {
+            return ReturnRemoveJournalRebootPending(
+                loaded, currentBoot, outcome);
+        }
+        if (!ObserveRemovePackagePrefix(loaded->state,
+                &removedPrefix, &packages, &error) ||
+            removedPrefix != index + 1U ||
+            !ObserveRemoveRootShape(loaded->state, &root, &error) ||
+            root != RemoveRootShape::Absent ||
+            !RecordRemoveJournalPhase(loaded,
+                RemoveJournalPhase::PackageRemovalCommitted,
+                true, ERROR_SUCCESS, false, false, false, &error,
+                std::nullopt, index + 1U)) {
+            return AdmitRemoveRollback(loaded,
+                error.code, currentBoot, outcome);
+        }
+    }
+    return RetireRemoveJournalAsUninstalled(loaded, outcome);
+}
+
+bool ReconcileRemoveJournal(
+    bool explicitRecovery,
+    uint64_t deadlineUnixMs,
+    Outcome* outcome) {
+    RemoveRecoveryDirectory directory;
+    bool exists = false;
+    if (!directory.OpenChain(false, &exists, &outcome->error)) {
+        outcome->exitCode = ExitCode::RollbackFailed;
+        return false;
+    }
+    if (!exists) return true;
+    LoadedRemoveJournal loaded;
+    if (!LoadRemoveJournal(
+            std::move(directory), &loaded, &outcome->error)) {
+        outcome->exitCode = ExitCode::RollbackFailed;
+        outcome->error.recoveryBackup = loaded.directory.active.wstring();
+        outcome->error.recoveryBackupRetained = true;
+        return false;
+    }
+    if (!loaded.hasRecord) {
+        std::string abandonedIdentity;
+        if (!GenerateInstallTransactionId(
+                &abandonedIdentity, &outcome->error) ||
+            !RetireRemoveRecoveryActiveDirectory(
+                &loaded.directory, abandonedIdentity,
+                &outcome->error)) {
+            outcome->exitCode = ExitCode::RollbackFailed;
+            outcome->error.recoveryBackup =
+                loaded.directory.active.wstring();
+            outcome->error.recoveryBackupRetained = true;
+            return false;
+        }
+        outcome->success = true;
+        outcome->exitCode = ExitCode::Success;
+        return true;
+    }
+    PublishRemoveRecoveryEvidence(loaded.directory.active,
+        loaded.state.sequence - 1U, nullptr);
+
+    InstallRecoveryDirectory installDirectory;
+    bool installExists = false;
+    Error concurrencyError;
+    if (!installDirectory.OpenChain(false, nullptr,
+            &installExists, &concurrencyError) || installExists) {
+        return FailRemoveJournalManual(&loaded,
+            L"remove and install journals are simultaneously active; no automatic mutation is authorized",
+            installExists ? nullptr : &concurrencyError, outcome);
+    }
+    if (loaded.state.phase ==
+            RemoveJournalPhase::ManualReconciliationRequired) {
+        return FailRemoveJournalManual(&loaded,
+            L"remove journal is latched for manual reconciliation",
+            nullptr, outcome);
+    }
+    std::string currentBoot;
+    if (!GetBootIdentifier(&currentBoot, &outcome->error)) {
+        return FailRemoveJournalManual(&loaded,
+            L"current boot epoch cannot be compared with the durable remove boundary",
+            &outcome->error, outcome);
+    }
+    const uint64_t recoveryDeadline = explicitRecovery
+        ? deadlineUnixMs
+        : std::min(deadlineUnixMs,
+            CurrentUnixMilliseconds() + kDriverRollbackCeilingMs);
+    return loaded.state.direction == RemoveJournalDirection::Rollback
+        ? RunRemoveRollbackRecovery(&loaded, currentBoot,
+            recoveryDeadline, outcome)
+        : RunRemoveForwardRecovery(&loaded, currentBoot,
+            recoveryDeadline, outcome);
 }
 
 struct RemoveOptions {
@@ -11540,7 +15654,8 @@ struct RemoveOptions {
 
 Outcome Remove(const RemoveOptions& options) {
     Outcome outcome;
-    if (!ValidateTransactionDeadlineBudget(options.transactionDeadlineUnixMs, &outcome.error)) {
+    if (!ValidateTransactionDeadlineBudget(
+            options.transactionDeadlineUnixMs, &outcome.error)) {
         outcome.exitCode = ExitCode::PreflightRejected;
         return outcome;
     }
@@ -11555,12 +15670,15 @@ Outcome Remove(const RemoveOptions& options) {
         return outcome;
     }
     Outcome recoveryOutcome;
-    if (!ReconcileInstallJournal(
+    if (!ReconcileRemoveJournal(
+            false, options.transactionDeadlineUnixMs, &recoveryOutcome) ||
+        !ReconcileInstallJournal(
             false, options.transactionDeadlineUnixMs, &recoveryOutcome)) {
         return recoveryOutcome;
     }
     if (!CheckTransactionDeadline(
-            options.transactionDeadlineUnixMs, L"remove-deadline-before-snapshot", &outcome.error)) {
+            options.transactionDeadlineUnixMs,
+            L"remove-deadline-before-snapshot", &outcome.error)) {
         outcome.exitCode = ExitCode::PreflightRejected;
         return outcome;
     }
@@ -11576,132 +15694,77 @@ Outcome Remove(const RemoveOptions& options) {
         outcome.exitCode = ExitCode::PreflightRejected;
         return outcome;
     }
+    RemoveJournalStateData observationState;
+    observationState.prior = prior;
+    RemoveRootShape root = RemoveRootShape::Manual;
+    if (!ObserveRemoveRootShape(
+            observationState, &root, &outcome.error) ||
+        root != (prior.devices.empty()
+            ? RemoveRootShape::Absent
+            : RemoveRootShape::ExactPrior)) {
+        if (outcome.error.code == ERROR_SUCCESS) {
+            SetError(&outcome.error, L"remove-raw-topology",
+                ERROR_REVISION_MISMATCH,
+                L"removal requires one exact captured root or exact root absence with no related partial roots");
+        }
+        outcome.exitCode = ExitCode::PreflightRejected;
+        return outcome;
+    }
     if (prior.devices.empty() && prior.packages.empty()) {
         outcome.success = true;
         outcome.exitCode = ExitCode::Success;
         return outcome;
     }
-    BackupDirectory backupRoot;
-    std::vector<PackageBackup> backups;
-    const auto rejectBeforeMutation = [&](Error failure) {
-        Error cleanupError;
-        if (!backupRoot.Cleanup(&backups, &cleanupError)) {
-            outcome.error = std::move(cleanupError);
-        } else {
-            outcome.error = std::move(failure);
-        }
-        outcome.exitCode = ExitCode::PreflightRejected;
-    };
-    if (!BackupPackages(prior.packages, &backupRoot, &backups, &outcome.error)) {
-        Error failure = std::move(outcome.error);
-        rejectBeforeMutation(std::move(failure));
-        return outcome;
-    }
-    std::string recoveryRecord;
-    const std::filesystem::path recoveryPath = backupRoot.RecoveryRecordPath();
-    Error recoveryError;
-    if (!BuildRemoveRecoveryRecord(
-            prior, backups, backupRoot.path(), &recoveryRecord, &recoveryError) ||
-        !WriteProtectedRecoveryRecord(recoveryPath, recoveryRecord, &recoveryError) ||
-        !backupRoot.ArmPreservation(recoveryPath, &recoveryError)) {
-        rejectBeforeMutation(std::move(recoveryError));
-        return outcome;
-    }
-    if (!CheckTransactionDeadline(
-            options.transactionDeadlineUnixMs, L"remove-deadline-before-device", &outcome.error)) {
-        Error failure = std::move(outcome.error);
-        rejectBeforeMutation(std::move(failure));
-        return outcome;
-    }
-    bool mutationStarted = false;
-    bool reboot = false;
-    Error mutationError;
-    bool mutationSucceeded = RemoveAllExactDevices(
-        options.transactionDeadlineUnixMs, &mutationStarted, &reboot, &mutationError);
-    outcome.changed = mutationStarted;
-    if (mutationSucceeded && !CheckTransactionDeadline(
-            options.transactionDeadlineUnixMs, L"remove-deadline-after-device", &mutationError)) {
-        mutationSucceeded = false;
-    }
-    if (mutationSucceeded) {
-        for (const PackageInfo& package : prior.packages) {
-            if (!CheckTransactionDeadline(
-                    options.transactionDeadlineUnixMs, L"remove-deadline-before-package", &mutationError)) {
-                mutationSucceeded = false;
-                break;
-            }
-            mutationStarted = true;
-            outcome.changed = true;
-            if (!UninstallPackage(package, &reboot, &mutationError)) {
-                mutationSucceeded = false;
-                break;
-            }
-            if (!CheckTransactionDeadline(
-                    options.transactionDeadlineUnixMs, L"remove-deadline-after-package", &mutationError)) {
-                mutationSucceeded = false;
-                break;
-            }
-        }
-    }
-    if (mutationSucceeded && !reboot) {
-        if (!CheckTransactionDeadline(
-                options.transactionDeadlineUnixMs, L"remove-deadline-before-verify", &mutationError)) {
-            mutationSucceeded = false;
-        }
-    }
-    if (mutationSucceeded && !reboot) {
-        Snapshot verified;
-        if (!CaptureSnapshot(&verified, &mutationError) ||
-            !verified.devices.empty() || !verified.packages.empty()) {
-            if (mutationError.code == ERROR_SUCCESS) {
-                SetError(&mutationError, L"remove-verification", ERROR_DEVICE_IN_USE);
-            }
-            mutationSucceeded = false;
-        }
-    }
-    if (!mutationSucceeded) {
-        if (!mutationStarted) {
-            rejectBeforeMutation(std::move(mutationError));
+    std::optional<AbiCompatibilityProfile> priorAbiProfile;
+    if (!prior.devices.empty() && prior.devices[0].started) {
+        AbiCompatibilityProfile negotiated{};
+        if (!VerifyAbiHealth(options.transactionDeadlineUnixMs,
+                nullptr, &outcome.error,
+                AbiHealthPurpose::ExactCandidate, nullptr,
+                &negotiated)) {
+            outcome.exitCode = ExitCode::PreflightRejected;
             return outcome;
         }
-        Error rollbackError;
-        bool rollbackReboot = reboot;
-        // Forward work owns the caller's absolute deadline. Rollback receives
-        // one fresh, bounded ceiling from the instant failure is observed; it
-        // must not inherit the unused portion of a long forward deadline and
-        // silently expand into a six-minute transaction.
-        const uint64_t rollbackDeadline =
-            CurrentUnixMilliseconds() + kDriverRollbackCeilingMs;
-        if (RollbackRemove(
-                prior, backups, rollbackDeadline, &rollbackReboot, &rollbackError)) {
-            outcome.rollback = L"succeeded";
-            outcome.rebootRequired = rollbackReboot;
-            Error cleanupError;
-            if (!backupRoot.Cleanup(&backups, &cleanupError)) {
-                outcome.error = std::move(cleanupError);
-                return outcome;
+        priorAbiProfile = negotiated;
+    }
+    {
+        LoadedRemoveJournal journal;
+        if (!PrepareRemoveJournal(prior,
+                priorAbiProfile ? &*priorAbiProfile : nullptr,
+                &journal, &outcome.error)) {
+            outcome.exitCode = journal.hasRecord || journal.poisoned
+                ? ExitCode::RollbackFailed
+                : ExitCode::PreflightRejected;
+            if (!journal.directory.active.empty()) {
+                outcome.error.recoveryBackup =
+                    journal.directory.active.wstring();
+                outcome.error.recoveryBackupRetained = true;
             }
-            outcome.error = std::move(mutationError);
             return outcome;
         }
-        backupRoot.AttachRecoveryRecord(&rollbackError);
-        outcome.rollback = L"failed";
-        outcome.rebootRequired = rollbackReboot;
-        outcome.error = std::move(rollbackError);
+    }
+    Outcome transactionOutcome;
+    const bool reconciled = ReconcileRemoveJournal(
+        true, options.transactionDeadlineUnixMs,
+        &transactionOutcome);
+    if (!reconciled) return transactionOutcome;
+    Snapshot finalState;
+    if (!CaptureSnapshot(&finalState, &outcome.error)) {
         outcome.exitCode = ExitCode::RollbackFailed;
         return outcome;
     }
-    Error cleanupError;
-    if (!backupRoot.Cleanup(&backups, &cleanupError)) {
-        outcome.rollback = L"failed";
-        outcome.rebootRequired = reboot;
-        outcome.error = std::move(cleanupError);
-        outcome.exitCode = ExitCode::RollbackFailed;
+    if (finalState.devices.empty() && finalState.packages.empty()) {
+        outcome.success = true;
+        outcome.changed = true;
+        outcome.exitCode = ExitCode::Success;
         return outcome;
     }
-    outcome.success = true;
-    outcome.rebootRequired = reboot;
-    outcome.exitCode = reboot ? ExitCode::RebootRequired : ExitCode::Success;
+    SetError(&outcome.error, L"remove-transaction-rolled-back",
+        ERROR_OPERATION_ABORTED,
+        L"removal could not commit and the exact prior state was restored");
+    outcome.changed = true;
+    outcome.rollback = L"succeeded";
+    outcome.exitCode = ExitCode::Failure;
     return outcome;
 }
 
@@ -11722,7 +15785,9 @@ Outcome Recover(uint64_t transactionDeadlineUnixMs) {
         outcome.exitCode = ExitCode::PreflightRejected;
         return outcome;
     }
-    if (!ReconcileInstallJournal(
+    if (!ReconcileRemoveJournal(
+            true, transactionDeadlineUnixMs, &outcome) ||
+        !ReconcileInstallJournal(
             true, transactionDeadlineUnixMs, &outcome)) {
         return outcome;
     }
@@ -11738,6 +15803,44 @@ enum class InstallJournalRecoveryModelAction {
     RebootPending,
     Manual,
 };
+
+enum class BrokerOuterRecoveryModelAction {
+    ReplayChild,
+    ValidateForward,
+    PublishPending,
+    EmitBinding,
+    ReplayAcknowledgement,
+    Manual,
+};
+
+BrokerOuterRecoveryModelAction ClassifyBrokerOuterRecoveryModel(
+    InstallJournalPhase phase,
+    bool hasProof,
+    bool proofSuccess,
+    bool proofChanged,
+    bool rollbackAuthorized) noexcept {
+    if (phase == InstallJournalPhase::BrokerChildEntered &&
+        !hasProof && !rollbackAuthorized) {
+        return BrokerOuterRecoveryModelAction::ReplayChild;
+    }
+    const bool exactForwardProof = hasProof && proofSuccess &&
+        proofChanged && !rollbackAuthorized;
+    if (!exactForwardProof) {
+        return BrokerOuterRecoveryModelAction::Manual;
+    }
+    switch (phase) {
+    case InstallJournalPhase::BrokerChildSettled:
+        return BrokerOuterRecoveryModelAction::ValidateForward;
+    case InstallJournalPhase::ForwardValidated:
+        return BrokerOuterRecoveryModelAction::PublishPending;
+    case InstallJournalPhase::BrokerOuterSettlementPending:
+        return BrokerOuterRecoveryModelAction::EmitBinding;
+    case InstallJournalPhase::BrokerOuterSettled:
+        return BrokerOuterRecoveryModelAction::ReplayAcknowledgement;
+    default:
+        return BrokerOuterRecoveryModelAction::Manual;
+    }
+}
 
 InstallJournalRecoveryModelAction ClassifyInstallJournalRecoveryModel(
     InstallJournalPhase phase,
@@ -11864,6 +15967,45 @@ bool RunInstallJournalModelSelfTest(Error* error) {
             std::filesystem::path(L"C:\\Windows\\INF\\oem1.inf"))) {
         return SetError(error, L"self-test-install-journal-security-model",
             ERROR_INVALID_DATA);
+    }
+    InstallJournalStateData finalBindingModel;
+    finalBindingModel.phase = InstallJournalPhase::BrokerOuterSettled;
+    finalBindingModel.lastDigest = std::string(64, 'a');
+    finalBindingModel.brokerDriverPendingDigest = std::string(64, 'b');
+    if (!IsBrokerOuterSettlementContinuationPhase(
+            InstallJournalPhase::BrokerOuterSettled) ||
+        IsBrokerOuterSettlementContinuationPhase(
+            InstallJournalPhase::Prepared) ||
+        BrokerOuterSettlementPendingDriverDigest(finalBindingModel) !=
+            finalBindingModel.brokerDriverPendingDigest ||
+        ClassifyBrokerOuterRecoveryModel(
+            InstallJournalPhase::BrokerChildEntered,
+            false, false, false, false) !=
+            BrokerOuterRecoveryModelAction::ReplayChild ||
+        ClassifyBrokerOuterRecoveryModel(
+            InstallJournalPhase::BrokerChildSettled,
+            true, true, true, false) !=
+            BrokerOuterRecoveryModelAction::ValidateForward ||
+        ClassifyBrokerOuterRecoveryModel(
+            InstallJournalPhase::ForwardValidated,
+            true, true, true, false) !=
+            BrokerOuterRecoveryModelAction::PublishPending ||
+        ClassifyBrokerOuterRecoveryModel(
+            InstallJournalPhase::BrokerOuterSettlementPending,
+            true, true, true, false) !=
+            BrokerOuterRecoveryModelAction::EmitBinding ||
+        ClassifyBrokerOuterRecoveryModel(
+            InstallJournalPhase::BrokerOuterSettled,
+            true, true, true, false) !=
+            BrokerOuterRecoveryModelAction::ReplayAcknowledgement ||
+        ClassifyBrokerOuterRecoveryModel(
+            InstallJournalPhase::BrokerChildSettled,
+            true, false, true, false) !=
+            BrokerOuterRecoveryModelAction::Manual) {
+        return SetError(error,
+            L"self-test-broker-outer-cutpoint-model",
+            ERROR_INVALID_DATA,
+            L"child exit, proof, pending, acknowledgement, or retirement cut was not classified deterministically");
     }
     uint64_t recordSequence = 0;
     if (!ParseJournalRecordFileName(
@@ -12016,6 +16158,10 @@ bool RunInstallJournalModelSelfTest(Error* error) {
         InstallJournalStateData proofState = state;
         proofState.phase = InstallJournalPhase::BrokerChildSettled;
         proofState.brokerRequired = true;
+        proofState.brokerExecutableSha256 = std::string(64, '1');
+        proofState.brokerTokenPath =
+            L"C:\\ProgramData\\VIIPER\\package.token";
+        proofState.brokerTargetUserSid = modelTargetUserSid;
         proofState.brokerEntered = true;
         proofState.brokerSettled = true;
         proofState.hasBrokerProof = true;
@@ -12025,6 +16171,19 @@ bool RunInstallJournalModelSelfTest(Error* error) {
         proofState.brokerProofExitCode = proof.exitCode;
         proofState.brokerDriverRollbackAuthorized =
             proof.rollbackAuthorized;
+        if (proof.changed) {
+            proofState.brokerJournalTransactionId =
+                std::string(32, '9');
+            proofState.brokerJournalOuterTransactionId =
+                proofState.transactionId;
+            proofState.brokerJournalCandidateSha256 =
+                proofState.brokerExecutableSha256;
+            proofState.brokerJournalState = proof.success
+                ? "nested-ready"
+                : proof.rollbackAuthorized
+                    ? "rollback-settled" : "manual";
+            proofState.brokerJournalDigest = std::string(64, '8');
+        }
         proofState.rollbackAuthorized = proof.rollbackAuthorized;
         proofState.direction = proof.rollbackAuthorized
             ? InstallJournalDirection::Rollback
@@ -12056,6 +16215,173 @@ bool RunInstallJournalModelSelfTest(Error* error) {
                 L"self-test-install-journal-broker-proof-roundtrip",
                 ERROR_INVALID_DATA);
         }
+    }
+    BrokerSettlementRequestData settlementRequest;
+    settlementRequest.binding.brokerTransactionId =
+        std::string(32, '1');
+    settlementRequest.binding.brokerOuterTransactionId =
+        std::string(64, '2');
+    settlementRequest.binding.brokerCandidateSha256 =
+        std::string(64, '3');
+    settlementRequest.binding.brokerNestedDigest =
+        std::string(64, '4');
+    settlementRequest.binding.driverTransactionId =
+        std::string(64, '5');
+    settlementRequest.binding.driverPendingDigest =
+        std::string(64, '6');
+    settlementRequest.binding.settlementNonce =
+        std::string(64, '7');
+    settlementRequest.brokerPendingDigest = std::string(64, '8');
+    std::string settlementBindingJson;
+    AppendBrokerSettlementBindingJson(
+        &settlementBindingJson, settlementRequest.binding);
+    if (!Sha256Data(settlementBindingJson,
+            &settlementRequest.bindingSha256, error)) {
+        return false;
+    }
+    std::string settlementPayload =
+        "{\"schema\":1,\"bindingSha256\":";
+    AppendJsonAsciiString(
+        &settlementPayload, settlementRequest.bindingSha256);
+    settlementPayload.append(",\"brokerPendingDigest\":");
+    AppendJsonAsciiString(
+        &settlementPayload, settlementRequest.brokerPendingDigest);
+    settlementPayload.append(",\"binding\":");
+    settlementPayload.append(settlementBindingJson);
+    settlementPayload.push_back('}');
+    if (!Sha256Data(settlementPayload,
+            &settlementRequest.payloadSha256, error)) {
+        return false;
+    }
+    std::string canonicalSettlementPayload;
+    std::string canonicalSettlementEnvelope;
+    BrokerSettlementRequestData parsedSettlement;
+    Error malformedSettlementError;
+    if (!BuildBrokerSettlementRequestJson(settlementRequest,
+            &canonicalSettlementPayload,
+            &canonicalSettlementEnvelope, error) ||
+        !ParseBrokerSettlementRequest(canonicalSettlementEnvelope,
+            &parsedSettlement, error) ||
+        parsedSettlement.binding.driverPendingDigest !=
+            settlementRequest.binding.driverPendingDigest ||
+        parsedSettlement.requestSha256.empty() ||
+        ParseBrokerSettlementRequest(
+            canonicalSettlementEnvelope + " ",
+            &parsedSettlement, &malformedSettlementError) ||
+        malformedSettlementError.code == ERROR_SUCCESS) {
+        return SetError(error,
+            L"self-test-broker-settlement-envelope",
+            ERROR_INVALID_DATA,
+            L"canonical settlement parsing or corruption rejection changed");
+    }
+    BrokerSettlementFinalData settlementFinal;
+    settlementFinal.brokerTransactionId =
+        settlementRequest.binding.brokerTransactionId;
+    settlementFinal.brokerPendingDigest =
+        settlementRequest.brokerPendingDigest;
+    settlementFinal.brokerSettledDigest = std::string(64, 'a');
+    settlementFinal.driverTransactionId =
+        settlementRequest.binding.driverTransactionId;
+    settlementFinal.driverPendingDigest =
+        settlementRequest.binding.driverPendingDigest;
+    settlementFinal.driverSettledDigest = std::string(64, 'b');
+    settlementFinal.settlementNonce =
+        settlementRequest.binding.settlementNonce;
+    settlementFinal.requestSha256 =
+        parsedSettlement.requestSha256;
+    settlementFinal.state = "outer-settled";
+    std::string settlementFinalPayload =
+        "{\"schema\":1,\"brokerTransactionId\":";
+    AppendJsonAsciiString(&settlementFinalPayload,
+        settlementFinal.brokerTransactionId);
+    settlementFinalPayload.append(",\"brokerPendingDigest\":");
+    AppendJsonAsciiString(&settlementFinalPayload,
+        settlementFinal.brokerPendingDigest);
+    settlementFinalPayload.append(",\"brokerSettledDigest\":");
+    AppendJsonAsciiString(&settlementFinalPayload,
+        settlementFinal.brokerSettledDigest);
+    settlementFinalPayload.append(",\"driverTransactionId\":");
+    AppendJsonAsciiString(&settlementFinalPayload,
+        settlementFinal.driverTransactionId);
+    settlementFinalPayload.append(",\"driverPendingDigest\":");
+    AppendJsonAsciiString(&settlementFinalPayload,
+        settlementFinal.driverPendingDigest);
+    settlementFinalPayload.append(",\"driverSettledDigest\":");
+    AppendJsonAsciiString(&settlementFinalPayload,
+        settlementFinal.driverSettledDigest);
+    settlementFinalPayload.append(",\"settlementNonce\":");
+    AppendJsonAsciiString(&settlementFinalPayload,
+        settlementFinal.settlementNonce);
+    settlementFinalPayload.append(",\"requestSha256\":");
+    AppendJsonAsciiString(&settlementFinalPayload,
+        settlementFinal.requestSha256);
+    settlementFinalPayload.append(",\"state\":\"outer-settled\"}");
+    if (!Sha256Data(settlementFinalPayload,
+            &settlementFinal.payloadSha256, error)) {
+        return false;
+    }
+    std::string canonicalFinalPayload;
+    std::string canonicalFinalEnvelope;
+    BrokerSettlementFinalData parsedFinal;
+    Error malformedFinalError;
+    if (!BuildBrokerSettlementFinalJson(settlementFinal,
+            &canonicalFinalPayload, &canonicalFinalEnvelope, error) ||
+        !ParseBrokerSettlementFinal(canonicalFinalEnvelope,
+            &parsedFinal, error) ||
+        !ValidateBrokerSettlementFinalBinding(
+            parsedSettlement, parsedFinal, error) ||
+        parsedFinal.brokerSettledDigest !=
+            settlementFinal.brokerSettledDigest ||
+        parsedFinal.receiptSha256.empty() ||
+        ParseBrokerSettlementFinal(canonicalFinalEnvelope + " ",
+            &parsedFinal, &malformedFinalError) ||
+        malformedFinalError.code == ERROR_SUCCESS) {
+        return SetError(error,
+            L"self-test-broker-settlement-final-envelope",
+            ERROR_INVALID_DATA,
+            L"canonical final receipt parsing or corruption rejection changed");
+    }
+    InstallJournalStateData outerChild = state;
+    outerChild.phase = InstallJournalPhase::BrokerChildSettled;
+    outerChild.brokerRequired = true;
+    outerChild.brokerExecutableSha256 = std::string(64, '3');
+    outerChild.brokerTokenPath =
+        L"C:\\ProgramData\\VIIPER\\package.token";
+    outerChild.brokerTargetUserSid = modelTargetUserSid;
+    outerChild.brokerEntered = true;
+    outerChild.brokerSettled = true;
+    outerChild.hasBrokerProof = true;
+    outerChild.brokerProofSuccess = true;
+    outerChild.brokerProofChanged = true;
+    outerChild.brokerProofRollback = "not-needed";
+    outerChild.brokerProofExitCode = ERROR_SUCCESS;
+    outerChild.brokerJournalTransactionId = std::string(32, '1');
+    outerChild.brokerJournalOuterTransactionId =
+        outerChild.transactionId;
+    outerChild.brokerJournalCandidateSha256 =
+        outerChild.brokerExecutableSha256;
+    outerChild.brokerJournalState = "nested-ready";
+    outerChild.brokerJournalDigest = std::string(64, '4');
+    InstallJournalStateData outerForward = outerChild;
+    outerForward.phase = InstallJournalPhase::ForwardValidated;
+    InstallJournalStateData outerPending = outerForward;
+    outerPending.phase =
+        InstallJournalPhase::BrokerOuterSettlementPending;
+    outerPending.brokerSettlementNonce = std::string(64, '7');
+    InstallJournalStateData outerFinal = outerPending;
+    outerFinal.phase = InstallJournalPhase::BrokerOuterSettled;
+    outerFinal.brokerDriverPendingDigest = std::string(64, '6');
+    outerFinal.brokerSettlementRequestSha256 = std::string(64, '9');
+    outerFinal.brokerGoPendingDigest = std::string(64, '8');
+    if (!ValidateInstallJournalTransition(
+            &outerChild, outerForward, error) ||
+        !ValidateInstallJournalTransition(
+            &outerForward, outerPending, error) ||
+        !ValidateInstallJournalTransition(
+            &outerPending, outerFinal, error)) {
+        return SetError(error,
+            L"self-test-broker-settlement-phase-chain",
+            ERROR_INVALID_DATA);
     }
     InstallJournalStateData durableReceipt = returned;
     durableReceipt.phase = InstallJournalPhase::StageReceiptCaptured;
@@ -12710,6 +17036,586 @@ bool RunInstallJournalModelSelfTest(Error* error) {
     return true;
 }
 
+enum class RemoveJournalRecoveryModelAction {
+    ContinueForward,
+    ContinueRollback,
+    AdmitRollback,
+    RebootPending,
+    RetireForward,
+    RetirePrior,
+    Manual,
+};
+
+RemoveJournalRecoveryModelAction ClassifyRemoveJournalRecoveryModel(
+    RemoveJournalPhase phase,
+    RemoveJournalDirection direction,
+    bool chainValid,
+    bool securityValid,
+    bool samePendingBoot,
+    bool priorValid,
+    bool forwardValid,
+    bool callSucceeded) noexcept {
+    if (!chainValid || !securityValid ||
+        phase == RemoveJournalPhase::ManualReconciliationRequired) {
+        return RemoveJournalRecoveryModelAction::Manual;
+    }
+    if ((phase == RemoveJournalPhase::ForwardRebootPending ||
+            phase == RemoveJournalPhase::RestoreRebootPending) &&
+        samePendingBoot) {
+        return RemoveJournalRecoveryModelAction::RebootPending;
+    }
+    if (forwardValid && direction == RemoveJournalDirection::Forward &&
+        (phase == RemoveJournalPhase::ForwardValidated ||
+            phase == RemoveJournalPhase::ForwardRebootPending)) {
+        return RemoveJournalRecoveryModelAction::RetireForward;
+    }
+    if (priorValid &&
+        (direction == RemoveJournalDirection::Rollback ||
+            phase == RemoveJournalPhase::Prepared)) {
+        return RemoveJournalRecoveryModelAction::RetirePrior;
+    }
+    if (direction == RemoveJournalDirection::Forward &&
+        (phase == RemoveJournalPhase::DeviceRemovalReturned ||
+            phase == RemoveJournalPhase::PackageRemovalReturned) &&
+        !callSucceeded) {
+        return RemoveJournalRecoveryModelAction::AdmitRollback;
+    }
+    return direction == RemoveJournalDirection::Rollback
+        ? RemoveJournalRecoveryModelAction::ContinueRollback
+        : RemoveJournalRecoveryModelAction::ContinueForward;
+}
+
+bool RunRemoveJournalRetirementSelfTest(Error* error) {
+    std::string rootIdentity;
+    if (!GenerateInstallTransactionId(&rootIdentity, error)) return false;
+    std::error_code pathError;
+    const std::filesystem::path temporary =
+        std::filesystem::temp_directory_path(pathError);
+    if (pathError) {
+        return SetError(error, L"self-test-remove-retire-temp",
+            static_cast<DWORD>(pathError.value()));
+    }
+    const std::filesystem::path testRoot = temporary /
+        (L"VIIPER-UdeCx-remove-retire-" +
+            std::wstring(rootIdentity.begin(), rootIdentity.end()));
+    if (!std::filesystem::create_directory(testRoot, pathError) || pathError) {
+        return SetError(error, L"self-test-remove-retire-root",
+            pathError ? static_cast<DWORD>(pathError.value())
+                      : ERROR_ALREADY_EXISTS);
+    }
+    struct Cleanup final {
+        std::filesystem::path root;
+        ~Cleanup() {
+            std::error_code ignored;
+            std::filesystem::remove_all(root, ignored);
+        }
+    } cleanup{testRoot};
+
+    const auto prepareLockedJournal = [&] (
+        std::wstring_view caseName,
+        char transactionDigit,
+        LoadedRemoveJournal* loaded) {
+        loaded->directory.root = testRoot / caseName;
+        loaded->directory.active = loaded->directory.root /
+            kRemoveRecoveryActiveDirectory;
+        const std::filesystem::path prior = loaded->directory.active /
+            kRemoveRecoveryPriorDirectory;
+        std::error_code createError;
+        if (!std::filesystem::create_directories(prior, createError) ||
+            createError) {
+            return SetError(error, L"self-test-remove-retire-tree",
+                createError ? static_cast<DWORD>(createError.value())
+                            : ERROR_ALREADY_EXISTS);
+        }
+        const std::filesystem::path evidence = prior / L"evidence.bin";
+        WinHandle file(CreateFileW(evidence.c_str(), GENERIC_READ,
+            FILE_SHARE_READ, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL,
+            nullptr));
+        WinHandle directory(CreateFileW(prior.c_str(), FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+            nullptr));
+        if (!file || !directory) {
+            return SetLastErrorDetail(error,
+                L"self-test-remove-retire-evidence-open");
+        }
+        PackageBackup backup;
+        backup.locks.push_back(std::move(file));
+        loaded->priorBackups.push_back(std::move(backup));
+        loaded->evidenceLocks.push_back(std::move(directory));
+        loaded->state.phase = RemoveJournalPhase::ForwardValidated;
+        loaded->state.direction = RemoveJournalDirection::Forward;
+        loaded->state.sequence = 1U;
+        loaded->state.transactionId = std::string(64, transactionDigit);
+        loaded->state.bootIdentifier = std::string(32, 'd');
+        loaded->state.previousDigest = std::string(64, 'e');
+        loaded->state.lastDigest = loaded->state.previousDigest;
+        loaded->hasRecord = true;
+        return true;
+    };
+    const auto activeIsAbsent = [] (const std::filesystem::path& active) {
+        const DWORD attributes = GetFileAttributesW(active.c_str());
+        if (attributes != INVALID_FILE_ATTRIBUTES) return false;
+        const DWORD code = GetLastError();
+        return code == ERROR_FILE_NOT_FOUND || code == ERROR_PATH_NOT_FOUND;
+    };
+
+    LoadedRemoveJournal shareBlocked;
+    if (!prepareLockedJournal(L"share", 'a', &shareBlocked)) return false;
+    const std::filesystem::path blockedDestination =
+        shareBlocked.directory.root / L"blocked";
+    if (MoveFileExW(shareBlocked.directory.active.c_str(),
+            blockedDestination.c_str(), MOVEFILE_WRITE_THROUGH)) {
+        return SetError(error, L"self-test-remove-retire-share-mode",
+            ERROR_INVALID_DATA,
+            L"a parent rename unexpectedly bypassed a descendant handle without FILE_SHARE_DELETE");
+    }
+    *error = Error{};
+    if (!RetireLoadedRemoveJournal(&shareBlocked, error,
+            RemoveRetirementTestFault::TemporaryTree) ||
+        !shareBlocked.priorBackups.empty() ||
+        !shareBlocked.evidenceLocks.empty() ||
+        !activeIsAbsent(shareBlocked.directory.active)) {
+        if (error->code == ERROR_SUCCESS) {
+            SetError(error, L"self-test-remove-retire-share-release",
+                ERROR_INVALID_DATA);
+        }
+        return false;
+    }
+
+    LoadedRemoveJournal postcheck;
+    if (!prepareLockedJournal(L"postcheck", 'b', &postcheck)) return false;
+    const std::filesystem::path postcheckTombstone =
+        postcheck.directory.root /
+        (std::wstring(kRemoveRecoverySettledPrefix) +
+            std::wstring(64, L'b'));
+    Error postcheckError;
+    if (RetireLoadedRemoveJournal(&postcheck, &postcheckError,
+            RemoveRetirementTestFault::
+                TemporaryTreeActiveAbsencePostcheck) ||
+        postcheckError.recoveryBackup != postcheckTombstone.wstring() ||
+        !postcheckError.recoveryBackupRetained ||
+        !activeIsAbsent(postcheck.directory.active) ||
+        !std::filesystem::is_directory(postcheckTombstone, pathError) ||
+        pathError) {
+        return SetError(error, L"self-test-remove-retire-postcheck",
+            ERROR_INVALID_DATA,
+            L"post-rename failure did not preserve the exact settled tombstone evidence");
+    }
+
+    LoadedRemoveJournal cleanupFailure;
+    if (!prepareLockedJournal(L"cleanup", 'c', &cleanupFailure)) return false;
+    const std::filesystem::path retainedTombstone =
+        cleanupFailure.directory.root /
+        (std::wstring(kRemoveRecoverySettledPrefix) +
+            std::wstring(64, L'c'));
+    Error cleanupError;
+    if (!RetireLoadedRemoveJournal(&cleanupFailure, &cleanupError,
+            RemoveRetirementTestFault::
+                TemporaryTreeRetainSettledTombstone) ||
+        cleanupError.code != ERROR_SUCCESS ||
+        !activeIsAbsent(cleanupFailure.directory.active) ||
+        !std::filesystem::is_directory(retainedTombstone, pathError) ||
+        pathError ||
+        std::wstring(gRetainedRemoveTombstone.data()) !=
+            retainedTombstone.wstring() ||
+        gRetainedRemoveTombstoneError == ERROR_SUCCESS) {
+        return SetError(error, L"self-test-remove-retire-cleanup",
+            ERROR_INVALID_DATA,
+            L"settled cleanup failure changed terminal success or re-admitted active recovery");
+    }
+    ClearRemoveRetirementWarning();
+    return true;
+}
+
+bool RunRemoveJournalModelSelfTest(Error* error) {
+    if (!RunRemoveJournalRetirementSelfTest(error)) return false;
+    for (RemoveJournalPhase phase : {
+            RemoveJournalPhase::Prepared,
+            RemoveJournalPhase::DeviceRemovalEntered,
+            RemoveJournalPhase::DeviceRemovalReturned,
+            RemoveJournalPhase::DeviceRemovalCommitted,
+            RemoveJournalPhase::PackageRemovalEntered,
+            RemoveJournalPhase::PackageRemovalReturned,
+            RemoveJournalPhase::PackageRemovalCommitted,
+            RemoveJournalPhase::RollbackAdmitted,
+            RemoveJournalPhase::RollbackPackageEntered,
+            RemoveJournalPhase::RollbackPackageReturned,
+            RemoveJournalPhase::RollbackPackageCommitted,
+            RemoveJournalPhase::RollbackBindingEntered,
+            RemoveJournalPhase::RollbackBindingReturned,
+            RemoveJournalPhase::ForwardValidated,
+            RemoveJournalPhase::ExactPriorRestored,
+            RemoveJournalPhase::ForwardRebootPending,
+            RemoveJournalPhase::RestoreRebootPending,
+            RemoveJournalPhase::ManualReconciliationRequired}) {
+        const char* name = RemoveJournalPhaseName(phase);
+        if (!ParseRemoveJournalPhase(name) ||
+            *ParseRemoveJournalPhase(name) != phase) {
+            return SetError(error,
+                L"self-test-remove-journal-phase-roundtrip",
+                ERROR_INVALID_DATA);
+        }
+    }
+    PackageInfo package;
+    package.publishedName = L"oem42.inf";
+    package.version.parts = {0, 1, 0, 37};
+    package.infSha256 = std::string(64, 'a');
+    package.sysSha256 = std::string(64, 'b');
+    package.catSha256 = std::string(64, 'c');
+    RemoveJournalStateData prepared;
+    prepared.transactionId = std::string(64, 'd');
+    prepared.bootIdentifier = std::string(32, 'e');
+    prepared.prior.packages.push_back(package);
+    if (!ValidateRemoveJournalTransition(nullptr, prepared, error)) {
+        return false;
+    }
+    prepared.sequence = 1U;
+    prepared.previousDigest = std::string(64, 'f');
+    prepared.lastDigest = prepared.previousDigest;
+    RemoveJournalStateData entered = prepared;
+    entered.phase = RemoveJournalPhase::PackageRemovalEntered;
+    entered.activePackageIndex = 0U;
+    RemoveJournalStateData returned = entered;
+    returned.phase = RemoveJournalPhase::PackageRemovalReturned;
+    RemoveJournalStateData committed = returned;
+    committed.phase = RemoveJournalPhase::PackageRemovalCommitted;
+    committed.activePackageIndex = UINT32_MAX;
+    committed.packageCursor = 1U;
+    if (!ValidateRemoveJournalTransition(&prepared, entered, error) ||
+        !ValidateRemoveJournalTransition(&entered, returned, error) ||
+        !ValidateRemoveJournalTransition(&returned, committed, error)) {
+        return false;
+    }
+    DeviceState capturedTarget;
+    capturedTarget.instanceId = L"ROOT\\VIIPERUDE\\0000";
+    capturedTarget.present = true;
+    capturedTarget.service = kServiceName;
+    capturedTarget.publishedInf = package.publishedName;
+    capturedTarget.version = package.version;
+    capturedTarget.package = package;
+    std::vector<DeviceState> exactTargets{capturedTarget};
+    std::vector<DeviceState> duplicateTargets{
+        capturedTarget, capturedTarget};
+    DeviceState reboundTarget = capturedTarget;
+    reboundTarget.publishedInf = L"oem43.inf";
+    if (!IsExactCapturedRemoveTarget(capturedTarget, exactTargets) ||
+        IsExactCapturedRemoveTarget(capturedTarget, duplicateTargets) ||
+        IsExactCapturedRemoveTarget(
+            capturedTarget, std::vector<DeviceState>{reboundTarget})) {
+        return SetError(error,
+            L"self-test-remove-journal-single-device-authority",
+            ERROR_INVALID_DATA);
+    }
+    if (!CrossedRemoveRebootStillPendingRequiresManual(
+            RemoveJournalPhase::ForwardRebootPending, false, true, false, false,
+            RemoveRootShape::PendingRemoval) ||
+        CrossedRemoveRebootStillPendingRequiresManual(
+            RemoveJournalPhase::ForwardRebootPending, false, true, false, true,
+            RemoveRootShape::PendingRemoval) ||
+        !CrossedRemoveRebootStillPendingRequiresManual(
+            RemoveJournalPhase::DeviceRemovalReturned, true, true, true, false,
+            RemoveRootShape::PendingRemoval) ||
+        CrossedRemoveRebootStillPendingRequiresManual(
+            RemoveJournalPhase::DeviceRemovalReturned, false, true, true, false,
+            RemoveRootShape::PendingRemoval) ||
+        CrossedRemoveRebootStillPendingRequiresManual(
+            RemoveJournalPhase::DeviceRemovalReturned, true, true, false, false,
+            RemoveRootShape::PendingRemoval) ||
+        CrossedRemoveRebootStillPendingRequiresManual(
+            RemoveJournalPhase::DeviceRemovalReturned, true, true, true, true,
+            RemoveRootShape::PendingRemoval) ||
+        !ReusesInterruptedRemoveBindingAdmission(
+            RemoveJournalPhase::RollbackBindingEntered) ||
+        ReusesInterruptedRemoveBindingAdmission(
+            RemoveJournalPhase::RollbackAdmitted)) {
+        return SetError(error,
+            L"self-test-remove-journal-recovery-cutpoint",
+            ERROR_INVALID_DATA);
+    }
+    if (!RestorePriorBindingTopologyAdmitsMutation(
+            RestorePriorBindingPolicy::RemoveJournalExactAbsence, 1U, 0U) ||
+        RestorePriorBindingTopologyAdmitsMutation(
+            RestorePriorBindingPolicy::RemoveJournalExactAbsence, 0U, 0U) ||
+        RestorePriorBindingTopologyAdmitsMutation(
+            RestorePriorBindingPolicy::RemoveJournalExactAbsence, 1U, 1U) ||
+        RestorePriorBindingTopologyAdmitsMutation(
+            RestorePriorBindingPolicy::RemoveJournalExactAbsence, 1U, 2U) ||
+        !RestorePriorBindingTopologyAdmitsMutation(
+            RestorePriorBindingPolicy::InstallRollbackReconcile, 1U, 1U)) {
+        return SetError(error,
+            L"self-test-remove-journal-binding-exact-absence-race",
+            ERROR_INVALID_DATA,
+            L"remove rollback admitted mutation after a concurrent root appeared at its inner snapshot");
+    }
+    const uint64_t deadlineNow = CurrentUnixMilliseconds();
+    const uint64_t expiredForwardDeadline = deadlineNow == 0U
+        ? 0U : deadlineNow - 1U;
+    const uint64_t freshRollbackDeadline = FreshRemoveRollbackDeadline();
+    const uint64_t deadlineAfter = CurrentUnixMilliseconds();
+    if (freshRollbackDeadline <= expiredForwardDeadline ||
+        freshRollbackDeadline < SaturatingDeadlineAfter(
+            deadlineNow, kDriverRollbackCeilingMs) ||
+        freshRollbackDeadline > SaturatingDeadlineAfter(
+            deadlineAfter, kDriverRollbackCeilingMs) ||
+        SaturatingDeadlineAfter(
+            std::numeric_limits<uint64_t>::max() - 1U, 2U) !=
+            std::numeric_limits<uint64_t>::max()) {
+        return SetError(error,
+            L"self-test-remove-journal-fresh-rollback-deadline",
+            ERROR_INVALID_DATA);
+    }
+
+    RemoveJournalStateData failedForwardReturn = entered;
+    failedForwardReturn.phase =
+        RemoveJournalPhase::PackageRemovalReturned;
+    failedForwardReturn.callSucceeded = false;
+    failedForwardReturn.callError = ERROR_GEN_FAILURE;
+    failedForwardReturn.rebootRequired = true;
+    failedForwardReturn.freshRebootRequired = true;
+    failedForwardReturn.pendingRebootBootIdentifier =
+        std::string(32, '1');
+    RemoveJournalStateData directRollbackPending = failedForwardReturn;
+    directRollbackPending.phase =
+        RemoveJournalPhase::RestoreRebootPending;
+    directRollbackPending.direction = RemoveJournalDirection::Rollback;
+    directRollbackPending.activePackageIndex = UINT32_MAX;
+    directRollbackPending.freshRebootRequired = false;
+    RemoveJournalStateData crossedDirectRollback = directRollbackPending;
+    crossedDirectRollback.phase =
+        RemoveJournalPhase::RollbackPackageEntered;
+    crossedDirectRollback.activePackageIndex = 0U;
+    crossedDirectRollback.rebootRequired = false;
+    crossedDirectRollback.pendingRebootBootIdentifier.clear();
+    crossedDirectRollback.callSucceeded = true;
+    crossedDirectRollback.callError = ERROR_SUCCESS;
+    RemoveJournalStateData legacyRollbackAdmission = failedForwardReturn;
+    legacyRollbackAdmission.phase = RemoveJournalPhase::RollbackAdmitted;
+    legacyRollbackAdmission.direction = RemoveJournalDirection::Rollback;
+    legacyRollbackAdmission.activePackageIndex = UINT32_MAX;
+    legacyRollbackAdmission.freshRebootRequired = false;
+    RemoveJournalStateData legacySameBootPending = legacyRollbackAdmission;
+    legacySameBootPending.phase = RemoveJournalPhase::RestoreRebootPending;
+    RemoveJournalStateData legacyCrossedRollback = legacyRollbackAdmission;
+    legacyCrossedRollback.phase =
+        RemoveJournalPhase::RollbackPackageEntered;
+    legacyCrossedRollback.activePackageIndex = 0U;
+    legacyCrossedRollback.rebootRequired = false;
+    legacyCrossedRollback.pendingRebootBootIdentifier.clear();
+    legacyCrossedRollback.callSucceeded = true;
+    legacyCrossedRollback.callError = ERROR_SUCCESS;
+    if (!ValidateRemoveJournalTransition(
+            &entered, failedForwardReturn, error) ||
+        !ValidateRemoveJournalTransition(
+            &failedForwardReturn, directRollbackPending, error) ||
+        !ValidateRemoveJournalTransition(
+            &directRollbackPending, crossedDirectRollback, error) ||
+        !ValidateRemoveJournalTransition(
+            &failedForwardReturn, legacyRollbackAdmission, error) ||
+        !ValidateRemoveJournalTransition(
+            &legacyRollbackAdmission, legacySameBootPending, error) ||
+        !ValidateRemoveJournalTransition(
+            &legacyRollbackAdmission, legacyCrossedRollback, error)) {
+        return SetError(error,
+            L"self-test-remove-journal-rollback-reboot-admission",
+            error->code == ERROR_SUCCESS ? ERROR_INVALID_DATA : error->code);
+    }
+
+    RemoveJournalStateData bindingPrepared;
+    bindingPrepared.transactionId = std::string(64, '7');
+    bindingPrepared.bootIdentifier = std::string(32, '8');
+    bindingPrepared.prior.packages.push_back(package);
+    bindingPrepared.prior.devices.push_back(capturedTarget);
+    if (!ValidateRemoveJournalTransition(nullptr, bindingPrepared, error)) {
+        return false;
+    }
+    bindingPrepared.sequence = 1U;
+    bindingPrepared.previousDigest = std::string(64, '9');
+    bindingPrepared.lastDigest = bindingPrepared.previousDigest;
+    RemoveJournalStateData deviceRemovalEntered = bindingPrepared;
+    deviceRemovalEntered.phase =
+        RemoveJournalPhase::DeviceRemovalEntered;
+    deviceRemovalEntered.deviceMutationEntered = true;
+    RemoveJournalStateData deviceRemovalReturned = deviceRemovalEntered;
+    deviceRemovalReturned.phase =
+        RemoveJournalPhase::DeviceRemovalReturned;
+    deviceRemovalReturned.rebootRequired = true;
+    deviceRemovalReturned.freshRebootRequired = true;
+    deviceRemovalReturned.pendingRebootBootIdentifier =
+        bindingPrepared.bootIdentifier;
+    if (!ValidateRemoveJournalTransition(
+            &bindingPrepared, deviceRemovalEntered, error) ||
+        !ValidateRemoveJournalTransition(
+            &deviceRemovalEntered, deviceRemovalReturned, error) ||
+        !CrossedRemoveRebootStillPendingRequiresManual(
+            deviceRemovalReturned.phase,
+            deviceRemovalReturned.callSucceeded,
+            deviceRemovalReturned.rebootRequired,
+            deviceRemovalReturned.freshRebootRequired,
+            false, RemoveRootShape::PendingRemoval)) {
+        return SetError(error,
+            L"self-test-remove-journal-device-returned-pending-cut",
+            error->code == ERROR_SUCCESS ? ERROR_INVALID_DATA : error->code,
+            L"a crossed successful device-removal reboot return could request a second reboot before its pending cutpoint");
+    }
+    RemoveJournalStateData bindingRollback = bindingPrepared;
+    bindingRollback.phase = RemoveJournalPhase::RollbackAdmitted;
+    bindingRollback.direction = RemoveJournalDirection::Rollback;
+    bindingRollback.callSucceeded = false;
+    bindingRollback.callError = ERROR_GEN_FAILURE;
+    RemoveJournalStateData bindingEntered = bindingRollback;
+    bindingEntered.phase = RemoveJournalPhase::RollbackBindingEntered;
+    bindingEntered.bindingMutationEntered = true;
+    bindingEntered.callSucceeded = true;
+    bindingEntered.callError = ERROR_SUCCESS;
+    RemoveJournalStateData bindingExactEffect = bindingEntered;
+    bindingExactEffect.phase = RemoveJournalPhase::ExactPriorRestored;
+    if (!ValidateRemoveJournalTransition(
+            &bindingPrepared, bindingRollback, error) ||
+        !ValidateRemoveJournalTransition(
+            &bindingRollback, bindingEntered, error) ||
+        !ReusesInterruptedRemoveBindingAdmission(bindingEntered.phase) ||
+        !ValidateRemoveJournalTransition(
+            &bindingEntered, bindingExactEffect, error)) {
+        return SetError(error,
+            L"self-test-remove-journal-binding-cutpoint",
+            error->code == ERROR_SUCCESS ? ERROR_INVALID_DATA : error->code);
+    }
+    RemoveJournalStateData illegalSkip = returned;
+    illegalSkip.phase = RemoveJournalPhase::PackageRemovalCommitted;
+    illegalSkip.activePackageIndex = UINT32_MAX;
+    illegalSkip.packageCursor = 2U;
+    Error illegalError;
+    if (ValidateRemoveJournalTransition(
+            &returned, illegalSkip, &illegalError) ||
+        illegalError.code == ERROR_SUCCESS) {
+        return SetError(error,
+            L"self-test-remove-journal-package-cutpoint",
+            ERROR_INVALID_DATA);
+    }
+    RemoveJournalStateData rebootReturn = returned;
+    rebootReturn.rebootRequired = true;
+    rebootReturn.freshRebootRequired = true;
+    rebootReturn.pendingRebootBootIdentifier =
+        std::string(32, '1');
+    RemoveJournalStateData rebootPending = rebootReturn;
+    rebootPending.phase = RemoveJournalPhase::ForwardRebootPending;
+    rebootPending.activePackageIndex = UINT32_MAX;
+    rebootPending.freshRebootRequired = false;
+    if (!ValidateRemoveJournalTransition(
+            &entered, rebootReturn, error) ||
+        !ValidateRemoveJournalTransition(
+            &rebootReturn, rebootPending, error)) {
+        return false;
+    }
+    RemoveJournalStateData illegalEpoch = rebootPending;
+    illegalEpoch.phase = RemoveJournalPhase::PackageRemovalEntered;
+    illegalEpoch.activePackageIndex = 0U;
+    illegalEpoch.pendingRebootBootIdentifier =
+        std::string(32, '2');
+    illegalEpoch.freshRebootRequired = false;
+    illegalError = Error{};
+    if (ValidateRemoveJournalTransition(
+            &rebootPending, illegalEpoch, &illegalError) ||
+        illegalError.code == ERROR_SUCCESS) {
+        return SetError(error,
+            L"self-test-remove-journal-reboot-epoch",
+            ERROR_INVALID_DATA);
+    }
+    RemoveJournalStateData crossedEpoch = rebootPending;
+    crossedEpoch.phase = RemoveJournalPhase::PackageRemovalEntered;
+    crossedEpoch.activePackageIndex = 0U;
+    crossedEpoch.rebootRequired = false;
+    crossedEpoch.pendingRebootBootIdentifier.clear();
+    if (!ValidateRemoveJournalTransition(
+            &rebootPending, crossedEpoch, error)) {
+        return SetError(error,
+            L"self-test-remove-journal-crossed-reboot-epoch",
+            ERROR_INVALID_DATA);
+    }
+    std::string payload;
+    RemoveJournalStateData canonical = prepared;
+    canonical.sequence = 0U;
+    canonical.previousDigest = std::string(kZeroSha256);
+    canonical.lastDigest.clear();
+    if (!BuildRemoveJournalPayload(canonical, &payload, error)) {
+        return false;
+    }
+    std::string digest;
+    if (!Sha256Data(payload, &digest, error)) return false;
+    std::string envelope = "{\"schema\":2,\"kind\":";
+    AppendJsonAsciiString(&envelope, kRemoveRecoveryKind);
+    envelope.append(",\"payloadSha256\":");
+    AppendJsonAsciiString(&envelope, digest);
+    envelope.append(",\"payload\":");
+    AppendJsonUtf8String(&envelope, payload);
+    envelope.append("}\n");
+    RemoveJournalStateData roundTrip;
+    std::string roundTripDigest;
+    if (!ParseRemoveJournalEnvelope(envelope,
+            std::filesystem::path(
+                LR"(C:\ProgramData\VIIPER-UdeCx-RemoveTransactions\active-v2)"),
+            &roundTrip, &roundTripDigest, error) ||
+        roundTripDigest != digest ||
+        !SameRemoveJournalImmutableState(canonical, roundTrip)) {
+        return SetError(error,
+            L"self-test-remove-journal-canonical-roundtrip",
+            ERROR_INVALID_DATA);
+    }
+    struct RecoveryCase {
+        RemoveJournalPhase phase;
+        RemoveJournalDirection direction;
+        bool chain;
+        bool security;
+        bool sameBoot;
+        bool prior;
+        bool forward;
+        bool callSucceeded;
+        RemoveJournalRecoveryModelAction expected;
+    };
+    const std::array<RecoveryCase, 7> cases{{
+        {RemoveJournalPhase::Prepared,
+            RemoveJournalDirection::Forward, true, true, false,
+            true, false, true,
+            RemoveJournalRecoveryModelAction::RetirePrior},
+        {RemoveJournalPhase::PackageRemovalEntered,
+            RemoveJournalDirection::Forward, true, true, false,
+            false, false, true,
+            RemoveJournalRecoveryModelAction::ContinueForward},
+        {RemoveJournalPhase::PackageRemovalReturned,
+            RemoveJournalDirection::Forward, true, true, false,
+            false, false, false,
+            RemoveJournalRecoveryModelAction::AdmitRollback},
+        {RemoveJournalPhase::ForwardRebootPending,
+            RemoveJournalDirection::Forward, true, true, true,
+            false, false, true,
+            RemoveJournalRecoveryModelAction::RebootPending},
+        {RemoveJournalPhase::ForwardValidated,
+            RemoveJournalDirection::Forward, true, true, false,
+            false, true, true,
+            RemoveJournalRecoveryModelAction::RetireForward},
+        {RemoveJournalPhase::RollbackAdmitted,
+            RemoveJournalDirection::Rollback, true, true, false,
+            false, false, true,
+            RemoveJournalRecoveryModelAction::ContinueRollback},
+        {RemoveJournalPhase::RollbackAdmitted,
+            RemoveJournalDirection::Rollback, false, true, false,
+            true, false, true,
+            RemoveJournalRecoveryModelAction::Manual},
+    }};
+    for (const RecoveryCase& test : cases) {
+        if (ClassifyRemoveJournalRecoveryModel(test.phase,
+                test.direction, test.chain, test.security,
+                test.sameBoot, test.prior, test.forward,
+                test.callSucceeded) != test.expected) {
+            return SetError(error,
+                L"self-test-remove-journal-recovery-model",
+                ERROR_INVALID_DATA);
+        }
+    }
+    return true;
+}
+
 Outcome SelfTest();
 
 Outcome Status() {
@@ -12743,7 +17649,8 @@ Outcome Status() {
 
 Outcome SelfTest() {
     Outcome outcome;
-    if (!RunInstallJournalModelSelfTest(&outcome.error)) {
+    if (!RunInstallJournalModelSelfTest(&outcome.error) ||
+        !RunRemoveJournalModelSelfTest(&outcome.error)) {
         return outcome;
     }
     InstallOptions brokerCommandOptions;
@@ -12879,7 +17786,7 @@ Outcome SelfTest() {
             "0123456789abcdef0123456789abcdef01234567",
             &buildIdentity, &outcome.error) ||
         buildIdentity !=
-            "6796b0cf22a80984b283662a50a3b364c46218e37766a2e1880b38851b65d9ad") {
+            "b6bdcfe32dec8eb48bfde2f70b72542695588d2483ab71218636ce0b733aa067") {
         if (outcome.error.code == ERROR_SUCCESS) {
             SetError(&outcome.error, L"self-test-build-identity", ERROR_INVALID_DATA);
         }
@@ -13041,8 +17948,9 @@ Outcome SelfTest() {
         return outcome;
     }
     pristineStats.ReservedPorts = 1;
-    if (!RuntimeStatsArePristine(pristineStats, kAbiCompatibilityProfiles[1]) ||
-        !RuntimeStatsArePristine(pristineStats, kAbiCompatibilityProfiles[2])) {
+    if (RuntimeStatsArePristine(pristineStats, kAbiCompatibilityProfiles[1]) ||
+        !RuntimeStatsArePristine(pristineStats, kAbiCompatibilityProfiles[2]) ||
+        !RuntimeStatsArePristine(pristineStats, kAbiCompatibilityProfiles[3])) {
         SetError(&outcome.error, L"self-test-pristine-runtime-stats", ERROR_INVALID_DATA,
             L"a legacy ABI inspected a counter outside its returned statistics record");
         return outcome;
@@ -13156,8 +18064,6 @@ Outcome SelfTest() {
             L"rollback lifecycle comparison is not exact for stopped or running roots");
         return outcome;
     }
-    const std::filesystem::path recoveryRoot =
-        LR"(C:\Windows\Temp\VIIPER-UDE-rollback-self-test)";
     if (!IsSafeRecoveryRelativePath(
             std::filesystem::path(L"0") / L"ViiperUde.inf") ||
         IsSafeRecoveryRelativePath(std::filesystem::path(L"..") / L"escape") ||
@@ -13168,60 +18074,6 @@ Outcome SelfTest() {
             std::filesystem::path(L"0") / L"ViiperUde.inf:stream")) {
         SetError(&outcome.error, L"self-test-recovery-path", ERROR_INVALID_DATA,
             L"rollback recovery relative-path validation is not fail-closed");
-        return outcome;
-    }
-    PackageInfo recoveryPackage;
-    recoveryPackage.infPath = LR"(C:\Windows\INF\oem42.inf)";
-    recoveryPackage.publishedName = L"oem42.inf";
-    recoveryPackage.version.parts = {0, 1, 0, 6};
-    recoveryPackage.infSha256 = std::string(64, 'A');
-    recoveryPackage.sysSha256 = std::string(64, 'B');
-    recoveryPackage.catSha256 = std::string(64, 'C');
-    DeviceState recoveryDevice;
-    recoveryDevice.instanceId = LR"(ROOT\VIIPERUDE\0000)";
-    recoveryDevice.present = true;
-    recoveryDevice.started = true;
-    recoveryDevice.service = kServiceName;
-    recoveryDevice.publishedInf = recoveryPackage.publishedName;
-    recoveryDevice.version = recoveryPackage.version;
-    recoveryDevice.package = recoveryPackage;
-    Snapshot recoverySnapshot;
-    recoverySnapshot.devices.push_back(std::move(recoveryDevice));
-    recoverySnapshot.packages.push_back(recoveryPackage);
-    std::vector<PackageBackup> recoveryBackups;
-    recoveryBackups.push_back(PackageBackup{
-        recoveryPackage,
-        recoveryRoot / L"0",
-        recoveryRoot / L"0" / L"ViiperUde.inf",
-        {}});
-    std::string firstRecoveryRecord;
-    std::string secondRecoveryRecord;
-    Error recoveryRecordError;
-    JsonValue recoveryRecordValue;
-    std::string recoveryRecordParseError;
-    if (!BuildRemoveRecoveryRecord(
-            recoverySnapshot, recoveryBackups, recoveryRoot,
-            &firstRecoveryRecord, &recoveryRecordError) ||
-        !BuildRemoveRecoveryRecord(
-            recoverySnapshot, recoveryBackups, recoveryRoot,
-            &secondRecoveryRecord, &recoveryRecordError) ||
-        firstRecoveryRecord != secondRecoveryRecord ||
-        !JsonParser(firstRecoveryRecord).Parse(
-            &recoveryRecordValue, &recoveryRecordParseError) ||
-        firstRecoveryRecord.find("\"automaticRestore\":false") == std::string::npos ||
-        firstRecoveryRecord.find(
-            "\"requiredValidation\":[\"inf-signature\"") == std::string::npos ||
-        firstRecoveryRecord.find("\"state\":\"prepared-remove-transaction\"") ==
-            std::string::npos ||
-        firstRecoveryRecord.find("\"packageIndex\":0") == std::string::npos ||
-        firstRecoveryRecord.find("\"backupInf\":\"0/ViiperUde.inf\"") ==
-            std::string::npos ||
-        firstRecoveryRecord.find("C:") != std::string::npos) {
-        if (recoveryRecordError.code == ERROR_SUCCESS) {
-            SetError(&recoveryRecordError, L"self-test-recovery-record", ERROR_INVALID_DATA,
-                L"rollback recovery record is not canonical and relative-path bound");
-        }
-        outcome.error = std::move(recoveryRecordError);
         return outcome;
     }
     if (!IsSafeTargetUserSid(L"S-1-5-21-1-2-3-1001") ||
@@ -13238,6 +18090,33 @@ Outcome SelfTest() {
     const std::string brokerPreflightFailure =
         "result=error operation=native-package-broker-commit changed=0 "
         "rollback=not-needed exitCode=4\n";
+    const std::string brokerNestedReady =
+        "result=success operation=native-package-broker-commit changed=1 "
+        "rollback=not-needed exitCode=0\n"
+        "journal-proof operation=native-package-broker-commit "
+        "transactionId=11111111111111111111111111111111 "
+        "outerTransactionId=2222222222222222222222222222222222222222222222222222222222222222 "
+        "candidateSha256=3333333333333333333333333333333333333333333333333333333333333333 "
+        "state=nested-ready "
+        "digest=4444444444444444444444444444444444444444444444444444444444444444\n";
+    const std::string brokerRollbackSettled =
+        "result=error operation=native-package-broker-commit changed=1 "
+        "rollback=succeeded exitCode=1\n"
+        "journal-proof operation=native-package-broker-commit "
+        "transactionId=11111111111111111111111111111111 "
+        "outerTransactionId=2222222222222222222222222222222222222222222222222222222222222222 "
+        "candidateSha256=3333333333333333333333333333333333333333333333333333333333333333 "
+        "state=rollback-settled "
+        "digest=4444444444444444444444444444444444444444444444444444444444444444\n";
+    const std::string brokerManual =
+        "result=error operation=native-package-broker-commit changed=1 "
+        "rollback=failed exitCode=3\n"
+        "journal-proof operation=native-package-broker-commit "
+        "transactionId=11111111111111111111111111111111 "
+        "outerTransactionId=2222222222222222222222222222222222222222222222222222222222222222 "
+        "candidateSha256=3333333333333333333333333333333333333333333333333333333333333333 "
+        "state=manual "
+        "digest=4444444444444444444444444444444444444444444444444444444444444444\n";
     BrokerCommitProof brokerProof;
     Error brokerProofError;
     if (!ParseBrokerCommitProof(
@@ -13366,8 +18245,21 @@ Outcome SelfTest() {
     brokerProof = {};
     brokerProofError = {};
     if (!ParseBrokerCommitProof(
-            "result=error operation=native-package-broker-commit changed=1 "
-            "rollback=succeeded exitCode=1\n",
+            brokerNestedReady, ERROR_SUCCESS,
+            &brokerProof, &brokerProofError) ||
+        !brokerProof.success || !brokerProof.changed ||
+        brokerProof.driverRollbackAuthorized ||
+        !brokerProof.hasJournalProof ||
+        brokerProof.journalState != "nested-ready") {
+        SetError(&outcome.error, L"self-test-broker-proof",
+            ERROR_INVALID_DATA,
+            L"nested-ready broker proof was rejected or unbound");
+        return outcome;
+    }
+    brokerProof = {};
+    brokerProofError = {};
+    if (!ParseBrokerCommitProof(
+            brokerRollbackSettled,
             1, &brokerProof, &brokerProofError) ||
         brokerProof.success || !brokerProof.changed ||
         !brokerProof.driverRollbackAuthorized) {
@@ -13378,8 +18270,7 @@ Outcome SelfTest() {
     brokerProof = {};
     brokerProofError = {};
     if (!ParseBrokerCommitProof(
-            "result=error operation=native-package-broker-commit changed=1 "
-            "rollback=failed exitCode=3\n",
+            brokerManual,
             3, &brokerProof, &brokerProofError) ||
         brokerProof.success || !brokerProof.changed ||
         brokerProof.driverRollbackAuthorized) {
@@ -13741,6 +18632,110 @@ bool ParseRemoveOptions(int argc, wchar_t** argv, RemoveOptions* options, Error*
     return true;
 }
 
+bool CopyCanonicalSettlementHex(
+    const wchar_t* value,
+    size_t length,
+    std::string* output,
+    Error* error) {
+    const std::wstring wide = value == nullptr ? L"" : value;
+    if (wide.size() != length) {
+        return SetError(error, L"arguments", ERROR_INVALID_PARAMETER,
+            L"settlement identity has the wrong length");
+    }
+    output->clear();
+    output->reserve(wide.size());
+    for (wchar_t character : wide) {
+        if (!((character >= L'0' && character <= L'9') ||
+                (character >= L'a' && character <= L'f'))) {
+            return SetError(error, L"arguments", ERROR_INVALID_PARAMETER,
+                L"settlement identity must be canonical lowercase hexadecimal");
+        }
+        output->push_back(static_cast<char>(character));
+    }
+    return true;
+}
+
+bool ParseSettlementDeadline(
+    const wchar_t* value,
+    uint64_t* deadline,
+    Error* error) {
+    const std::wstring text = value == nullptr ? L"" : value;
+    if (text.empty() || text.size() > 20U ||
+        !std::all_of(text.begin(), text.end(), [](wchar_t character) {
+            return character >= L'0' && character <= L'9';
+        })) {
+        return SetError(error, L"arguments", ERROR_INVALID_PARAMETER,
+            L"transaction deadline must contain only Unix-millisecond digits");
+    }
+    const wchar_t* begin = text.data();
+    wchar_t* end = nullptr;
+    errno = 0;
+    const unsigned long long parsed = std::wcstoull(begin, &end, 10);
+    if (errno == ERANGE || end == begin ||
+        end != begin + text.size() || parsed == 0U) {
+        return SetError(error, L"arguments", ERROR_INVALID_PARAMETER,
+            L"transaction deadline must be positive Unix milliseconds");
+    }
+    *deadline = static_cast<uint64_t>(parsed);
+    return ValidateTransactionDeadlineBudget(*deadline, error);
+}
+
+bool ParseBrokerSettlementAckOptions(
+    int argc,
+    wchar_t** argv,
+    BrokerSettlementAckOptions* options,
+    Error* error) {
+    if (argc != 8 || _wcsicmp(argv[2], L"--request") != 0 ||
+        _wcsicmp(argv[4], L"--request-sha256") != 0 ||
+        _wcsicmp(argv[6],
+            L"--transaction-deadline-unix-ms") != 0) {
+        return SetError(error, L"arguments", ERROR_INVALID_PARAMETER);
+    }
+    options->requestPath = argv[3];
+    return CopyCanonicalSettlementHex(
+            argv[5], 64U, &options->requestSha256, error) &&
+        ParseSettlementDeadline(argv[7],
+            &options->transactionDeadlineUnixMs, error);
+}
+
+bool ParseBrokerSettlementDiscardOptions(
+    int argc,
+    wchar_t** argv,
+    BrokerSettlementDiscardOptions* options,
+    Error* error) {
+    if (argc != 20 ||
+        _wcsicmp(argv[2], L"--broker-transaction-id") != 0 ||
+        _wcsicmp(argv[4], L"--broker-settled-digest") != 0 ||
+        _wcsicmp(argv[6], L"--driver-transaction-id") != 0 ||
+        _wcsicmp(argv[8], L"--driver-settled-digest") != 0 ||
+        _wcsicmp(argv[10], L"--settlement-nonce") != 0 ||
+        _wcsicmp(argv[12], L"--request-sha256") != 0 ||
+        _wcsicmp(argv[14], L"--broker-final-receipt") != 0 ||
+        _wcsicmp(argv[16],
+            L"--broker-final-receipt-sha256") != 0 ||
+        _wcsicmp(argv[18],
+            L"--transaction-deadline-unix-ms") != 0) {
+        return SetError(error, L"arguments", ERROR_INVALID_PARAMETER);
+    }
+    options->brokerFinalReceiptPath = argv[15];
+    return CopyCanonicalSettlementHex(argv[3], 32U,
+            &options->brokerTransactionId, error) &&
+        CopyCanonicalSettlementHex(argv[5], 64U,
+            &options->brokerDigest, error) &&
+        CopyCanonicalSettlementHex(argv[7], 64U,
+            &options->driverTransactionId, error) &&
+        CopyCanonicalSettlementHex(argv[9], 64U,
+            &options->driverDigest, error) &&
+        CopyCanonicalSettlementHex(argv[11], 64U,
+            &options->settlementNonce, error) &&
+        CopyCanonicalSettlementHex(argv[13], 64U,
+            &options->requestSha256, error) &&
+        CopyCanonicalSettlementHex(argv[17], 64U,
+            &options->brokerFinalReceiptSha256, error) &&
+        ParseSettlementDeadline(argv[19],
+            &options->transactionDeadlineUnixMs, error);
+}
+
 void Usage() {
     std::wcerr
         << L"usage:\n"
@@ -13764,6 +18759,8 @@ void Usage() {
            L"--transaction-deadline-unix-ms <positive integer>\n"
         << L"  ViiperUdeCtl.exe remove [--transaction-deadline-unix-ms <positive integer>]\n"
         << L"  ViiperUdeCtl.exe recover [--transaction-deadline-unix-ms <positive integer>]\n"
+        << L"  ViiperUdeCtl.exe broker-settlement-ack --request <protected-json> --request-sha256 <64 hex> --transaction-deadline-unix-ms <positive integer>\n"
+        << L"  ViiperUdeCtl.exe broker-settlement-discard --broker-transaction-id <32 hex> --broker-settled-digest <64 hex> --driver-transaction-id <64 hex> --driver-settled-digest <64 hex> --settlement-nonce <64 hex> --request-sha256 <64 hex> --broker-final-receipt <protected-json> --broker-final-receipt-sha256 <64 hex> --transaction-deadline-unix-ms <positive integer>\n"
         << L"  ViiperUdeCtl.exe status\n"
         << L"  ViiperUdeCtl.exe self-test\n";
 }
@@ -13772,7 +18769,63 @@ void Usage() {
 
 int RunViiperUdeCtl(int argc, wchar_t** argv) {
     ClearActiveRecoveryEvidence();
+    ClearRemoveRetirementWarning();
     gTransactionMutationStarted = false;
+    if (argc >= 2 &&
+        _wcsicmp(argv[1], L"broker-settlement-ack") == 0) {
+        BrokerSettlementAckOptions options;
+        Error error;
+        if (!ParseBrokerSettlementAckOptions(
+                argc, argv, &options, &error)) {
+            Usage();
+            Outcome outcome;
+            outcome.error = std::move(error);
+            outcome.exitCode = ExitCode::Usage;
+            EmitOutcome(L"broker-settlement-ack", outcome);
+            return static_cast<int>(outcome.exitCode);
+        }
+        BrokerSettlementRequestData receipt;
+        std::string driverFinalDigest;
+        if (!AcknowledgeBrokerOuterSettlement(
+                options, &receipt, &driverFinalDigest, &error)) {
+            Outcome outcome;
+            outcome.changed = gTransactionMutationStarted;
+            outcome.error = std::move(error);
+            outcome.rollback = outcome.changed ? L"failed" : L"not-needed";
+            outcome.exitCode = outcome.changed
+                ? ExitCode::RollbackFailed : ExitCode::PreflightRejected;
+            EmitOutcome(L"broker-settlement-ack", outcome);
+            return static_cast<int>(outcome.exitCode);
+        }
+        EmitBrokerSettlementAck(receipt, driverFinalDigest);
+        return 0;
+    }
+    if (argc >= 2 &&
+        _wcsicmp(argv[1], L"broker-settlement-discard") == 0) {
+        BrokerSettlementDiscardOptions options;
+        Error error;
+        if (!ParseBrokerSettlementDiscardOptions(
+                argc, argv, &options, &error)) {
+            Usage();
+            Outcome outcome;
+            outcome.error = std::move(error);
+            outcome.exitCode = ExitCode::Usage;
+            EmitOutcome(L"broker-settlement-discard", outcome);
+            return static_cast<int>(outcome.exitCode);
+        }
+        bool discarded = false;
+        bool retained = false;
+        if (!DiscardBrokerSettlementTombstone(
+                options, &discarded, &retained, &error)) {
+            Outcome outcome;
+            outcome.error = std::move(error);
+            outcome.exitCode = ExitCode::PreflightRejected;
+            EmitOutcome(L"broker-settlement-discard", outcome);
+            return static_cast<int>(outcome.exitCode);
+        }
+        EmitBrokerSettlementDiscard(options, discarded, retained);
+        return 0;
+    }
     if (argc >= 3 &&
         (_wcsicmp(argv[1], L"install") == 0 || _wcsicmp(argv[1], L"verify") == 0)) {
         InstallOptions options;
@@ -13853,7 +18906,9 @@ const wchar_t* ExceptionOperation(int argc, wchar_t** argv) noexcept {
         return L"unknown";
     }
     for (const wchar_t* operation :
-            {L"install", L"verify", L"remove", L"recover", L"status", L"self-test"}) {
+            {L"install", L"verify", L"remove", L"recover", L"status",
+                L"self-test", L"broker-settlement-ack",
+                L"broker-settlement-discard"}) {
         if (_wcsicmp(argv[1], operation) == 0) {
             return operation;
         }

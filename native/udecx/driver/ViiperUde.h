@@ -19,7 +19,12 @@ EXTERN_C const GUID GUID_DEVINTERFACE_VIIPER_UDE;
 #define VIIPER_UDE_MAX_PENDING_MANAGEMENT 256
 #define VIIPER_UDE_MAX_INPUT_TRANSITIONS 256
 #define VIIPER_UDE_MAX_INPUT_TRANSITION_BYTES 65536
-#define VIIPER_UDE_MANAGEMENT_SLOT_FLAG 0x80000000UL
+// Keep one cache-isolated recorder shard per logical processor on ordinary
+// client systems. Very large systems hash processors into this fixed ceiling;
+// every shard still retains the complete public trace window, so collisions
+// cannot discard a record merely because another processor used the shard.
+#define VIIPER_UDE_LIFECYCLE_TRACE_MAX_SHARDS 64
+#define VIIPER_UDE_RUNDOWN_WATCHDOG_INTERVAL_100NS (2ULL * 1000ULL * 1000ULL * 10ULL)
 // UdeCx numbers USB 3 ports after every USB 2 port on the controller. Keep
 // the topology constants shared by controller creation and child plug-in so
 // fixed slot-to-port identity cannot drift between those two boundaries.
@@ -45,6 +50,7 @@ typedef struct VIIPER_UDE_PENDING_SLOT {
     ULONGLONG AdmissionSequence;
     ULONG Generation;
     ULONG DeviceGeneration;
+    ULONG EndpointGeneration;
     VIIPER_UDE_PENDING_STATE State;
     BOOLEAN AbortPending;
     BOOLEAN PublishedToOwner;
@@ -62,6 +68,7 @@ typedef struct VIIPER_UDE_NOTIFICATION {
     ULONGLONG EndpointSequence;
     ULONGLONG DeviceSequence;
     ULONG Generation;
+    ULONG EndpointGeneration;
     ULONG Kind;
     UCHAR EndpointAddress;
     UCHAR InterfaceNumber;
@@ -92,7 +99,9 @@ typedef struct VIIPER_UDE_MANAGEMENT_SLOT {
     ULONGLONG ResetEpoch;
     ULONG Generation;
     ULONG DeviceGeneration;
+    ULONG EndpointGeneration;
     ULONG RetiredDeviceGeneration;
+    ULONG RetiredEndpointGeneration;
     VIIPER_UDE_PENDING_STATE State;
     BOOLEAN RetiredNotificationPending;
     ULONG Kind;
@@ -104,6 +113,8 @@ typedef struct VIIPER_UDE_REQUEST_CONTEXT {
     UDECXUSBENDPOINT Endpoint;
     ULONG PendingSlot;
     ULONGLONG Token;
+    ULONG DeviceGeneration;
+    ULONG EndpointGeneration;
     ULONG TransferLength;
     ULONG IsoPacketCount;
     ULONG IsoStartFrame;
@@ -125,6 +136,21 @@ typedef struct VIIPER_UDE_REQUEST_CONTEXT {
 } VIIPER_UDE_REQUEST_CONTEXT;
 
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(VIIPER_UDE_REQUEST_CONTEXT, ViiperGetRequestContext)
+
+typedef struct VIIPER_UDE_LIFECYCLE_TRACE_SHARD {
+    DECLSPEC_ALIGN(SYSTEM_CACHE_ALIGNMENT_SIZE) volatile LONG64 WriteSequence;
+    UCHAR SequencePadding[SYSTEM_CACHE_ALIGNMENT_SIZE - sizeof(LONG64)];
+    // A slot state is (local sequence << 1) | writer-active. The monotonically
+    // increasing claim prevents a preempted old writer from overwriting a
+    // newer wrap of the same ring slot, while the low bit makes collisions
+    // fail closed without a lock or wait.
+    volatile LONG64 SlotStates[VIIPER_UDE_LIFECYCLE_TRACE_CAPACITY];
+    VIIPER_UDE_LIFECYCLE_TRACE_RECORD Records[VIIPER_UDE_LIFECYCLE_TRACE_CAPACITY];
+} VIIPER_UDE_LIFECYCLE_TRACE_SHARD;
+
+C_ASSERT((SYSTEM_CACHE_ALIGNMENT_SIZE & (SYSTEM_CACHE_ALIGNMENT_SIZE - 1)) == 0);
+C_ASSERT(sizeof(VIIPER_UDE_LIFECYCLE_TRACE_SHARD) %
+    SYSTEM_CACHE_ALIGNMENT_SIZE == 0);
 
 typedef struct VIIPER_UDE_CONTROLLER_CONTEXT {
     WDFWAITLOCK OwnerLock;
@@ -188,8 +214,10 @@ typedef struct VIIPER_UDE_CONTROLLER_CONTEXT {
     volatile LONG64 BytesToDevice;
     volatile LONG64 BytesFromDevice;
     volatile LONG64 LifecycleTraceSequence;
-    DECLSPEC_ALIGN(8) VIIPER_UDE_LIFECYCLE_TRACE_RECORD
-        LifecycleTrace[VIIPER_UDE_LIFECYCLE_TRACE_CAPACITY];
+    volatile LONG LifecycleTraceStatus;
+    WDFMEMORY LifecycleTraceStorage;
+    VIIPER_UDE_LIFECYCLE_TRACE_SHARD *LifecycleTraceShards;
+    ULONG LifecycleTraceShardCount;
     // Sorted by DeviceId and protected by DeviceLock. The input producer uses
     // a shared binary lookup while lifecycle mutations retain exclusive access
     // to the physical UDE port table below.
@@ -253,6 +281,11 @@ ViiperReleaseDeviceLockShared(
 }
 
 typedef struct VIIPER_UDE_FILE_CONTEXT {
+    // The reference-pinned WDFFILEOBJECT containing this context is the
+    // kernel session incarnation: KMDF cannot recycle that object while any
+    // owner/request callback retains it, and Closing makes retirement a
+    // permanent one-way generation fence. DriverNonce is the corresponding
+    // nonzero user-visible session tag established by negotiation.
     volatile LONG Negotiated;
     volatile LONG Closing;
     volatile LONG BrokerOwner;
@@ -284,7 +317,9 @@ typedef struct VIIPER_UDE_DEVICE_CONTEXT {
     UDECXUSBENDPOINT DefaultEndpoint;
     UDECXUSBENDPOINT Endpoints[256];
     BOOLEAN RetiredEndpoints[256];
+    ULONG EndpointGenerations[256];
     volatile LONG64 EndpointSequences[256];
+    volatile LONG64 DeviceLifecycleSequence;
     volatile LONG64 DeviceSequence;
 } VIIPER_UDE_DEVICE_CONTEXT;
 
@@ -292,6 +327,7 @@ WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(VIIPER_UDE_DEVICE_CONTEXT, ViiperGetDeviceCon
 
 typedef struct VIIPER_UDE_ENDPOINT_CONTEXT {
     UDECXUSBDEVICE Device;
+    ULONG Generation;
     WDFQUEUE Queue;
     WDFWAITLOCK InputLock;
     WDFWORKITEM PurgeWorkItem;
@@ -376,6 +412,7 @@ BOOLEAN ViiperQuiesceResetByIdentity(
     _In_ ULONG Generation,
     _In_ UDECXUSBDEVICE ExpectedDevice,
     _In_opt_ UDECXUSBENDPOINT ExpectedEndpoint,
+    _In_ ULONG ExpectedEndpointGeneration,
     _In_ ULONGLONG ExpectedResetEpoch,
     _In_ UCHAR EndpointAddress,
     _In_ BOOLEAN WholeDevice,
@@ -424,6 +461,7 @@ VOID ViiperEndpointOperationStarted(_In_ UDECXUSBENDPOINT Endpoint);
 _IRQL_requires_max_(DISPATCH_LEVEL)
 VOID ViiperEndpointOperationCompleted(_In_ UDECXUSBENDPOINT Endpoint);
 VOID ViiperPurgeOwnerOperations(_In_ WDFDEVICE Controller, _In_ NTSTATUS Status);
+NTSTATUS ViiperInitializeLifecycleTrace(_In_ WDFDEVICE Controller);
 VOID ViiperTraceLifecycle(
     _In_ WDFDEVICE Controller,
     _In_ UCHAR Source,

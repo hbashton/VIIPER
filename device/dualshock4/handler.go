@@ -3,6 +3,7 @@ package dualshock4
 import (
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash/crc32"
 	"io"
@@ -131,7 +132,8 @@ func (h *handler) StreamHandler() api.StreamHandlerFunc {
 
 		var writer *dualShock4OutputWriter
 		if speakerOutput && streamFrameVersion == StreamFrameVersionV3 {
-			writer = newDualShock4OutputWriter(conn, streamFrameVersion)
+			writer = newDualShock4OutputWriterForStream(conn, streamFrameVersion,
+				ds4.beginSpeakerStream(), logger)
 			ds4.SetOutputCallback(func(feedback OutputState) {
 				data, err := feedback.MarshalBinary()
 				if err != nil {
@@ -145,119 +147,335 @@ func (h *handler) StreamHandler() api.StreamHandlerFunc {
 			}
 			ds4.setSpeakerCallbacks(speakerCallback, writer.ResetSpeaker)
 			go writer.Run()
-			defer func() {
-				ds4.SetOutputCallback(nil)
-				ds4.setSpeakerCallbacks(nil, nil)
-				writer.Stop()
-			}()
-		} else {
-			ds4.SetOutputCallback(func(feedback OutputState) {
-				data, err := feedback.MarshalBinary()
-				if err != nil {
-					logger.Error("failed to marshal feedback", "error", err)
-					return
-				}
-				if _, err := conn.Write(data); err != nil {
-					logger.Error("failed to send feedback", "error", err)
-				}
-			})
-			defer ds4.SetOutputCallback(nil)
+			streamErr := readDualShock4InputStream(conn, ds4, logger,
+				microphoneInput, streamFrameVersion)
+			// Detach producers before requesting writer rundown. Stop returns a
+			// latched failure if the writer cannot authoritatively join.
+			ds4.SetOutputCallback(nil)
+			ds4.detachSpeakerStreamCallbacks()
+			return errors.Join(streamErr, writer.Stop())
 		}
 
+		ds4.SetOutputCallback(func(feedback OutputState) {
+			data, err := feedback.MarshalBinary()
+			if err != nil {
+				logger.Error("failed to marshal feedback", "error", err)
+				return
+			}
+			if _, err := conn.Write(data); err != nil {
+				logger.Error("failed to send feedback", "error", err)
+			}
+		})
+		defer ds4.SetOutputCallback(nil)
 		return readDualShock4InputStream(conn, ds4, logger,
 			microphoneInput, streamFrameVersion)
 	}
 }
 
 type dualShock4OutputFrame struct {
-	frameType    byte
-	payload      []byte
-	pooledBuffer *dualShock4AudioBuffer
-	audio        bool
-	generation   uint64
+	frameType     byte
+	payload       []byte
+	pooledBuffer  *dualShock4AudioBuffer
+	audio         bool
+	mediaBytes    int
+	mediaDuration time.Duration
+	generation    uint64
+	publication   uint64
 }
 
 type dualShock4AudioBuffer struct {
 	data []byte
 }
 
-const dualShock4SpeakerResetWriteTimeout = 250 * time.Millisecond
+const (
+	dualShock4OutputControlQueueCapacity = 32
+	dualShock4SpeakerFrameBytes          = USBSpeakerChannels * USBSpeakerBytesPerSample
+	// Cadence is retained solely for observed producer-gap telemetry. Queue
+	// admission derives time from each callback's actual aligned PCM frames.
+	dualShock4SpeakerGenerationFrames  = USBSpeakerSampleRate / 100
+	dualShock4SpeakerGenerationCadence = time.Second *
+		dualShock4SpeakerGenerationFrames / USBSpeakerSampleRate
+	dualShock4SpeakerMaximumBufferTime   = 200 * time.Millisecond
+	dualShock4SpeakerMaximumBufferFrames = int(
+		int64(USBSpeakerSampleRate) * int64(dualShock4SpeakerMaximumBufferTime) /
+			int64(time.Second))
+	// Preserve the cadence-derived item ceiling as an independent allocation
+	// bound. Exact payload duration below additionally enforces the 200 ms cap.
+	dualShock4OutputAudioQueueCapacity = int(
+		dualShock4SpeakerMaximumBufferTime / dualShock4SpeakerGenerationCadence)
+	dualShock4SpeakerResetWriteTimeout = 250 * time.Millisecond
+	dualShock4OutputJoinTimeout        = 300 * time.Millisecond
+)
+
+var errDualShock4OutputJoinTimeout = errors.New(
+	"DualShock 4 output writer did not stop before the join deadline")
+
+type dualShock4OutputStreamTelemetry struct {
+	orderedReceived                 atomic.Uint64
+	orderedEnqueued                 atomic.Uint64
+	orderedRejected                 atomic.Uint64
+	orderedWritten                  atomic.Uint64
+	orderedSaturations              atomic.Uint64
+	orderedQueueDepth               atomic.Uint64
+	orderedQueueHighWater           atomic.Uint64
+	orderedLifecycleDiscardedFrames atomic.Uint64
+	orderedLifecycleDiscardedBytes  atomic.Uint64
+	mediaReceivedPayloads           atomic.Uint64
+	mediaReceivedBytes              atomic.Uint64
+	mediaEnqueuedPayloads           atomic.Uint64
+	mediaEnqueuedBytes              atomic.Uint64
+	mediaRejectedPayloads           atomic.Uint64
+	mediaRejectedBytes              atomic.Uint64
+	mediaMalformedPayloads          atomic.Uint64
+	mediaMalformedBytes             atomic.Uint64
+	mediaOversizePayloads           atomic.Uint64
+	mediaOversizeBytes              atomic.Uint64
+	mediaDroppedPayloads            atomic.Uint64
+	mediaDroppedBytes               atomic.Uint64
+	mediaOverruns                   atomic.Uint64
+	mediaUnderruns                  atomic.Uint64
+	mediaLateGaps                   atomic.Uint64
+	mediaStalePayloads              atomic.Uint64
+	mediaStaleBytes                 atomic.Uint64
+	mediaLifecycleDiscardedPayloads atomic.Uint64
+	mediaLifecycleDiscardedBytes    atomic.Uint64
+	mediaWrittenPayloads            atomic.Uint64
+	mediaWrittenBytes               atomic.Uint64
+	orderedWriteFailures            atomic.Uint64
+	mediaWriteFailures              atomic.Uint64
+	mediaQueueDepth                 atomic.Uint64
+	mediaQueueHighWater             atomic.Uint64
+	mediaQueueDurationNS            atomic.Int64
+	mediaQueueDurationHighNS        atomic.Int64
+	lastMediaEnqueueNS              atomic.Int64
+	maxMediaEnqueueGapNS            atomic.Int64
+	lastMediaWriteNS                atomic.Int64
+	maxMediaWriteGapNS              atomic.Int64
+	active                          atomic.Bool
+	teardownFailures                atomic.Uint64
+	teardownPending                 atomic.Bool
+}
+
+type dualShock4OutputStreamSnapshot struct {
+	OrderedReceived                 uint64
+	OrderedEnqueued                 uint64
+	OrderedRejected                 uint64
+	OrderedWritten                  uint64
+	OrderedSaturations              uint64
+	OrderedQueueDepth               uint64
+	OrderedQueueHighWater           uint64
+	OrderedLifecycleDiscardedFrames uint64
+	OrderedLifecycleDiscardedBytes  uint64
+	MediaReceivedPayloads           uint64
+	MediaReceivedBytes              uint64
+	MediaEnqueuedPayloads           uint64
+	MediaEnqueuedBytes              uint64
+	MediaRejectedPayloads           uint64
+	MediaRejectedBytes              uint64
+	MediaMalformedPayloads          uint64
+	MediaMalformedBytes             uint64
+	MediaOversizePayloads           uint64
+	MediaOversizeBytes              uint64
+	MediaDroppedPayloads            uint64
+	MediaDroppedBytes               uint64
+	MediaOverruns                   uint64
+	MediaUnderruns                  uint64
+	MediaLateGaps                   uint64
+	MediaStalePayloads              uint64
+	MediaStaleBytes                 uint64
+	MediaLifecycleDiscardedPayloads uint64
+	MediaLifecycleDiscardedBytes    uint64
+	MediaWrittenPayloads            uint64
+	MediaWrittenBytes               uint64
+	OrderedWriteFailures            uint64
+	MediaWriteFailures              uint64
+	MediaQueueDepth                 uint64
+	MediaQueueHighWater             uint64
+	MediaQueueDurationUS            int64
+	MediaQueueDurationHighWaterUS   int64
+	MaxMediaEnqueueGapUS            int64
+	MaxMediaWriteGapUS              int64
+	Active                          bool
+	TeardownFailures                uint64
+	TeardownPending                 bool
+}
+
+func (s *dualShock4OutputStreamTelemetry) snapshot() dualShock4OutputStreamSnapshot {
+	if s == nil {
+		return dualShock4OutputStreamSnapshot{}
+	}
+	return dualShock4OutputStreamSnapshot{
+		OrderedReceived:                 s.orderedReceived.Load(),
+		OrderedEnqueued:                 s.orderedEnqueued.Load(),
+		OrderedRejected:                 s.orderedRejected.Load(),
+		OrderedWritten:                  s.orderedWritten.Load(),
+		OrderedSaturations:              s.orderedSaturations.Load(),
+		OrderedQueueDepth:               s.orderedQueueDepth.Load(),
+		OrderedQueueHighWater:           s.orderedQueueHighWater.Load(),
+		OrderedLifecycleDiscardedFrames: s.orderedLifecycleDiscardedFrames.Load(),
+		OrderedLifecycleDiscardedBytes:  s.orderedLifecycleDiscardedBytes.Load(),
+		MediaReceivedPayloads:           s.mediaReceivedPayloads.Load(),
+		MediaReceivedBytes:              s.mediaReceivedBytes.Load(),
+		MediaEnqueuedPayloads:           s.mediaEnqueuedPayloads.Load(),
+		MediaEnqueuedBytes:              s.mediaEnqueuedBytes.Load(),
+		MediaRejectedPayloads:           s.mediaRejectedPayloads.Load(),
+		MediaRejectedBytes:              s.mediaRejectedBytes.Load(),
+		MediaMalformedPayloads:          s.mediaMalformedPayloads.Load(),
+		MediaMalformedBytes:             s.mediaMalformedBytes.Load(),
+		MediaOversizePayloads:           s.mediaOversizePayloads.Load(),
+		MediaOversizeBytes:              s.mediaOversizeBytes.Load(),
+		MediaDroppedPayloads:            s.mediaDroppedPayloads.Load(),
+		MediaDroppedBytes:               s.mediaDroppedBytes.Load(),
+		MediaOverruns:                   s.mediaOverruns.Load(),
+		MediaUnderruns:                  s.mediaUnderruns.Load(),
+		MediaLateGaps:                   s.mediaLateGaps.Load(),
+		MediaStalePayloads:              s.mediaStalePayloads.Load(),
+		MediaStaleBytes:                 s.mediaStaleBytes.Load(),
+		MediaLifecycleDiscardedPayloads: s.mediaLifecycleDiscardedPayloads.Load(),
+		MediaLifecycleDiscardedBytes:    s.mediaLifecycleDiscardedBytes.Load(),
+		MediaWrittenPayloads:            s.mediaWrittenPayloads.Load(),
+		MediaWrittenBytes:               s.mediaWrittenBytes.Load(),
+		OrderedWriteFailures:            s.orderedWriteFailures.Load(),
+		MediaWriteFailures:              s.mediaWriteFailures.Load(),
+		MediaQueueDepth:                 s.mediaQueueDepth.Load(),
+		MediaQueueHighWater:             s.mediaQueueHighWater.Load(),
+		MediaQueueDurationUS: s.mediaQueueDurationNS.Load() /
+			int64(time.Microsecond),
+		MediaQueueDurationHighWaterUS: s.mediaQueueDurationHighNS.Load() /
+			int64(time.Microsecond),
+		MaxMediaEnqueueGapUS: s.maxMediaEnqueueGapNS.Load() /
+			int64(time.Microsecond),
+		MaxMediaWriteGapUS: s.maxMediaWriteGapNS.Load() /
+			int64(time.Microsecond),
+		Active:           s.active.Load(),
+		TeardownFailures: s.teardownFailures.Load(),
+		TeardownPending:  s.teardownPending.Load(),
+	}
+}
 
 // dualShock4OutputWriter keeps USB isochronous completion independent from
 // local TCP backpressure. Control feedback and speaker PCM share one writer so
 // their framing sequence is strictly monotonic and conn.Write is never raced.
 type dualShock4OutputWriter struct {
-	conn            net.Conn
-	version         byte
-	control         chan dualShock4OutputFrame
-	audio           chan dualShock4OutputFrame
-	stop            chan struct{}
-	done            chan struct{}
-	stopOnce        sync.Once
-	enqueueLock     sync.RWMutex
-	controlEnqueue  sync.Mutex
-	audioWrite      sync.Mutex
-	stopped         bool
-	audioGeneration atomic.Uint64
-	sequence        uint32
-	packet          []byte
-	audioPool       sync.Pool
+	conn                net.Conn
+	version             byte
+	logger              *slog.Logger
+	telemetry           *dualShock4OutputStreamTelemetry
+	control             chan dualShock4OutputFrame
+	audio               chan dualShock4OutputFrame
+	stop                chan struct{}
+	done                chan struct{}
+	stopOnce            sync.Once
+	enqueueLock         sync.RWMutex
+	controlEnqueue      sync.Mutex
+	audioEnqueue        sync.Mutex
+	audioWrite          sync.Mutex
+	stopped             bool
+	accepting           atomic.Bool
+	audioGeneration     atomic.Uint64
+	orderedPublication  uint64
+	sequence            uint32
+	packet              []byte
+	audioPool           sync.Pool
+	teardownMu          sync.Mutex
+	teardownErr         error
+	teardownFailureOnce sync.Once
+	teardownJoinOnce    sync.Once
 }
 
 func newDualShock4OutputWriter(conn net.Conn, version byte) *dualShock4OutputWriter {
-	return &dualShock4OutputWriter{
-		conn: conn, version: version,
-		control: make(chan dualShock4OutputFrame, 32),
-		audio:   make(chan dualShock4OutputFrame, 256),
-		stop:    make(chan struct{}), done: make(chan struct{}),
+	return newDualShock4OutputWriterForStream(conn, version, nil, nil)
+}
+
+func newDualShock4OutputWriterForStream(conn net.Conn, version byte,
+	telemetry *dualShock4OutputStreamTelemetry,
+	logger *slog.Logger) *dualShock4OutputWriter {
+	if telemetry == nil {
+		telemetry = &dualShock4OutputStreamTelemetry{}
 	}
+	telemetry.orderedQueueDepth.Store(0)
+	telemetry.mediaQueueDepth.Store(0)
+	telemetry.mediaQueueDurationNS.Store(0)
+	telemetry.lastMediaEnqueueNS.Store(0)
+	telemetry.lastMediaWriteNS.Store(0)
+	telemetry.active.Store(true)
+	w := &dualShock4OutputWriter{
+		conn: conn, version: version, logger: logger, telemetry: telemetry,
+		control: make(chan dualShock4OutputFrame,
+			dualShock4OutputControlQueueCapacity),
+		audio: make(chan dualShock4OutputFrame,
+			dualShock4OutputAudioQueueCapacity),
+		stop: make(chan struct{}), done: make(chan struct{}),
+	}
+	w.accepting.Store(true)
+	return w
 }
 
 func (w *dualShock4OutputWriter) EnqueueControl(frameType byte, payload []byte) {
 	if len(payload) == 0 {
 		return
 	}
-	w.enqueueLock.RLock()
-	defer w.enqueueLock.RUnlock()
-	if w.stopped {
-		return
-	}
 	w.controlEnqueue.Lock()
 	defer w.controlEnqueue.Unlock()
-	w.enqueueNewestControlLocked(dualShock4OutputFrame{
+	w.telemetry.orderedReceived.Add(1)
+	if !w.accepting.Load() {
+		w.telemetry.orderedRejected.Add(1)
+		return
+	}
+	frame := dualShock4OutputFrame{
 		frameType: frameType,
 		payload:   append([]byte(nil), payload...),
-	})
-}
-
-// enqueueNewestControlLocked preserves an explicit final controller state
-// when the bounded feedback lane is saturated. Old intermediate feedback can
-// be coalesced; the newest release/LED/rumble state cannot be silently lost.
-func (w *dualShock4OutputWriter) enqueueNewestControlLocked(
-	frame dualShock4OutputFrame,
-) {
+	}
+	w.enqueueLock.RLock()
+	if w.stopped || !w.accepting.Load() {
+		w.telemetry.orderedRejected.Add(1)
+		w.enqueueLock.RUnlock()
+		return
+	}
+	w.orderedPublication++
+	frame.publication = w.orderedPublication
+	depth := w.telemetry.orderedQueueDepth.Add(1)
 	select {
 	case w.control <- frame:
+		w.telemetry.orderedEnqueued.Add(1)
+		recordDualShock4MaximumUint64(&w.telemetry.orderedQueueHighWater, depth)
+		w.enqueueLock.RUnlock()
 		return
 	default:
+		decrementDualShock4Uint64(&w.telemetry.orderedQueueDepth)
 	}
-	select {
-	case <-w.control:
-	default:
+	// Ordered feedback is lossless while the stream is viable. Capacity
+	// exhaustion is therefore a stream failure, never permission to evict an
+	// earlier rumble/LED/media-configuration update.
+	w.telemetry.orderedRejected.Add(1)
+	if !w.accepting.CompareAndSwap(true, false) {
+		w.enqueueLock.RUnlock()
+		return
 	}
-	select {
-	case w.control <- frame:
-	default:
-	}
+	w.telemetry.orderedSaturations.Add(1)
+	w.enqueueLock.RUnlock()
+	w.failStream("ordered output queue saturated")
 }
 
 func (w *dualShock4OutputWriter) EnqueueAudio(frameType byte, payload []byte) {
 	if len(payload) == 0 {
 		return
 	}
+	w.audioEnqueue.Lock()
+	defer w.audioEnqueue.Unlock()
+	w.recordMediaReceive(len(payload))
+	duration, valid := w.validateMediaPayload(payload)
+	if !valid {
+		return
+	}
+	if !w.accepting.Load() {
+		w.recordMediaRejected(len(payload))
+		return
+	}
 	w.enqueueLock.RLock()
 	defer w.enqueueLock.RUnlock()
-	if w.stopped {
+	if w.stopped || !w.accepting.Load() {
+		w.recordMediaRejected(len(payload))
 		return
 	}
 	var buffer *dualShock4AudioBuffer
@@ -276,11 +494,10 @@ func (w *dualShock4OutputWriter) EnqueueAudio(frameType byte, payload []byte) {
 	copy(owned, payload)
 	frame := dualShock4OutputFrame{
 		frameType: frameType, payload: owned, pooledBuffer: buffer, audio: true,
+		mediaBytes: len(payload), mediaDuration: duration,
 		generation: w.audioGeneration.Load(),
 	}
-	if !w.enqueueFrameLocked(w.audio, frame) {
-		w.releaseAudioBuffer(buffer)
-	}
+	w.enqueueMediaDropOldestLocked(frame)
 }
 
 // EnqueueAudioOwned accepts the immutable buffer transferred by DualShock4's
@@ -289,43 +506,82 @@ func (w *dualShock4OutputWriter) EnqueueAudioOwned(frameType byte, payload []byt
 	if len(payload) == 0 {
 		return
 	}
-	w.enqueueLock.RLock()
-	defer w.enqueueLock.RUnlock()
-	if w.stopped {
+	w.audioEnqueue.Lock()
+	defer w.audioEnqueue.Unlock()
+	w.recordMediaReceive(len(payload))
+	duration, valid := w.validateMediaPayload(payload)
+	if !valid {
 		return
 	}
-	w.enqueueFrameLocked(w.audio, dualShock4OutputFrame{
+	if !w.accepting.Load() {
+		w.recordMediaRejected(len(payload))
+		return
+	}
+	w.enqueueLock.RLock()
+	defer w.enqueueLock.RUnlock()
+	if w.stopped || !w.accepting.Load() {
+		w.recordMediaRejected(len(payload))
+		return
+	}
+	w.enqueueMediaDropOldestLocked(dualShock4OutputFrame{
 		frameType: frameType, payload: payload, audio: true,
+		mediaBytes: len(payload), mediaDuration: duration,
 		generation: w.audioGeneration.Load(),
 	})
 }
 
-// enqueueFrameLocked requires enqueueLock to be held for reading. Reset and
-// shutdown take the write side before draining, so a producer cannot publish a
-// stale frame after the final empty-queue observation.
-func (w *dualShock4OutputWriter) enqueueFrameLocked(
-	queue chan dualShock4OutputFrame, frame dualShock4OutputFrame) bool {
+// enqueueMediaDropOldestLocked keeps at most the derived 200 ms media window.
+// The only removable item is read from the queue itself, so an in-flight write
+// is never selected as the overrun victim.
+func (w *dualShock4OutputWriter) enqueueMediaDropOldestLocked(
+	frame dualShock4OutputFrame) {
+	duration := int64(frame.mediaDuration)
+	for w.telemetry.mediaQueueDurationNS.Load()+duration >
+		int64(dualShock4SpeakerMaximumBufferTime) ||
+		w.telemetry.mediaQueueDepth.Load() >= uint64(cap(w.audio)) {
+		select {
+		case oldest := <-w.audio:
+			w.recordMediaDequeued(oldest)
+			w.recordMediaOverrun(oldest)
+			w.release(oldest)
+		default:
+			// The sole consumer may have removed the last queued item between
+			// observations. Retry admission using the exact atomic totals.
+			continue
+		}
+	}
+	reservedDuration := w.telemetry.mediaQueueDurationNS.Add(duration)
+	depth := w.telemetry.mediaQueueDepth.Add(1)
 	select {
-	case queue <- frame:
-		return true
+	case w.audio <- frame:
+		w.recordMediaEnqueue(frame.mediaBytes, depth, reservedDuration)
 	default:
-		// Never block the USB/IP isochronous or HID callback. The receiver
-		// bounds its own latency too, so dropping newest under pathological
-		// backpressure is preferable to stalling the virtual USB device.
-		return false
+		w.telemetry.mediaQueueDurationNS.Add(-duration)
+		decrementDualShock4Uint64(&w.telemetry.mediaQueueDepth)
+		w.recordMediaOverrun(frame)
+		w.release(frame)
 	}
 }
 
 func (w *dualShock4OutputWriter) Run() {
 	defer func() {
 		w.requestStop()
-		w.drainAudioQueue()
+		w.drainControlQueue()
+		w.drainAudioQueue(dualShock4MediaDiscardLifecycle)
+		w.telemetry.active.Store(false)
+		w.traceOutputState()
 		close(w.done)
 	}()
 	for {
+		select {
+		case <-w.stop:
+			return
+		default:
+		}
 		// Give feedback priority without starving speaker packets.
 		select {
 		case frame := <-w.control:
+			decrementDualShock4Uint64(&w.telemetry.orderedQueueDepth)
 			if !w.writeAndRelease(frame) {
 				return
 			}
@@ -337,10 +593,12 @@ func (w *dualShock4OutputWriter) Run() {
 		case <-w.stop:
 			return
 		case frame := <-w.control:
+			decrementDualShock4Uint64(&w.telemetry.orderedQueueDepth)
 			if !w.writeAndRelease(frame) {
 				return
 			}
 		case frame := <-w.audio:
+			w.recordMediaDequeued(frame)
 			if !w.writeAndRelease(frame) {
 				return
 			}
@@ -353,12 +611,24 @@ func (w *dualShock4OutputWriter) writeAndRelease(frame dualShock4OutputFrame) bo
 		w.audioWrite.Lock()
 		defer w.audioWrite.Unlock()
 		if frame.generation != w.audioGeneration.Load() {
+			w.recordMediaStale(frame)
 			w.release(frame)
 			return true
 		}
 	}
 
 	ok := w.write(frame)
+	if frame.audio {
+		if ok {
+			w.recordMediaWrite(len(frame.payload))
+		} else {
+			w.telemetry.mediaWriteFailures.Add(1)
+		}
+	} else if !ok {
+		w.telemetry.orderedWriteFailures.Add(1)
+	} else {
+		w.telemetry.orderedWritten.Add(1)
+	}
 	w.release(frame)
 	return ok
 }
@@ -369,14 +639,16 @@ func (w *dualShock4OutputWriter) writeAndRelease(frame dualShock4OutputFrame) bo
 func (w *dualShock4OutputWriter) ResetSpeaker() {
 	w.enqueueLock.Lock()
 	w.audioGeneration.Add(1)
-	w.drainAudioQueue()
+	w.drainAudioQueue(dualShock4MediaDiscardStale)
+	w.telemetry.lastMediaEnqueueNS.Store(0)
+	w.telemetry.lastMediaWriteNS.Store(0)
 	w.enqueueLock.Unlock()
 
 	deadlineArmed := false
 	if w.conn != nil {
 		if err := w.conn.SetWriteDeadline(
 			time.Now().Add(dualShock4SpeakerResetWriteTimeout)); err != nil {
-			w.failStream()
+			w.failStream("speaker reset deadline failed")
 		} else {
 			deadlineArmed = true
 		}
@@ -398,14 +670,44 @@ func (w *dualShock4OutputWriter) clearWriteDeadlineIfViable() {
 	err := w.conn.SetWriteDeadline(time.Time{})
 	w.enqueueLock.RUnlock()
 	if err != nil {
-		w.failStream()
+		w.failStream("speaker reset deadline clear failed")
 	}
 }
 
-func (w *dualShock4OutputWriter) drainAudioQueue() {
+type dualShock4MediaDiscardReason uint8
+
+const (
+	dualShock4MediaDiscardStale dualShock4MediaDiscardReason = iota + 1
+	dualShock4MediaDiscardLifecycle
+)
+
+func (w *dualShock4OutputWriter) drainControlQueue() {
+	for {
+		select {
+		case frame := <-w.control:
+			decrementDualShock4Uint64(&w.telemetry.orderedQueueDepth)
+			w.telemetry.orderedLifecycleDiscardedFrames.Add(1)
+			w.telemetry.orderedLifecycleDiscardedBytes.Add(
+				uint64(len(frame.payload)))
+			w.release(frame)
+		default:
+			return
+		}
+	}
+}
+
+func (w *dualShock4OutputWriter) drainAudioQueue(
+	reason dualShock4MediaDiscardReason) {
 	for {
 		select {
 		case frame := <-w.audio:
+			w.recordMediaDequeued(frame)
+			switch reason {
+			case dualShock4MediaDiscardStale:
+				w.recordMediaStale(frame)
+			case dualShock4MediaDiscardLifecycle:
+				w.recordMediaLifecycleDiscard(frame)
+			}
 			w.release(frame)
 		default:
 			return
@@ -440,7 +742,7 @@ func (w *dualShock4OutputWriter) write(frame dualShock4OutputFrame) bool {
 	for len(remaining) > 0 {
 		n, err := w.conn.Write(remaining)
 		if err != nil || n <= 0 {
-			w.failStream()
+			w.failStream("socket write failed")
 			return false
 		}
 		remaining = remaining[n:]
@@ -448,8 +750,20 @@ func (w *dualShock4OutputWriter) write(frame dualShock4OutputFrame) bool {
 	return true
 }
 
-func (w *dualShock4OutputWriter) failStream() {
+func (w *dualShock4OutputWriter) failStream(reason string) {
+	w.accepting.Store(false)
 	w.requestStop()
+	w.telemetry.active.Store(false)
+	if w.logger != nil {
+		state := w.telemetry.snapshot()
+		w.logger.Error("DualShock 4 output stream faulted",
+			"reason", reason,
+			"orderedRejected", state.OrderedRejected,
+			"orderedSaturations", state.OrderedSaturations,
+			"orderedWriteFailures", state.OrderedWriteFailures,
+			"mediaOverruns", state.MediaOverruns,
+			"mediaWriteFailures", state.MediaWriteFailures)
+	}
 	if w.conn != nil {
 		_ = w.conn.Close()
 	}
@@ -466,22 +780,211 @@ func (w *dualShock4OutputWriter) releaseAudioBuffer(buffer *dualShock4AudioBuffe
 	w.audioPool.Put(buffer)
 }
 
-func (w *dualShock4OutputWriter) Stop() {
+func (w *dualShock4OutputWriter) Stop() error {
 	w.requestStop()
-	_ = w.conn.SetWriteDeadline(time.Now().Add(250 * time.Millisecond))
+	if w.conn != nil {
+		_ = w.conn.SetWriteDeadline(
+			time.Now().Add(dualShock4SpeakerResetWriteTimeout))
+		_ = w.conn.Close()
+	}
+	timer := time.NewTimer(dualShock4OutputJoinTimeout)
+	defer timer.Stop()
 	select {
 	case <-w.done:
-	case <-time.After(300 * time.Millisecond):
+		w.telemetry.teardownPending.Store(false)
+		return w.latchedTeardownError()
+	case <-timer.C:
+		w.latchTeardownFailure(errDualShock4OutputJoinTimeout)
+		w.telemetry.teardownPending.Store(true)
+		// Keep the writer and every dependent queue/buffer alive until Run's
+		// authoritative final drain closes done.
+		w.teardownJoinOnce.Do(func() {
+			go func() {
+				<-w.done
+				w.telemetry.teardownPending.Store(false)
+			}()
+		})
+		return w.latchedTeardownError()
 	}
 }
 
+func (w *dualShock4OutputWriter) latchTeardownFailure(err error) {
+	w.teardownFailureOnce.Do(func() {
+		w.teardownMu.Lock()
+		w.teardownErr = err
+		w.teardownMu.Unlock()
+		w.telemetry.teardownFailures.Add(1)
+	})
+}
+
+func (w *dualShock4OutputWriter) latchedTeardownError() error {
+	w.teardownMu.Lock()
+	defer w.teardownMu.Unlock()
+	return w.teardownErr
+}
+
 func (w *dualShock4OutputWriter) requestStop() {
+	w.accepting.Store(false)
 	w.stopOnce.Do(func() {
 		w.enqueueLock.Lock()
 		w.stopped = true
 		close(w.stop)
 		w.enqueueLock.Unlock()
 	})
+}
+
+func (w *dualShock4OutputWriter) traceOutputState() {
+	if w.logger == nil {
+		return
+	}
+	state := w.telemetry.snapshot()
+	w.logger.Info("DualShock 4 output stream stopped",
+		"orderedReceived", state.OrderedReceived,
+		"orderedEnqueued", state.OrderedEnqueued,
+		"orderedRejected", state.OrderedRejected,
+		"orderedWritten", state.OrderedWritten,
+		"orderedSaturations", state.OrderedSaturations,
+		"orderedLifecycleDiscardedFrames", state.OrderedLifecycleDiscardedFrames,
+		"orderedLifecycleDiscardedBytes", state.OrderedLifecycleDiscardedBytes,
+		"mediaReceivedPayloads", state.MediaReceivedPayloads,
+		"mediaEnqueuedPayloads", state.MediaEnqueuedPayloads,
+		"mediaRejectedPayloads", state.MediaRejectedPayloads,
+		"mediaMalformedPayloads", state.MediaMalformedPayloads,
+		"mediaOversizePayloads", state.MediaOversizePayloads,
+		"mediaDroppedPayloads", state.MediaDroppedPayloads,
+		"mediaOverruns", state.MediaOverruns,
+		"mediaUnderruns", state.MediaUnderruns,
+		"mediaLateGaps", state.MediaLateGaps,
+		"mediaStalePayloads", state.MediaStalePayloads,
+		"mediaLifecycleDiscardedPayloads",
+		state.MediaLifecycleDiscardedPayloads,
+		"mediaWrittenPayloads", state.MediaWrittenPayloads,
+		"mediaWriteFailures", state.MediaWriteFailures,
+		"mediaQueueHighWater", state.MediaQueueHighWater,
+		"mediaQueueDurationHighWaterUS", state.MediaQueueDurationHighWaterUS,
+		"teardownFailures", state.TeardownFailures,
+		"teardownPending", state.TeardownPending)
+}
+
+func (w *dualShock4OutputWriter) validateMediaPayload(payload []byte) (
+	time.Duration, bool) {
+	if len(payload)%dualShock4SpeakerFrameBytes != 0 {
+		w.telemetry.mediaMalformedPayloads.Add(1)
+		w.telemetry.mediaMalformedBytes.Add(uint64(len(payload)))
+		return 0, false
+	}
+	frames := int64(len(payload) / dualShock4SpeakerFrameBytes)
+	// Round up fractional nanoseconds so admission is conservative for any
+	// future sample rate that does not divide one second exactly.
+	durationNS := (frames*int64(time.Second) +
+		int64(USBSpeakerSampleRate) - 1) / int64(USBSpeakerSampleRate)
+	duration := time.Duration(durationNS)
+	if duration > dualShock4SpeakerMaximumBufferTime {
+		w.telemetry.mediaOversizePayloads.Add(1)
+		w.telemetry.mediaOversizeBytes.Add(uint64(len(payload)))
+		return 0, false
+	}
+	return duration, true
+}
+
+func (w *dualShock4OutputWriter) recordMediaReceive(length int) {
+	w.telemetry.mediaReceivedPayloads.Add(1)
+	w.telemetry.mediaReceivedBytes.Add(uint64(length))
+	now := time.Now().UnixNano()
+	previous := w.telemetry.lastMediaEnqueueNS.Swap(now)
+	if previous <= 0 || now <= previous {
+		return
+	}
+	gap := now - previous
+	recordDualShock4MaximumInt64(&w.telemetry.maxMediaEnqueueGapNS, gap)
+	cadence := int64(dualShock4SpeakerGenerationCadence)
+	if gap > cadence+cadence/2 {
+		w.telemetry.mediaLateGaps.Add(1)
+		missing := uint64(gap/cadence) - 1
+		if missing == 0 {
+			missing = 1
+		}
+		w.telemetry.mediaUnderruns.Add(missing)
+	}
+}
+
+func (w *dualShock4OutputWriter) recordMediaRejected(length int) {
+	w.telemetry.mediaRejectedPayloads.Add(1)
+	w.telemetry.mediaRejectedBytes.Add(uint64(length))
+}
+
+func (w *dualShock4OutputWriter) recordMediaEnqueue(length int, depth uint64,
+	duration int64) {
+	w.telemetry.mediaEnqueuedPayloads.Add(1)
+	w.telemetry.mediaEnqueuedBytes.Add(uint64(length))
+	recordDualShock4MaximumUint64(&w.telemetry.mediaQueueHighWater, depth)
+	recordDualShock4MaximumInt64(&w.telemetry.mediaQueueDurationHighNS, duration)
+}
+
+func (w *dualShock4OutputWriter) recordMediaDequeued(
+	frame dualShock4OutputFrame) {
+	decrementDualShock4Uint64(&w.telemetry.mediaQueueDepth)
+	if frame.mediaDuration > 0 {
+		w.telemetry.mediaQueueDurationNS.Add(-int64(frame.mediaDuration))
+	}
+}
+
+func (w *dualShock4OutputWriter) recordMediaOverrun(frame dualShock4OutputFrame) {
+	w.telemetry.mediaOverruns.Add(1)
+	w.telemetry.mediaDroppedPayloads.Add(1)
+	w.telemetry.mediaDroppedBytes.Add(uint64(len(frame.payload)))
+}
+
+func (w *dualShock4OutputWriter) recordMediaStale(frame dualShock4OutputFrame) {
+	w.telemetry.mediaStalePayloads.Add(1)
+	w.telemetry.mediaStaleBytes.Add(uint64(len(frame.payload)))
+}
+
+func (w *dualShock4OutputWriter) recordMediaLifecycleDiscard(
+	frame dualShock4OutputFrame) {
+	w.telemetry.mediaLifecycleDiscardedPayloads.Add(1)
+	w.telemetry.mediaLifecycleDiscardedBytes.Add(uint64(frame.mediaBytes))
+}
+
+func (w *dualShock4OutputWriter) recordMediaWrite(length int) {
+	w.telemetry.mediaWrittenPayloads.Add(1)
+	w.telemetry.mediaWrittenBytes.Add(uint64(length))
+	now := time.Now().UnixNano()
+	previous := w.telemetry.lastMediaWriteNS.Swap(now)
+	if previous > 0 && now > previous {
+		recordDualShock4MaximumInt64(&w.telemetry.maxMediaWriteGapNS,
+			now-previous)
+	}
+}
+
+func recordDualShock4MaximumInt64(target *atomic.Int64, value int64) {
+	for value > 0 {
+		current := target.Load()
+		if value <= current || target.CompareAndSwap(current, value) {
+			return
+		}
+	}
+}
+
+func recordDualShock4MaximumUint64(target *atomic.Uint64, value uint64) {
+	for value > 0 {
+		current := target.Load()
+		if value <= current || target.CompareAndSwap(current, value) {
+			return
+		}
+	}
+}
+
+func decrementDualShock4Uint64(target *atomic.Uint64) uint64 {
+	for {
+		current := target.Load()
+		if current == 0 {
+			return 0
+		}
+		if target.CompareAndSwap(current, current-1) {
+			return current - 1
+		}
+	}
 }
 
 func readDualShock4InputStream(conn net.Conn, ds4 *DualShock4,

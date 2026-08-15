@@ -456,7 +456,9 @@ func TestDualSenseV5WriterPublishesExactAtomicContract(t *testing.T) {
 	}
 
 	_ = client.Close()
-	writer.Stop()
+	if err := writer.Stop(); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestDualSenseV5WriterRetainsNewestGenerationWhenBounded(t *testing.T) {
@@ -473,8 +475,8 @@ func TestDualSenseV5WriterRetainsNewestGenerationWhenBounded(t *testing.T) {
 			len(writer.audio), dualSenseOutputAudioQueueCapacity)
 	}
 	state := writer.telemetry.snapshot()
-	if state.ReceivedPayloads != dualSenseOutputAudioQueueCapacity+1 ||
-		state.EnqueuedPayloads != dualSenseOutputAudioQueueCapacity+1 ||
+	if state.ReceivedPayloads != uint64(dualSenseOutputAudioQueueCapacity+1) ||
+		state.EnqueuedPayloads != uint64(dualSenseOutputAudioQueueCapacity+1) ||
 		state.DroppedPayloads != 1 ||
 		state.DroppedBytes != dualSenseV5SpeakerPayloadSize {
 		t.Fatalf("unexpected V5 bounded telemetry: %+v", state)
@@ -482,6 +484,7 @@ func TestDualSenseV5WriterRetainsNewestGenerationWhenBounded(t *testing.T) {
 
 	for expected := 1; expected <= dualSenseOutputAudioQueueCapacity; expected++ {
 		frame := <-writer.audio
+		writer.recordMediaDequeued(frame)
 		feedbackLength := int(binary.LittleEndian.Uint16(frame.payload[:2]))
 		feedback := frame.payload[2 : 2+feedbackLength]
 		speaker := frame.payload[2+feedbackLength:]
@@ -492,7 +495,7 @@ func TestDualSenseV5WriterRetainsNewestGenerationWhenBounded(t *testing.T) {
 		}
 		writer.release(frame)
 	}
-	if len(writer.audioFree) != dualSenseOutputAudioQueueCapacity {
+	if len(writer.audioFree) != dualSenseOutputAudioPoolCapacity {
 		t.Fatalf("V5 bounded queue leaked buffers: free=%d", len(writer.audioFree))
 	}
 }

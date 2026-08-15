@@ -98,6 +98,20 @@ func TestNegotiationRejectsMissingCapabilitiesAndImpossibleLimits(t *testing.T) 
 	}
 }
 
+func TestNegotiationNoncesFenceExactFileSession(t *testing.T) {
+	valid := validTestNegotiation()
+	if err := validateNegotiation(valid, valid.ClientNonce+1, valid.BuildIdentity); err == nil {
+		t.Fatal("negotiation accepted a response from a different client-nonce session")
+	}
+	zeroDriverNonce := valid
+	zeroDriverNonce.DriverNonce = 0
+	if err := validateNegotiation(
+		zeroDriverNonce, valid.ClientNonce, valid.BuildIdentity,
+	); err == nil {
+		t.Fatal("negotiation accepted a session without a kernel nonce tag")
+	}
+}
+
 func TestNegotiationRejectsStaleLoadedKernelDespiteMatchingOnDiskPackageContract(t *testing.T) {
 	// acceptedPackageIdentity represents the exact source-bound identity from
 	// the already validated signed on-disk package and protected manifest. The

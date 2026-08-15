@@ -1398,15 +1398,14 @@ ViiperEvtEndpointAdd(
     WDF_OBJECT_ATTRIBUTES attributes;
     UDECXUSBENDPOINT endpoint;
     VIIPER_UDE_ENDPOINT_CONTEXT *endpointContext;
+    VIIPER_UDE_DEVICE_CONTEXT *deviceContext = ViiperGetDeviceContext(Device);
+    VIIPER_UDE_CONTROLLER_CONTEXT *controllerContext =
+        ViiperGetControllerContext(deviceContext->Controller);
     WDF_IO_QUEUE_DISPATCH_TYPE dispatchType;
     NTSTATUS status;
 
     PAGED_CODE();
-    if (InterlockedCompareExchange(
-            &ViiperGetControllerContext(
-                ViiperGetDeviceContext(Device)->Controller)->ShuttingDown,
-            0,
-            0) != 0) {
+    if (InterlockedCompareExchange(&controllerContext->ShuttingDown, 0, 0) != 0) {
         return STATUS_DEVICE_REMOVED;
     }
     RtlZeroMemory(&descriptor, sizeof(descriptor));
@@ -1438,6 +1437,34 @@ ViiperEvtEndpointAdd(
     endpointContext->Descriptor = descriptor;
     InitializeListHead(&endpointContext->AdmissionQueue);
     KeInitializeEvent(&endpointContext->OperationsDrained, NotificationEvent, TRUE);
+    // Allocate an address-scoped incarnation before any queue or work-item can
+    // publish ownership. Failed creations deliberately consume a generation;
+    // no future endpoint may reuse an identity observed by a delayed callback.
+    ViiperAcquireDeviceLockExclusive(controllerContext);
+    if (InterlockedCompareExchange(&controllerContext->ShuttingDown, 0, 0) != 0 ||
+        InterlockedCompareExchange(&deviceContext->Purging, 0, 0) != 0) {
+        status = STATUS_DEVICE_REMOVED;
+    } else if (deviceContext->Endpoints[descriptor.bEndpointAddress] != WDF_NO_HANDLE ||
+        (descriptor.bEndpointAddress == 0 &&
+         deviceContext->DefaultEndpoint != WDF_NO_HANDLE)) {
+        // A duplicate add must not advance the address generation while the
+        // published incarnation is still live. Direct-input validation treats
+        // EndpointGenerations[address] as the live endpoint's exact identity.
+        status = STATUS_OBJECT_NAME_COLLISION;
+    } else if (deviceContext->EndpointGenerations[
+            descriptor.bEndpointAddress] == MAXULONG) {
+        status = STATUS_INTEGER_OVERFLOW;
+    } else {
+        ULONG generation = deviceContext->EndpointGenerations[
+            descriptor.bEndpointAddress] + 1;
+        deviceContext->EndpointGenerations[descriptor.bEndpointAddress] = generation;
+        endpointContext->Generation = generation;
+        status = STATUS_SUCCESS;
+    }
+    ViiperReleaseDeviceLockExclusive(controllerContext);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
     WDF_WORKITEM_CONFIG_INIT(&workItemConfig, ViiperEvtEndpointPurgeWorkItem);
     workItemConfig.AutomaticSerialization = WdfFalse;
     WDF_OBJECT_ATTRIBUTES_INIT(&attributes);
@@ -1521,17 +1548,19 @@ ViiperEvtEndpointAdd(
     }
 
     {
-        VIIPER_UDE_DEVICE_CONTEXT *deviceContext = ViiperGetDeviceContext(Device);
-        VIIPER_UDE_CONTROLLER_CONTEXT *controllerContext =
-            ViiperGetControllerContext(deviceContext->Controller);
+        UCHAR address = descriptor.bEndpointAddress;
         ViiperAcquireDeviceLockExclusive(controllerContext);
         if (InterlockedCompareExchange(&controllerContext->ShuttingDown, 0, 0) == 0 &&
-            InterlockedCompareExchange(&deviceContext->Purging, 0, 0) == 0) {
+            InterlockedCompareExchange(&deviceContext->Purging, 0, 0) == 0 &&
+            endpointContext->Generation != 0 &&
+            deviceContext->EndpointGenerations[address] == endpointContext->Generation &&
+            deviceContext->Endpoints[address] == WDF_NO_HANDLE) {
             if (descriptor.bEndpointAddress == 0) {
                 deviceContext->DefaultEndpoint = endpoint;
             }
-            deviceContext->Endpoints[descriptor.bEndpointAddress] = endpoint;
-            deviceContext->RetiredEndpoints[descriptor.bEndpointAddress] = FALSE;
+            deviceContext->Endpoints[address] = endpoint;
+            deviceContext->RetiredEndpoints[address] = FALSE;
+            InterlockedExchange64(&deviceContext->EndpointSequences[address], 0);
             status = STATUS_SUCCESS;
         } else {
             // UdeCx owns the just-created child and will reclaim it when this
@@ -1567,12 +1596,20 @@ ViiperCompleteRetrievedInputUrb(
     _In_ ULONGLONG DirectInputSequence
     )
 {
+    VIIPER_UDE_ENDPOINT_CONTEXT *endpointContext = ViiperGetEndpointContext(Endpoint);
     VIIPER_UDE_DEVICE_CONTEXT *deviceContext =
-        ViiperGetDeviceContext(ViiperGetEndpointContext(Endpoint)->Device);
+        ViiperGetDeviceContext(endpointContext->Device);
+    VIIPER_UDE_REQUEST_CONTEXT *requestContext = ViiperGetRequestContext(Request);
     BOOLEAN queued;
 
     // The passive caller owns buffer validation/copying. Terminal completion
     // and the endpoint rundown release are transferred together to the DPC.
+    RtlZeroMemory(requestContext, sizeof(*requestContext));
+    requestContext->Controller = deviceContext->Controller;
+    requestContext->Endpoint = Endpoint;
+    requestContext->PendingSlot = VIIPER_UDE_MAX_PENDING_OPERATIONS;
+    requestContext->DeviceGeneration = deviceContext->Generation;
+    requestContext->EndpointGeneration = endpointContext->Generation;
     queued = ViiperQueueUrbCompletion(
         deviceContext->Controller,
         Endpoint,
@@ -1824,7 +1861,8 @@ ViiperSubmitInputReport(
         input->Header.Minor != VIIPER_UDE_ABI_MINOR ||
         input->Header.Flags != 0 ||
         input->Header.Size != sizeof(*input) + input->PayloadLength ||
-        input->DeviceId == 0 || input->Generation == 0 || input->Sequence == 0 ||
+        input->DeviceId == 0 || input->Generation == 0 ||
+        input->EndpointGeneration == 0 || input->Sequence == 0 ||
         input->Sequence > MAXLONGLONG ||
         (input->EndpointAddress & USB_ENDPOINT_DIRECTION_MASK) == 0 ||
         input->PayloadOffset != sizeof(*input) || input->PayloadLength == 0 ||
@@ -1851,13 +1889,23 @@ ViiperSubmitInputReport(
             } else {
                 endpoint = deviceContext->Endpoints[input->EndpointAddress];
                 if (endpoint == WDF_NO_HANDLE) {
-                    if (deviceContext->RetiredEndpoints[input->EndpointAddress]) {
+                    if (deviceContext->RetiredEndpoints[input->EndpointAddress] ||
+                        (deviceContext->EndpointGenerations[input->EndpointAddress] != 0 &&
+                         input->EndpointGeneration <=
+                            deviceContext->EndpointGenerations[input->EndpointAddress])) {
                         lifecycleDrop = TRUE;
                         status = STATUS_SUCCESS;
                     }
                 } else {
                     endpointContext = ViiperGetEndpointContext(endpoint);
-                    if (!endpointContext->FastInput ||
+                    if (endpointContext->Generation != input->EndpointGeneration ||
+                        deviceContext->EndpointGenerations[input->EndpointAddress] !=
+                            input->EndpointGeneration) {
+                        if (input->EndpointGeneration < endpointContext->Generation) {
+                            lifecycleDrop = TRUE;
+                            status = STATUS_SUCCESS;
+                        }
+                    } else if (!endpointContext->FastInput ||
                         endpointContext->InputLock == WDF_NO_HANDLE) {
                         status = STATUS_INVALID_DEVICE_STATE;
                     } else {
@@ -1909,6 +1957,7 @@ ViiperSubmitInputReport(
         InterlockedCompareExchange(&deviceContext->InD0, 0, 0) == 0 ||
         InterlockedCompareExchange(&deviceContext->Purging, 0, 0) != 0 ||
         InterlockedCompareExchange(&deviceContext->Resetting, 0, 0) != 0 ||
+        endpointContext->Generation != input->EndpointGeneration ||
         InterlockedCompareExchange(&endpointContext->Purging, 0, 0) != 0 ||
         InterlockedCompareExchange(&endpointContext->Resetting, 0, 0) != 0) {
         WdfSpinLockRelease(controllerContext->BrokerLock);
@@ -2026,21 +2075,29 @@ ViiperWaitForEndpointQuiescence(
     VIIPER_UDE_CONTROLLER_CONTEXT *controllerContext =
         ViiperGetControllerContext(deviceContext->Controller);
     LARGE_INTEGER retryInterval;
+    LARGE_INTEGER watchdogWait;
+    ULONGLONG nextWatchdog;
 
     NT_ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
     // One millisecond is used only on the cold purge/reset path. The ordinary
     // case returns after one event wait and one read-only queue-state sample.
     retryInterval.QuadPart = -10 * 1000;
+    watchdogWait.QuadPart =
+        -(LONGLONG)VIIPER_UDE_RUNDOWN_WATCHDOG_INTERVAL_100NS;
+    nextWatchdog = KeQueryInterruptTime() +
+        VIIPER_UDE_RUNDOWN_WATCHDOG_INTERVAL_100NS;
     for (;;) {
         WDF_IO_QUEUE_STATE queueState;
         BOOLEAN quiescent;
+        LONG activeOperations;
+        ULONGLONG now;
 
         (VOID)KeWaitForSingleObject(
             &endpointContext->OperationsDrained,
             Executive,
             KernelMode,
             FALSE,
-            NULL);
+            &watchdogWait);
 
         // WdfIoQueueDriverNoRequests closes the interval in which a callback
         // was delivered and then preempted before its first BrokerLock
@@ -2051,16 +2108,35 @@ ViiperWaitForEndpointQuiescence(
         WdfSpinLockAcquire(controllerContext->BrokerLock);
         queueState = WdfIoQueueGetState(endpointContext->Queue, NULL, NULL);
         quiescent = (queueState & WdfIoQueueDriverNoRequests) != 0 &&
-            InterlockedCompareExchange(&endpointContext->ActiveOperations, 0, 0) == 0;
+            InterlockedCompareExchange(
+                &endpointContext->ActiveOperations, 0, 0) == 0;
+        activeOperations = InterlockedCompareExchange(
+            &endpointContext->ActiveOperations, 0, 0);
         WdfSpinLockRelease(controllerContext->BrokerLock);
         if (quiescent) {
             return;
         }
+        now = KeQueryInterruptTime();
+        if (now >= nextWatchdog) {
+            VIIPER_TRACE_LIFECYCLE(
+                deviceContext->Controller,
+                VIIPER_UDE_TRACE_SOURCE_DEVICE,
+                VIIPER_UDE_TRACE_ENDPOINT_QUIESCENCE_WATCHDOG,
+                deviceContext->DeviceId,
+                deviceContext->Generation,
+                endpointContext->Device,
+                Endpoint,
+                endpointContext->Descriptor.bEndpointAddress,
+                STATUS_IO_TIMEOUT,
+                activeOperations,
+                (ULONG)queueState);
+            nextWatchdog = now + VIIPER_UDE_RUNDOWN_WATCHDOG_INTERVAL_100NS;
+        }
 
         // A callback can be between KMDF delivery and its first BrokerLock
         // acquisition. It will either enter rundown and re-arm the event or
-        // finish its terminal DPC and make the queue idle. Avoid spinning while
-        // that passive callback is scheduled.
+        // finish its terminal DPC and return the request to framework
+        // ownership. Avoid spinning while that passive callback is scheduled.
         (VOID)KeDelayExecutionThread(KernelMode, FALSE, &retryInterval);
     }
 }
@@ -2080,21 +2156,29 @@ ViiperWaitForEndpointPurgeQuiescence(
     VIIPER_UDE_CONTROLLER_CONTEXT *controllerContext =
         ViiperGetControllerContext(deviceContext->Controller);
     LARGE_INTEGER retryInterval;
+    LARGE_INTEGER watchdogWait;
+    ULONGLONG nextWatchdog;
 
     NT_ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
     retryInterval.QuadPart = -10 * 1000;
+    watchdogWait.QuadPart =
+        -(LONGLONG)VIIPER_UDE_RUNDOWN_WATCHDOG_INTERVAL_100NS;
+    nextWatchdog = KeQueryInterruptTime() +
+        VIIPER_UDE_RUNDOWN_WATCHDOG_INTERVAL_100NS;
     for (;;) {
         WDF_IO_QUEUE_STATE queueState;
         ULONG queuedRequests;
         ULONG driverRequests;
         BOOLEAN quiescent;
+        LONG activeOperations;
+        ULONGLONG now;
 
         (VOID)KeWaitForSingleObject(
             &endpointContext->OperationsDrained,
             Executive,
             KernelMode,
             FALSE,
-            NULL);
+            &watchdogWait);
 
         // UdeCx exclusively owns the associated queue's START/PURGE state.
         // The PURGE callback is the upstream stop/cancel boundary even when
@@ -2114,6 +2198,8 @@ ViiperWaitForEndpointPurgeQuiescence(
             driverRequests == 0 &&
             InterlockedCompareExchange(
                 &endpointContext->ActiveOperations, 0, 0) == 0;
+        activeOperations = InterlockedCompareExchange(
+            &endpointContext->ActiveOperations, 0, 0);
         if (quiescent) {
             *FinalQueueState = queueState;
             *FinalQueuedRequests = queuedRequests;
@@ -2122,6 +2208,22 @@ ViiperWaitForEndpointPurgeQuiescence(
         WdfSpinLockRelease(controllerContext->BrokerLock);
         if (quiescent) {
             return;
+        }
+        now = KeQueryInterruptTime();
+        if (now >= nextWatchdog) {
+            VIIPER_TRACE_LIFECYCLE(
+                deviceContext->Controller,
+                VIIPER_UDE_TRACE_SOURCE_DEVICE,
+                VIIPER_UDE_TRACE_ENDPOINT_QUIESCENCE_WATCHDOG,
+                deviceContext->DeviceId,
+                deviceContext->Generation,
+                endpointContext->Device,
+                Endpoint,
+                endpointContext->Descriptor.bEndpointAddress,
+                STATUS_IO_TIMEOUT,
+                activeOperations,
+                (ULONG)queueState);
+            nextWatchdog = now + VIIPER_UDE_RUNDOWN_WATCHDOG_INTERVAL_100NS;
         }
 
         // This runs only during an endpoint lifecycle transition. A short
@@ -2176,6 +2278,7 @@ ViiperQuiesceResetByIdentity(
     _In_ ULONG Generation,
     _In_ UDECXUSBDEVICE ExpectedDevice,
     _In_opt_ UDECXUSBENDPOINT ExpectedEndpoint,
+    _In_ ULONG ExpectedEndpointGeneration,
     _In_ ULONGLONG ExpectedResetEpoch,
     _In_ UCHAR EndpointAddress,
     _In_ BOOLEAN WholeDevice,
@@ -2210,6 +2313,7 @@ ViiperQuiesceResetByIdentity(
             ULONGLONG currentResetEpoch;
 
             WdfSpinLockAcquire(controllerContext->BrokerLock);
+            NT_ASSERT(ExpectedEndpointGeneration == 0);
             currentResetEpoch = (ULONGLONG)InterlockedCompareExchange64(
                 &deviceContext->ResetEpoch, 0, 0);
             found = InterlockedCompareExchange(&controllerContext->ShuttingDown, 0, 0) == 0 &&
@@ -2253,7 +2357,10 @@ ViiperQuiesceResetByIdentity(
         } else {
             UDECXUSBENDPOINT endpoint = deviceContext->Endpoints[EndpointAddress];
 
-            if (endpoint != WDF_NO_HANDLE && endpoint == ExpectedEndpoint) {
+            if (endpoint != WDF_NO_HANDLE && endpoint == ExpectedEndpoint &&
+                ExpectedEndpointGeneration != 0 &&
+                deviceContext->EndpointGenerations[EndpointAddress] ==
+                    ExpectedEndpointGeneration) {
                 VIIPER_UDE_ENDPOINT_CONTEXT *endpointContext =
                     ViiperGetEndpointContext(endpoint);
 
@@ -2262,6 +2369,7 @@ ViiperQuiesceResetByIdentity(
                     InterlockedCompareExchange(&controllerContext->BrokerFaulted, FALSE, FALSE) == FALSE &&
                     (ULONGLONG)InterlockedCompareExchange64(
                         &deviceContext->ResetEpoch, 0, 0) == ExpectedResetEpoch &&
+                    endpointContext->Generation == ExpectedEndpointGeneration &&
                     InterlockedCompareExchange(&deviceContext->Purging, 0, 0) == 0 &&
                     InterlockedCompareExchange(&deviceContext->Resetting, 0, 0) == 0 &&
                     InterlockedCompareExchange(&endpointContext->Resetting, 0, 0) != 0 &&
@@ -2279,6 +2387,9 @@ ViiperQuiesceResetByIdentity(
                     InterlockedCompareExchange(&controllerContext->BrokerFaulted, FALSE, FALSE) == FALSE &&
                     (ULONGLONG)InterlockedCompareExchange64(
                         &deviceContext->ResetEpoch, 0, 0) == ExpectedResetEpoch &&
+                    endpointContext->Generation == ExpectedEndpointGeneration &&
+                    deviceContext->EndpointGenerations[EndpointAddress] ==
+                        ExpectedEndpointGeneration &&
                     InterlockedCompareExchange(&deviceContext->Purging, 0, 0) == 0 &&
                     InterlockedCompareExchange(&deviceContext->Resetting, 0, 0) == 0 &&
                     InterlockedCompareExchange(&endpointContext->Resetting, 0, 0) != 0 &&
@@ -2358,6 +2469,7 @@ ViiperEvtEndpointResetWorkItem(
         deviceContext->Generation,
         endpointContext->Device,
         endpoint,
+        endpointContext->Generation,
         (ULONGLONG)InterlockedCompareExchange64(
             &endpointContext->ResetDeviceEpoch, 0, 0),
         endpointContext->Descriptor.bEndpointAddress,

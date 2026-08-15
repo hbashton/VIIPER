@@ -15,22 +15,18 @@ after transfer ordering, cancellation, teardown, and recovery are proven.
 - Microsoft's UdeCx contract owns USB device creation, endpoint queues, reset,
   start, purge, and power lifecycle. Purge is asynchronous: pending work must be
   cancelled before `UdecxUsbEndpointPurgeComplete` is called.
-- The local usbip-win2 0.9.7.8 reference proves that UdeCx can expose VIIPER's
-  bidirectional isochronous PlayStation audio topology on Windows.
-- Its WHLK-released UDE lineage invokes normal-response URB completion at
-  `DISPATCH_LEVEL`; current upstream moved every terminal path to a real WDF
-  DPC.
-  ViGEmBus is not a UdeCx driver, so its mixed request-completion contexts are
-  evidence for manual-queue/cache ownership only, not for UDE completion IRQL.
-- Its controller contract also reports chained-MDL, high-speed, and SuperSpeed
-  compatibility for a root controller with USB 2 and USB 3 ports. VIIPER
-  mirrors that capability set. UdeCx owns the mandatory post-enumeration child
-  reset; configuration replacement enters VIIPER's generation-owned lifecycle
-  stream after Windows has finished enumerating the child.
-- ViGEmBus provides the lifecycle north star: explicit protocol negotiation,
-  handle-scoped ownership, bounded manual queues, cancel-safe requests,
-  generation-aware target teardown, and synchronization per target rather than
-  one global lock.
+- Released UdeCx behavior demonstrates that Windows can expose VIIPER's
+  bidirectional isochronous PlayStation audio topology. Its normal-response URB
+  completion behavior also supports using a real WDF DPC for every terminal
+  path; the Microsoft UDE contract remains the authority for completion IRQL.
+- The controller supports chained MDLs plus high-speed and SuperSpeed devices
+  on separate USB 2 and USB 3 ports. UdeCx owns the mandatory
+  post-enumeration child reset; configuration replacement enters VIIPER's
+  generation-owned lifecycle stream only after Windows finishes enumerating
+  the child.
+- The lifecycle model uses explicit protocol negotiation, handle-scoped
+  ownership, bounded manual queues, cancel-safe requests, generation-aware
+  target teardown, and per-target synchronization rather than one global lock.
 
 Reference code is used for architecture and documented protocol behavior. New
 VIIPER code is independently named and implemented. See
@@ -59,20 +55,23 @@ The kernel driver owns only Windows USB presentation and transfer lifecycle.
 
 1. Every device is owned by exactly one open broker handle.
 2. Every device identity includes a monotonically increasing generation.
-3. Every operation token completes exactly once or is cancelled exactly once.
-4. A completion from an old generation is rejected without touching a new
-   device that reused the numeric identifier.
-5. Purge stops admission, cancels queued and in-flight work, waits for ownership
+3. Every endpoint incarnation includes a monotonically increasing generation;
+   an address reused within one device generation cannot inherit requests,
+   publications, workers, cancels, or completions from its predecessor.
+4. Every operation token completes exactly once or is cancelled exactly once.
+5. A completion from an old device or endpoint generation is rejected without
+   touching a replacement that reused the numeric identifier or address.
+6. Purge stops admission, cancels queued and in-flight work, waits for ownership
    to settle, then acknowledges UdeCx.
-6. Driver unload and file cleanup leave no UDE device, request, or worker alive.
-7. Endpoint queues are bounded. The broker enforces both its controller-wide
+7. Driver unload and file cleanup leave no UDE device, request, or worker alive.
+8. Endpoint queues are bounded. The broker enforces both its controller-wide
    ceiling and each child's negotiated pending-operation quota, so one busy
    media device cannot starve another controller. Saturation is observable and
    never overwrites live media or state silently.
-8. Shared report state is snapshotted atomically before encoding. Media and
+9. Shared report state is snapshotted atomically before encoding. Media and
    state never share mutable buffers.
-9. No raw user pointer crosses the ABI.
-10. The ABI is size- and version-negotiated before any mutating operation.
+10. No raw user pointer crosses the ABI.
+11. The ABI is size- and version-negotiated before any mutating operation.
     A revision mismatch has a distinct status that directs the service or
     installer to the exact matching native-driver package. The service also
     recognizes the parameter/length errors returned by native previews from
@@ -84,10 +83,12 @@ The kernel driver owns only Windows USB presentation and transfer lifecycle.
     inputs. A stale
     loaded image is rejected even when its on-disk replacement, ABI, and
     capability mask otherwise look correct.
-11. Every packed wire structure has a compiler-independent size guard. The
-    72-byte completion header carries two explicit reserved words; its size
-    never depends on compiler tail padding. Every field offset is guarded too,
-    so a same-size reorder cannot silently desynchronize the C and Go layouts.
+12. Every packed wire structure has a compiler-independent size guard. ABI
+    1.13 carries endpoint generation in the 108-byte operation, 72-byte
+    completion, and 52-byte input-report records; the completion's final
+    32-bit word remains explicitly reserved. Sizes never depend on compiler
+    tail padding, and every field offset is guarded so a same-size reorder
+    cannot silently desynchronize the C and Go layouts.
 
 ## Kernel/user transport
 
@@ -97,7 +98,9 @@ The transport is intentionally split by USB semantics:
   stays parked in the endpoint queue; one versioned `SUBMIT_INPUT_REPORT` call
   completes a waiting URB without an allocation or broker round trip. ABI 1.10
   classifies newly queued controller states separately from deadline-generated
-  cadence snapshots. Each endpoint holds a bounded preallocated transition
+  cadence snapshots. ABI 1.13 additionally binds every report, operation,
+  cancel, completion, publisher, and worker to the exact endpoint incarnation.
+  Each endpoint holds a bounded preallocated transition
   FIFO and one latest-state snapshot: Windows consumes every accepted edge in
   order, while idle 1 ms DS4/DualSense reports update only the snapshot and
   cannot crowd edges out. The passive ready callback copies one report directly
@@ -140,9 +143,8 @@ guidance by listing `PASSIVE_LEVEL`; the current WDK declarations carry no IRQL
 SAL annotation that resolves the conflict (verified against the project's
 pinned WDK 10.0.28000.1839). VIIPER follows the UDE-specific
 compatibility rule because it explicitly covers terminal and cancellation
-behavior and agrees with usbip-win2's WHLK-released DISPATCH behavior. Current
-usbip-win2 upstream uses a WDF DPC; VIIPER does not copy the older reference's
-synthetic IRQL raise.
+behavior and agrees with released UdeCx behavior. VIIPER uses a real WDF DPC
+and never synthesizes an IRQL raise.
 
 One preallocated controller WDF DPC is the only function that calls either
 UdeCx URB completion API. A request-context intrusive queue holds request and
@@ -180,9 +182,9 @@ endpoint that was never configured.
 The broker owner session is deliberately one-shot. Stopping the user-mode host
 cancels endpoint lanes that may already own dequeued kernel requests; those
 requests cannot be reconstructed safely in a restarted goroutine. VIIPER must
-close that driver handle and negotiate a fresh `Client`/`Host` session, matching
-ViGEmBus's file-session ownership model, rather than guessing a new endpoint
-sequence baseline and risking an abandoned USB request.
+close that driver handle and negotiate a fresh `Client`/`Host` session. It never
+guesses a new endpoint sequence baseline or risks abandoning a USB request from
+the retired file session.
 
 Session shutdown owns a cancellation context before `Serve` is scheduled, so
 even an immediate stop cannot miss host cancellation. The client waits for all
@@ -211,7 +213,7 @@ Every operation carries:
 
 - device ID and generation;
 - a globally unique token for that generation;
-- endpoint address and transfer direction;
+- endpoint address, endpoint-incarnation generation, and transfer direction;
 - endpoint attributes, interval, and maximum packet size copied from the
   UdeCx endpoint descriptor;
 - operation kind and URB function;
@@ -251,10 +253,9 @@ unplug all converge on the same idempotent purge path.
 
 ### Composite alternate-setting identity
 
-The usbip-win2 0.9.7.8 UdeCx implementation documents that UdeCx can report
-incorrect `InterfaceNumber` and `NewInterfaceSetting` values for composite
-device alternate-setting changes. usbip-win2 compensates with an upper filter
-on every USB 3 root hub. VIIPER does not install that system-wide filter.
+UdeCx can report unreliable `InterfaceNumber` and `NewInterfaceSetting` values
+for composite-device alternate-setting changes. VIIPER does not install a
+system-wide root-hub upper filter to compensate.
 
 Every endpoint callback already supplies the authoritative endpoint descriptor.
 The kernel copies its address, attributes, interval, and maximum packet size
@@ -379,13 +380,15 @@ a wedged provider cannot retain the installer mutex indefinitely.
   gate, then purges user-mode queues, aborts every admitted broker operation,
   and uses KMDF's preceding non-power-managed queue purge as its terminal
   endpoint fence. While a shared device-index lock still pins every endpoint,
-  it observes each UdeCx-owned queue as nonaccepting, nondispatching, and
-  `WDF_IO_QUEUE_IDLE`, with `ActiveOperations == 0` under the broker lock. This
-  includes a callback already delivered by WDF but preempted before its first
-  driver instruction. Only after that proof does cleanup join tracked and
-  untracked completion counts and the final DPC, then revoke and consume UDE
-  handles. The final controller `EvtCleanupCallback` performs only invariant
-  checks because KMDF has already cleaned up child objects by then.
+  it requires `WdfIoQueueDriverNoRequests` and `ActiveOperations == 0` under
+  the broker lock. The former closes the callback-delivered/pre-first-driver-
+  instruction window; the latter joins forwarded work and its terminal DPC.
+  Queued host polls are deliberately not part of this predicate because UdeCx
+  owns those requests and issues the endpoint-purge transition while consuming
+  the child. Only after that proof does cleanup join tracked and untracked
+  completion counts and the final DPC, then revoke and consume UDE handles.
+  The final controller `EvtCleanupCallback` performs only invariant checks
+  because KMDF has already cleaned up child objects by then.
 - UdeCx USB-device deletion remains asynchronous. Shutdown snapshots and
   revokes each device under the embedded shared/exclusive push lock, invokes
   `UdecxUsbDevicePlugOutAndDelete` after dropping the lock, and never waits for
@@ -426,12 +429,14 @@ a wedged provider cannot retain the installer mutex indefinitely.
   endpoint queue; VIIPER never starts or purges that queue. The purge callback
   closes admission and cancels only the requests already forwarded into
   VIIPER-owned paths. A passive work item only observes the associated queue:
-  `WDF_IO_QUEUE_IDLE` proves both that no request remains queued and that every
-  WDF-delivered request has completed or been canceled, while the broker-lock
-  rundown proves its terminal DPC has released the endpoint. Only then may the
-  work item call `UdecxUsbEndpointPurgeComplete`. A pipe can therefore never
-  restart or disappear across a live or pre-callback-delivery request, and the
-  client never mutates UdeCx-owned queue state.
+  `WdfIoQueueDriverNoRequests` proves that every WDF-delivered request has
+  returned to framework ownership, while the broker-lock rundown proves every
+  forwarded request and terminal DPC has released the endpoint. It does not
+  wait for UdeCx-owned queued host polls or for the queue's READY bookkeeping
+  to clear. Only then may the work item call
+  `UdecxUsbEndpointPurgeComplete`. A pipe can therefore never restart or
+  disappear across a live or pre-callback-delivery request, and the client
+  never mutates UdeCx-owned queue state.
 - Endpoint reset and endpoint-configuration callbacks are asynchronous UdeCx
   management requests, not notifications. ABI 1.10 preserves the
   generation-bound management tokens introduced in ABI 1.8 and adds the
@@ -564,8 +569,8 @@ a wedged provider cannot retain the installer mutex indefinitely.
   reset, purge, and start clear it so an old pipe lifetime cannot skew a new
   media stream.
 
-This follows the useful ViGEmBus pattern of per-target ownership and manual
-request queues while accounting for UdeCx's endpoint-specific purge contract.
+This uses per-target ownership and manual request queues while accounting for
+UdeCx's endpoint-specific purge contract.
 Host-side create/remove gates are keyed by stable device ID: generations of
 one controller cannot cross, while a slow PnP transition for one pad cannot
 stall an independent pad's registration or removal.
@@ -612,11 +617,22 @@ stall an independent pad's registration or removal.
   waived cancellation/IRQL failure is not a pass.
 - Repeated create/remove, service kill, process crash, sleep/resume, and device
   reconnect leave zero stale children and zero stuck requests.
+- The driver retains a bounded, nonpaged lifecycle recorder partitioned by
+  processor. Each shard can retain the full public 512-record window, and the
+  query path merges only stable published records into the global latest
+  suffix. Monotonic per-slot claims prevent a preempted writer from overwriting
+  a newer wrap when processors collide on a shard; an active-slot collision is
+  dropped rather than waited on and sets a sticky failure flag. Lifecycle
+  writers take no locks, allocate no memory, and never wait. Any endpoint,
+  completion, controller, or owner rundown watchdog also sets a sticky status
+  flag, so rolling its record out of the public window cannot hide it from the
+  release gate. Retained records include the active count and queue state needed
+  to diagnose the stalled ownership boundary.
 - Descriptor and protocol fuzzing rejects malformed inputs without a bugcheck.
 - HID report ordering has no duplication or regression across generations.
 - DualSense and DualShock 4 media survive concurrent state and feedback traffic.
-- Native latency and CPU are measured against the current USB/IP path and
-  ViGEmBus-style virtual input under the same workload.
+- Native latency and CPU are measured against the current USB/IP path and a
+  comparable virtual-input baseline under the same workload.
 - The overlapped owner handle uses Microsoft's
   `FILE_SKIP_COMPLETION_PORT_ON_SUCCESS` contract. A direct input IOCTL which
   the kernel completes inline returns on its publisher goroutine without an
@@ -678,10 +694,9 @@ authenticated commit order are documented in
 - Microsoft, `EVT_UDECX_USB_ENDPOINT_RESET` (asynchronous reset request)
   <https://learn.microsoft.com/windows-hardware/drivers/ddi/udecxusbendpoint/nc-udecxusbendpoint-evt_udecx_usb_endpoint_reset>
 - Microsoft, `WdfIoQueueGetState`, `WDF_IO_QUEUE_STATE`, and
-  `WDF_IO_QUEUE_IDLE` (idle includes requests delivered to the driver)
+  `WdfIoQueueDriverNoRequests` (no requests are owned by driver callbacks)
   <https://learn.microsoft.com/windows-hardware/drivers/ddi/wdfio/nf-wdfio-wdfioqueuegetstate>
   <https://learn.microsoft.com/windows-hardware/drivers/ddi/wdfio/ne-wdfio-_wdf_io_queue_state>
-  <https://learn.microsoft.com/windows-hardware/drivers/ddi/wdfio/nf-wdfio-wdf_io_queue_idle>
 - Microsoft, `UdecxUrbComplete` and `UdecxUrbCompleteWithNtStatus`
   <https://learn.microsoft.com/windows-hardware/drivers/ddi/udecxurb/nf-udecxurb-udecxurbcomplete>
   <https://learn.microsoft.com/windows-hardware/drivers/ddi/udecxurb/nf-udecxurb-udecxurbcompletewithntstatus>
@@ -691,14 +706,6 @@ authenticated commit order are documented in
   <https://learn.microsoft.com/windows-hardware/drivers/ddi/wdfdpc/nc-wdfdpc-evt_wdf_dpc>
   <https://learn.microsoft.com/windows-hardware/drivers/ddi/wdfdpc/nf-wdfdpc-wdfdpcenqueue>
   <https://learn.microsoft.com/windows-hardware/drivers/ddi/wdfdpc/nf-wdfdpc-wdfdpccancel>
-- usbip-win2, separate UDE completion-DPC change
-  <https://github.com/vadimgrn/usbip-win2/commit/32244122278edb8a003d67f34ef8366d86761ad2>
-- usbip-win2 `v.0.9.7.8` source at `74f5a7f` (WHLK-released DISPATCH
-  behavior)
-  <https://github.com/vadimgrn/usbip-win2/tree/74f5a7fa8a4991f61bcee3ec846d3b182184f05d>
-- ViGEmBus source archive at `d986e1d` (manual-queue and target-lifecycle
-  reference; not UDE)
-  <https://github.com/nefarius/ViGEmBus/tree/d986e1d93708ec9b11049542fa6027272cce716c>
 - Microsoft, *KMDF Version History*
 - Microsoft, *Install the WDK using NuGet*
 - Microsoft Windows Driver Samples CI guidance

@@ -13,7 +13,7 @@ func installNativePackage(context.Context, *slog.Logger, nativePackageRequest) e
 }
 
 func commitNativePackageBroker(
-	*slog.Logger, string, string, string, string, string,
+	*slog.Logger, string, string, string, string, string, bool,
 ) (nativePackageBrokerCommitResult, error) {
 	return nativePackageBrokerPreflightFailure(
 		errors.New("native UDE package installation is supported only on Windows"),

@@ -135,10 +135,13 @@ type Client struct {
 	// removes a scheduler/channel round trip from direct input without changing
 	// cancellation or lifecycle I/O.
 	skipCompletionPortOnSuccess bool
-	driverNonce                 uint64
-	buildIdentity               [BuildIdentitySize]byte
-	capabilities                Capabilities
-	limits                      NegotiateResponse
+	// driverNonce is the nonzero negotiated tag for this exact exclusive file
+	// session. The Client and its Host are one-shot, so it cannot be inherited
+	// by a successor handle or reused by a later worker/publication graph.
+	driverNonce   uint64
+	buildIdentity [BuildIdentitySize]byte
+	capabilities  Capabilities
+	limits        NegotiateResponse
 	// pendingObserver is a package-private synchronization seam for the
 	// Windows IOCP stress harness. Production clients leave it nil. It runs
 	// only after the overlapped issuer has returned ERROR_IO_PENDING, so tests can

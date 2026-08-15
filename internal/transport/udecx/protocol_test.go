@@ -13,7 +13,7 @@ func TestBuildIdentityCanonicalVectorAndValidation(t *testing.T) {
 	t.Parallel()
 
 	const revision = "0123456789abcdef0123456789abcdef01234567"
-	const wantHex = "6796b0cf22a80984b283662a50a3b364c46218e37766a2e1880b38851b65d9ad"
+	const wantHex = "b6bdcfe32dec8eb48bfde2f70b72542695588d2483ab71218636ce0b733aa067"
 	identity, err := DeriveBuildIdentity(revision, DriverPackageVersion,
 		ABIMajor, ABIMinor, AdvertisedCapabilities)
 	if err != nil {
@@ -89,8 +89,8 @@ func TestABISizes(t *testing.T) {
 		"completion": CompletionSize, "input report": InputReportSize,
 		"stats": StatsSize,
 	} {
-		if got%8 != 0 {
-			t.Fatalf("%s ABI size %d is not 8-byte aligned", name, got)
+		if got%4 != 0 {
+			t.Fatalf("%s ABI size %d is not 32-bit aligned", name, got)
 		}
 	}
 }
@@ -176,6 +176,7 @@ func TestParseOperationCopiesPayloadAndPackets(t *testing.T) {
 	binary.LittleEndian.PutUint32(raw[72:76], OperationSize)
 	binary.LittleEndian.PutUint64(raw[88:96], 17)
 	binary.LittleEndian.PutUint64(raw[96:104], 23)
+	binary.LittleEndian.PutUint32(raw[104:108], 29)
 	binary.LittleEndian.PutUint32(raw[OperationSize:OperationSize+4], 0)
 	binary.LittleEndian.PutUint32(raw[OperationSize+4:OperationSize+8], uint32(len(payload)))
 	copy(raw[OperationSize+IsoPacketSize:], payload)
@@ -185,7 +186,8 @@ func TestParseOperationCopiesPayloadAndPackets(t *testing.T) {
 		t.Fatal(err)
 	}
 	if op.Token != 99 || op.DeviceID != 4 || op.Generation != 8 ||
-		op.EndpointSequence != 17 || op.DeviceSequence != 23 || op.InterfaceNumber != 2 ||
+		op.EndpointSequence != 17 || op.DeviceSequence != 23 || op.EndpointGeneration != 29 ||
+		op.InterfaceNumber != 2 ||
 		op.InterfaceSetting != 1 || op.EndpointAttributes != 0x05 ||
 		op.EndpointInterval != 4 || op.EndpointMaxPacketSize != 196 ||
 		len(op.IsoPackets) != 1 {
@@ -318,6 +320,7 @@ func TestParseOperationAcceptsCanonicalEmptyTail(t *testing.T) {
 	binary.LittleEndian.PutUint32(raw[36:40], uint32(OperationEndpointStart))
 	binary.LittleEndian.PutUint32(raw[64:68], OperationSize)
 	binary.LittleEndian.PutUint32(raw[72:76], OperationSize)
+	binary.LittleEndian.PutUint32(raw[104:108], 3)
 
 	op, err := ParseOperation(raw)
 	if err != nil {
@@ -331,6 +334,50 @@ func TestParseOperationAcceptsCanonicalEmptyTail(t *testing.T) {
 	binary.LittleEndian.PutUint32(raw[72:76], 0)
 	if _, err = ParseOperation(raw); !errors.Is(err, ErrInvalidRange) {
 		t.Fatalf("ParseOperation zero ISO offset error=%v want=%v", err, ErrInvalidRange)
+	}
+}
+
+func TestParseOperationRequiresKindScopedEndpointGeneration(t *testing.T) {
+	raw := make([]byte, OperationSize)
+	header, err := NewHeader(OperationSize)
+	if err != nil {
+		t.Fatal(err)
+	}
+	putHeader(raw, header)
+	binary.LittleEndian.PutUint64(raw[16:24], 7)
+	binary.LittleEndian.PutUint64(raw[24:32], 9)
+	binary.LittleEndian.PutUint32(raw[32:36], 2)
+	binary.LittleEndian.PutUint32(raw[36:40], uint32(OperationEndpointStart))
+	binary.LittleEndian.PutUint32(raw[64:68], OperationSize)
+	binary.LittleEndian.PutUint32(raw[72:76], OperationSize)
+
+	if _, err = ParseOperation(raw); !errors.Is(err, ErrInvalidRange) {
+		t.Fatalf("zero endpoint generation error=%v want ErrInvalidRange", err)
+	}
+	binary.LittleEndian.PutUint32(raw[104:108], 3)
+	if _, err = ParseOperation(raw); err != nil {
+		t.Fatalf("endpoint-scoped identity: %v", err)
+	}
+	binary.LittleEndian.PutUint32(raw[36:40], uint32(OperationDeviceD0Exit))
+	if _, err = ParseOperation(raw); !errors.Is(err, ErrInvalidRange) {
+		t.Fatalf("device-scoped endpoint generation error=%v want ErrInvalidRange", err)
+	}
+	binary.LittleEndian.PutUint32(raw[104:108], 0)
+	if _, err = ParseOperation(raw); err != nil {
+		t.Fatalf("device-scoped zero endpoint generation: %v", err)
+	}
+	binary.LittleEndian.PutUint32(raw[36:40], uint32(OperationCancel))
+	if _, err = ParseOperation(raw); !errors.Is(err, ErrInvalidRange) {
+		t.Fatalf("ordinary cancellation zero endpoint generation error=%v want ErrInvalidRange", err)
+	}
+	managementToken := uint64(2)<<32 | uint64(ManagementSlotFlag) | 1
+	binary.LittleEndian.PutUint64(raw[16:24], managementToken)
+	if _, err = ParseOperation(raw); err != nil {
+		t.Fatalf("device-scoped management cancellation: %v", err)
+	}
+	binary.LittleEndian.PutUint32(raw[104:108], 3)
+	if _, err = ParseOperation(raw); err != nil {
+		t.Fatalf("endpoint-scoped management cancellation: %v", err)
 	}
 }
 
@@ -367,7 +414,8 @@ func TestParseDequeuedOperationRequiresExactBytesReturned(t *testing.T) {
 
 func TestCompletionMarshalling(t *testing.T) {
 	raw, err := (Completion{
-		Token: 3, DeviceID: 9, Generation: 4, Status: -1, USBDStatus: 0xc0000001,
+		Token: 3, DeviceID: 9, Generation: 4, EndpointGeneration: 5,
+		Status: -1, USBDStatus: 0xc0000001,
 		IsoPackets: []IsoPacket{{Offset: 0, Length: 3}}, Payload: []byte{7, 8, 9},
 	}).MarshalBinary()
 	if err != nil {
@@ -379,17 +427,21 @@ func TestCompletionMarshalling(t *testing.T) {
 	if got := binary.LittleEndian.Uint32(raw[52:56]); got != CompletionSize+IsoPacketSize {
 		t.Fatalf("payload offset=%d", got)
 	}
+	if got := binary.LittleEndian.Uint32(raw[64:68]); got != 5 {
+		t.Fatalf("endpoint generation=%d want=5", got)
+	}
 }
 
 func TestCompletionMarshallingPreservesZeroLengthSparseISO(t *testing.T) {
 	payload := make([]byte, 64)
 	raw, err := (Completion{
-		Token:          3,
-		DeviceID:       9,
-		Generation:     4,
-		TransferLength: 0,
-		IsoPackets:     []IsoPacket{{Offset: 0, Length: 0}},
-		Payload:        payload,
+		Token:              3,
+		DeviceID:           9,
+		Generation:         4,
+		EndpointGeneration: 1,
+		TransferLength:     0,
+		IsoPackets:         []IsoPacket{{Offset: 0, Length: 0}},
+		Payload:            payload,
 	}).MarshalBinary()
 	if err != nil {
 		t.Fatal(err)
@@ -404,7 +456,8 @@ func TestCompletionMarshallingPreservesZeroLengthSparseISO(t *testing.T) {
 
 func TestCompletionEncodingIntoCallerBufferDoesNotAllocate(t *testing.T) {
 	completion := Completion{
-		Token: 1, DeviceID: 2, Generation: 3, TransferLength: 4 * 196,
+		Token: 1, DeviceID: 2, Generation: 3, EndpointGeneration: 1,
+		TransferLength: 4 * 196,
 		IsoPackets: []IsoPacket{
 			{Offset: 0, Length: 196}, {Offset: 196, Length: 196},
 			{Offset: 392, Length: 196}, {Offset: 588, Length: 196},
@@ -427,9 +480,12 @@ func TestCompletionEncodingIntoCallerBufferDoesNotAllocate(t *testing.T) {
 	if allocations != 0 {
 		t.Fatalf("caller-buffer completion encoding allocated %.2f objects", allocations)
 	}
-	for index, value := range dst[64:CompletionSize] {
+	if got := binary.LittleEndian.Uint32(dst[64:68]); got != completion.EndpointGeneration {
+		t.Fatalf("endpoint generation=%d want=%d", got, completion.EndpointGeneration)
+	}
+	for index, value := range dst[68:CompletionSize] {
 		if value != 0 {
-			t.Fatalf("completion reserved byte %d retained %#x", 64+index, value)
+			t.Fatalf("completion reserved byte %d retained %#x", 68+index, value)
 		}
 	}
 	for packet := range completion.IsoPackets {
@@ -440,9 +496,31 @@ func TestCompletionEncodingIntoCallerBufferDoesNotAllocate(t *testing.T) {
 	}
 }
 
+func TestCompletionEndpointGenerationScopedByToken(t *testing.T) {
+	ordinary := Completion{Token: 1, DeviceID: 2, Generation: 3}
+	if _, err := ordinary.MarshalBinary(); !errors.Is(err, ErrInvalidRange) {
+		t.Fatalf("ordinary zero endpoint generation error=%v want ErrInvalidRange", err)
+	}
+	deviceManagement := Completion{
+		Token:    uint64(2)<<32 | uint64(ManagementSlotFlag) | 1,
+		DeviceID: 2, Generation: 3,
+	}
+	raw, err := deviceManagement.MarshalBinary()
+	if err != nil {
+		t.Fatalf("device-scoped management completion: %v", err)
+	}
+	if got := binary.LittleEndian.Uint32(raw[64:68]); got != 0 {
+		t.Fatalf("device-scoped endpoint generation=%d want=0", got)
+	}
+	deviceManagement.EndpointGeneration = 7
+	if _, err = deviceManagement.MarshalBinary(); err != nil {
+		t.Fatalf("endpoint-scoped management completion: %v", err)
+	}
+}
+
 func TestInputReportMarshalling(t *testing.T) {
 	raw, err := (InputReport{
-		DeviceID: 5, Generation: 7, EndpointAddress: 0x81,
+		DeviceID: 5, Generation: 7, EndpointGeneration: 9, EndpointAddress: 0x81,
 		Transition: true, Sequence: 11, Payload: []byte{1, 2, 3},
 	}).MarshalBinary()
 	if err != nil {
@@ -453,6 +531,7 @@ func TestInputReportMarshalling(t *testing.T) {
 		binary.LittleEndian.Uint32(raw[32:36]) != InputReportSize ||
 		binary.LittleEndian.Uint32(raw[36:40]) != 3 ||
 		binary.LittleEndian.Uint64(raw[40:48]) != 11 ||
+		binary.LittleEndian.Uint32(raw[48:52]) != 9 ||
 		string(raw[InputReportSize:]) != string([]byte{1, 2, 3}) {
 		t.Fatalf("invalid input-report wire layout: %x", raw)
 	}
@@ -460,7 +539,7 @@ func TestInputReportMarshalling(t *testing.T) {
 
 func TestInputReportMetadataEncodingDoesNotAllocate(t *testing.T) {
 	report := InputReport{
-		DeviceID: 5, Generation: 7, EndpointAddress: 0x81,
+		DeviceID: 5, Generation: 7, EndpointGeneration: 9, EndpointAddress: 0x81,
 		Sequence: 11, Payload: []byte{1, 2, 3},
 	}
 	var metadata [InputReportSize]byte
@@ -476,7 +555,7 @@ func TestInputReportMetadataEncodingDoesNotAllocate(t *testing.T) {
 
 func TestInputReportMetadataClearsReusedTransitionFlag(t *testing.T) {
 	report := InputReport{
-		DeviceID: 5, Generation: 7, EndpointAddress: 0x81,
+		DeviceID: 5, Generation: 7, EndpointGeneration: 9, EndpointAddress: 0x81,
 		Transition: true, Sequence: 11, Payload: []byte{1},
 	}
 	var metadata [InputReportSize]byte
@@ -544,6 +623,8 @@ func TestParseLifecycleTracePreservesDebugState(t *testing.T) {
 	binary.LittleEndian.PutUint32(raw[32:36], 1)
 	binary.LittleEndian.PutUint32(raw[36:40], LifecycleTraceRecordSize)
 	binary.LittleEndian.PutUint32(raw[40:44], LifecycleTraceCapacity)
+	binary.LittleEndian.PutUint32(raw[44:48], uint32(
+		LifecycleTraceStatusDroppedRecord|LifecycleTraceStatusWatchdogFired))
 
 	record := raw[48 : 48+LifecycleTraceRecordSize]
 	binary.LittleEndian.PutUint64(record[0:8], 23)
@@ -566,7 +647,9 @@ func TestParseLifecycleTracePreservesDebugState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if trace.LatestSequence != 23 || trace.PerformanceFrequency != 10_000_000 || len(trace.Records) != 1 {
+	if trace.LatestSequence != 23 || trace.PerformanceFrequency != 10_000_000 ||
+		trace.StatusFlags != LifecycleTraceStatusDroppedRecord|LifecycleTraceStatusWatchdogFired ||
+		len(trace.Records) != 1 {
 		t.Fatalf("unexpected lifecycle trace header: %+v", trace)
 	}
 	got := trace.Records[0]
@@ -577,6 +660,10 @@ func TestParseLifecycleTracePreservesDebugState(t *testing.T) {
 		got.Event != TraceEndpointPurgeCompleteEnd || got.Processor != 9 ||
 		got.Source != TraceSourceDevice || got.IRQL != 0 || got.EndpointAddress != 0x84 {
 		t.Fatalf("unexpected lifecycle trace record: %+v", got)
+	}
+	binary.LittleEndian.PutUint32(raw[44:48], 0x80000000)
+	if _, err = ParseLifecycleTrace(raw); !errors.Is(err, ErrInvalidRange) {
+		t.Fatalf("unknown lifecycle trace status error=%v want ErrInvalidRange", err)
 	}
 }
 
@@ -665,6 +752,7 @@ func dualSenseIsoOperationFixture(packetCount, packetLength int) []byte {
 	binary.LittleEndian.PutUint32(raw[68:72], uint32(packetCount*packetLength))
 	binary.LittleEndian.PutUint32(raw[72:76], OperationSize)
 	binary.LittleEndian.PutUint64(raw[88:96], 1)
+	binary.LittleEndian.PutUint32(raw[104:108], 1)
 	for index := 0; index < packetCount; index++ {
 		offset := OperationSize + index*IsoPacketSize
 		binary.LittleEndian.PutUint32(raw[offset:offset+4], uint32(index*packetLength))
@@ -688,7 +776,8 @@ func BenchmarkParseDualSenseIsoOperation(b *testing.B) {
 
 func BenchmarkMarshalDualSenseIsoCompletion(b *testing.B) {
 	completion := Completion{
-		Token: 1, DeviceID: 2, Generation: 3, TransferLength: 4 * 196,
+		Token: 1, DeviceID: 2, Generation: 3, EndpointGeneration: 1,
+		TransferLength: 4 * 196,
 		IsoPackets: []IsoPacket{
 			{Offset: 0, Length: 196}, {Offset: 196, Length: 196},
 			{Offset: 392, Length: 196}, {Offset: 588, Length: 196},
@@ -719,7 +808,8 @@ func TestDualSenseIsoProtocolAllocationBudget(t *testing.T) {
 	}
 
 	completion := Completion{
-		Token: 1, DeviceID: 2, Generation: 3, TransferLength: 4 * 196,
+		Token: 1, DeviceID: 2, Generation: 3, EndpointGeneration: 1,
+		TransferLength: 4 * 196,
 		IsoPackets: []IsoPacket{
 			{Offset: 0, Length: 196}, {Offset: 196, Length: 196},
 			{Offset: 392, Length: 196}, {Offset: 588, Length: 196},

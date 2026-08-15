@@ -187,7 +187,8 @@ ViiperHandleQueryLifecycleTrace(
     LARGE_INTEGER frequency;
     ULONGLONG latestSequence;
     ULONGLONG firstSequence;
-    ULONGLONG sequence;
+    ULONG shardIndex;
+    ULONG recordIndex;
 
     if (fileObject == WDF_NO_HANDLE) {
         return STATUS_INVALID_HANDLE;
@@ -220,28 +221,77 @@ ViiperHandleQueryLifecycleTrace(
     firstSequence = latestSequence > VIIPER_UDE_LIFECYCLE_TRACE_CAPACITY
         ? latestSequence - VIIPER_UDE_LIFECYCLE_TRACE_CAPACITY + 1
         : 1;
-    for (sequence = firstSequence; sequence <= latestSequence; ++sequence) {
-        VIIPER_UDE_LIFECYCLE_TRACE_RECORD *source =
-            &context->LifecycleTrace[
-                (sequence - 1) % VIIPER_UDE_LIFECYCLE_TRACE_CAPACITY];
-        ULONGLONG publishedBefore = (ULONGLONG)InterlockedCompareExchange64(
-            (volatile LONG64 *)&source->PublishedSequence, 0, 0);
-        ULONGLONG publishedAfter;
+    for (shardIndex = 0;
+         shardIndex < context->LifecycleTraceShardCount;
+         ++shardIndex) {
+        VIIPER_UDE_LIFECYCLE_TRACE_SHARD *shard =
+            &context->LifecycleTraceShards[shardIndex];
+        for (recordIndex = 0;
+             recordIndex < VIIPER_UDE_LIFECYCLE_TRACE_CAPACITY;
+             ++recordIndex) {
+            VIIPER_UDE_LIFECYCLE_TRACE_RECORD *source =
+                &shard->Records[recordIndex];
+            VIIPER_UDE_LIFECYCLE_TRACE_RECORD candidate;
+            LONG64 slotStateBefore = InterlockedCompareExchange64(
+                &shard->SlotStates[recordIndex], 0, 0);
+            ULONGLONG publishedBefore =
+                (ULONGLONG)InterlockedCompareExchange64(
+                    (volatile LONG64 *)&source->PublishedSequence, 0, 0);
+            ULONGLONG publishedAfter;
+            LONG64 slotStateAfter;
+            ULONG insertIndex;
 
-        if (publishedBefore != sequence) {
-            continue;
-        }
-        KeMemoryBarrier();
-        RtlCopyMemory(
-            &output->Records[output->RecordCount], source, sizeof(*source));
-        KeMemoryBarrier();
-        publishedAfter = (ULONGLONG)InterlockedCompareExchange64(
-            (volatile LONG64 *)&source->PublishedSequence, 0, 0);
-        if (publishedAfter == sequence &&
-            output->Records[output->RecordCount].PublishedSequence == sequence) {
+            if ((slotStateBefore & 1) != 0 ||
+                publishedBefore < firstSequence ||
+                publishedBefore > latestSequence) {
+                continue;
+            }
+            KeMemoryBarrier();
+            RtlCopyMemory(&candidate, source, sizeof(candidate));
+            KeMemoryBarrier();
+            publishedAfter = (ULONGLONG)InterlockedCompareExchange64(
+                (volatile LONG64 *)&source->PublishedSequence, 0, 0);
+            slotStateAfter = InterlockedCompareExchange64(
+                &shard->SlotStates[recordIndex], 0, 0);
+            if (slotStateAfter != slotStateBefore ||
+                (slotStateAfter & 1) != 0 ||
+                publishedAfter != publishedBefore ||
+                candidate.PublishedSequence != publishedBefore ||
+                output->RecordCount >= VIIPER_UDE_LIFECYCLE_TRACE_CAPACITY) {
+                continue;
+            }
+
+            insertIndex = output->RecordCount;
+            while (insertIndex > 0 &&
+                output->Records[insertIndex - 1].PublishedSequence >
+                    candidate.PublishedSequence) {
+                --insertIndex;
+            }
+            if ((insertIndex > 0 &&
+                    output->Records[insertIndex - 1].PublishedSequence ==
+                        candidate.PublishedSequence) ||
+                (insertIndex < output->RecordCount &&
+                    output->Records[insertIndex].PublishedSequence ==
+                        candidate.PublishedSequence)) {
+                continue;
+            }
+            if (insertIndex < output->RecordCount) {
+                RtlMoveMemory(
+                    &output->Records[insertIndex + 1],
+                    &output->Records[insertIndex],
+                    (output->RecordCount - insertIndex) *
+                        sizeof(output->Records[0]));
+            }
+            output->Records[insertIndex] = candidate;
             ++output->RecordCount;
         }
     }
+
+    // Status is monotonic. Sample it only after the complete record scan so a
+    // watchdog or contended writer observed during the scan cannot be omitted
+    // from an otherwise successful release-gate snapshot.
+    output->StatusFlags = (VIIPER_UDE_UINT32)InterlockedCompareExchange(
+        &context->LifecycleTraceStatus, 0, 0);
 
     WdfRequestSetInformation(Request, sizeof(*output));
     return STATUS_SUCCESS;

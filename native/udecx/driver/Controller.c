@@ -22,9 +22,19 @@ ViiperFinishOwnerCleanup(
     _In_ WDFFILEOBJECT OwnerFile
     );
 
+static
+VOID
+ViiperWaitForControllerRundown(
+    _In_ WDFDEVICE Device,
+    _Inout_ PKEVENT Event,
+    _In_ USHORT WatchdogEvent,
+    _Inout_ volatile LONG *ActiveCounter
+    );
+
 #ifdef ALLOC_PRAGMA
 #pragma alloc_text(PAGE, ViiperEvtDeviceAdd)
 #pragma alloc_text(PAGE, ViiperEvtDeviceSelfManagedIoInit)
+#pragma alloc_text(PAGE, ViiperWaitForControllerRundown)
 #pragma alloc_text(PAGE, ViiperFinishOwnerCleanup)
 #pragma alloc_text(PAGE, ViiperEvtFileCreate)
 #pragma alloc_text(PAGE, ViiperEvtFileClose)
@@ -57,12 +67,11 @@ ViiperFinishOwnerCleanup(
     // only those finite UdeCx API calls here. Child EvtCleanup is deliberately
     // not part of this rundown because PlugOutAndDelete consumes its handle
     // before KMDF necessarily destroys the object.
-    (VOID)KeWaitForSingleObject(
+    ViiperWaitForControllerRundown(
+        Device,
         &context->OwnerAdmissionsDrained,
-        Executive,
-        KernelMode,
-        FALSE,
-        NULL);
+        VIIPER_UDE_TRACE_OWNER_RUNDOWN_WATCHDOG,
+        &context->ActiveOwnerAdmissions);
     if (InterlockedCompareExchange(&context->ShuttingDown, 0, 0) != 0) {
         return FALSE;
     }
@@ -82,6 +91,49 @@ ViiperFinishOwnerCleanup(
         WdfObjectDereference(OwnerFile);
     }
     return TRUE;
+}
+
+static
+VOID
+ViiperWaitForControllerRundown(
+    _In_ WDFDEVICE Device,
+    _Inout_ PKEVENT Event,
+    _In_ USHORT WatchdogEvent,
+    _Inout_ volatile LONG *ActiveCounter
+    )
+{
+    VIIPER_UDE_CONTROLLER_CONTEXT *context =
+        ViiperGetControllerContext(Device);
+    LARGE_INTEGER watchdogWait;
+
+    PAGED_CODE();
+    watchdogWait.QuadPart =
+        -(LONGLONG)VIIPER_UDE_RUNDOWN_WATCHDOG_INTERVAL_100NS;
+    for (;;) {
+        NTSTATUS waitStatus = KeWaitForSingleObject(
+            Event,
+            Executive,
+            KernelMode,
+            FALSE,
+            &watchdogWait);
+        if (waitStatus != STATUS_TIMEOUT) {
+            NT_ASSERT(waitStatus == STATUS_SUCCESS);
+            return;
+        }
+        VIIPER_TRACE_LIFECYCLE(
+            Device,
+            VIIPER_UDE_TRACE_SOURCE_CONTROLLER,
+            WatchdogEvent,
+            0,
+            0,
+            WDF_NO_HANDLE,
+            WDF_NO_HANDLE,
+            0,
+            STATUS_IO_TIMEOUT,
+            InterlockedCompareExchange(ActiveCounter, 0, 0),
+            (ULONG)InterlockedCompareExchange(
+                &context->PendingOperations, 0, 0));
+    }
 }
 
 NTSTATUS
@@ -184,6 +236,11 @@ ViiperEvtDeviceAdd(
     KeInitializeEvent(&context->CompletionOperationsDrained, NotificationEvent, TRUE);
     KeInitializeEvent(&context->OwnerAdmissionsDrained, NotificationEvent, TRUE);
     KeInitializeEvent(&context->FileCleanupsDrained, NotificationEvent, TRUE);
+
+    status = ViiperInitializeLifecycleTrace(device);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
 
     // UdeCx owns the controller's USB root-hub power policy. Establish the
     // proven non-wakeable S0 idle contract before publishing emulation so a
@@ -302,12 +359,11 @@ ViiperEvtDeviceSelfManagedIoCleanup(
     // using the controller's queue and lock children. The gate prevents any
     // successor, so this event is a finite rundown join before those objects
     // are purged. A cleanup that reaches OwnerLock after the gate never enters.
-    (VOID)KeWaitForSingleObject(
+    ViiperWaitForControllerRundown(
+        Device,
         &context->FileCleanupsDrained,
-        Executive,
-        KernelMode,
-        FALSE,
-        NULL);
+        VIIPER_UDE_TRACE_CONTROLLER_RUNDOWN_WATCHDOG,
+        &context->ActiveFileCleanups);
 
     // These queues are non-power-managed. KMDF purges them before this
     // callback on normal removal, but an explicit idempotent purge also covers
@@ -337,12 +393,11 @@ ViiperEvtDeviceSelfManagedIoCleanup(
             BOOLEAN stable;
 
             if (InterlockedCompareExchange(&context->PendingOperations, 0, 0) != 0) {
-                (VOID)KeWaitForSingleObject(
+                ViiperWaitForControllerRundown(
+                    Device,
                     &context->BrokerOperationsDrained,
-                    Executive,
-                    KernelMode,
-                    FALSE,
-                    NULL);
+                    VIIPER_UDE_TRACE_CONTROLLER_RUNDOWN_WATCHDOG,
+                    &context->PendingOperations);
             }
             // BrokerOperationsDrained covers tracked slots. The second join
             // also covers rejected and fast-input URBs, then cancels/joins the

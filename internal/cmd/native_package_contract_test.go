@@ -31,6 +31,8 @@ func TestNativePackageProductionSourceContract(t *testing.T) {
 		filepath.Join(root, "internal", "cmd", "native_package_uninstall.go"))
 	serviceSource := readNativePackageContractFile(t,
 		filepath.Join(root, "internal", "cmd", "native_service_install_windows.go"))
+	brokerJournalSource := readNativePackageContractFile(t,
+		filepath.Join(root, "internal", "cmd", "native_broker_journal_windows.go"))
 
 	requiredWindows := []string{
 		"expectedManifestSHA256",
@@ -100,7 +102,7 @@ func TestNativePackageProductionSourceContract(t *testing.T) {
 		"lockNativePackageUninstallLiveLog(", "promoteNativePackageUninstallLiveLog(ctx)",
 		"stopNativeService(ctx, t.service", "--transaction-deadline-unix-ms",
 		"exec.Command(t.request.driverHelper", "parseNativePackageRemoveProof(",
-		"serviceRestoreVerified", "t.service.Delete()",
+		"return result, proofErr", "serviceRestoreVerified", "t.service.Delete()",
 		"waitForNativePackageServiceDeletion", "deleteNativePackageUninstallFileHandle(",
 		"errors.Is(err, windows.ERROR_SERVICE_MARKED_FOR_DELETE)",
 		"nativePackageUninstallIsCurrentExecutable(file)",
@@ -201,7 +203,8 @@ func TestNativePackageProductionSourceContract(t *testing.T) {
 		"PreparePreinstalledDriverOnDevice(", "CommitPreparedDriverBinding(",
 		"requirePristineRuntime", "RequiresDriverMutation(",
 		"RequiresPristineRuntimeProof(", "RuntimeStatsArePristine(",
-		"AbiCompatibilityProfile", "{12, 29, 152, true}",
+		"AbiCompatibilityProfile", "{13, 29, 152, true}",
+		"{12, 29, 152, true}",
 		"{11, 29, 144, false}", "{10, 13, 144, false}",
 		"AbiCompatibilityProfilesAreValid()", "IsAbiRetryEligible(",
 		"AbiHealthPurpose::PristineUpgrade", "AbiHealthPurpose::PristineRecheck",
@@ -217,6 +220,20 @@ func TestNativePackageProductionSourceContract(t *testing.T) {
 		"self-test-pristine-runtime-decision", "self-test-pristine-runtime-stats",
 		"--broker-quiesce-request-handle", "--broker-quiesce-ready-handle",
 		"--broker-quiesce-abort-handle", "--broker-handoff-handle",
+		"--recovery-only", "journal-binding operation=install",
+		"OuterPackageMutexWitness", "VerifyHeldByOuterOwner(",
+		"AcknowledgeBrokerOuterSettlement(", "DiscardBrokerSettlementTombstone(",
+		"ReconcileSettledBrokerOuterSettlement(",
+		"ParseBrokerSettlementRequest(", "ParseBrokerSettlementFinal(",
+		"ReadProtectedBrokerSettlementFinal(",
+		"ValidateBrokerSettlementFinalBinding(",
+		"ValidateBrokerSettlementFinalJournal(",
+		"IsBrokerOuterSettlementContinuationPhase(",
+		"BrokerOuterSettlementPendingDriverDigest(",
+		"LockProtectedBrokerImage(",
+		"kBrokerSettlementRequestFile", "kInstallRecoverySettledPrefix",
+		"kBrokerSettlementFinalFile", "kInstallRecoveryDiscardPrefix",
+		`<< " retained=" << (retained ? 1 : 0)`,
 	}
 	for _, fragment := range requiredHelper {
 		if !strings.Contains(helperSource, fragment) {
@@ -304,6 +321,7 @@ func TestNativePackageProductionSourceContract(t *testing.T) {
 		"DriverValidated",
 		"BrokerHandoffEntered", "BrokerHandoffReturned",
 		"BrokerChildEntered", "BrokerChildSettled",
+		"BrokerOuterSettlementPending", "BrokerOuterSettled",
 		"RollbackBindingEntered", "PartialRootRemovalEntered",
 		"PartialRootRemovalReturned", "PartialRootRemovalRebootPending",
 		"RollbackBindingReturned",
@@ -377,6 +395,63 @@ func TestNativePackageProductionSourceContract(t *testing.T) {
 		t.Error("driver helper can continue after an indeterminate journal append")
 	}
 
+	brokerRunSource := sourceRegion("broker proof publication",
+		"bool RunBrokerInstall(", "Outcome Install(", false)
+	assertOrdered("durable broker authority publication", brokerRunSource,
+		"ParseBrokerCommitProof(", "RecordBrokerProof(proof",
+		"*driverRollbackAuthorized = proof.driverRollbackAuthorized;",
+		"*brokerChanged = proof.changed;")
+
+	brokerAckSource := sourceRegion("broker settlement acknowledgement",
+		"bool AcknowledgeBrokerOuterSettlement(",
+		"bool DiscardBrokerSettlementTombstone(", false)
+	assertOrdered("outer settlement lock and journal order", brokerAckSource,
+		"outerMutex.VerifyHeldByOuterOwner(",
+		"transactionMutex.Acquire(",
+		"ReadProtectedBrokerSettlementRequest(",
+		"ParseBrokerSettlementRequest(",
+		"LoadSettlementInstallJournal(",
+		"ValidateBrokerSettlementJournalBinding(",
+		"AppendBrokerOuterSettled(",
+		"RetireInstallRecoveryActiveDirectory(")
+	for _, fragment := range []string{
+		"error, true, &retiredPath", "BrokerOuterSettlementPending",
+		"BrokerOuterSettled", "requestSha256",
+	} {
+		if !strings.Contains(brokerAckSource, fragment) {
+			t.Errorf("driver helper broker settlement acknowledgement lost %q", fragment)
+		}
+	}
+	brokerDiscardSource := sourceRegion("broker settlement discard",
+		"bool DiscardBrokerSettlementTombstone(",
+		"void EmitBrokerSettlementAck(", false)
+	assertOrdered("authenticated atomic settlement discard", brokerDiscardSource,
+		"outerMutex.VerifyHeldByOuterOwner(",
+		"transactionMutex.Acquire(",
+		"ReadProtectedBrokerSettlementFinal(",
+		"ParseBrokerSettlementFinal(",
+		"ReadProtectedBrokerSettlementRequest(",
+		"ParseBrokerSettlementRequest(",
+		"ValidateBrokerSettlementFinalBinding(",
+		"OpenSettledInstallJournalDirectory(",
+		"OpenDiscardingInstallJournalDirectory(",
+		"ValidateBrokerSettlementFinalJournal(",
+		"RecoveryStateMatchesForward(",
+		"MoveFileExW(settled.c_str(), discarding.c_str()",
+		"MOVEFILE_WRITE_THROUGH",
+		"OpenStableDirectory(")
+	if strings.Contains(brokerDiscardSource,
+		"std::filesystem::remove_all(settled") {
+		t.Error("driver settlement discard deletes its authoritative tombstone in place")
+	}
+	for _, fragment := range []string{
+		"driverPendingDigest", "brokerPendingDigest", "settlementNonce",
+	} {
+		if !strings.Contains(helperSource, fragment) {
+			t.Errorf("driver helper broker settlement binding lost %q", fragment)
+		}
+	}
+
 	watchdogSource := sourceRegion("authoritative mutation watchdog",
 		"class SynchronousMutationWatchdog final", "class DeviceInfoSet final", false)
 	for _, fragment := range []string{
@@ -413,11 +488,178 @@ func TestNativePackageProductionSourceContract(t *testing.T) {
 	removeEntrySource := sourceRegion("remove entry",
 		"Outcome Remove(const RemoveOptions& options)", "Outcome Recover(", false)
 	assertOrdered("remove pre-mutation reconciliation", removeEntrySource,
-		"mutex.Acquire(", "ReconcileInstallJournal(", "CaptureSnapshot(",
-		"BackupPackages(")
+		"mutex.Acquire(", "ReconcileRemoveJournal(", "ReconcileInstallJournal(",
+		"CaptureSnapshot(", "PrepareRemoveJournal(", "ReconcileRemoveJournal(")
+
+	removeRequired := []string{
+		`kRemoveRecoveryRootDirectory[]`, `L"VIIPER-UdeCx-RemoveTransactions"`,
+		`kRemoveRecoveryActiveDirectory[] = L"active-v2"`,
+		"WriteRemoveJournalRecord(", `\"previousSha256\"`, `\"payloadSha256\"`,
+		"ValidateRemoveJournalTransition(", "loaded->poisoned = true",
+		"PrepareRemoveJournal(", "BackupPackagesIntoDirectory(",
+		"DeviceRemovalEntered", "DeviceRemovalReturned", "DeviceRemovalCommitted",
+		"PackageRemovalEntered", "PackageRemovalReturned", "PackageRemovalCommitted",
+		"RollbackAdmitted", "RollbackPackageEntered", "RollbackPackageReturned",
+		"RollbackPackageCommitted", "RollbackBindingEntered", "RollbackBindingReturned",
+		"ForwardRebootPending", "RestoreRebootPending",
+		"ManualReconciliationRequired", "pendingRebootBootIdentifier",
+		"ObserveRemoveRootShape(", "ObserveRemovePackagePrefix(",
+		"ObserveRemovePackageSubset(", "InvokeRemovePackageMutation(",
+		"InvokeRestorePackageMutation(", "CurrentRemoveStateIsUninstalled(",
+		"CurrentRemoveStateMatchesPrior(", "RetireRemoveRecoveryActiveDirectory(",
+		"RetireLoadedRemoveJournal(", "RunRemoveJournalModelSelfTest(",
+		"RunRemoveJournalRetirementSelfTest(", "RemoveExactCapturedDevice(",
+		"FreshRemoveRollbackDeadline(",
+		"CrossedRemoveRebootStillPendingRequiresManual(",
+		`warning=\"remove-settled-cleanup-retained\"`,
+		"ReconcileRemoveJournal(",
+	}
+	for _, fragment := range removeRequired {
+		if !strings.Contains(helperSource, fragment) {
+			t.Errorf("driver helper remove journal lost %q", fragment)
+		}
+	}
+	removePrepareSource := sourceRegion("remove journal preparation",
+		"bool PrepareRemoveJournal(", "enum class RemoveRootShape", false)
+	assertOrdered("remove protected evidence before Prepared", removePrepareSource,
+		"OpenChain(true", "PublishRemoveRecoveryEvidence(",
+		"BackupPackagesIntoDirectory(", "ValidateRemoveJournalTransition(nullptr",
+		"WriteRemoveJournalRecord(")
+	removeRecordSource := sourceRegion("remove atomic journal record",
+		"bool AppendRemoveJournalRecord(", "bool PrepareRemoveJournal(", true)
+	assertOrdered("remove atomic journal state publication", removeRecordSource,
+		"ValidateRemoveJournalTransition(", "WriteRemoveJournalRecord(",
+		"loaded->state = std::move(next);", "PublishRemoveRecoveryEvidence(")
+	if !strings.Contains(removeRecordSource, "loaded->poisoned = true") {
+		t.Error("driver helper can continue after an indeterminate remove append")
+	}
+	removeRetireSource := sourceRegion("loaded remove journal retirement",
+		"bool RetireLoadedRemoveJournal(", "bool AppendRemoveJournalRecord(", false)
+	assertOrdered("remove descendant evidence release immediately before rename",
+		removeRetireSource,
+		"RemoveJournalPhase::ForwardValidated",
+		"RemoveJournalPhase::ExactPriorRestored",
+		"const std::string transactionId",
+		"loaded->priorBackups.clear();", "loaded->evidenceLocks.clear();",
+		"return RetireRemoveRecoveryActiveDirectory(")
+	removePriorRetireSource := sourceRegion("remove prior terminal retirement",
+		"bool RetireRemoveJournalAsPrior(",
+		"bool RetireRemoveJournalAsUninstalled(", false)
+	assertOrdered("remove prior terminal double validation", removePriorRetireSource,
+		"CurrentRemoveStateMatchesPrior(",
+		"RemoveJournalPhase::ExactPriorRestored", "RecordRemoveJournalPhase(",
+		"CurrentRemoveStateMatchesPrior(", "RetireLoadedRemoveJournal(")
+	if !strings.Contains(removePriorRetireSource,
+		"if (outcome->error.recoveryBackup.empty())") {
+		t.Error("prior retirement overwrites exact tombstone failure evidence with absent active-v2")
+	}
+	removeForwardRetireSource := sourceRegion("remove forward terminal retirement",
+		"bool RetireRemoveJournalAsUninstalled(", "bool FailRemoveJournalManual(", false)
+	assertOrdered("remove forward terminal double validation", removeForwardRetireSource,
+		"CurrentRemoveStateIsUninstalled(",
+		"RemoveJournalPhase::ForwardValidated", "RecordRemoveJournalPhase(",
+		"CurrentRemoveStateIsUninstalled(", "RetireLoadedRemoveJournal(")
+	if !strings.Contains(removeForwardRetireSource,
+		"if (outcome->error.recoveryBackup.empty())") {
+		t.Error("forward retirement overwrites exact tombstone failure evidence with absent active-v2")
+	}
+	removeManualSource := sourceRegion("remove manual evidence retention",
+		"bool FailRemoveJournalManual(",
+		"bool ReturnRemoveJournalRebootPending(", false)
+	if !strings.Contains(removeManualSource, "!cause->recoveryBackup.empty()") ||
+		strings.Contains(removeManualSource, "RetireLoadedRemoveJournal(") {
+		t.Error("manual recovery does not preserve callee tombstone evidence or releases terminal locks")
+	}
+
+	removeDeviceSource := sourceRegion("single captured device removal",
+		"bool RemoveExactCapturedDevice(", "bool RegisterRootDevice(", false)
+	assertOrdered("single captured device immutable revalidation", removeDeviceSource,
+		"FindExactDevices(", "LoadOwnedPackage(",
+		"IsExactCapturedRemoveTarget(", "return RemoveDevice(")
+	if strings.Contains(helperSource, "RemoveAllExactDevices(") {
+		t.Error("driver helper retained forbidden broad all-device remove plumbing")
+	}
+
+	removeRollbackSource := sourceRegion("remove rollback recovery",
+		"bool RunRemoveRollbackRecovery(", "bool AdmitRemoveRollback(", false)
+	assertOrdered("interrupted binding admission reuse", removeRollbackSource,
+		"ReusesInterruptedRemoveBindingAdmission(",
+		"!reusingInterruptedBindingAdmission",
+		"RemoveJournalPhase::RollbackBindingEntered", "ObserveRemoveRootShape(",
+		"VerifyPackageInventory(", "RestorePriorBinding(")
+	assertOrdered("remove rollback uses exact-absence binding authority",
+		removeRollbackSource, "ObserveRemoveRootShape(",
+		"root != RemoveRootShape::Absent", "VerifyPackageInventory(",
+		"RestorePriorBinding(restorable,",
+		"RestorePriorBindingPolicy::RemoveJournalExactAbsence")
+	restoreBindingSource := sourceRegion("prior binding restore policy",
+		"bool RestorePriorBinding(", "bool RollbackInstall(", false)
+	assertOrdered("remove exact-absence race fails before mutation",
+		restoreBindingSource, "CaptureSnapshot(",
+		"RestorePriorBindingTopologyAdmitsMutation(",
+		"RestorePriorBindingPolicy::InstallRollbackReconcile &&",
+		"RemoveDevice(", "RegisterRootDeviceExact(",
+		"InstallPreinstalledDriverOnDevice(")
+	if !strings.Contains(restoreBindingSource,
+		"policy == RestorePriorBindingPolicy::RemoveJournalExactAbsence") ||
+		!strings.Contains(helperSource,
+			`L"self-test-remove-journal-binding-exact-absence-race"`) {
+		t.Error("remove rollback lost its explicit zero-mutation exact-absence race policy/model")
+	}
+	removeAdmissionSource := sourceRegion("remove rollback admission",
+		"bool AdmitRemoveRollback(", "bool RunRemoveForwardRecovery(", false)
+	assertOrdered("durable rollback admission and fresh deadline", removeAdmissionSource,
+		"RemoveJournalPhase::RestoreRebootPending", "RecordRemoveJournalPhase(",
+		"FreshRemoveRollbackDeadline();", "RunRemoveRollbackRecovery(")
+	if strings.Contains(removeAdmissionSource, "deadlineUnixMs") {
+		t.Error("forward-to-rollback admission accepts or reuses the exhausted forward deadline")
+	}
+	removeForwardSource := sourceRegion("remove forward recovery",
+		"bool RunRemoveForwardRecovery(", "bool ReconcileRemoveJournal(", false)
+	assertOrdered("crossed reboot loop fails closed", removeForwardSource,
+		"CrossedRemoveRebootStillPendingRequiresManual(",
+		"FailRemoveJournalManual(", "ReturnRemoveJournalRebootPending(")
+	crossedRebootSource := sourceRegion("crossed remove reboot decision",
+		"bool CrossedRemoveRebootStillPendingRequiresManual(",
+		"bool ReusesInterruptedRemoveBindingAdmission(", false)
+	for _, fragment := range []string{
+		"RemoveJournalPhase::DeviceRemovalReturned", "callSucceeded",
+		"freshRebootRequired", "!samePendingBoot",
+	} {
+		if !strings.Contains(crossedRebootSource, fragment) {
+			t.Errorf("returned-to-pending crossed reboot decision lost %q", fragment)
+		}
+	}
+	if !strings.Contains(helperSource,
+		`L"self-test-remove-journal-device-returned-pending-cut"`) {
+		t.Error("driver helper lost the compiled DeviceRemovalReturned-to-pending crash cut test")
+	}
+	if !strings.Contains(removeForwardSource, "RemoveExactCapturedDevice(") ||
+		strings.Contains(removeForwardSource, "RemoveAllExactDevices(") {
+		t.Error("protected forward removal is not confined to one immutable captured root")
+	}
+
+	removeRawRetireSource := sourceRegion("remove raw terminal retirement",
+		"bool RetireRemoveRecoveryActiveDirectory(",
+		"struct RemoveJournalStateData {", false)
+	assertOrdered("remove tombstone retirement and warning evidence", removeRawRetireSource,
+		"MoveFileExW(", "error->recoveryBackup = tombstone.wstring();",
+		"ClearActiveRecoveryEvidence();", "std::filesystem::remove_all(",
+		"gRetainedRemoveTombstoneError", "OutputDebugStringW(")
+	removeReconcileSource := sourceRegion("remove startup reconciliation",
+		"bool ReconcileRemoveJournal(", "struct RemoveOptions {", true)
+	for _, fragment := range []string{
+		"LoadRemoveJournal(", "InstallRecoveryDirectory installDirectory",
+		"installExists", "ManualReconciliationRequired", "GetBootIdentifier(",
+		"RunRemoveRollbackRecovery(", "RunRemoveForwardRecovery(",
+	} {
+		if !strings.Contains(removeReconcileSource, fragment) {
+			t.Errorf("driver helper remove reconciliation lost %q", fragment)
+		}
+	}
 
 	reconcileSource := sourceRegion("startup journal reconciliation",
-		"bool ReconcileInstallJournal(", "bool RollbackRemove(", true)
+		"bool ReconcileInstallJournal(", "const char* RemoveJournalPhaseName(", true)
 	for _, fragment := range []string{
 		"ForwardRebootPending && sameBoot", "RestoreRebootPending && sameBoot",
 		"return rebootPending(",
@@ -794,11 +1036,20 @@ func TestNativePackageProductionSourceContract(t *testing.T) {
 	if strings.Contains(windowsSource, `strings.Contains(text, "result=success operation=install")`) {
 		t.Error("native package install must parse one exact helper outcome instead of accepting a success substring")
 	}
-	backupMove := strings.Index(windowsSource,
-		"moveNativePackageFile(t.destination, backupPath, false)")
-	backupPublish := strings.Index(windowsSource, "t.backupPath = backupPath")
-	if backupMove < 0 || backupPublish < 0 || backupPublish < backupMove {
-		t.Error("native package rollback path is published before the prior broker rename succeeds")
+	imageIntent := strings.Index(windowsSource, "nativeBrokerPhaseImageSwitchIntent")
+	atomicReplace := strings.Index(windowsSource,
+		"replaceNativePackageFileAtomically(t.temporaryPath, t.destination, priorExists)")
+	imageSettled := strings.Index(windowsSource, "nativeBrokerPhaseImageSwitched")
+	if imageIntent < 0 || atomicReplace <= imageIntent || imageSettled <= atomicReplace {
+		t.Error("native package image replacement lost intent -> atomic replace -> settled ordering")
+	}
+	for _, fragment := range []string{
+		"copyNativeBrokerJournalImage(", "nativeBrokerJournalPriorImageName",
+		"appendPhase(nativeBrokerPhasePrepared", "REPLACEFILE_WRITE_THROUGH",
+	} {
+		if !strings.Contains(brokerJournalSource+windowsSource, fragment) {
+			t.Errorf("native broker durable image transaction lost %q", fragment)
+		}
 	}
 	requiredTransaction := []string{
 		"transaction.Preflight(ctx)", "transaction.InspectService(ctx)",
@@ -824,6 +1075,34 @@ func TestNativePackageProductionSourceContract(t *testing.T) {
 		if !strings.Contains(uninstallTransactionSource, fragment) {
 			t.Errorf("package uninstall transaction lost %q", fragment)
 		}
+	}
+	for _, fragment := range []string{
+		"parseNativePackageRemoveProofFields(",
+		"parseOptionalNativePackageRemoveWarning(",
+		"nativePackageRemoveRetainedTombstoneMaximumRunes",
+		"validateNativePackageRemoveRetainedTombstone(",
+		"retainedTombstoneWin32Error",
+		`logger.Warn("Native remove journal retired with a retained settled tombstone"`,
+	} {
+		if !strings.Contains(uninstallTransactionSource, fragment) {
+			t.Errorf("native remove warning proof channel lost %q", fragment)
+		}
+	}
+	warningParserStart := strings.Index(uninstallTransactionSource,
+		"func parseOptionalNativePackageRemoveWarning(")
+	warningParserEnd := strings.Index(uninstallTransactionSource,
+		"func parseNativePackageRemoveProof(")
+	if warningParserStart < 0 || warningParserEnd <= warningParserStart {
+		t.Fatal("native remove warning parser source region is missing or malformed")
+	}
+	warningParserSource := uninstallTransactionSource[warningParserStart:warningParserEnd]
+	assertOrdered("native remove warning tuple",
+		warningParserSource, `"warning"`,
+		`"warningWin32Error"`, `"retainedTombstone"`,
+		"validateNativePackageRemoveRetainedTombstone(",
+		"*position != len(fields)")
+	if strings.Contains(uninstallTransactionSource, `(?: .*)?`) {
+		t.Error("native remove proof parser still accepts an arbitrary trailing field wildcard")
 	}
 	if !strings.Contains(serviceSource, "func acquireNativeInstallMutex(") {
 		t.Error("native broker service mutex wrapper was removed")

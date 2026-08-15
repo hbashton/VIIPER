@@ -44,6 +44,13 @@ func (c *ServiceCommand) Run(logger *slog.Logger, rawLogger log.RawLogger) error
 		}
 		c.KeyFile = path
 	}
+	executable, err := currentExecutable()
+	if err != nil {
+		return fmt.Errorf("resolve native broker service image: %w", err)
+	}
+	if err := admitNativeBrokerServiceStartup(executable, c.KeyFile); err != nil {
+		return fmt.Errorf("native broker startup admission rejected: %w", err)
+	}
 	c.serviceMode = true
 	handler := &nativeBrokerService{logger: logger, run: func(ctx context.Context, ready func()) error {
 		c.ready = ready

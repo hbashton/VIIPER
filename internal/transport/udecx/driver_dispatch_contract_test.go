@@ -363,9 +363,10 @@ func TestNativeCachedInputReadyUsesCompletionDPCWithoutWorkerHop(t *testing.T) {
 	}
 
 	complete := normalizedContract(nativeCFunction(t, device, "ViiperCompleteRetrievedInputUrb"))
-	if !strings.Contains(complete, "ViiperQueueUrbCompletion(") {
-		t.Fatal("cached input no longer transfers terminal completion to the shared DPC")
-	}
+	requireContractOrder(t, complete,
+		"requestContext->DeviceGeneration = deviceContext->Generation;",
+		"requestContext->EndpointGeneration = endpointContext->Generation;",
+		"ViiperQueueUrbCompletion(")
 }
 
 func TestNativeDirectInputStatsCommitAfterTerminalUdeCxCompletion(t *testing.T) {
@@ -394,7 +395,11 @@ func TestNativeDirectInputStatsCommitAfterTerminalUdeCxCompletion(t *testing.T) 
 	requireContractOrder(t, dpc,
 		"directInputBytes = requestContext->DirectInputBytes;",
 		"directInputSequence = requestContext->DirectInputSequence;",
+		"deviceGeneration = requestContext->DeviceGeneration;",
+		"endpointGeneration = requestContext->EndpointGeneration;",
 		"WdfSpinLockRelease(controllerContext->BrokerLock);",
+		"ViiperGetEndpointContext(endpoint)->Generation != endpointGeneration",
+		"ViiperGetDeviceContext(ViiperGetEndpointContext(endpoint)->Device)->Generation != deviceGeneration",
 		"UdecxUrbCompleteWithNtStatus(request, completionStatus);",
 		"UdecxUrbComplete(request, usbdStatus);",
 		"directInputSequence != 0",
@@ -410,6 +415,9 @@ func TestNativeFastInputQueuesTransitionsButCoalescesIdleCadence(t *testing.T) {
 	device := nativeContractSource(t, "native", "udecx", "driver", "Device.c")
 	submit := normalizedContract(nativeCFunction(t, device, "ViiperSubmitInputReport"))
 	requireContractOrder(t, submit,
+		"input->EndpointGeneration == 0",
+		"endpointContext->Generation != input->EndpointGeneration",
+		"deviceContext->EndpointGenerations[input->EndpointAddress] != input->EndpointGeneration",
 		"if ((input->Flags & VIIPER_UDE_INPUT_REPORT_TRANSITION) != 0 &&",
 		"return STATUS_DEVICE_BUSY;",
 		"RtlCopyMemory(endpointContext->InputReport",
@@ -440,17 +448,22 @@ func TestNativeCompletionValidatesImmutableIdentityBeforeClaim(t *testing.T) {
 	broker := nativeContractSource(t, "native", "udecx", "driver", "Broker.c")
 	complete := normalizedContract(nativeCFunction(t, broker, "ViiperCompleteOperation"))
 	requireContractOrder(t, complete,
+		"((ULONG)completion->Token & VIIPER_UDE_MANAGEMENT_SLOT_FLAG) == 0 && completion->EndpointGeneration == 0",
 		"controllerContext->PendingSlots[slot].Token == completion->Token",
 		"controllerContext->PendingSlots[slot].State == ViiperUdePendingInFlight",
 		"controllerContext->PendingSlots[slot].DeviceId == completion->DeviceId",
 		"controllerContext->PendingSlots[slot].DeviceGeneration == completion->Generation",
+		"controllerContext->PendingSlots[slot].EndpointGeneration == completion->EndpointGeneration",
 		"controllerContext->PendingSlots[slot].State = ViiperUdePendingCompleting;",
 		"WdfObjectReference(urbRequest);",
 		"identityMismatch = TRUE;",
 		"WdfSpinLockRelease(controllerContext->BrokerLock);",
 		"if (identityMismatch)",
 		"return STATUS_INVALID_PARAMETER;",
-		"WdfRequestUnmarkCancelable(urbRequest);")
+		"WdfRequestUnmarkCancelable(urbRequest);",
+		"completion->Generation != requestContext->DeviceGeneration",
+		"completion->EndpointGeneration != requestContext->EndpointGeneration",
+		"completion->EndpointGeneration != ViiperGetEndpointContext(requestContext->Endpoint)->Generation")
 }
 
 func TestNativeBrokerFaultFencesAdmissionAndPublication(t *testing.T) {

@@ -52,6 +52,8 @@ type windowsNativePackageTransaction struct {
 	driverBrokerHandoff          bool
 	driverHelperSettled          bool
 	driverCoordinationErr        error
+	pendingBrokerOuterSettlement bool
+	replayedBrokerRecovery       bool
 
 	programFiles string
 	destination  string
@@ -74,15 +76,19 @@ type windowsNativePackageTransaction struct {
 	weakServiceMutation    bool
 	weakServiceRemoved     bool
 
-	temporaryPath        string
-	backupPath           string
-	destinationPublished bool
-	destinationRelease   func()
-	tokenPath            string
-	tokenSHA256          string
-	tokenHandle          windows.Handle
-	installProof         bool
-	closed               bool
+	temporaryPath         string
+	backupPath            string
+	destinationPublished  bool
+	destinationRelease    func()
+	tokenPath             string
+	tokenSHA256           string
+	tokenHandle           windows.Handle
+	boundOuterTokenPath   string
+	installProof          bool
+	brokerJournal         *nativeBrokerJournal
+	brokerJournalProof    nativeBrokerJournalProof
+	brokerJournalCutpoint func(string) error
+	closed                bool
 }
 
 func installNativePackage(
@@ -91,12 +97,19 @@ func installNativePackage(
 	request nativePackageRequest,
 ) error {
 	transaction := &windowsNativePackageTransaction{logger: logger, request: request}
-	return runNativePackageTransaction(ctx, logger, transaction)
+	if err := runNativePackageTransaction(ctx, logger, transaction); err != nil {
+		return err
+	}
+	if transaction.replayedBrokerRecovery {
+		return &nativePackageRecoveryRetryError{}
+	}
+	return nil
 }
 
 func commitNativePackageBroker(
 	logger *slog.Logger,
 	tokenPath, expectedTokenSHA256, expectedBrokerSHA256, targetUserSID, deadlineUnixMS string,
+	recoveryOnly bool,
 ) (nativePackageBrokerCommitResult, error) {
 	preflightFailure := func(err error) (nativePackageBrokerCommitResult, error) {
 		return nativePackageBrokerPreflightFailure(err)
@@ -151,6 +164,53 @@ func commitNativePackageBroker(
 	if !held {
 		return preflightFailure(errors.New("outer native package transaction mutex is not held"))
 	}
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
+	defer cancel()
+	replayBudget := time.Until(deadline)
+	releaseReplayMutex, err := acquireNativeInstallMutex(replayBudget)
+	if err != nil {
+		_, active, pathErr := nativeBrokerJournalPaths(targetUserSID)
+		if pathErr == nil {
+			if _, attributeErr := nativePathAttributes(active); attributeErr == nil ||
+				(!errors.Is(attributeErr, windows.ERROR_FILE_NOT_FOUND) &&
+					!errors.Is(attributeErr, windows.ERROR_PATH_NOT_FOUND)) {
+				return nativePackageBrokerCommitResult{
+					changed: true, rollback: "failed", exitCode: 3,
+				}, fmt.Errorf("acquire service transaction mutex with an active broker journal: %w", err)
+			}
+		}
+		return preflightFailure(fmt.Errorf("acquire service transaction mutex for broker proof replay: %w", err))
+	}
+	replayProof, replayed, activeJournal, replayErr := replayNativeBrokerNestedReadyProof(
+		ctx, logger, targetUserSID, tokenPath, expectedTokenSHA256, expectedBrokerSHA256,
+	)
+	releaseReplayMutex()
+	if replayErr != nil {
+		if activeJournal {
+			return nativePackageBrokerCommitResult{
+				changed: true, rollback: "failed", exitCode: 3, journal: replayProof,
+			}, replayErr
+		}
+		return preflightFailure(replayErr)
+	}
+	if replayed {
+		logger.Info("Replayed exact durable nested broker readiness",
+			"transactionId", replayProof.TransactionID, "journalDigest", replayProof.Digest)
+		return nativePackageBrokerCommitResult{
+			success: true, changed: true, rollback: "not-needed", exitCode: 0,
+			journal: replayProof,
+		}, nil
+	}
+	if activeJournal {
+		return nativePackageBrokerCommitResult{
+			changed: true, rollback: "succeeded", exitCode: 1, journal: replayProof,
+		}, errors.New("reconciled an interrupted nested broker transaction to its exact prior state")
+	}
+	if recoveryOnly {
+		return preflightFailure(errors.New(
+			"broker recovery query found no exact active child transaction and will not start a new one",
+		))
+	}
 	executable, err := currentExecutable()
 	if err != nil {
 		return preflightFailure(fmt.Errorf("resolve nested broker executable: %w", err))
@@ -161,15 +221,15 @@ func commitNativePackageBroker(
 			brokerSource: executable, expectedBrokerSHA256: expectedBrokerSHA256,
 			targetUserSID: targetUserSID,
 		},
-		nestedBrokerCommit: true,
+		nestedBrokerCommit:  true,
+		tokenSHA256:         expectedTokenSHA256,
+		boundOuterTokenPath: tokenPath,
 	}
-	ctx, cancel := context.WithDeadline(context.Background(), deadline)
-	defer cancel()
 	err = runNativePackageTransaction(ctx, logger, transaction)
 	if err == nil {
 		return nativePackageBrokerCommitResult{
 			success: true, changed: transaction.nestedMutationStarted,
-			rollback: "not-needed", exitCode: 0,
+			rollback: "not-needed", exitCode: 0, journal: transaction.brokerJournalProof,
 		}, nil
 	}
 	if !transaction.nestedMutationStarted {
@@ -178,10 +238,12 @@ func commitNativePackageBroker(
 	if transaction.nestedRollbackSucceeded {
 		return nativePackageBrokerCommitResult{
 			changed: true, rollback: "succeeded", exitCode: 1,
+			journal: transaction.brokerJournalProof,
 		}, err
 	}
 	return nativePackageBrokerCommitResult{
 		changed: true, rollback: "failed", exitCode: 3,
+		journal: transaction.brokerJournalProof,
 	}, err
 }
 
@@ -363,6 +425,21 @@ func (t *windowsNativePackageTransaction) InspectService(
 		return nativePackageServiceSnapshot{}, fmt.Errorf("lock native broker service transaction: %w", err)
 	}
 	t.releaseServiceMutex = release
+	if t.nestedBrokerCommit {
+		if err := reconcileNativeBrokerJournalBeforeAdmission(
+			ctx, t.logger, t.request.targetUserSID,
+		); err != nil {
+			return nativePackageServiceSnapshot{}, err
+		}
+	} else {
+		pending, err := reconcileNativeBrokerJournalBeforeOuterPackage(
+			ctx, t.logger, t.request.targetUserSID,
+		)
+		if err != nil {
+			return nativePackageServiceSnapshot{}, err
+		}
+		t.pendingBrokerOuterSettlement = pending
+	}
 	manager, err := mgr.Connect()
 	if err != nil {
 		return nativePackageServiceSnapshot{}, fmt.Errorf("connect to SCM: %w", err)
@@ -568,6 +645,12 @@ func (t *windowsNativePackageTransaction) Prepare(
 	if t.nestedBrokerHealthy {
 		return nil
 	}
+	journal, err := beginNativeBrokerJournal(ctx, t)
+	if err != nil {
+		return fmt.Errorf("arm durable native broker recovery: %w", err)
+	}
+	t.brokerJournal = journal
+	t.brokerJournalProof = journal.proof()
 	// From this point onward the nested callback may stop/delete SCM state or
 	// publish the canonical broker image. Any failure must prove rollback before
 	// the still-running helper may touch its captured driver snapshot again.
@@ -583,9 +666,15 @@ func (t *windowsNativePackageTransaction) Prepare(
 			// STOP is itself the mutation. Arm reconciliation before sending it so
 			// a timeout while StopPending cannot strand a formerly-running service.
 			t.stoppedTrustedService = true
+			if err := t.brokerJournal.appendPhase(nativeBrokerPhaseServiceStopIntent, ""); err != nil {
+				return fmt.Errorf("journal prior broker stop intent: %w", err)
+			}
 			if err := stopNativeService(ctx, t.service, waitContext); err != nil {
 				return fmt.Errorf("quiesce trusted %s for atomic image replacement: %w",
 					NativeBrokerServiceName, err)
+			}
+			if err := t.brokerJournal.appendPhase(nativeBrokerPhaseServiceStopped, ""); err != nil {
+				return fmt.Errorf("journal prior broker stopped state: %w", err)
 			}
 		}
 		// The read-only preflight lock deliberately denies rename/delete. Once
@@ -611,7 +700,9 @@ func (t *windowsNativePackageTransaction) InstallDriverAndBroker(ctx context.Con
 			var evidence nativeBrokerInstallEvidence
 			if err := installNativeBrokerTransactionWithEvidence(
 				ctx, t.logger, t.destination,
-				productionNativeInstallDependencies(t.request.targetUserSID),
+				productionNativeInstallDependenciesWithJournal(
+					t.request.targetUserSID, t.brokerJournal,
+				),
 				&evidence,
 			); err != nil {
 				t.nestedServiceRollbackSettled =
@@ -663,6 +754,12 @@ func (t *windowsNativePackageTransaction) VerifyAuthenticatedHealth(ctx context.
 }
 
 func (t *windowsNativePackageTransaction) Commit(context.Context) error {
+	if t.nestedBrokerCommit && t.brokerJournal != nil {
+		if err := t.brokerJournal.appendPhase(nativeBrokerPhaseNestedReady, ""); err != nil {
+			return fmt.Errorf("persist nested broker readiness: %w", err)
+		}
+		t.brokerJournalProof = t.brokerJournal.proof()
+	}
 	if t.destinationRelease != nil {
 		t.destinationRelease()
 		t.destinationRelease = nil
@@ -696,11 +793,33 @@ func (t *windowsNativePackageTransaction) Rollback(ctx context.Context) (resultE
 		}
 	}()
 	var rollbackErrors []error
+	if t.brokerJournal != nil && t.brokerJournal.lastPhase() != nativeBrokerPhaseRollbackSettled &&
+		t.brokerJournal.lastPhase() != nativeBrokerPhaseOuterSettled &&
+		t.brokerJournal.lastPhase() != nativeBrokerPhaseManual &&
+		nativeBrokerJournalPhaseIndex(
+			nativeBrokerForwardPhaseOrder, t.brokerJournal.lastPhase(),
+		) >= 0 {
+		if err := t.brokerJournal.appendPhase(nativeBrokerPhaseRollbackIntent, ""); err != nil {
+			rollbackErrors = append(rollbackErrors, fmt.Errorf("persist broker rollback intent: %w", err))
+		}
+	}
 	if t.destinationRelease != nil {
 		t.destinationRelease()
 		t.destinationRelease = nil
 	}
-	if err := t.releaseCoordinationToken(); err != nil {
+	retainTokenForRecovery := !t.nestedBrokerCommit && t.driverBrokerHandoff &&
+		!t.driverHelperSettled
+	if retainTokenForRecovery {
+		if t.tokenHandle != 0 {
+			if err := windows.CloseHandle(t.tokenHandle); err != nil {
+				rollbackErrors = append(rollbackErrors,
+					fmt.Errorf("close retained package transaction token: %w", err))
+			}
+			t.tokenHandle = 0
+		}
+		t.logger.Warn("Retaining protected package transaction token for authoritative broker replay",
+			"path", t.tokenPath)
+	} else if err := t.releaseCoordinationToken(); err != nil {
 		rollbackErrors = append(rollbackErrors,
 			fmt.Errorf("remove package transaction token: %w", err))
 	}
@@ -712,6 +831,12 @@ func (t *windowsNativePackageTransaction) Rollback(ctx context.Context) (resultE
 		// both protected images for explicit external reconciliation.
 		rollbackErrors = append(rollbackErrors, errors.New(
 			"nested native broker service rollback is unsettled; retaining staged and prior broker images and leaving the service stopped for external reconciliation"))
+		if t.brokerJournal != nil {
+			if err := t.brokerJournal.appendPhase(nativeBrokerPhaseManual, ""); err != nil {
+				rollbackErrors = append(rollbackErrors, err)
+			}
+			t.brokerJournalProof = t.brokerJournal.proof()
+		}
 		return errors.Join(rollbackErrors...)
 	}
 	if !t.nestedBrokerCommit && t.stoppedTrustedService && !t.driverHelperSettled {
@@ -730,6 +855,21 @@ func (t *windowsNativePackageTransaction) Rollback(ctx context.Context) (resultE
 		restored = false
 		rollbackErrors = append(rollbackErrors, err)
 	}
+	if t.brokerJournal != nil && restored {
+		if err := t.brokerJournal.appendPhase(nativeBrokerPhaseRollbackImage, ""); err != nil {
+			rollbackErrors = append(rollbackErrors, err)
+			resultErr = errors.Join(rollbackErrors...)
+			return resultErr
+		}
+		_, priorLegacy, err := t.brokerJournal.loadProtectedArtifacts()
+		if err != nil {
+			rollbackErrors = append(rollbackErrors, err)
+		} else if err := restoreNativeBrokerJournalLegacy(ctx, t.brokerJournal, priorLegacy); err != nil {
+			rollbackErrors = append(rollbackErrors, err)
+		} else if err := t.brokerJournal.appendPhase(nativeBrokerPhaseRollbackLegacy, ""); err != nil {
+			rollbackErrors = append(rollbackErrors, err)
+		}
+	}
 	if t.nestedBrokerCommit && t.stoppedTrustedService && t.service != nil &&
 		t.serviceSnapshot.wasRunning {
 		if !restored {
@@ -747,6 +887,24 @@ func (t *windowsNativePackageTransaction) Rollback(ctx context.Context) (resultE
 		if err := reconcileNativePackageServiceRunning(ctx, t.service); err != nil {
 			rollbackErrors = append(rollbackErrors,
 				fmt.Errorf("restore prior trusted %s run state: %w", NativeBrokerServiceName, err))
+		}
+	}
+	if t.brokerJournal != nil {
+		if len(rollbackErrors) != 0 {
+			if err := t.brokerJournal.appendPhase(nativeBrokerPhaseManual, ""); err != nil {
+				rollbackErrors = append(rollbackErrors, err)
+			}
+			t.brokerJournalProof = t.brokerJournal.proof()
+		} else if err := t.brokerJournal.appendPhase(nativeBrokerPhaseRollbackSettled, ""); err != nil {
+			rollbackErrors = append(rollbackErrors, err)
+		} else {
+			t.brokerJournalProof = t.brokerJournal.proof()
+			if err := retireNativeBrokerJournal(t.brokerJournal); err != nil {
+				t.logger.Warn("Retaining settled native broker rollback journal for later cleanup",
+					"transactionId", t.brokerJournalProof.TransactionID, "error", err)
+			} else {
+				t.brokerJournal = nil
+			}
 		}
 	}
 	return errors.Join(rollbackErrors...)
@@ -853,8 +1011,111 @@ func (t *windowsNativePackageTransaction) runDriverHelper(ctx context.Context) e
 	if proofErr != nil {
 		return fmt.Errorf("validate native driver helper proof: %w: %s", proofErr, text)
 	}
+	if proof.journalRecovery == "replayed" && !t.pendingBrokerOuterSettlement {
+		return errors.New("driver helper replayed a broker journal without a preexisting pending outer settlement")
+	}
+	if proof.journalRecovery != "replayed" && t.pendingBrokerOuterSettlement {
+		return errors.New("driver helper did not replay the preexisting pending broker settlement")
+	}
+	settleCtx, cancelSettle := context.WithTimeout(
+		context.WithoutCancel(ctx), nativePackageRollbackTimeout,
+	)
+	defer cancelSettle()
+	if proof.success && proof.journal.TransactionID != "" {
+		var activeJournal *nativeBrokerJournal
+		var prepared nativeBrokerOuterSettlementPrepared
+		var receipt nativePackageBrokerSettlementReceipt
+		var settledJournal *nativeBrokerJournal
+		var finalReceipt nativeBrokerOuterSettlementFinalPrepared
+		journalErr := executeNativeBrokerOuterSettlement(nativeBrokerOuterSettlementOperations{
+			recordPending: func() error {
+				var err error
+				activeJournal, prepared, err = armNativeBrokerOuterSettlement(
+					settleCtx, t.request.targetUserSID, t.tokenSHA256,
+					t.request.expectedBrokerSHA256, proof,
+				)
+				if activeJournal != nil {
+					t.brokerJournalProof = activeJournal.proof()
+				}
+				return err
+			},
+			publishRequest: func() error {
+				return publishNativeBrokerOuterSettlementRequest(activeJournal, prepared)
+			},
+			acknowledgeDriver: func() error {
+				if activeJournal != nil &&
+					activeJournal.lastPhase() == nativeBrokerPhaseOuterSettled {
+					existingFinal, err := loadNativeBrokerOuterSettlementFinalForReconciliation(
+						activeJournal,
+					)
+					if err == nil {
+						finalReceipt = existingFinal
+						receipt = nativeBrokerDriverReceiptFromFinal(existingFinal.Receipt)
+						return validateNativeBrokerOuterSettlementReceipt(prepared, receipt)
+					}
+					if !errors.Is(err, windows.ERROR_FILE_NOT_FOUND) &&
+						!errors.Is(err, windows.ERROR_PATH_NOT_FOUND) {
+						return err
+					}
+				}
+				var err error
+				receipt, err = t.executeDriverBrokerSettlementAck(settleCtx, prepared)
+				return err
+			},
+			recordBrokerSettled: func() error {
+				var err error
+				settledJournal, finalReceipt, err = recordNativeBrokerOuterSettlement(
+					settleCtx, t.request.targetUserSID, receipt,
+				)
+				if settledJournal != nil {
+					t.brokerJournalProof = settledJournal.proof()
+				}
+				return err
+			},
+			retireBrokerJournal: func() error {
+				return retireNativeBrokerJournal(settledJournal)
+			},
+			discardInertState: func() error {
+				return t.discardDriverBrokerSettlementTombstone(
+					settleCtx, prepared, finalReceipt, receipt, t.brokerJournalProof,
+				)
+			},
+			observeDiscardError: func(err error) {
+				t.logger.Warn("Retaining inert settled transaction artifacts for later cleanup",
+					"brokerTransactionId", proof.journal.TransactionID, "error", err)
+			},
+		})
+		if journalErr != nil {
+			t.driverHelperSettled = false
+			return fmt.Errorf("complete durable two-phase broker settlement: %w", journalErr)
+		}
+		if proof.journalRecovery == "replayed" {
+			if err := discardSettledNativeBrokerOuterToken(settledJournal); err != nil {
+				t.logger.Warn("Retaining inert settled outer token after cleanup error",
+					"brokerTransactionId", proof.journal.TransactionID, "error", err)
+			}
+		}
+		t.logger.Info("Native broker and outer package journals reached exact settlement",
+			"brokerTransactionId", t.brokerJournalProof.TransactionID,
+			"brokerJournalDigest", t.brokerJournalProof.Digest,
+			"driverTransactionId", receipt.DriverTransactionID,
+			"driverJournalDigest", receipt.Digest)
+	} else {
+		journalProof, journalErr := reconcileNativeBrokerJournalAfterOuterFailure(
+			settleCtx, t.request.targetUserSID, t.tokenSHA256,
+			t.request.expectedBrokerSHA256, proof,
+		)
+		t.brokerJournalProof = journalProof
+		if journalErr != nil {
+			t.driverHelperSettled = false
+			return fmt.Errorf("reconcile durable native broker ownership after driver proof: %w", journalErr)
+		}
+	}
+	if proof.journalRecovery == "replayed" {
+		t.replayedBrokerRecovery = true
+	}
 	t.driverHelperSettled = proof.exitCode != 3
-	if proof.success && !t.driverBrokerHandoff {
+	if proof.success && !t.driverBrokerHandoff && proof.journalRecovery != "replayed" {
 		t.driverHelperSettled = false
 		return errors.New("native driver helper reported success without the broker service handoff")
 	}
@@ -881,6 +1142,116 @@ func (t *windowsNativePackageTransaction) runDriverHelper(ctx context.Context) e
 	if !proof.success {
 		return fmt.Errorf("native driver helper failed with exit %d: %w: %s",
 			proof.exitCode, err, text)
+	}
+	return nil
+}
+
+func (t *windowsNativePackageTransaction) executePinnedDriverHelper(
+	arguments []string,
+) (string, int, error) {
+	if t.releaseMutex == nil || t.helperHandle == 0 {
+		return "", 0, errors.New("driver helper replay requires the held package mutex and pinned helper")
+	}
+	helperHash, err := hashNativePackageHandle(t.helperHandle)
+	if err != nil {
+		return "", 0, fmt.Errorf("rehash pinned driver helper: %w", err)
+	}
+	if !strings.EqualFold(helperHash, t.request.expectedHelperSHA256) {
+		return "", 0, errors.New("pinned driver helper identity changed before journal replay")
+	}
+	// The helper owns its write-through journal transition. Its propagated
+	// deadline is cooperative; killing it between FlushFileBuffers and readback
+	// would manufacture the very indeterminate boundary this handshake closes.
+	command := exec.Command(t.request.driverHelper, arguments...)
+	command.Dir = filepath.Dir(t.request.driverHelper)
+	var output bytes.Buffer
+	command.Stdout = &output
+	command.Stderr = &output
+	err = command.Run()
+	processExitCode := 0
+	if err != nil {
+		var exitError *exec.ExitError
+		if !errors.As(err, &exitError) {
+			return output.String(), 0, err
+		}
+		processExitCode = exitError.ExitCode()
+	}
+	return output.String(), processExitCode, err
+}
+
+func (t *windowsNativePackageTransaction) executeDriverBrokerSettlementAck(
+	ctx context.Context,
+	prepared nativeBrokerOuterSettlementPrepared,
+) (nativePackageBrokerSettlementReceipt, error) {
+	deadline, ok := ctx.Deadline()
+	if !ok || !deadline.After(time.Now()) {
+		return nativePackageBrokerSettlementReceipt{}, context.DeadlineExceeded
+	}
+	output, processExitCode, processErr := t.executePinnedDriverHelper([]string{
+		"broker-settlement-ack",
+		"--request", prepared.RequestPath,
+		"--request-sha256", prepared.RequestSHA256,
+		"--transaction-deadline-unix-ms", strconv.FormatInt(deadline.UnixMilli(), 10),
+	})
+	if processErr != nil && processExitCode == 0 {
+		return nativePackageBrokerSettlementReceipt{}, fmt.Errorf(
+			"run driver settlement acknowledgement: %w", processErr,
+		)
+	}
+	receipt, err := parseNativePackageBrokerSettlementReceipt(output, processExitCode)
+	if err != nil {
+		return nativePackageBrokerSettlementReceipt{}, fmt.Errorf(
+			"validate driver settlement acknowledgement: %w: %s", err, output,
+		)
+	}
+	if err := validateNativeBrokerOuterSettlementReceipt(prepared, receipt); err != nil {
+		return nativePackageBrokerSettlementReceipt{}, err
+	}
+	return receipt, nil
+}
+
+func (t *windowsNativePackageTransaction) discardDriverBrokerSettlementTombstone(
+	ctx context.Context,
+	prepared nativeBrokerOuterSettlementPrepared,
+	finalReceipt nativeBrokerOuterSettlementFinalPrepared,
+	receipt nativePackageBrokerSettlementReceipt,
+	brokerProof nativeBrokerJournalProof,
+) error {
+	deadline, ok := ctx.Deadline()
+	if !ok || !deadline.After(time.Now()) {
+		return context.DeadlineExceeded
+	}
+	output, processExitCode, processErr := t.executePinnedDriverHelper([]string{
+		"broker-settlement-discard",
+		"--broker-transaction-id", brokerProof.TransactionID,
+		"--broker-settled-digest", brokerProof.Digest,
+		"--driver-transaction-id", receipt.DriverTransactionID,
+		"--driver-settled-digest", receipt.Digest,
+		"--settlement-nonce", receipt.SettlementNonce,
+		"--request-sha256", receipt.RequestSHA256,
+		"--broker-final-receipt", finalReceipt.ReceiptPath,
+		"--broker-final-receipt-sha256", finalReceipt.ReceiptSHA256,
+		"--transaction-deadline-unix-ms", strconv.FormatInt(deadline.UnixMilli(), 10),
+	})
+	if processErr != nil && processExitCode == 0 {
+		return fmt.Errorf("discard settled driver journal tombstone: %w", processErr)
+	}
+	discard, err := parseNativePackageBrokerSettlementDiscardReceipt(output, processExitCode)
+	if err != nil {
+		return fmt.Errorf("validate settled driver journal discard receipt: %w: %s", err, output)
+	}
+	if discard.BrokerTransactionID != brokerProof.TransactionID ||
+		discard.BrokerDigest != brokerProof.Digest ||
+		discard.DriverTransactionID != receipt.DriverTransactionID ||
+		discard.DriverDigest != receipt.Digest ||
+		discard.SettlementNonce != receipt.SettlementNonce ||
+		discard.RequestSHA256 != receipt.RequestSHA256 {
+		return errors.New("settled driver journal discard receipt mismatched the exact two-phase transaction")
+	}
+	if discard.Retained {
+		t.logger.Warn("Retaining inert driver settlement cleanup tombstone",
+			"driverTransactionId", discard.DriverTransactionID,
+			"brokerTransactionId", discard.BrokerTransactionID)
 	}
 	return nil
 }
@@ -1281,8 +1652,10 @@ func (t *windowsNativePackageTransaction) executeDriverHelper(ctx context.Contex
 	err = waitNativePackageHelperCoordinated(command, func(process windows.Handle) error {
 		return t.coordinateDriverHelper(ctx, process, coordination)
 	})
-	text := strings.TrimSpace(output.String())
-	return text, err
+	// Preserve exact record framing. The authenticated journal binding is valid
+	// only as one canonical newline-terminated line; trimming helper output here
+	// would erase that boundary before the strict parser can verify it.
+	return output.String(), err
 }
 
 func reconcileNativePackageServiceRunning(ctx context.Context, service nativeManagedService) error {
@@ -1453,6 +1826,7 @@ func (t *windowsNativePackageTransaction) stageBrokerExecutable() error {
 		return err
 	}
 	var err error
+	priorExists := false
 	if existing, openErr := openNativePathWithoutReparse(
 		t.destination, windows.GENERIC_READ|windows.READ_CONTROL, false,
 	); openErr == nil {
@@ -1477,36 +1851,46 @@ func (t *windowsNativePackageTransaction) stageBrokerExecutable() error {
 			t.destinationRelease = release
 			return nil
 		}
-		backupPath, err := t.uniqueManagedPath("rollback")
-		if err != nil {
-			return err
-		}
-		if err := moveNativePackageFile(t.destination, backupPath, false); err != nil {
-			return fmt.Errorf("retain prior broker for rollback: %w", err)
-		}
-		// Publish rollback ownership only after the atomic rename succeeds. On a
-		// failed rename the canonical prior image is still in place and may be
-		// safely revalidated/restarted by Rollback.
-		t.backupPath = backupPath
+		priorExists = true
 	} else if !errors.Is(openErr, windows.ERROR_FILE_NOT_FOUND) &&
 		!errors.Is(openErr, windows.ERROR_PATH_NOT_FOUND) {
 		return fmt.Errorf("inspect existing broker: %w", openErr)
 	}
 
-	t.temporaryPath, err = t.uniqueManagedPath("staging")
-	if err != nil {
-		return err
+	if t.brokerJournal != nil {
+		t.temporaryPath = filepath.Join(
+			t.parent, ".viiper.staging."+t.brokerJournal.snapshot.TransactionID+".tmp",
+		)
+	} else {
+		t.temporaryPath, err = t.uniqueManagedPath("staging")
+		if err != nil {
+			return err
+		}
 	}
 	if err := copyNativePackageHandleAtomically(
 		t.sourceHandle, t.temporaryPath, t.request.expectedBrokerSHA256,
 	); err != nil {
 		return err
 	}
-	if err := moveNativePackageFile(t.temporaryPath, t.destination, false); err != nil {
+	if t.brokerJournal != nil {
+		if err := t.brokerJournal.appendPhase(
+			nativeBrokerPhaseImageSwitchIntent, t.request.expectedBrokerSHA256,
+		); err != nil {
+			return fmt.Errorf("journal broker image switch intent: %w", err)
+		}
+	}
+	if err := replaceNativePackageFileAtomically(t.temporaryPath, t.destination, priorExists); err != nil {
 		return fmt.Errorf("publish staged broker: %w", err)
 	}
 	t.temporaryPath = ""
 	t.destinationPublished = true
+	if t.brokerJournal != nil {
+		if err := t.brokerJournal.appendPhase(
+			nativeBrokerPhaseImageSwitched, t.request.expectedBrokerSHA256,
+		); err != nil {
+			return fmt.Errorf("journal published broker image: %w", err)
+		}
+	}
 	release, err := lockNativeServiceExecutableReadOnly(t.destination)
 	if err != nil {
 		return fmt.Errorf("verify published protected broker: %w", err)
@@ -1524,7 +1908,13 @@ func (t *windowsNativePackageTransaction) restoreBrokerExecutable() error {
 		}
 		t.temporaryPath = ""
 	}
-	if t.destinationPublished {
+	if t.destinationPublished && t.brokerJournal != nil {
+		if err := restoreNativeBrokerJournalImage(t.brokerJournal); err != nil {
+			restoreErrors = append(restoreErrors, fmt.Errorf("restore durable prior broker image: %w", err))
+		} else {
+			t.destinationPublished = false
+		}
+	} else if t.destinationPublished {
 		handle, err := openNativePathWithoutReparse(t.destination, windows.GENERIC_READ, false)
 		if err != nil {
 			restoreErrors = append(restoreErrors, fmt.Errorf("lock rejected broker for rollback: %w", err))
@@ -1787,6 +2177,37 @@ func moveNativePackageFile(source, destination string, replace bool) error {
 		flags |= windows.MOVEFILE_REPLACE_EXISTING
 	}
 	return windows.MoveFileEx(from, to, flags)
+}
+
+var replaceNativePackageFileW = windows.NewLazySystemDLL("kernel32.dll").NewProc("ReplaceFileW")
+
+func replaceNativePackageFileAtomically(source, destination string, destinationExists bool) error {
+	if !destinationExists {
+		return moveNativePackageFile(source, destination, false)
+	}
+	sourcePointer, err := windows.UTF16PtrFromString(source)
+	if err != nil {
+		return err
+	}
+	destinationPointer, err := windows.UTF16PtrFromString(destination)
+	if err != nil {
+		return err
+	}
+	result, _, callErr := replaceNativePackageFileW.Call(
+		uintptr(unsafe.Pointer(destinationPointer)),
+		uintptr(unsafe.Pointer(sourcePointer)),
+		0,
+		1, // REPLACEFILE_WRITE_THROUGH
+		0,
+		0,
+	)
+	if result == 0 {
+		if callErr == nil || errors.Is(callErr, windows.ERROR_SUCCESS) {
+			callErr = errors.New("ReplaceFileW returned false")
+		}
+		return callErr
+	}
+	return nil
 }
 
 func deleteNativePackageFile(path string) error {

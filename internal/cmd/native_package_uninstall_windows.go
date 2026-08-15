@@ -153,6 +153,9 @@ func (t *windowsNativePackageUninstallTransaction) Preflight(ctx context.Context
 		return fmt.Errorf("resolve exact native broker credential owner: %w", err)
 	}
 	t.userSID = userSID
+	if err := reconcileNativeBrokerJournalBeforeAdmission(ctx, t.logger, t.userSID); err != nil {
+		return fmt.Errorf("reconcile interrupted native broker transaction before uninstall: %w", err)
+	}
 
 	directoryHandles, err := lockNativePackageDirectoryChain(filepath.Dir(t.request.driverHelper))
 	if err != nil {
@@ -768,9 +771,9 @@ func (t *windowsNativePackageUninstallTransaction) RemoveDriver(
 	result, proofErr := parseNativePackageRemoveProof(output.String(), exitCode)
 	if proofErr != nil {
 		if waitErr != nil {
-			return nativePackageRemoveResult{}, fmt.Errorf("%w (process: %v)", proofErr, waitErr)
+			return result, fmt.Errorf("%w (process: %v)", proofErr, waitErr)
 		}
-		return nativePackageRemoveResult{}, proofErr
+		return result, proofErr
 	}
 	return result, nil
 }
