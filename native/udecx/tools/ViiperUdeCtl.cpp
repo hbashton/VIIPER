@@ -18,11 +18,14 @@
 #include <devguid.h>
 #include <initguid.h>
 #include <devpkey.h>
+#include <knownfolders.h>
 #include <newdev.h>
+#include <objbase.h>
 #include <wincrypt.h>
 #include <mscat.h>
 #include <setupapi.h>
 #include <sddl.h>
+#include <shlobj.h>
 #include <softpub.h>
 #include <wintrust.h>
 #include <aclapi.h>
@@ -31,6 +34,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <charconv>
 #include <cerrno>
 #include <cctype>
@@ -75,6 +79,8 @@ BOOL WINAPI DiUninstallDriverW(HWND, LPCWSTR, DWORD, PBOOL);
 #pragma comment(lib, "Advapi32.lib")
 #pragma comment(lib, "Crypt32.lib")
 #pragma comment(lib, "Wintrust.lib")
+#pragma comment(lib, "Shell32.lib")
+#pragma comment(lib, "Ole32.lib")
 
 namespace {
 
@@ -130,6 +136,24 @@ static_assert(offsetof(VIIPER_UDE_STATS, ReservedPorts) == 144,
     "ABI 1.10/1.11 statistics boundary drift");
 static_assert(AbiCompatibilityProfilesAreValid(),
     "ABI compatibility profiles must be exact and strictly descending");
+
+constexpr bool SameAbiCompatibilityProfile(
+    const AbiCompatibilityProfile& left,
+    const AbiCompatibilityProfile& right) noexcept {
+    return left.minor == right.minor &&
+        left.capabilities == right.capabilities &&
+        left.statsSize == right.statsSize &&
+        left.hasReservedPortFields == right.hasReservedPortFields;
+}
+
+constexpr bool IsKnownAbiCompatibilityProfile(
+    const AbiCompatibilityProfile& profile) noexcept {
+    return std::any_of(kAbiCompatibilityProfiles.begin(),
+        kAbiCompatibilityProfiles.end(),
+        [&](const AbiCompatibilityProfile& known) {
+            return SameAbiCompatibilityProfile(profile, known);
+        });
+}
 constexpr wchar_t kModelSection[] = L"Standard.NTamd64.10.0...17763";
 constexpr wchar_t kInstallSection[] = L"ViiperUde_Install";
 constexpr wchar_t kTransactionNamespace[] = L"VIIPER_UDE_DRIVER_TRANSACTION_NAMESPACE_V1";
@@ -155,6 +179,21 @@ constexpr wchar_t kRecoveryRecordSecurity[] =
 constexpr wchar_t kRecoveryRecordName[] = L"recovery-v1.json";
 constexpr wchar_t kRecoveryRecordTemporaryName[] = L"recovery-v1.json.tmp";
 constexpr size_t kMaximumRecoveryRecordBytes = 256U * 1024U;
+constexpr wchar_t kInstallRecoveryProductDirectory[] = L"VIIPER";
+constexpr wchar_t kInstallRecoveryComponentDirectory[] = L"UdeCx";
+constexpr wchar_t kInstallRecoveryTransactionsDirectory[] = L"Transactions";
+constexpr wchar_t kInstallRecoveryActiveDirectory[] = L"active-v2";
+constexpr wchar_t kInstallRecoverySettledPrefix[] = L"settled-v2-";
+constexpr wchar_t kInstallRecoveryJournalPrefix[] = L"journal-";
+constexpr wchar_t kInstallRecoveryJournalSuffix[] = L".json";
+constexpr wchar_t kInstallRecoveryTemporarySuffix[] = L".tmp";
+constexpr wchar_t kInstallRecoveryPriorDirectory[] = L"prior";
+constexpr wchar_t kInstallRecoveryCandidateDirectory[] = L"candidate";
+constexpr size_t kMaximumInstallRecoveryRecords = 96;
+constexpr std::string_view kInstallRecoveryKind =
+    "VIIPER-UDE-install-switch-recovery";
+constexpr std::string_view kZeroSha256 =
+    "0000000000000000000000000000000000000000000000000000000000000000";
 constexpr std::string_view kHardwareVerificationOid = "1.3.6.1.4.1.311.10.3.5";
 constexpr std::string_view kAttestationVerificationOid = "1.3.6.1.4.1.311.10.3.5.1";
 
@@ -168,6 +207,7 @@ bool gActiveRecoveryRecordWritten = false;
 std::array<wchar_t, MAX_PATH> gActiveBackupRoot{};
 bool gActiveBackupRootRetained = false;
 bool gTransactionMutationStarted = false;
+bool gLastSynchronousMutationTimedOut = false;
 
 void MarkTransactionMutationStarted() noexcept {
     gTransactionMutationStarted = true;
@@ -268,11 +308,22 @@ void EmitOutcome(const wchar_t* operation, const Outcome& outcome) {
             stream << L" nestedExitCode=" << *outcome.error.nestedExitCode;
         }
         stream << L" message=" << std::quoted(outcome.error.message);
-        if (!outcome.error.recoveryRecord.empty()) {
-            stream << L" recoveryRecord=" << std::quoted(outcome.error.recoveryRecord)
+        const std::wstring recoveryRecord =
+            !outcome.error.recoveryRecord.empty()
+                ? outcome.error.recoveryRecord
+                : gActiveRecoveryRecord[0] != L'\0'
+                    ? std::wstring(gActiveRecoveryRecord.data())
+                    : std::wstring{};
+        const bool recoveryRecordWritten =
+            !outcome.error.recoveryRecord.empty()
+                ? outcome.error.recoveryRecordWritten
+                : gActiveRecoveryRecordWritten;
+        if (!recoveryRecord.empty()) {
+            stream << L" recoveryRecord=" << std::quoted(recoveryRecord)
                    << L" recoveryRecordWritten="
-                   << (outcome.error.recoveryRecordWritten ? 1 : 0);
-            if (!outcome.error.recoveryRecordWritten) {
+                   << (recoveryRecordWritten ? 1 : 0);
+            if (!recoveryRecordWritten &&
+                !outcome.error.recoveryRecord.empty()) {
                 stream << L" recoveryRecordPhase="
                        << std::quoted(outcome.error.recoveryRecordPhase)
                        << L" recoveryRecordWin32Error="
@@ -281,10 +332,18 @@ void EmitOutcome(const wchar_t* operation, const Outcome& outcome) {
                        << std::quoted(outcome.error.recoveryRecordMessage);
             }
         }
-        if (!outcome.error.recoveryBackup.empty()) {
-            stream << L" recoveryBackup=" << std::quoted(outcome.error.recoveryBackup)
+        const std::wstring recoveryBackup =
+            !outcome.error.recoveryBackup.empty()
+                ? outcome.error.recoveryBackup
+                : gActiveBackupRoot[0] != L'\0'
+                    ? std::wstring(gActiveBackupRoot.data())
+                    : std::wstring{};
+        if (!recoveryBackup.empty()) {
+            stream << L" recoveryBackup=" << std::quoted(recoveryBackup)
                    << L" recoveryBackupRetained="
-                   << (outcome.error.recoveryBackupRetained ? 1 : 0);
+                   << ((!outcome.error.recoveryBackup.empty()
+                           ? outcome.error.recoveryBackupRetained
+                           : gActiveBackupRootRetained) ? 1 : 0);
         }
     }
     stream << L"\n";
@@ -323,6 +382,83 @@ public:
 private:
     HANDLE value_ = INVALID_HANDLE_VALUE;
 };
+
+class SynchronousMutationWatchdog final {
+public:
+    SynchronousMutationWatchdog(
+        uint64_t deadlineUnixMs,
+        const wchar_t* apiName)
+        : apiName_(apiName == nullptr ? L"unknown" : apiName) {
+        completion_.reset(CreateEventW(nullptr, TRUE, FALSE, nullptr));
+        if (!completion_) {
+            throw std::bad_alloc();
+        }
+        thread_ = std::thread([this, deadlineUnixMs]() noexcept {
+            for (;;) {
+                const uint64_t now = CurrentUnixMilliseconds();
+                const DWORD waitMilliseconds = deadlineUnixMs <= now
+                    ? 0
+                    : static_cast<DWORD>(std::min<uint64_t>(
+                        deadlineUnixMs - now,
+                        std::numeric_limits<DWORD>::max() - 1ULL));
+                const DWORD wait = WaitForSingleObject(
+                    completion_.get(), waitMilliseconds);
+                if (wait == WAIT_OBJECT_0) {
+                    return;
+                }
+                if (wait == WAIT_TIMEOUT) {
+                    timedOut_.store(true, std::memory_order_release);
+                    std::wstring diagnostic =
+                        L"VIIPER: authoritative synchronous mutation exceeded its deadline; "
+                        L"the owner remains alive and is still waiting for ";
+                    diagnostic += apiName_;
+                    diagnostic += L" to return.\n";
+                    OutputDebugStringW(diagnostic.c_str());
+                    WaitForSingleObject(completion_.get(), INFINITE);
+                    return;
+                }
+                timedOut_.store(true, std::memory_order_release);
+                return;
+            }
+        });
+    }
+
+    ~SynchronousMutationWatchdog() noexcept {
+        Complete();
+    }
+
+    SynchronousMutationWatchdog(const SynchronousMutationWatchdog&) = delete;
+    SynchronousMutationWatchdog& operator=(const SynchronousMutationWatchdog&) = delete;
+
+    bool Complete() noexcept {
+        if (completion_) {
+            SetEvent(completion_.get());
+        }
+        if (thread_.joinable()) {
+            thread_.join();
+        }
+        return timedOut_.load(std::memory_order_acquire);
+    }
+
+private:
+    std::wstring apiName_;
+    WinHandle completion_;
+    std::thread thread_;
+    std::atomic<bool> timedOut_{false};
+};
+
+template <typename Callback>
+auto InvokeAuthoritativeSynchronousMutation(
+    uint64_t deadlineUnixMs,
+    const wchar_t* apiName,
+    Callback&& callback) -> decltype(callback()) {
+    SynchronousMutationWatchdog watchdog(deadlineUnixMs, apiName);
+    auto result = callback();
+    const DWORD callbackError = GetLastError();
+    gLastSynchronousMutationTimedOut = watchdog.Complete();
+    SetLastError(callbackError);
+    return result;
+}
 
 class DeviceInfoSet final {
 public:
@@ -703,11 +839,37 @@ private:
         } else if (codePoint <= 0x7ffU) {
             value->push_back(static_cast<char>(0xc0U | (codePoint >> 6U)));
             value->push_back(static_cast<char>(0x80U | (codePoint & 0x3fU)));
-        } else {
+        } else if (codePoint <= 0xffffU) {
             value->push_back(static_cast<char>(0xe0U | (codePoint >> 12U)));
             value->push_back(static_cast<char>(0x80U | ((codePoint >> 6U) & 0x3fU)));
             value->push_back(static_cast<char>(0x80U | (codePoint & 0x3fU)));
+        } else {
+            value->push_back(static_cast<char>(0xf0U | (codePoint >> 18U)));
+            value->push_back(static_cast<char>(0x80U | ((codePoint >> 12U) & 0x3fU)));
+            value->push_back(static_cast<char>(0x80U | ((codePoint >> 6U) & 0x3fU)));
+            value->push_back(static_cast<char>(0x80U | (codePoint & 0x3fU)));
         }
+    }
+
+    bool ParseUnicodeEscape(uint32_t* codePoint, std::string* message) {
+        if (position_ + 4 > text_.size()) {
+            *message = "short JSON unicode escape";
+            return false;
+        }
+        uint32_t parsed = 0;
+        for (unsigned index = 0; index < 4; ++index) {
+            const char digit = text_[position_++];
+            parsed <<= 4U;
+            if (digit >= '0' && digit <= '9') parsed |= static_cast<uint32_t>(digit - '0');
+            else if (digit >= 'a' && digit <= 'f') parsed |= static_cast<uint32_t>(digit - 'a' + 10);
+            else if (digit >= 'A' && digit <= 'F') parsed |= static_cast<uint32_t>(digit - 'A' + 10);
+            else {
+                *message = "invalid JSON unicode escape";
+                return false;
+            }
+        }
+        *codePoint = parsed;
+        return true;
     }
 
     bool ParseString(std::string* value, std::string* message) {
@@ -744,24 +906,27 @@ private:
             case 'r': value->push_back('\r'); break;
             case 't': value->push_back('\t'); break;
             case 'u': {
-                if (position_ + 4 > text_.size()) {
-                    *message = "short JSON unicode escape";
+                uint32_t codePoint = 0;
+                if (!ParseUnicodeEscape(&codePoint, message)) {
                     return false;
                 }
-                uint32_t codePoint = 0;
-                for (unsigned index = 0; index < 4; ++index) {
-                    const char digit = text_[position_++];
-                    codePoint <<= 4U;
-                    if (digit >= '0' && digit <= '9') codePoint |= static_cast<uint32_t>(digit - '0');
-                    else if (digit >= 'a' && digit <= 'f') codePoint |= static_cast<uint32_t>(digit - 'a' + 10);
-                    else if (digit >= 'A' && digit <= 'F') codePoint |= static_cast<uint32_t>(digit - 'A' + 10);
-                    else {
-                        *message = "invalid JSON unicode escape";
+                if (codePoint >= 0xd800U && codePoint <= 0xdbffU) {
+                    if (position_ + 2 > text_.size() || text_[position_] != '\\' ||
+                        text_[position_ + 1] != 'u') {
+                        *message = "high surrogate JSON escape lacks a low surrogate";
                         return false;
                     }
-                }
-                if (codePoint >= 0xd800U && codePoint <= 0xdfffU) {
-                    *message = "surrogate JSON escapes are not permitted in install manifests";
+                    position_ += 2;
+                    uint32_t low = 0;
+                    if (!ParseUnicodeEscape(&low, message) ||
+                        low < 0xdc00U || low > 0xdfffU) {
+                        *message = "invalid low surrogate JSON escape";
+                        return false;
+                    }
+                    codePoint = 0x10000U +
+                        ((codePoint - 0xd800U) << 10U) + (low - 0xdc00U);
+                } else if (codePoint >= 0xdc00U && codePoint <= 0xdfffU) {
+                    *message = "unpaired low surrogate JSON escape";
                     return false;
                 }
                 AppendUtf8(codePoint, value);
@@ -2020,6 +2185,68 @@ struct Snapshot {
     std::vector<PackageInfo> packages;
 };
 
+enum class InstallJournalPhase {
+    Prepared,
+    SetupCopyEntered,
+    SetupCopyReturned,
+    StageReceiptCaptured,
+    QuiesceSignalEntered,
+    QuiesceSignalReturned,
+    RootRegistrationIntentCaptured,
+    RootRegistrationEntered,
+    RootRegistrationReturned,
+    DiInstallEntered,
+    DiInstallReturned,
+    PriorAbiProfileCaptured,
+    DriverValidated,
+    BrokerHandoffEntered,
+    BrokerHandoffReturned,
+    BrokerChildEntered,
+    BrokerChildSettled,
+    RollbackBindingEntered,
+    PartialRootRemovalEntered,
+    PartialRootRemovalReturned,
+    PartialRootRemovalRebootPending,
+    RollbackBindingReturned,
+    SetupUninstallEntered,
+    SetupUninstallReturned,
+    ForwardValidated,
+    ExactPriorRestored,
+    ForwardRebootPending,
+    RestoreRebootPending,
+    ManualReconciliationRequired,
+};
+
+enum class InstallJournalDirection {
+    Forward,
+    Rollback,
+};
+
+bool RecordActiveInstallJournalCutpoint(
+    InstallJournalPhase phase,
+    bool callSucceeded,
+    DWORD callError,
+    bool deadlineOverrun,
+    Error* error);
+
+bool RecordActiveInstallJournalCutpointWithReboot(
+    InstallJournalPhase phase,
+    bool callSucceeded,
+    DWORD callError,
+    bool deadlineOverrun,
+    bool rebootRequired,
+    bool freshRebootRequired,
+    Error* error);
+
+bool RecordActiveInstallJournalRollbackAuthorization(
+    InstallJournalPhase phase,
+    DWORD callError,
+    Error* error);
+
+bool RecordActiveInstallJournalRootRegistrationIntent(
+    const std::wstring& instanceId,
+    Error* error);
+
 enum class CandidateDisposition {
     InstallRequired,
     Exact,
@@ -2288,12 +2515,24 @@ bool StageCandidatePackage(
     // receipt validation. Mark the protected transaction as potentially
     // mutated before the API boundary; stagedHere remains success-only so
     // rollback never claims ownership of a preexisting or uncertain package.
+    if (!RecordActiveInstallJournalCutpoint(
+            InstallJournalPhase::SetupCopyEntered, true, ERROR_SUCCESS,
+            false, error)) {
+        return false;
+    }
     MarkTransactionMutationStarted();
-    const BOOL copied = SetupCopyOEMInfW(
-        sourcePath.c_str(), nullptr, SPOST_PATH, SP_COPY_NOOVERWRITE,
-        destination.data(), static_cast<DWORD>(destination.size()),
-        &required, nullptr);
+    const BOOL copied = InvokeAuthoritativeSynchronousMutation(
+        transactionDeadlineUnixMs, L"SetupCopyOEMInfW", [&]() {
+            return SetupCopyOEMInfW(
+                sourcePath.c_str(), nullptr, SPOST_PATH, SP_COPY_NOOVERWRITE,
+                destination.data(), static_cast<DWORD>(destination.size()),
+                &required, nullptr);
+        });
     const DWORD copyError = copied ? ERROR_SUCCESS : GetLastError();
+    Error journalReturnError;
+    const bool journalReturnRecorded = RecordActiveInstallJournalCutpoint(
+        InstallJournalPhase::SetupCopyReturned, copied != FALSE,
+        copyError, gLastSynchronousMutationTimedOut, &journalReturnError);
     if (copied) {
         if (mutationStarted != nullptr) {
             *mutationStarted = true;
@@ -2308,6 +2547,10 @@ bool StageCandidatePackage(
         // An unexpected API failure is not proof of package ownership. Leave
         // stagedHere false; common rollback will prove the prior inventory and
         // fail closed if SetupAPI nevertheless changed it.
+        if (!journalReturnRecorded) {
+            *error = std::move(journalReturnError);
+            return false;
+        }
         return SetError(error, L"stage-driver-package", copyError,
             L"add-only candidate import into the Driver Store failed");
     }
@@ -2363,6 +2606,14 @@ bool StageCandidatePackage(
         return false;
     }
     *published = std::move(verifiedPublished);
+    if (!journalReturnRecorded) {
+        *error = std::move(journalReturnError);
+        return false;
+    }
+    if (gLastSynchronousMutationTimedOut) {
+        return SetError(error, L"stage-driver-package-timeout", ERROR_TIMEOUT,
+            L"SetupCopyOEMInfW exceeded the transaction deadline; its authoritative return and exact receipt were retained for rollback");
+    }
     return true;
 }
 
@@ -2373,7 +2624,8 @@ bool RemoveDevice(
     const wchar_t* deadlinePhase,
     bool* mutationStarted,
     bool* rebootRequired,
-    Error* error) {
+    Error* error,
+    bool* freshRebootRequired = nullptr) {
     if (transactionDeadlineUnixMs != 0 &&
         !CheckTransactionDeadline(transactionDeadlineUnixMs, deadlinePhase, error)) {
         return false;
@@ -2385,6 +2637,9 @@ bool RemoveDevice(
     BOOL reboot = FALSE;
     if (!DiUninstallDevice(nullptr, set, &data, 0, &reboot)) {
         return SetLastErrorDetail(error, L"remove-devnode");
+    }
+    if (freshRebootRequired != nullptr) {
+        *freshRebootRequired = reboot != FALSE;
     }
     *rebootRequired = *rebootRequired || reboot != FALSE;
     return true;
@@ -2454,11 +2709,43 @@ bool RegisterRootDevice(
             DICD_GENERATE_ID, data)) {
         return SetLastErrorDetail(error, L"create-root-devnode");
     }
+    DWORD instanceCharacters = 0;
+    SetupDiGetDeviceInstanceIdW(
+        set->get(), data, nullptr, 0, &instanceCharacters);
+    if (instanceCharacters == 0U ||
+        GetLastError() != ERROR_INSUFFICIENT_BUFFER) {
+        return SetLastErrorDetail(
+            error, L"capture-generated-root-instance-id");
+    }
+    std::vector<wchar_t> generatedInstance(instanceCharacters);
+    if (!SetupDiGetDeviceInstanceIdW(
+            set->get(), data, generatedInstance.data(),
+            instanceCharacters, nullptr)) {
+        return SetLastErrorDetail(
+            error, L"capture-generated-root-instance-id");
+    }
+    const std::wstring intendedInstanceId = generatedInstance.data();
+    if (!IsEqualGUID(classGuid, GUID_DEVCLASS_USB) ||
+        !IsGeneratedRootInstanceIdForDeviceName(
+            intendedInstanceId, kRootDeviceName)) {
+        return SetError(error, L"capture-generated-root-instance-id",
+            ERROR_INVALID_DATA,
+            L"SetupAPI generated a root identity or class outside the exact VIIPER transaction namespace");
+    }
+    if (!RecordActiveInstallJournalRootRegistrationIntent(
+            intendedInstanceId, error)) {
+        return false;
+    }
     const size_t idCharacters = std::size(kHardwareId) + 1;
     std::vector<wchar_t> identifiers(idCharacters, L'\0');
     std::copy(std::begin(kHardwareId), std::end(kHardwareId), identifiers.begin());
     if (!CheckTransactionDeadline(transactionDeadlineUnixMs,
             L"transaction-deadline-before-root-properties", error)) {
+        return false;
+    }
+    if (!RecordActiveInstallJournalCutpoint(
+            InstallJournalPhase::RootRegistrationEntered,
+            true, ERROR_SUCCESS, false, error)) {
         return false;
     }
     MarkTransactionMutationStarted();
@@ -2469,7 +2756,15 @@ bool RegisterRootDevice(
             set->get(), data, SPDRP_HARDWAREID,
             reinterpret_cast<const BYTE*>(identifiers.data()),
             static_cast<DWORD>(identifiers.size() * sizeof(wchar_t)))) {
-        return SetLastErrorDetail(error, L"set-root-hardware-id");
+        const DWORD code = GetLastError();
+        Error journalError;
+        if (!RecordActiveInstallJournalCutpoint(
+                InstallJournalPhase::RootRegistrationReturned,
+                false, code, false, &journalError)) {
+            *error = std::move(journalError);
+            return false;
+        }
+        return SetError(error, L"set-root-hardware-id", code);
     }
     if (!CheckTransactionDeadline(transactionDeadlineUnixMs,
             L"transaction-deadline-before-root-registration", error)) {
@@ -2479,8 +2774,24 @@ bool RegisterRootDevice(
     if (mutationStarted != nullptr) {
         *mutationStarted = true;
     }
-    if (!SetupDiCallClassInstaller(DIF_REGISTERDEVICE, set->get(), data)) {
-        return SetLastErrorDetail(error, L"register-root-devnode");
+    const BOOL registered = InvokeAuthoritativeSynchronousMutation(
+        transactionDeadlineUnixMs, L"SetupDiCallClassInstaller(DIF_REGISTERDEVICE)",
+        [&]() {
+            return SetupDiCallClassInstaller(
+                DIF_REGISTERDEVICE, set->get(), data);
+        });
+    const DWORD registerError = registered ? ERROR_SUCCESS : GetLastError();
+    Error journalReturnError;
+    const bool journalReturnRecorded = RecordActiveInstallJournalCutpoint(
+        InstallJournalPhase::RootRegistrationReturned,
+        registered != FALSE, registerError, gLastSynchronousMutationTimedOut,
+        &journalReturnError);
+    if (!registered) {
+        if (!journalReturnRecorded) {
+            *error = std::move(journalReturnError);
+            return false;
+        }
+        return SetError(error, L"register-root-devnode", registerError);
     }
     if (registrationSucceeded != nullptr) {
         *registrationSucceeded = true;
@@ -2490,9 +2801,18 @@ bool RegisterRootDevice(
             set->get(), data, instanceId, static_cast<DWORD>(std::size(instanceId)), nullptr)) {
         return SetLastErrorDetail(error, L"verify-generated-root-instance-id");
     }
-    if (!IsGeneratedRootInstanceIdForDeviceName(instanceId, kRootDeviceName)) {
+    if (!IsGeneratedRootInstanceIdForDeviceName(instanceId, kRootDeviceName) ||
+        _wcsicmp(instanceId, intendedInstanceId.c_str()) != 0) {
         return SetError(error, L"verify-generated-root-instance-id", ERROR_INVALID_DATA,
-            L"SetupAPI generated a root identity outside the VIIPER-owned namespace");
+            L"registered root identity changed from the exact durable pre-registration receipt");
+    }
+    if (!journalReturnRecorded) {
+        *error = std::move(journalReturnError);
+        return false;
+    }
+    if (gLastSynchronousMutationTimedOut) {
+        return SetError(error, L"register-root-devnode-timeout", ERROR_TIMEOUT,
+            L"root registration exceeded the transaction deadline; its authoritative return was retained for rollback");
     }
     return true;
 }
@@ -2634,16 +2954,49 @@ bool CommitPreparedDriverBinding(
         return SetError(error, L"repair-select-exact-driver", code);
     }
     BOOL reboot = FALSE;
-    if (!DiInstallDevice(nullptr, prepared->set, prepared->device,
-            &prepared->selected, 0, &reboot)) {
-        const DWORD code = GetLastError();
+    if (!RecordActiveInstallJournalCutpoint(
+            InstallJournalPhase::DiInstallEntered, true, ERROR_SUCCESS,
+            false, error)) {
         prepared->Reset();
+        return false;
+    }
+    const BOOL installed = InvokeAuthoritativeSynchronousMutation(
+        transactionDeadlineUnixMs, L"DiInstallDevice", [&]() {
+            return DiInstallDevice(nullptr, prepared->set, prepared->device,
+                &prepared->selected, 0, &reboot);
+        });
+    const DWORD installError = installed ? ERROR_SUCCESS : GetLastError();
+    const bool combinedRebootRequired =
+        *rebootRequired || reboot != FALSE;
+    *rebootRequired = combinedRebootRequired;
+    Error journalReturnError;
+    const bool journalReturnRecorded =
+        RecordActiveInstallJournalCutpointWithReboot(
+        InstallJournalPhase::DiInstallReturned, installed != FALSE,
+        installError, gLastSynchronousMutationTimedOut,
+        combinedRebootRequired, reboot != FALSE,
+        &journalReturnError);
+    if (!installed) {
+        const DWORD code = installError;
+        prepared->Reset();
+        if (!journalReturnRecorded) {
+            *error = std::move(journalReturnError);
+            return false;
+        }
         return SetError(error, L"repair-install-preinstalled-driver", code);
     }
     if (!prepared->Reset()) {
         return SetLastErrorDetail(error, L"repair-destroy-compatible-driver-list");
     }
-    *rebootRequired = *rebootRequired || reboot != FALSE;
+    if (!journalReturnRecorded) {
+        *error = std::move(journalReturnError);
+        return false;
+    }
+    if (gLastSynchronousMutationTimedOut) {
+        return SetError(error, L"repair-install-preinstalled-driver-timeout",
+            ERROR_TIMEOUT,
+            L"DiInstallDevice exceeded the transaction deadline; its authoritative return was retained for rollback");
+    }
     return true;
 }
 
@@ -2721,6 +3074,11 @@ bool RegisterRootDeviceExact(
             L"rollback-deadline-before-root-properties", error)) {
         return false;
     }
+    if (!RecordActiveInstallJournalCutpoint(
+            InstallJournalPhase::RootRegistrationEntered,
+            true, ERROR_SUCCESS, false, error)) {
+        return false;
+    }
     MarkTransactionMutationStarted();
     if (mutationStarted != nullptr) {
         *mutationStarted = true;
@@ -2728,7 +3086,15 @@ bool RegisterRootDeviceExact(
     if (!SetupDiSetDeviceRegistryPropertyW(set->get(), data, SPDRP_HARDWAREID,
             reinterpret_cast<const BYTE*>(identifiers.data()),
             static_cast<DWORD>(identifiers.size() * sizeof(wchar_t)))) {
-        return SetLastErrorDetail(error, L"rollback-set-root-hardware-id");
+        const DWORD code = GetLastError();
+        Error journalError;
+        if (!RecordActiveInstallJournalCutpoint(
+                InstallJournalPhase::RootRegistrationReturned,
+                false, code, false, &journalError)) {
+            *error = std::move(journalError);
+            return false;
+        }
+        return SetError(error, L"rollback-set-root-hardware-id", code);
     }
     if (transactionDeadlineUnixMs != 0 &&
         !CheckTransactionDeadline(transactionDeadlineUnixMs,
@@ -2739,11 +3105,37 @@ bool RegisterRootDeviceExact(
     if (mutationStarted != nullptr) {
         *mutationStarted = true;
     }
-    if (!SetupDiCallClassInstaller(DIF_REGISTERDEVICE, set->get(), data)) {
-        return SetLastErrorDetail(error, L"rollback-register-exact-root-devnode");
+    const BOOL registered = InvokeAuthoritativeSynchronousMutation(
+        transactionDeadlineUnixMs,
+        L"SetupDiCallClassInstaller(DIF_REGISTERDEVICE)", [&]() {
+            return SetupDiCallClassInstaller(
+                DIF_REGISTERDEVICE, set->get(), data);
+        });
+    const DWORD registerError = registered ? ERROR_SUCCESS : GetLastError();
+    Error journalReturnError;
+    const bool journalReturnRecorded = RecordActiveInstallJournalCutpoint(
+        InstallJournalPhase::RootRegistrationReturned,
+        registered != FALSE, registerError, gLastSynchronousMutationTimedOut,
+        &journalReturnError);
+    if (!registered) {
+        if (!journalReturnRecorded) {
+            *error = std::move(journalReturnError);
+            return false;
+        }
+        return SetError(error, L"rollback-register-exact-root-devnode",
+            registerError);
     }
     if (registrationSucceeded != nullptr) {
         *registrationSucceeded = true;
+    }
+    if (!journalReturnRecorded) {
+        *error = std::move(journalReturnError);
+        return false;
+    }
+    if (gLastSynchronousMutationTimedOut) {
+        return SetError(error, L"rollback-register-exact-root-devnode-timeout",
+            ERROR_TIMEOUT,
+            L"exact root registration exceeded the rollback deadline; its authoritative return was retained");
     }
     return true;
 }
@@ -3001,6 +3393,7 @@ bool VerifyAbiHealth(
     case AbiHealthPurpose::RollbackHealth:
         profiles = requiredProfile;
         profileCount = 1;
+        requirePristineRuntime = true;
         break;
     }
 
@@ -3264,11 +3657,39 @@ bool RemoveStagedCandidateExact(
             L"install-rollback-deadline-staged-package", error)) {
         return false;
     }
+    if (!RecordActiveInstallJournalCutpoint(
+            InstallJournalPhase::SetupUninstallEntered,
+            true, ERROR_SUCCESS, false, error)) {
+        return false;
+    }
     MarkTransactionMutationStarted();
-    if (!SetupUninstallOEMInfW(
-            stagedCandidate.publishedName.c_str(), 0, nullptr)) {
-        return SetLastErrorDetail(error, L"rollback-staged-package-remove",
+    const BOOL removed = InvokeAuthoritativeSynchronousMutation(
+        rollbackDeadlineUnixMs, L"SetupUninstallOEMInfW", [&]() {
+            return SetupUninstallOEMInfW(
+                stagedCandidate.publishedName.c_str(), 0, nullptr);
+        });
+    const DWORD removeError = removed ? ERROR_SUCCESS : GetLastError();
+    Error journalReturnError;
+    const bool journalReturnRecorded = RecordActiveInstallJournalCutpoint(
+        InstallJournalPhase::SetupUninstallReturned,
+        removed != FALSE, removeError, gLastSynchronousMutationTimedOut,
+        &journalReturnError);
+    if (!removed) {
+        if (!journalReturnRecorded) {
+            *error = std::move(journalReturnError);
+            return false;
+        }
+        return SetError(error, L"rollback-staged-package-remove", removeError,
             L"the exact unbound staged-here candidate could not be removed");
+    }
+    if (!journalReturnRecorded) {
+        *error = std::move(journalReturnError);
+        return false;
+    }
+    if (gLastSynchronousMutationTimedOut) {
+        return SetError(error, L"rollback-staged-package-remove-timeout",
+            ERROR_TIMEOUT,
+            L"SetupUninstallOEMInfW exceeded the rollback deadline; its authoritative return was retained");
     }
     return true;
 }
@@ -3528,6 +3949,124 @@ struct InstallOptions {
     HANDLE brokerHandoff = nullptr;
 };
 
+struct BrokerCommitProof;
+struct InstallJournalStateData;
+
+class InstallJournal final {
+public:
+    InstallJournal();
+    ~InstallJournal();
+    InstallJournal(const InstallJournal&) = delete;
+    InstallJournal& operator=(const InstallJournal&) = delete;
+
+    bool Prepare(
+        const Snapshot& prior,
+        const PackageInfo& candidate,
+        const std::filesystem::path& candidateDirectory,
+        const std::vector<PackageInfo>& expectedInventory,
+        const InstallOptions& options,
+        Error* error);
+    bool Record(
+        InstallJournalPhase phase,
+        const PackageInfo* publishedCandidate,
+        bool packageStagedHere,
+        bool bindingMutationStarted,
+        bool rebootRequired,
+        bool callSucceeded,
+        DWORD callError,
+        bool deadlineOverrun,
+        Error* error);
+    bool RecordCutpoint(
+        InstallJournalPhase phase,
+        bool callSucceeded,
+        DWORD callError,
+        bool deadlineOverrun,
+        bool rebootRequired,
+        bool freshRebootRequired,
+        Error* error);
+    bool RecordAuthoritativeReturn(
+        InstallJournalPhase phase,
+        const PackageInfo* publishedCandidate,
+        bool packageStagedHere,
+        bool bindingMutationStarted,
+        bool rebootRequired,
+        bool freshRebootRequired,
+        bool callSucceeded,
+        DWORD callError,
+        bool deadlineOverrun,
+        Error* error);
+    bool RecordPriorAbiProfile(
+        const AbiCompatibilityProfile& profile,
+        const PackageInfo& publishedCandidate,
+        bool packageStagedHere,
+        Error* error);
+    bool RecordRootRegistrationIntent(
+        const std::wstring& instanceId,
+        Error* error);
+    bool RecordBrokerProof(
+        const BrokerCommitProof& proof,
+        Error* error);
+    bool RecordRollbackAuthorization(
+        InstallJournalPhase phase,
+        DWORD callError,
+        Error* error);
+    bool RetireAfterForwardValidation(
+        const PackageInfo& candidate,
+        const std::wstring& publishedName,
+        bool rebootRequired,
+        uint64_t deadlineUnixMs,
+        Error* error);
+    bool RetireAfterPriorValidation(
+        bool rebootRequired,
+        Error* error);
+    bool RemoveAuthorizedPriorEmptyRootAfterAdmission(
+        uint64_t rollbackDeadlineUnixMs,
+        bool* rebootRequired,
+        bool* rootRemovalRebootPending,
+        Error* error);
+    bool VerifyPriorTopologyBeforePackageRollback(Error* error) const;
+    void AttachEvidence(Error* error) const;
+
+private:
+    bool RecordNext(
+        InstallJournalStateData next,
+        InstallJournalPhase phase,
+        const PackageInfo* publishedCandidate,
+        bool packageStagedHere,
+        bool bindingMutationStarted,
+        bool rebootRequired,
+        bool callSucceeded,
+        DWORD callError,
+        bool deadlineOverrun,
+        bool freshRebootRequired,
+        Error* error);
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
+
+InstallJournal* gActiveInstallJournal = nullptr;
+
+class ActiveInstallJournalScope final {
+public:
+    explicit ActiveInstallJournalScope(InstallJournal* journal) noexcept
+        : prior_(gActiveInstallJournal) {
+        gActiveInstallJournal = journal;
+    }
+    ~ActiveInstallJournalScope() {
+        gActiveInstallJournal = prior_;
+    }
+    ActiveInstallJournalScope(const ActiveInstallJournalScope&) = delete;
+    ActiveInstallJournalScope& operator=(const ActiveInstallJournalScope&) = delete;
+
+private:
+    InstallJournal* prior_;
+};
+
+bool ReconcileInstallJournal(
+    bool explicitRecovery,
+    uint64_t deadlineUnixMs,
+    Outcome* outcome);
+
 uint64_t CurrentUnixMilliseconds() {
     FILETIME now{};
     GetSystemTimeAsFileTime(&now);
@@ -3577,8 +4116,26 @@ bool RequestBrokerQuiescence(const InstallOptions& options, Error* error) {
             options, L"transaction-deadline-before-broker-quiescence", error)) {
         return false;
     }
+    if (!RecordActiveInstallJournalCutpoint(
+            InstallJournalPhase::QuiesceSignalEntered,
+            true, ERROR_SUCCESS, false, error)) {
+        return false;
+    }
     if (!SetEvent(options.brokerQuiesceRequest)) {
-        return SetLastErrorDetail(error, L"broker-quiescence-request");
+        const DWORD code = GetLastError();
+        Error journalError;
+        if (!RecordActiveInstallJournalCutpoint(
+                InstallJournalPhase::QuiesceSignalReturned,
+                false, code, false, &journalError)) {
+            *error = std::move(journalError);
+            return false;
+        }
+        return SetError(error, L"broker-quiescence-request", code);
+    }
+    if (!RecordActiveInstallJournalCutpoint(
+            InstallJournalPhase::QuiesceSignalReturned,
+            true, ERROR_SUCCESS, false, error)) {
+        return false;
     }
     const std::array<HANDLE, 2> responses{
         options.brokerQuiesceReady, options.brokerQuiesceAbort,
@@ -3617,10 +4174,27 @@ bool SignalBrokerHandoff(const InstallOptions& options, Error* error) {
         return SetError(error, L"broker-handoff-handle", ERROR_INVALID_HANDLE,
             L"authenticated broker commit requires the inherited service-lock handoff");
     }
-    if (!SetEvent(options.brokerHandoff)) {
-        return SetLastErrorDetail(error, L"broker-handoff-signal");
+    if (!CheckTransactionDeadline(
+            options, L"transaction-deadline-before-broker-handoff", error) ||
+        !RecordActiveInstallJournalCutpoint(
+            InstallJournalPhase::BrokerHandoffEntered,
+            true, ERROR_SUCCESS, false, error)) {
+        return false;
     }
-    return true;
+    if (!SetEvent(options.brokerHandoff)) {
+        const DWORD code = GetLastError();
+        Error journalError;
+        if (!RecordActiveInstallJournalRollbackAuthorization(
+                InstallJournalPhase::BrokerHandoffReturned,
+                code, &journalError)) {
+            *error = std::move(journalError);
+            return false;
+        }
+        return SetError(error, L"broker-handoff-signal", code);
+    }
+    return RecordActiveInstallJournalCutpoint(
+        InstallJournalPhase::BrokerHandoffReturned,
+        true, ERROR_SUCCESS, false, error);
 }
 
 bool ValidateTransactionDeadlineBudget(uint64_t deadlineUnixMs, Error* error) {
@@ -3767,6 +4341,22 @@ struct BrokerCommitProof {
     bool driverRollbackAuthorized = false;
     std::wstring diagnostic;
 };
+
+bool BrokerProofFieldsAreCanonical(
+    bool success,
+    bool changed,
+    std::string_view rollback,
+    DWORD exitCode,
+    bool driverRollbackAuthorized) noexcept {
+    return (success && !driverRollbackAuthorized &&
+               rollback == "not-needed" && exitCode == 0U) ||
+        (!success && !changed && driverRollbackAuthorized &&
+            rollback == "not-needed" && exitCode == 4U) ||
+        (!success && changed && driverRollbackAuthorized &&
+            rollback == "succeeded" && exitCode == 1U) ||
+        (!success && changed && !driverRollbackAuthorized &&
+            rollback == "failed" && exitCode == 3U);
+}
 
 bool IsUnsafeBrokerDiagnosticCharacter(wchar_t value) {
     const uint32_t codePoint = static_cast<uint16_t>(value);
@@ -4064,12 +4654,25 @@ bool RunBrokerInstall(
         return SetError(error, L"broker-handle-list-update", code);
     }
     PROCESS_INFORMATION process{};
+    if (!RecordActiveInstallJournalCutpoint(
+            InstallJournalPhase::BrokerChildEntered,
+            true, ERROR_SUCCESS, false, error)) {
+        deleteAttributeList();
+        return false;
+    }
     if (!CreateProcessW(options.brokerExecutable.c_str(), mutableCommand.data(), nullptr, nullptr,
             TRUE, CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT, nullptr,
             options.brokerExecutable.parent_path().c_str(),
             &startup.StartupInfo, &process)) {
         const DWORD code = GetLastError();
         deleteAttributeList();
+        Error journalError;
+        if (!RecordActiveInstallJournalRollbackAuthorization(
+                InstallJournalPhase::BrokerChildSettled,
+                code, &journalError)) {
+            *error = std::move(journalError);
+            return false;
+        }
         return SetError(error, L"broker-start", code);
     }
     MarkTransactionMutationStarted();
@@ -4165,6 +4768,10 @@ bool RunBrokerInstall(
     }
     *driverRollbackAuthorized = proof.driverRollbackAuthorized;
     *brokerChanged = proof.changed;
+    if (gActiveInstallJournal != nullptr &&
+        !gActiveInstallJournal->RecordBrokerProof(proof, error)) {
+        return false;
+    }
     if (!proof.success) {
         return SetBrokerCommitFailure(proof, error);
     }
@@ -4182,6 +4789,11 @@ Outcome Install(const InstallOptions& options) {
     if (!mutex.Acquire(&outcome.error)) {
         outcome.exitCode = ExitCode::PreflightRejected;
         return outcome;
+    }
+    Outcome recoveryOutcome;
+    if (!ReconcileInstallJournal(
+            false, options.transactionDeadlineUnixMs, &recoveryOutcome)) {
+        return recoveryOutcome;
     }
     std::filesystem::path packageDirectory;
     std::vector<WinHandle> packageLocks;
@@ -4247,6 +4859,23 @@ Outcome Install(const InstallOptions& options) {
             SamePackageBytes(prior.devices[0].package, candidate);
     }
 
+    InstallJournal installJournal;
+    if (!installJournal.Prepare(
+            prior, candidate, packageDirectory,
+            expectedTransactionInventory, options, &outcome.error)) {
+        outcome.exitCode = ExitCode::PreflightRejected;
+        return outcome;
+    }
+    ActiveInstallJournalScope activeJournal(&installJournal);
+    if (disposition == CandidateDisposition::Exact &&
+        !installJournal.Record(
+            InstallJournalPhase::Prepared, &publishedCandidate,
+            false, false, false, true, ERROR_SUCCESS, false,
+            &outcome.error)) {
+        outcome.exitCode = ExitCode::PreflightRejected;
+        return outcome;
+    }
+
     // Same-version bytes are immutable. An exact package with a missing,
     // stopped, or stale binding may repair only the ROOT topology from the
     // already-published exact INF. It selects that preinstalled package for the
@@ -4261,7 +4890,6 @@ Outcome Install(const InstallOptions& options) {
     DeviceInfoSet created;
     SP_DEVINFO_DATA createdData{};
     createdData.cbSize = sizeof(createdData);
-    bool createdHere = false;
     bool registrationSucceeded = false;
     GUID candidateClassGuid{};
     wchar_t candidateClassName[MAX_CLASS_NAME_LEN]{};
@@ -4281,10 +4909,28 @@ Outcome Install(const InstallOptions& options) {
     // snapshot rollback path, which removes the new package and preserves the
     // prior binding.
     if (disposition == CandidateDisposition::InstallRequired) {
-        if (!StageCandidatePackage(
+        const bool stageSucceeded = StageCandidatePackage(
                 candidate, options.production, options.transactionDeadlineUnixMs,
                 &driverMutationStarted, &packageStagedHere,
-                &publishedCandidate, &outcome.error)) {
+                &publishedCandidate, &outcome.error);
+        const Error stageError = outcome.error;
+        Error stageJournalError;
+        const PackageInfo* stageReceipt =
+            IsSafePublishedInfName(publishedCandidate.publishedName)
+                ? &publishedCandidate : nullptr;
+        const bool stageCallReturned =
+            driverMutationStarted || stageReceipt != nullptr;
+        if (stageCallReturned && !installJournal.Record(
+                InstallJournalPhase::StageReceiptCaptured, stageReceipt,
+                packageStagedHere, bindingMutationStarted,
+                outcome.rebootRequired, stageSucceeded,
+                stageSucceeded ? ERROR_SUCCESS : stageError.code,
+                gLastSynchronousMutationTimedOut, &stageJournalError)) {
+            outcome.error = std::move(stageJournalError);
+        } else if (!stageSucceeded) {
+            outcome.error = stageError;
+        }
+        if (!stageSucceeded) {
             // Exact staging proof recorded the failure.
         } else {
             if (!packageStagedHere &&
@@ -4369,7 +5015,13 @@ Outcome Install(const InstallOptions& options) {
                 outcome.rebootRequired = true;
             }
         } else {
-            priorAbiProfile = negotiatedProfile;
+            if (!installJournal.RecordPriorAbiProfile(
+                    negotiatedProfile, publishedCandidate,
+                    packageStagedHere, &outcome.error)) {
+                // The exact compatibility profile must be durable before bind.
+            } else {
+                priorAbiProfile = negotiatedProfile;
+            }
         }
     }
 
@@ -4382,7 +5034,6 @@ Outcome Install(const InstallOptions& options) {
                     candidateClassGuid, options.transactionDeadlineUnixMs,
                     &bindingMutationStarted, &registrationSucceeded,
                     &created, &createdData, &outcome.error);
-            createdHere = registrationSucceeded;
             if (registeredAndVerified) {
                 InstallPreinstalledDriverOnDevice(
                     created.get(), &createdData, publishedCandidate,
@@ -4465,31 +5116,127 @@ Outcome Install(const InstallOptions& options) {
             L"post-bind-package-inventory-verification", &outcome.error)) {
         // A concurrent package mutation invalidates the transaction outcome.
     }
+    if (outcome.error.code == ERROR_SUCCESS &&
+        !installJournal.Record(
+            InstallJournalPhase::DriverValidated,
+            IsSafePublishedInfName(publishedCandidate.publishedName)
+                ? &publishedCandidate : nullptr,
+            packageStagedHere, bindingMutationStarted,
+            outcome.rebootRequired, true, ERROR_SUCCESS, false,
+            &outcome.error)) {
+        // A durable validation boundary is required before broker handoff.
+    }
+    const auto verifyPostAdmissionRollbackInventory =
+        [&](const wchar_t* phase, Error* error) {
+            std::vector<PackageInfo> exactInventory = prior.packages;
+            if (packageStagedHere) {
+                if (!IsSafePublishedInfName(
+                        publishedCandidate.publishedName) ||
+                    !SamePackageBytes(publishedCandidate, candidate) ||
+                    !(publishedCandidate.version == candidate.version)) {
+                    return SetError(error, phase, ERROR_INVALID_DATA,
+                        L"staged-here rollback lacks its exact published candidate receipt");
+                }
+                if (!ContainsExactPackage(
+                        exactInventory, publishedCandidate)) {
+                    exactInventory.push_back(publishedCandidate);
+                }
+            }
+            std::sort(exactInventory.begin(), exactInventory.end(),
+                [](const PackageInfo& left,
+                   const PackageInfo& right) {
+                    return _wcsicmp(left.publishedName.c_str(),
+                        right.publishedName.c_str()) < 0;
+                });
+            return VerifyPackageInventory(exactInventory, phase, error);
+        };
     if (outcome.error.code != ERROR_SUCCESS && driverMutationStarted) {
         const Error installError = outcome.error;
         Error rollbackError;
         bool rollbackReboot = outcome.rebootRequired;
         const uint64_t rollbackDeadline =
             CurrentUnixMilliseconds() + kDriverRollbackCeilingMs;
-        if (createdHere) {
-            Error cleanupError;
-            if (!RemoveDevice(created.get(), createdData, rollbackDeadline,
-                    L"install-rollback-deadline-created-device",
-                    nullptr,
-                    &rollbackReboot, &cleanupError)) {
-                outcome.rollback = L"failed";
-                outcome.rebootRequired = rollbackReboot;
-                outcome.error = std::move(cleanupError);
-                outcome.exitCode = ExitCode::RollbackFailed;
-                return outcome;
-            }
+        if (!installJournal.Record(
+                InstallJournalPhase::RollbackBindingEntered,
+                IsSafePublishedInfName(publishedCandidate.publishedName)
+                    ? &publishedCandidate : nullptr,
+                packageStagedHere, bindingMutationStarted,
+                rollbackReboot, true, ERROR_SUCCESS, false,
+                &rollbackError)) {
+            outcome.rollback = L"failed";
+            outcome.error = std::move(rollbackError);
+            outcome.exitCode = ExitCode::RollbackFailed;
+            return outcome;
+        }
+        if (!verifyPostAdmissionRollbackInventory(
+                L"install-rollback-post-admission-inventory",
+                &rollbackError)) {
+            outcome.rollback = L"failed";
+            outcome.rebootRequired = rollbackReboot;
+            outcome.error = std::move(rollbackError);
+            outcome.exitCode = ExitCode::RollbackFailed;
+            return outcome;
+        }
+        const bool rollbackRebootAtAdmission = rollbackReboot;
+        bool rootRemovalRebootPending = false;
+        if (!installJournal.RemoveAuthorizedPriorEmptyRootAfterAdmission(
+                rollbackDeadline, &rollbackReboot,
+                &rootRemovalRebootPending,
+                &rollbackError)) {
+            outcome.rollback = L"failed";
+            outcome.rebootRequired = rollbackReboot;
+            outcome.error = std::move(rollbackError);
+            outcome.exitCode = ExitCode::RollbackFailed;
+            return outcome;
+        }
+        if (rootRemovalRebootPending) {
+            outcome.rollback = L"not-needed";
+            outcome.rebootRequired = true;
+            SetError(&outcome.error,
+                L"install-partial-root-removal-reboot-pending",
+                ERROR_SUCCESS_REBOOT_REQUIRED,
+                L"receipt-bound root removal requires a restart before package rollback can continue");
+            outcome.exitCode = ExitCode::RebootRequired;
+            return outcome;
+        }
+        if (!verifyPostAdmissionRollbackInventory(
+                L"install-rollback-pre-package-inventory",
+                &rollbackError) ||
+            !installJournal.VerifyPriorTopologyBeforePackageRollback(
+                &rollbackError)) {
+            outcome.rollback = L"failed";
+            outcome.rebootRequired = rollbackReboot;
+            outcome.error = std::move(rollbackError);
+            outcome.exitCode = ExitCode::RollbackFailed;
+            return outcome;
         }
         const PackageInfo* stagedHereCandidate =
             packageStagedHere ? &publishedCandidate : nullptr;
+        const bool restoreBindingThroughStrictSnapshot =
+            !prior.devices.empty() && bindingMutationStarted;
         if (RollbackInstall(
-                prior, stagedHereCandidate, bindingMutationStarted,
+                prior, stagedHereCandidate,
+                restoreBindingThroughStrictSnapshot,
                 priorAbiProfile.has_value() ? &priorAbiProfile.value() : nullptr,
                 rollbackDeadline, &rollbackReboot, &rollbackError)) {
+            Error journalError;
+            if (!installJournal.RecordAuthoritativeReturn(
+                    InstallJournalPhase::RollbackBindingReturned,
+                    IsSafePublishedInfName(publishedCandidate.publishedName)
+                        ? &publishedCandidate : nullptr,
+                    packageStagedHere, bindingMutationStarted,
+                    rollbackReboot,
+                    rollbackReboot && !rollbackRebootAtAdmission,
+                    true, ERROR_SUCCESS, false,
+                    &journalError) ||
+                !installJournal.RetireAfterPriorValidation(
+                    rollbackReboot, &journalError)) {
+                outcome.rollback = L"failed";
+                outcome.rebootRequired = rollbackReboot;
+                outcome.error = std::move(journalError);
+                outcome.exitCode = ExitCode::RollbackFailed;
+                return outcome;
+            }
             outcome.rollback = L"succeeded";
             outcome.rebootRequired = rollbackReboot;
             outcome.error = installError;
@@ -4500,10 +5247,34 @@ Outcome Install(const InstallOptions& options) {
         outcome.rollback = L"failed";
         outcome.rebootRequired = rollbackReboot;
         outcome.error = std::move(rollbackError);
+        Error journalError;
+        installJournal.RecordAuthoritativeReturn(
+            InstallJournalPhase::RollbackBindingReturned,
+            IsSafePublishedInfName(publishedCandidate.publishedName)
+                ? &publishedCandidate : nullptr,
+            packageStagedHere, bindingMutationStarted,
+            rollbackReboot,
+            rollbackReboot && !rollbackRebootAtAdmission,
+            false, outcome.error.code, false,
+            &journalError);
+        installJournal.Record(
+            InstallJournalPhase::ManualReconciliationRequired,
+            IsSafePublishedInfName(publishedCandidate.publishedName)
+                ? &publishedCandidate : nullptr,
+            packageStagedHere, bindingMutationStarted,
+            rollbackReboot, false, outcome.error.code, false,
+            &journalError);
         outcome.exitCode = ExitCode::RollbackFailed;
         return outcome;
     }
     if (outcome.error.code != ERROR_SUCCESS) {
+        Error journalError;
+        if (!installJournal.RetireAfterPriorValidation(
+                outcome.rebootRequired, &journalError)) {
+            outcome.error = std::move(journalError);
+            outcome.exitCode = ExitCode::RollbackFailed;
+            return outcome;
+        }
         outcome.exitCode = outcome.rebootRequired &&
                 outcome.error.code == ERROR_SUCCESS_REBOOT_REQUIRED
             ? ExitCode::RebootRequired : ExitCode::PreflightRejected;
@@ -4529,12 +5300,29 @@ Outcome Install(const InstallOptions& options) {
         outcome.changed = outcome.changed || brokerChanged;
         if (brokerError.code != ERROR_SUCCESS) {
             if (!driverRollbackAuthorized) {
+                Error journalError;
+                installJournal.Record(
+                    InstallJournalPhase::ManualReconciliationRequired,
+                    IsSafePublishedInfName(publishedCandidate.publishedName)
+                        ? &publishedCandidate : nullptr,
+                    packageStagedHere, bindingMutationStarted,
+                    outcome.rebootRequired, false, brokerError.code,
+                    false, &journalError);
                 outcome.rollback = L"failed";
                 outcome.error = std::move(brokerError);
+                installJournal.AttachEvidence(&outcome.error);
                 outcome.exitCode = ExitCode::RollbackFailed;
                 return outcome;
             }
             if (!driverMutationStarted) {
+                Error journalError;
+                if (!installJournal.RetireAfterPriorValidation(
+                        outcome.rebootRequired, &journalError)) {
+                    outcome.rollback = L"failed";
+                    outcome.error = std::move(journalError);
+                    outcome.exitCode = ExitCode::RollbackFailed;
+                    return outcome;
+                }
                 outcome.rollback = brokerChanged ? L"succeeded" : L"not-needed";
                 outcome.error = std::move(brokerError);
                 outcome.exitCode = outcome.error.code == ERROR_SUCCESS_REBOOT_REQUIRED
@@ -4545,25 +5333,87 @@ Outcome Install(const InstallOptions& options) {
             bool rollbackReboot = outcome.rebootRequired;
             const uint64_t rollbackDeadline =
                 CurrentUnixMilliseconds() + kDriverRollbackCeilingMs;
-            if (createdHere) {
-                Error cleanupError;
-                if (!RemoveDevice(created.get(), createdData, rollbackDeadline,
-                        L"install-rollback-deadline-created-device",
-                        nullptr,
-                        &rollbackReboot, &cleanupError)) {
-                    outcome.rollback = L"failed";
-                    outcome.rebootRequired = rollbackReboot;
-                    outcome.error = std::move(cleanupError);
-                    outcome.exitCode = ExitCode::RollbackFailed;
-                    return outcome;
-                }
+            if (!installJournal.Record(
+                    InstallJournalPhase::RollbackBindingEntered,
+                    IsSafePublishedInfName(publishedCandidate.publishedName)
+                        ? &publishedCandidate : nullptr,
+                    packageStagedHere, bindingMutationStarted,
+                    rollbackReboot, true, ERROR_SUCCESS, false,
+                    &rollbackError)) {
+                outcome.rollback = L"failed";
+                outcome.error = std::move(rollbackError);
+                outcome.exitCode = ExitCode::RollbackFailed;
+                return outcome;
+            }
+            if (!verifyPostAdmissionRollbackInventory(
+                    L"install-broker-rollback-post-admission-inventory",
+                    &rollbackError)) {
+                outcome.rollback = L"failed";
+                outcome.rebootRequired = rollbackReboot;
+                outcome.error = std::move(rollbackError);
+                outcome.exitCode = ExitCode::RollbackFailed;
+                return outcome;
+            }
+            const bool rollbackRebootAtAdmission = rollbackReboot;
+            bool rootRemovalRebootPending = false;
+            if (!installJournal.RemoveAuthorizedPriorEmptyRootAfterAdmission(
+                    rollbackDeadline, &rollbackReboot,
+                    &rootRemovalRebootPending,
+                    &rollbackError)) {
+                outcome.rollback = L"failed";
+                outcome.rebootRequired = rollbackReboot;
+                outcome.error = std::move(rollbackError);
+                outcome.exitCode = ExitCode::RollbackFailed;
+                return outcome;
+            }
+            if (rootRemovalRebootPending) {
+                outcome.rollback = L"not-needed";
+                outcome.rebootRequired = true;
+                SetError(&outcome.error,
+                    L"install-partial-root-removal-reboot-pending",
+                    ERROR_SUCCESS_REBOOT_REQUIRED,
+                    L"receipt-bound root removal requires a restart before package rollback can continue");
+                outcome.exitCode = ExitCode::RebootRequired;
+                return outcome;
+            }
+            if (!verifyPostAdmissionRollbackInventory(
+                    L"install-broker-rollback-pre-package-inventory",
+                    &rollbackError) ||
+                !installJournal.VerifyPriorTopologyBeforePackageRollback(
+                    &rollbackError)) {
+                outcome.rollback = L"failed";
+                outcome.rebootRequired = rollbackReboot;
+                outcome.error = std::move(rollbackError);
+                outcome.exitCode = ExitCode::RollbackFailed;
+                return outcome;
             }
             const PackageInfo* stagedHereCandidate =
                 packageStagedHere ? &publishedCandidate : nullptr;
+            const bool restoreBindingThroughStrictSnapshot =
+                !prior.devices.empty() && bindingMutationStarted;
             if (RollbackInstall(
-                    prior, stagedHereCandidate, bindingMutationStarted,
+                    prior, stagedHereCandidate,
+                    restoreBindingThroughStrictSnapshot,
                     priorAbiProfile.has_value() ? &priorAbiProfile.value() : nullptr,
                     rollbackDeadline, &rollbackReboot, &rollbackError)) {
+                Error journalError;
+                if (!installJournal.RecordAuthoritativeReturn(
+                        InstallJournalPhase::RollbackBindingReturned,
+                        IsSafePublishedInfName(publishedCandidate.publishedName)
+                            ? &publishedCandidate : nullptr,
+                        packageStagedHere, bindingMutationStarted,
+                        rollbackReboot,
+                        rollbackReboot && !rollbackRebootAtAdmission,
+                        true, ERROR_SUCCESS, false,
+                        &journalError) ||
+                    !installJournal.RetireAfterPriorValidation(
+                        rollbackReboot, &journalError)) {
+                    outcome.rollback = L"failed";
+                    outcome.rebootRequired = rollbackReboot;
+                    outcome.error = std::move(journalError);
+                    outcome.exitCode = ExitCode::RollbackFailed;
+                    return outcome;
+                }
                 outcome.rollback = L"succeeded";
                 outcome.rebootRequired = rollbackReboot;
                 outcome.error = std::move(brokerError);
@@ -4574,11 +5424,36 @@ Outcome Install(const InstallOptions& options) {
             outcome.rollback = L"failed";
             outcome.rebootRequired = rollbackReboot;
             outcome.error = std::move(rollbackError);
+            Error journalError;
+            installJournal.RecordAuthoritativeReturn(
+                InstallJournalPhase::RollbackBindingReturned,
+                IsSafePublishedInfName(publishedCandidate.publishedName)
+                    ? &publishedCandidate : nullptr,
+                packageStagedHere, bindingMutationStarted,
+                rollbackReboot,
+                rollbackReboot && !rollbackRebootAtAdmission,
+                false, outcome.error.code, false,
+                &journalError);
+            installJournal.Record(
+                InstallJournalPhase::ManualReconciliationRequired,
+                IsSafePublishedInfName(publishedCandidate.publishedName)
+                    ? &publishedCandidate : nullptr,
+                packageStagedHere, bindingMutationStarted,
+                rollbackReboot, false, outcome.error.code, false,
+                &journalError);
             outcome.exitCode = ExitCode::RollbackFailed;
             return outcome;
         }
     }
 
+    if (!installJournal.RetireAfterForwardValidation(
+            candidate, publishedCandidate.publishedName,
+            outcome.rebootRequired, options.transactionDeadlineUnixMs,
+            &outcome.error)) {
+        outcome.rollback = L"failed";
+        outcome.exitCode = ExitCode::RollbackFailed;
+        return outcome;
+    }
     outcome.success = true;
     outcome.rollback = L"not-needed";
     outcome.exitCode = outcome.rebootRequired ? ExitCode::RebootRequired : ExitCode::Success;
@@ -4705,6 +5580,164 @@ bool VerifyProtectedFileSystemSecurity(
     if (!administratorsSeen || !systemSeen) {
         return SetError(error, phase, ERROR_INVALID_ACL,
             L"protected backup DACL is missing an exact principal");
+    }
+    return true;
+}
+
+constexpr ACCESS_MASK kProductReadExecuteMask =
+    FILE_LIST_DIRECTORY | FILE_TRAVERSE | FILE_READ_EA |
+    FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE;
+
+ACCESS_MASK NormalizeProductDirectoryAccessMask(
+    ACCESS_MASK mask) noexcept {
+    GENERIC_MAPPING mapping{
+        FILE_GENERIC_READ,
+        FILE_GENERIC_WRITE,
+        FILE_GENERIC_EXECUTE,
+        FILE_ALL_ACCESS,
+    };
+    MapGenericMask(&mask, &mapping);
+    return mask;
+}
+
+bool ProductDirectoryMaskIsReadExecuteOnly(
+    ACCESS_MASK mask) noexcept {
+    mask = NormalizeProductDirectoryAccessMask(mask);
+    return mask != 0 && (mask & ~kProductReadExecuteMask) == 0;
+}
+
+bool VerifyProtectedProductDirectorySecurity(
+    HANDLE handle,
+    const std::wstring* exactTargetUserSid,
+    Error* error) {
+    PSID owner = nullptr;
+    PACL dacl = nullptr;
+    PSECURITY_DESCRIPTOR descriptor = nullptr;
+    const DWORD securityError = GetSecurityInfo(
+        handle, SE_FILE_OBJECT,
+        OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+        &owner, nullptr, &dacl, nullptr, &descriptor);
+    if (securityError != ERROR_SUCCESS) {
+        return SetError(error, L"install-journal-product-security",
+            securityError);
+    }
+    const auto fail = [&](DWORD code, std::wstring message) {
+        LocalFree(descriptor);
+        return SetError(error, L"install-journal-product-security",
+            code, std::move(message));
+    };
+    BYTE administratorsBuffer[SECURITY_MAX_SID_SIZE]{};
+    DWORD administratorsSize = sizeof(administratorsBuffer);
+    BYTE systemBuffer[SECURITY_MAX_SID_SIZE]{};
+    DWORD systemSize = sizeof(systemBuffer);
+    if (!CreateWellKnownSid(WinBuiltinAdministratorsSid, nullptr,
+            administratorsBuffer, &administratorsSize) ||
+        !CreateWellKnownSid(WinLocalSystemSid, nullptr,
+            systemBuffer, &systemSize)) {
+        return fail(GetLastError(),
+            L"could not construct product-directory principals");
+    }
+    PSID targetUser = nullptr;
+    if (exactTargetUserSid != nullptr &&
+        (!IsSafeTargetUserSid(*exactTargetUserSid) ||
+            !ConvertStringSidToSidW(
+                exactTargetUserSid->c_str(), &targetUser))) {
+        return fail(GetLastError() == ERROR_SUCCESS
+                ? ERROR_INVALID_SID : GetLastError(),
+            L"could not construct the exact product-directory target user principal");
+    }
+    const auto freeTargetUser = [&]() {
+        if (targetUser != nullptr) {
+            LocalFree(targetUser);
+            targetUser = nullptr;
+        }
+    };
+    SECURITY_DESCRIPTOR_CONTROL control = 0;
+    DWORD revision = 0;
+    ACL_SIZE_INFORMATION information{};
+    if (owner == nullptr ||
+        (exactTargetUserSid != nullptr
+            ? !EqualSid(owner, administratorsBuffer)
+            : (!EqualSid(owner, administratorsBuffer) &&
+                !EqualSid(owner, systemBuffer))) ||
+        dacl == nullptr ||
+        !GetSecurityDescriptorControl(descriptor, &control, &revision) ||
+        (control & SE_DACL_PROTECTED) == 0 ||
+        !GetAclInformation(dacl, &information, sizeof(information),
+            AclSizeInformation) ||
+        (exactTargetUserSid != nullptr
+            ? information.AceCount != 3U
+            : information.AceCount < 2U)) {
+        freeTargetUser();
+        return fail(ERROR_INVALID_SECURITY_DESCR,
+            L"product directory must have a protected Administrators/LocalSystem-owned DACL");
+    }
+    constexpr BYTE inheritedFlags =
+        OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE;
+    bool administratorsSeen = false;
+    bool systemSeen = false;
+    bool targetUserSeen = false;
+    for (DWORD index = 0; index < information.AceCount; ++index) {
+        void* rawAce = nullptr;
+        if (!GetAce(dacl, index, &rawAce) || rawAce == nullptr) {
+            const DWORD code = GetLastError();
+            freeTargetUser();
+            return fail(code == ERROR_SUCCESS ? ERROR_INVALID_ACL : code,
+                L"product directory DACL could not be enumerated");
+        }
+        const auto* ace = static_cast<const ACCESS_ALLOWED_ACE*>(rawAce);
+        if (ace->Header.AceType != ACCESS_ALLOWED_ACE_TYPE ||
+            (ace->Header.AceFlags & ~inheritedFlags) != 0) {
+            freeTargetUser();
+            return fail(ERROR_INVALID_ACL,
+                L"product directory contains a deny, inherited, or otherwise unsupported access rule");
+        }
+        PSID sid = const_cast<DWORD*>(&ace->SidStart);
+        const ACCESS_MASK normalizedMask =
+            NormalizeProductDirectoryAccessMask(ace->Mask);
+        if (EqualSid(sid, administratorsBuffer) ||
+            EqualSid(sid, systemBuffer)) {
+            bool& seen = EqualSid(sid, administratorsBuffer)
+                ? administratorsSeen : systemSeen;
+            if (seen || ace->Header.AceFlags != inheritedFlags ||
+                normalizedMask != FILE_ALL_ACCESS) {
+                freeTargetUser();
+                return fail(ERROR_INVALID_ACL,
+                    L"product directory Administrators/LocalSystem rules are not exact full-control entries");
+            }
+            seen = true;
+            continue;
+        }
+        if (exactTargetUserSid != nullptr &&
+            EqualSid(sid, targetUser)) {
+            if (targetUserSeen ||
+                ace->Header.AceFlags != inheritedFlags ||
+                normalizedMask != kProductReadExecuteMask) {
+                freeTargetUser();
+                return fail(ERROR_INVALID_ACL,
+                    L"product directory target-user rule is not exact inherited read/execute access");
+            }
+            targetUserSeen = true;
+            continue;
+        }
+        if (!ProductDirectoryMaskIsReadExecuteOnly(ace->Mask)) {
+            freeTargetUser();
+            return fail(ERROR_INVALID_ACL,
+                L"product directory grants a non-system principal create, write, delete, ownership, or ACL authority");
+        }
+        if (exactTargetUserSid != nullptr) {
+            freeTargetUser();
+            return fail(ERROR_INVALID_ACL,
+                L"product directory grants read/execute access to a principal other than the requested target user");
+        }
+    }
+    freeTargetUser();
+    LocalFree(descriptor);
+    if (!administratorsSeen || !systemSeen ||
+        (exactTargetUserSid != nullptr && !targetUserSeen)) {
+        return SetError(error, L"install-journal-product-security",
+            ERROR_INVALID_ACL,
+            L"product directory is missing exact Administrators or LocalSystem full control");
     }
     return true;
 }
@@ -5084,14 +6117,11 @@ private:
     bool preserve_ = false;
 };
 
-bool BackupPackages(
+bool BackupPackagesIntoDirectory(
     const std::vector<PackageInfo>& packages,
-    BackupDirectory* root,
+    const std::filesystem::path& baseDirectory,
     std::vector<PackageBackup>* backups,
     Error* error) {
-    if (!root->Create(error)) {
-        return false;
-    }
     backups->clear();
     for (size_t index = 0; index < packages.size(); ++index) {
         std::filesystem::path storeInf;
@@ -5106,7 +6136,8 @@ bool BackupPackages(
             }
             return false;
         }
-        const std::filesystem::path destination = root->path() / std::to_wstring(index);
+        const std::filesystem::path destination =
+            baseDirectory / std::to_wstring(index);
         std::filesystem::path signerCatalog;
         if (!VerifyInfSignature(storeInf, &signerCatalog, error)) {
             return false;
@@ -5149,6 +6180,15 @@ bool BackupPackages(
             packages[index], destination, backupInf, std::move(locks)});
     }
     return true;
+}
+
+bool BackupPackages(
+    const std::vector<PackageInfo>& packages,
+    BackupDirectory* root,
+    std::vector<PackageBackup>* backups,
+    Error* error) {
+    return root->Create(error) &&
+        BackupPackagesIntoDirectory(packages, root->path(), backups, error);
 }
 
 bool IsSha256Digest(std::string_view value) {
@@ -5502,6 +6542,4912 @@ bool WriteProtectedRecoveryRecord(
     return true;
 }
 
+const char* InstallJournalPhaseName(InstallJournalPhase phase) noexcept {
+    switch (phase) {
+    case InstallJournalPhase::Prepared: return "Prepared";
+    case InstallJournalPhase::SetupCopyEntered: return "SetupCopyEntered";
+    case InstallJournalPhase::SetupCopyReturned: return "SetupCopyReturned";
+    case InstallJournalPhase::StageReceiptCaptured:
+        return "StageReceiptCaptured";
+    case InstallJournalPhase::QuiesceSignalEntered: return "QuiesceSignalEntered";
+    case InstallJournalPhase::QuiesceSignalReturned: return "QuiesceSignalReturned";
+    case InstallJournalPhase::RootRegistrationIntentCaptured:
+        return "RootRegistrationIntentCaptured";
+    case InstallJournalPhase::RootRegistrationEntered: return "RootRegistrationEntered";
+    case InstallJournalPhase::RootRegistrationReturned: return "RootRegistrationReturned";
+    case InstallJournalPhase::DiInstallEntered: return "DiInstallEntered";
+    case InstallJournalPhase::DiInstallReturned: return "DiInstallReturned";
+    case InstallJournalPhase::PriorAbiProfileCaptured:
+        return "PriorAbiProfileCaptured";
+    case InstallJournalPhase::DriverValidated: return "DriverValidated";
+    case InstallJournalPhase::BrokerHandoffEntered: return "BrokerHandoffEntered";
+    case InstallJournalPhase::BrokerHandoffReturned: return "BrokerHandoffReturned";
+    case InstallJournalPhase::BrokerChildEntered: return "BrokerChildEntered";
+    case InstallJournalPhase::BrokerChildSettled: return "BrokerChildSettled";
+    case InstallJournalPhase::RollbackBindingEntered: return "RollbackBindingEntered";
+    case InstallJournalPhase::PartialRootRemovalEntered:
+        return "PartialRootRemovalEntered";
+    case InstallJournalPhase::PartialRootRemovalReturned:
+        return "PartialRootRemovalReturned";
+    case InstallJournalPhase::PartialRootRemovalRebootPending:
+        return "PartialRootRemovalRebootPending";
+    case InstallJournalPhase::RollbackBindingReturned: return "RollbackBindingReturned";
+    case InstallJournalPhase::SetupUninstallEntered: return "SetupUninstallEntered";
+    case InstallJournalPhase::SetupUninstallReturned: return "SetupUninstallReturned";
+    case InstallJournalPhase::ForwardValidated: return "ForwardValidated";
+    case InstallJournalPhase::ExactPriorRestored: return "ExactPriorRestored";
+    case InstallJournalPhase::ForwardRebootPending: return "ForwardRebootPending";
+    case InstallJournalPhase::RestoreRebootPending: return "RestoreRebootPending";
+    case InstallJournalPhase::ManualReconciliationRequired:
+        return "ManualReconciliationRequired";
+    }
+    return "ManualReconciliationRequired";
+}
+
+std::optional<InstallJournalPhase> ParseInstallJournalPhase(
+    std::string_view value) noexcept {
+    for (InstallJournalPhase phase : {
+            InstallJournalPhase::Prepared,
+            InstallJournalPhase::SetupCopyEntered,
+            InstallJournalPhase::SetupCopyReturned,
+            InstallJournalPhase::StageReceiptCaptured,
+            InstallJournalPhase::QuiesceSignalEntered,
+            InstallJournalPhase::QuiesceSignalReturned,
+            InstallJournalPhase::RootRegistrationIntentCaptured,
+            InstallJournalPhase::RootRegistrationEntered,
+            InstallJournalPhase::RootRegistrationReturned,
+            InstallJournalPhase::DiInstallEntered,
+            InstallJournalPhase::DiInstallReturned,
+            InstallJournalPhase::PriorAbiProfileCaptured,
+            InstallJournalPhase::DriverValidated,
+            InstallJournalPhase::BrokerHandoffEntered,
+            InstallJournalPhase::BrokerHandoffReturned,
+            InstallJournalPhase::BrokerChildEntered,
+            InstallJournalPhase::BrokerChildSettled,
+            InstallJournalPhase::RollbackBindingEntered,
+            InstallJournalPhase::PartialRootRemovalEntered,
+            InstallJournalPhase::PartialRootRemovalReturned,
+            InstallJournalPhase::PartialRootRemovalRebootPending,
+            InstallJournalPhase::RollbackBindingReturned,
+            InstallJournalPhase::SetupUninstallEntered,
+            InstallJournalPhase::SetupUninstallReturned,
+            InstallJournalPhase::ForwardValidated,
+            InstallJournalPhase::ExactPriorRestored,
+            InstallJournalPhase::ForwardRebootPending,
+            InstallJournalPhase::RestoreRebootPending,
+            InstallJournalPhase::ManualReconciliationRequired}) {
+        if (value == InstallJournalPhaseName(phase)) {
+            return phase;
+        }
+    }
+    return std::nullopt;
+}
+
+bool InstallJournalPhaseRequiresPriorAbiProfile(
+    InstallJournalPhase phase) noexcept {
+    switch (phase) {
+    case InstallJournalPhase::PriorAbiProfileCaptured:
+    case InstallJournalPhase::DiInstallEntered:
+    case InstallJournalPhase::DiInstallReturned:
+        return true;
+    default:
+        return false;
+    }
+}
+
+const char* InstallJournalDirectionName(
+    InstallJournalDirection direction) noexcept {
+    return direction == InstallJournalDirection::Rollback
+        ? "rollback" : "forward";
+}
+
+std::optional<InstallJournalDirection> ParseInstallJournalDirection(
+    std::string_view value) noexcept {
+    if (value == "forward") return InstallJournalDirection::Forward;
+    if (value == "rollback") return InstallJournalDirection::Rollback;
+    return std::nullopt;
+}
+
+bool Utf8ToWide(std::string_view value, std::wstring* wide, Error* error) {
+    if (value.size() > static_cast<size_t>(std::numeric_limits<int>::max())) {
+        return SetError(error, L"install-journal-utf8", ERROR_BUFFER_OVERFLOW);
+    }
+    if (value.empty()) {
+        wide->clear();
+        return true;
+    }
+    const int bytes = static_cast<int>(value.size());
+    const int required = MultiByteToWideChar(
+        CP_UTF8, MB_ERR_INVALID_CHARS, value.data(), bytes, nullptr, 0);
+    if (required <= 0) {
+        return SetLastErrorDetail(error, L"install-journal-utf8");
+    }
+    wide->assign(static_cast<size_t>(required), L'\0');
+    if (MultiByteToWideChar(
+            CP_UTF8, MB_ERR_INVALID_CHARS, value.data(), bytes,
+            wide->data(), required) != required) {
+        return SetLastErrorDetail(error, L"install-journal-utf8");
+    }
+    return true;
+}
+
+void AppendJsonUtf8String(std::string* output, std::string_view value) {
+    static constexpr char digits[] = "0123456789abcdef";
+    output->push_back('"');
+    for (unsigned char character : value) {
+        if (character == '"' || character == '\\') {
+            output->push_back('\\');
+            output->push_back(static_cast<char>(character));
+        } else if (character < 0x20U) {
+            output->append("\\u00");
+            output->push_back(digits[(character >> 4U) & 0x0fU]);
+            output->push_back(digits[character & 0x0fU]);
+        } else {
+            output->push_back(static_cast<char>(character));
+        }
+    }
+    output->push_back('"');
+}
+
+bool ResolveInstallRecoveryPaths(
+    std::filesystem::path* programData,
+    std::filesystem::path* product,
+    std::filesystem::path* component,
+    std::filesystem::path* transactions,
+    std::filesystem::path* active,
+    Error* error) {
+    PWSTR raw = nullptr;
+    const HRESULT result = SHGetKnownFolderPath(
+        FOLDERID_ProgramData, KF_FLAG_DEFAULT, nullptr, &raw);
+    if (FAILED(result) || raw == nullptr) {
+        return SetError(error, L"install-journal-programdata",
+            HRESULT_CODE(result == S_OK ? E_FAIL : result));
+    }
+    try {
+        *programData = std::filesystem::path(raw).lexically_normal();
+        *product = *programData / kInstallRecoveryProductDirectory;
+        *component = *product / kInstallRecoveryComponentDirectory;
+        *transactions = *component / kInstallRecoveryTransactionsDirectory;
+        *active = *transactions / kInstallRecoveryActiveDirectory;
+    } catch (...) {
+        CoTaskMemFree(raw);
+        throw;
+    }
+    CoTaskMemFree(raw);
+    if (!programData->is_absolute() ||
+        active->lexically_relative(*programData).empty()) {
+        return SetError(error, L"install-journal-programdata", ERROR_INVALID_NAME,
+            L"known ProgramData did not resolve an absolute journal parent");
+    }
+    return true;
+}
+
+bool OpenStableDirectory(
+    const std::filesystem::path& path,
+    bool exactProtectedSecurity,
+    WinHandle* handle,
+    Error* error) {
+    handle->reset(CreateFileW(
+        path.c_str(), FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | READ_CONTROL,
+        FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT |
+            FILE_FLAG_BACKUP_SEMANTICS,
+        nullptr));
+    if (!*handle) {
+        return SetLastErrorDetail(error, L"install-journal-directory-open");
+    }
+    FILE_ATTRIBUTE_TAG_INFO attributes{};
+    if (!GetFileInformationByHandleEx(
+            handle->get(), FileAttributeTagInfo, &attributes,
+            sizeof(attributes)) ||
+        (attributes.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0 ||
+        (attributes.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+        return SetError(error, L"install-journal-directory-open",
+            ERROR_REPARSE_TAG_MISMATCH,
+            L"install journal components must be regular non-reparse directories");
+    }
+    return !exactProtectedSecurity || VerifyProtectedFileSystemSecurity(
+        handle->get(), true, L"install-journal-directory-security", error);
+}
+
+bool CreateOrOpenInstallRecoveryDirectoryWithSecurity(
+    const std::filesystem::path& path,
+    bool allowExisting,
+    bool exactProtectedSecurity,
+    const wchar_t* securitySddl,
+    WinHandle* handle,
+    bool* created,
+    Error* error) {
+    LocalSecurityDescriptor security;
+    if (!security.Initialize(
+            securitySddl,
+            L"install-journal-directory-security", error)) {
+        return false;
+    }
+    *created = false;
+    if (CreateDirectoryW(path.c_str(), security.attributes())) {
+        *created = true;
+    } else {
+        const DWORD code = GetLastError();
+        if (code != ERROR_ALREADY_EXISTS || !allowExisting) {
+            return SetError(error, L"install-journal-directory-create",
+                code == ERROR_ALREADY_EXISTS ? ERROR_INSTALL_SUSPEND : code,
+                code == ERROR_ALREADY_EXISTS
+                    ? L"an unfinished native driver transaction already exists"
+                    : std::wstring{});
+        }
+    }
+    return OpenStableDirectory(path, exactProtectedSecurity, handle, error);
+}
+
+bool CreateOrOpenInstallRecoveryDirectory(
+    const std::filesystem::path& path,
+    bool allowExisting,
+    bool exactProtectedSecurity,
+    WinHandle* handle,
+    bool* created,
+    Error* error) {
+    return CreateOrOpenInstallRecoveryDirectoryWithSecurity(
+        path, allowExisting, exactProtectedSecurity,
+        kRollbackDirectorySecurity, handle, created, error);
+}
+
+bool BuildInstallRecoveryProductDirectorySecurity(
+    const std::wstring& targetUserSid,
+    std::wstring* sddl,
+    Error* error) {
+    if (!IsSafeTargetUserSid(targetUserSid)) {
+        return SetError(error, L"install-journal-product-security",
+            ERROR_INVALID_SID,
+            L"fresh product-directory creation requires one canonical target-user SID");
+    }
+    *sddl = L"O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
+        L"(A;OICI;GRGX;;;" + targetUserSid + L")";
+    return true;
+}
+
+bool InstallRecoveryChainHasActive(
+    bool productExists,
+    bool componentExists,
+    bool transactionsExist,
+    bool activeExists) noexcept {
+    return productExists && componentExists &&
+        transactionsExist && activeExists;
+}
+
+bool OpenExistingInstallRecoveryDirectory(
+    const std::filesystem::path& path,
+    bool exactProtectedSecurity,
+    WinHandle* handle,
+    bool* exists,
+    Error* error) {
+    *exists = false;
+    const DWORD attributes = GetFileAttributesW(path.c_str());
+    if (attributes == INVALID_FILE_ATTRIBUTES) {
+        const DWORD code = GetLastError();
+        if (code == ERROR_FILE_NOT_FOUND || code == ERROR_PATH_NOT_FOUND) {
+            return true;
+        }
+        return SetError(error, L"install-journal-discovery", code);
+    }
+    if (!OpenStableDirectory(path, exactProtectedSecurity, handle, error)) {
+        return false;
+    }
+    *exists = true;
+    return true;
+}
+
+struct InstallRecoveryDirectory {
+    std::filesystem::path programData;
+    std::filesystem::path product;
+    std::filesystem::path component;
+    std::filesystem::path transactions;
+    std::filesystem::path active;
+    WinHandle programDataHandle;
+    WinHandle productHandle;
+    WinHandle componentHandle;
+    WinHandle transactionsHandle;
+    WinHandle activeHandle;
+    bool activeCreated = false;
+
+    bool OpenChain(
+        bool createActive,
+        const std::wstring* exactTargetUserSid,
+        bool* exists,
+        Error* error) {
+        *exists = false;
+        if (!ResolveInstallRecoveryPaths(
+                &programData, &product, &component, &transactions, &active,
+                error) ||
+            !OpenStableDirectory(
+                programData, false, &programDataHandle, error)) {
+            return false;
+        }
+        if (!createActive) {
+            bool productExists = false;
+            bool componentExists = false;
+            bool transactionsExist = false;
+            bool activeExists = false;
+            if (!OpenExistingInstallRecoveryDirectory(
+                    product, false, &productHandle,
+                    &productExists, error)) {
+                return false;
+            }
+            if (!productExists) return true;
+            if (!VerifyProtectedProductDirectorySecurity(
+                    productHandle.get(), nullptr, error) ||
+                !OpenExistingInstallRecoveryDirectory(
+                    component, true, &componentHandle,
+                    &componentExists, error)) {
+                return false;
+            }
+            if (!componentExists) return true;
+            if (!OpenExistingInstallRecoveryDirectory(
+                    transactions, true, &transactionsHandle,
+                    &transactionsExist, error)) {
+                return false;
+            }
+            if (!transactionsExist) return true;
+            if (!OpenExistingInstallRecoveryDirectory(
+                    active, true, &activeHandle,
+                    &activeExists, error)) {
+                return false;
+            }
+            *exists = InstallRecoveryChainHasActive(
+                productExists, componentExists,
+                transactionsExist, activeExists);
+            return true;
+        }
+        if (exactTargetUserSid == nullptr) {
+            return SetError(error, L"install-journal-product-security",
+                ERROR_INVALID_PARAMETER,
+                L"fresh install journal creation requires the exact target-user SID");
+        }
+        std::wstring productSecurity;
+        bool created = false;
+        if (!BuildInstallRecoveryProductDirectorySecurity(
+                *exactTargetUserSid, &productSecurity, error) ||
+            !CreateOrOpenInstallRecoveryDirectoryWithSecurity(
+                product, true, false, productSecurity.c_str(),
+                &productHandle, &created, error) ||
+            !VerifyProtectedProductDirectorySecurity(
+                productHandle.get(), exactTargetUserSid, error) ||
+            !CreateOrOpenInstallRecoveryDirectory(
+                component, true, true, &componentHandle, &created, error) ||
+            !CreateOrOpenInstallRecoveryDirectory(
+                transactions, true, true, &transactionsHandle, &created,
+                error)) {
+            return false;
+        }
+        if (createActive) {
+            const bool opened = CreateOrOpenInstallRecoveryDirectory(
+                active, false, true, &activeHandle, &created, error);
+            activeCreated = created;
+            if (!opened) {
+                return false;
+            }
+            *exists = true;
+            return true;
+        }
+        if (!OpenStableDirectory(active, true, &activeHandle, error)) {
+            return false;
+        }
+        *exists = true;
+        return true;
+    }
+};
+
+bool RetireInstallRecoveryActiveDirectory(
+    InstallRecoveryDirectory* directory,
+    std::string_view transactionId,
+    Error* error) {
+    if (directory == nullptr || !IsSha256Digest(transactionId) ||
+        directory->active.filename() != kInstallRecoveryActiveDirectory) {
+        return SetError(error, L"install-journal-retire-identity",
+            ERROR_INVALID_PARAMETER);
+    }
+    std::wstring transactionIdWide(
+        transactionId.begin(), transactionId.end());
+    const std::filesystem::path tombstone =
+        directory->transactions /
+        (std::wstring(kInstallRecoverySettledPrefix) + transactionIdWide);
+    directory->activeHandle.reset();
+    if (!MoveFileExW(directory->active.c_str(), tombstone.c_str(),
+            MOVEFILE_WRITE_THROUGH)) {
+        return SetLastErrorDetail(error, L"install-journal-retire-rename",
+            L"terminal journal could not be atomically moved out of active admission");
+    }
+    const DWORD activeAttributes = GetFileAttributesW(directory->active.c_str());
+    const DWORD activeError = activeAttributes == INVALID_FILE_ATTRIBUTES
+        ? GetLastError() : ERROR_SUCCESS;
+    if (activeAttributes != INVALID_FILE_ATTRIBUTES ||
+        (activeError != ERROR_FILE_NOT_FOUND &&
+            activeError != ERROR_PATH_NOT_FOUND)) {
+        if (error != nullptr) {
+            error->recoveryBackup = tombstone.wstring();
+            error->recoveryBackupRetained = true;
+        }
+        return SetError(error, L"install-journal-retire-active-absence",
+            activeAttributes != INVALID_FILE_ATTRIBUTES
+                ? ERROR_ALREADY_EXISTS : activeError,
+            L"atomic retirement did not prove active-v2 absent");
+    }
+    WinHandle tombstoneHandle;
+    if (!OpenStableDirectory(
+            tombstone, true, &tombstoneHandle, error)) {
+        if (error != nullptr) {
+            error->recoveryBackup = tombstone.wstring();
+            error->recoveryBackupRetained = true;
+        }
+        return false;
+    }
+    ClearActiveRecoveryEvidence();
+    tombstoneHandle.reset();
+
+    // Once active-v2 is atomically absent, cleanup is intentionally
+    // best-effort. A power loss may leave a settled-v2-* tombstone, but it is
+    // outside active admission and its transaction-bound name cannot be
+    // confused with an unfinished transaction.
+    std::error_code removalError;
+    std::filesystem::remove_all(tombstone, removalError);
+    if (removalError) {
+        std::wstring diagnostic =
+            L"VIIPER: settled install journal tombstone retained after cleanup error ";
+        diagnostic += std::to_wstring(removalError.value());
+        diagnostic += L".\n";
+        OutputDebugStringW(diagnostic.c_str());
+    }
+    return true;
+}
+
+bool PublishInstallRecoveryEvidence(
+    const std::filesystem::path& active,
+    uint64_t sequence,
+    Error* error) {
+    std::wostringstream name;
+    name << kInstallRecoveryJournalPrefix << std::setw(8) << std::setfill(L'0')
+         << sequence << kInstallRecoveryJournalSuffix;
+    const std::filesystem::path record = active / name.str();
+    const std::wstring activeValue = active.wstring();
+    const std::wstring recordValue = record.wstring();
+    if (activeValue.empty() || recordValue.empty() ||
+        activeValue.size() >= gActiveBackupRoot.size() ||
+        recordValue.size() >= gActiveRecoveryRecord.size()) {
+        return SetError(error, L"install-journal-evidence",
+            ERROR_FILENAME_EXCED_RANGE,
+            L"fixed recovery journal path exceeds the exception-safe reporting bound");
+    }
+    ClearActiveRecoveryEvidence();
+    std::copy(activeValue.begin(), activeValue.end(), gActiveBackupRoot.begin());
+    std::copy(recordValue.begin(), recordValue.end(), gActiveRecoveryRecord.begin());
+    gActiveBackupRootRetained = true;
+    return true;
+}
+
+bool GetBootIdentifier(std::string* identifier, Error* error) {
+    using NtQuerySystemInformationFn = LONG(NTAPI*)(ULONG, PVOID, ULONG, PULONG);
+    struct BootEnvironmentInformation {
+        GUID bootIdentifier;
+        ULONG firmwareType;
+        ULONGLONG bootFlags;
+    } information{};
+    const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+    const auto query = ntdll == nullptr ? nullptr
+        : reinterpret_cast<NtQuerySystemInformationFn>(
+            GetProcAddress(ntdll, "NtQuerySystemInformation"));
+    if (query == nullptr || query(90U, &information,
+            static_cast<ULONG>(sizeof(information)), nullptr) < 0) {
+        return SetError(error, L"install-journal-boot-identifier",
+            ERROR_NOT_SUPPORTED,
+            L"the current boot session could not be identified durably");
+    }
+    wchar_t value[64]{};
+    if (StringFromGUID2(information.bootIdentifier, value,
+            static_cast<int>(std::size(value))) <= 0) {
+        return SetError(error, L"install-journal-boot-identifier",
+            ERROR_INVALID_DATA);
+    }
+    identifier->clear();
+    for (wchar_t character : std::wstring_view(value)) {
+        if (character == L'{' || character == L'}' || character == L'-') {
+            continue;
+        }
+        if (character > 0x7f) {
+            return SetError(error, L"install-journal-boot-identifier",
+                ERROR_INVALID_DATA);
+        }
+        identifier->push_back(static_cast<char>(
+            std::tolower(static_cast<unsigned char>(character))));
+    }
+    if (identifier->size() != 32U) {
+        return SetError(error, L"install-journal-boot-identifier",
+            ERROR_INVALID_DATA);
+    }
+    return true;
+}
+
+bool IsCanonicalBootIdentifier(std::string_view identifier) noexcept {
+    return identifier.size() == 32U &&
+        std::all_of(identifier.begin(), identifier.end(),
+            [](unsigned char character) {
+                return (character >= '0' && character <= '9') ||
+                    (character >= 'a' && character <= 'f');
+            });
+}
+
+struct InstallJournalStateData {
+    InstallJournalPhase phase = InstallJournalPhase::Prepared;
+    InstallJournalDirection direction = InstallJournalDirection::Forward;
+    bool rollbackAuthorized = false;
+    uint64_t sequence = 0;
+    std::string previousDigest = std::string(kZeroSha256);
+    std::string lastDigest;
+    std::string transactionId;
+    std::string bootIdentifier;
+    std::string pendingRebootBootIdentifier;
+    std::string sourceRevision;
+    bool production = true;
+    bool localTest = false;
+    bool brokerRequired = false;
+    bool brokerEntered = false;
+    bool brokerSettled = false;
+    bool hasBrokerProof = false;
+    bool brokerProofSuccess = false;
+    bool brokerProofChanged = false;
+    bool brokerDriverRollbackAuthorized = false;
+    std::string brokerProofRollback;
+    DWORD brokerProofExitCode = ERROR_SUCCESS;
+    bool hasPriorAbiProfile = false;
+    AbiCompatibilityProfile priorAbiProfile{};
+    bool hasRootRegistrationIntent = false;
+    std::wstring rootRegistrationInstanceId;
+    enum class PartialRootRemovalBinding {
+        None,
+        Unbound,
+        Candidate,
+    } partialRootRemovalBinding = PartialRootRemovalBinding::None;
+    std::string partialRootRemovalBootIdentifier;
+    Snapshot prior;
+    PackageInfo candidate;
+    PackageInfo publishedCandidate;
+    bool hasPublishedCandidate = false;
+    std::vector<PackageInfo> expectedInventory;
+    bool packageStagedHere = false;
+    bool bindingMutationStarted = false;
+    bool rebootRequired = false;
+    bool freshRebootRequired = false;
+    bool callSucceeded = true;
+    DWORD callError = ERROR_SUCCESS;
+    bool deadlineOverrun = false;
+};
+
+bool ValidateInstallJournalTransition(
+    const InstallJournalStateData* previous,
+    const InstallJournalStateData& next,
+    Error* error);
+
+bool VerifyInstallJournalRawPriorTopology(
+    const InstallJournalStateData& state,
+    Error* error);
+
+bool VerifyInstallJournalRawForwardTopology(
+    const InstallJournalStateData& state,
+    Error* error);
+
+void AppendPackageIdentityJson(
+    std::string* output,
+    const PackageInfo& package,
+    std::wstring_view backupInf) {
+    output->append("{\"publishedInf\":");
+    AppendJsonString(output, package.publishedName);
+    output->append(",\"version\":");
+    AppendJsonString(output, VersionToString(package.version));
+    output->append(",\"infSha256\":");
+    AppendJsonAsciiString(output, LowerAscii(package.infSha256));
+    output->append(",\"sysSha256\":");
+    AppendJsonAsciiString(output, LowerAscii(package.sysSha256));
+    output->append(",\"catSha256\":");
+    AppendJsonAsciiString(output, LowerAscii(package.catSha256));
+    output->append(",\"backupInf\":");
+    AppendJsonString(output, backupInf);
+    output->push_back('}');
+}
+
+bool BuildInstallJournalPayload(
+    const InstallJournalStateData& state,
+    std::string* payload,
+    Error* error) {
+    const bool priorRequiresAbiProfile =
+        state.prior.devices.size() == 1U &&
+        state.prior.devices[0].started &&
+        state.prior.devices[0].problem == 0;
+    const bool authoritativeRebootReturn =
+        state.phase == InstallJournalPhase::DiInstallReturned ||
+        state.phase == InstallJournalPhase::RollbackBindingReturned ||
+        state.phase ==
+            InstallJournalPhase::PartialRootRemovalReturned;
+    const bool partialRootRemovalPhase =
+        state.phase == InstallJournalPhase::PartialRootRemovalEntered ||
+        state.phase == InstallJournalPhase::PartialRootRemovalReturned ||
+        state.phase == InstallJournalPhase::
+            PartialRootRemovalRebootPending;
+    const bool hasPartialRootRemovalBinding =
+        state.partialRootRemovalBinding !=
+            InstallJournalStateData::PartialRootRemovalBinding::None;
+    const bool rebootPendingPhase =
+        state.phase == InstallJournalPhase::ForwardRebootPending ||
+        state.phase == InstallJournalPhase::RestoreRebootPending;
+    if (!IsSha256Digest(state.previousDigest) ||
+        !IsCanonicalBootIdentifier(state.bootIdentifier) ||
+        (!state.pendingRebootBootIdentifier.empty() &&
+            !IsCanonicalBootIdentifier(
+                state.pendingRebootBootIdentifier)) ||
+        (!state.partialRootRemovalBootIdentifier.empty() &&
+            !IsCanonicalBootIdentifier(
+                state.partialRootRemovalBootIdentifier)) ||
+        (partialRootRemovalPhase &&
+            (state.partialRootRemovalBootIdentifier.empty() ||
+                !hasPartialRootRemovalBinding)) ||
+        (state.partialRootRemovalBootIdentifier.empty() !=
+            !hasPartialRootRemovalBinding) ||
+        (!state.partialRootRemovalBootIdentifier.empty() &&
+            (!state.hasRootRegistrationIntent ||
+                !state.prior.devices.empty() ||
+                state.direction != InstallJournalDirection::Rollback ||
+                !state.rollbackAuthorized)) ||
+        (!state.rebootRequired &&
+            !state.pendingRebootBootIdentifier.empty()) ||
+        (rebootPendingPhase &&
+            state.pendingRebootBootIdentifier.empty()) ||
+        (state.freshRebootRequired &&
+            (!state.rebootRequired ||
+                state.pendingRebootBootIdentifier.empty() ||
+                !authoritativeRebootReturn)) ||
+        !IsSha256Digest(state.candidate.infSha256) ||
+        !IsSha256Digest(state.candidate.sysSha256) ||
+        !IsSha256Digest(state.candidate.catSha256) ||
+        (state.hasPriorAbiProfile &&
+            !IsKnownAbiCompatibilityProfile(state.priorAbiProfile)) ||
+        (state.hasRootRegistrationIntent &&
+            (!state.prior.devices.empty() ||
+                !state.hasPublishedCandidate ||
+                !IsGeneratedRootInstanceIdForDeviceName(
+                    state.rootRegistrationInstanceId,
+                    kRootDeviceName))) ||
+        (!state.hasRootRegistrationIntent &&
+            (!state.rootRegistrationInstanceId.empty() ||
+                state.phase ==
+                    InstallJournalPhase::RootRegistrationIntentCaptured ||
+                (state.prior.devices.empty() &&
+                    state.bindingMutationStarted))) ||
+        (state.phase == InstallJournalPhase::RootRegistrationIntentCaptured &&
+            (state.direction != InstallJournalDirection::Forward ||
+                state.bindingMutationStarted)) ||
+        (state.hasBrokerProof &&
+            !BrokerProofFieldsAreCanonical(
+                state.brokerProofSuccess,
+                state.brokerProofChanged,
+                state.brokerProofRollback,
+                state.brokerProofExitCode,
+                state.brokerDriverRollbackAuthorized)) ||
+        (state.hasBrokerProof &&
+            state.brokerDriverRollbackAuthorized !=
+                state.rollbackAuthorized) ||
+        (state.brokerSettled && !state.hasBrokerProof &&
+            !state.rollbackAuthorized) ||
+        ((state.direction == InstallJournalDirection::Rollback) !=
+            state.rollbackAuthorized) ||
+        (priorRequiresAbiProfile &&
+            (InstallJournalPhaseRequiresPriorAbiProfile(state.phase) ||
+                state.bindingMutationStarted) &&
+            !state.hasPriorAbiProfile) ||
+        state.sequence >= kMaximumInstallRecoveryRecords) {
+        return SetError(error, L"install-journal-state", ERROR_INVALID_DATA);
+    }
+    payload->clear();
+    payload->append("{\"sequence\":");
+    payload->append(std::to_string(state.sequence));
+    payload->append(",\"previousSha256\":");
+    AppendJsonAsciiString(payload, LowerAscii(state.previousDigest));
+    payload->append(",\"phase\":");
+    AppendJsonAsciiString(payload, InstallJournalPhaseName(state.phase));
+    payload->append(",\"direction\":");
+    AppendJsonAsciiString(payload,
+        InstallJournalDirectionName(state.direction));
+    payload->append(",\"rollbackAuthorized\":");
+    payload->append(state.rollbackAuthorized ? "true" : "false");
+    payload->append(",\"transactionId\":");
+    AppendJsonAsciiString(payload, state.transactionId);
+    payload->append(",\"bootIdentifier\":");
+    AppendJsonAsciiString(payload, state.bootIdentifier);
+    payload->append(",\"pendingRebootBootIdentifier\":");
+    if (state.pendingRebootBootIdentifier.empty()) {
+        payload->append("null");
+    } else {
+        AppendJsonAsciiString(
+            payload, state.pendingRebootBootIdentifier);
+    }
+    payload->append(",\"sourceRevision\":");
+    AppendJsonAsciiString(payload, LowerAscii(state.sourceRevision));
+    payload->append(",\"production\":");
+    payload->append(state.production ? "true" : "false");
+    payload->append(",\"localTest\":");
+    payload->append(state.localTest ? "true" : "false");
+    payload->append(",\"brokerRequired\":");
+    payload->append(state.brokerRequired ? "true" : "false");
+    payload->append(",\"brokerEntered\":");
+    payload->append(state.brokerEntered ? "true" : "false");
+    payload->append(",\"brokerSettled\":");
+    payload->append(state.brokerSettled ? "true" : "false");
+    payload->append(",\"brokerProof\":");
+    if (state.hasBrokerProof) {
+        payload->append("{\"success\":");
+        payload->append(state.brokerProofSuccess ? "true" : "false");
+        payload->append(",\"changed\":");
+        payload->append(state.brokerProofChanged ? "true" : "false");
+        payload->append(",\"rollback\":");
+        AppendJsonAsciiString(payload, state.brokerProofRollback);
+        payload->append(",\"exitCode\":");
+        payload->append(std::to_string(state.brokerProofExitCode));
+        payload->append(",\"driverRollbackAuthorized\":");
+        payload->append(state.brokerDriverRollbackAuthorized
+            ? "true" : "false");
+        payload->push_back('}');
+    } else {
+        payload->append("null");
+    }
+    payload->append(",\"priorAbiProfile\":");
+    if (state.hasPriorAbiProfile) {
+        payload->append("{\"minor\":");
+        payload->append(std::to_string(state.priorAbiProfile.minor));
+        payload->append(",\"capabilities\":");
+        payload->append(std::to_string(state.priorAbiProfile.capabilities));
+        payload->append(",\"statsSize\":");
+        payload->append(std::to_string(state.priorAbiProfile.statsSize));
+        payload->append(",\"hasReservedPortFields\":");
+        payload->append(state.priorAbiProfile.hasReservedPortFields
+            ? "true" : "false");
+        payload->push_back('}');
+    } else {
+        payload->append("null");
+    }
+    payload->append(",\"rootRegistrationInstanceId\":");
+    if (state.hasRootRegistrationIntent) {
+        AppendJsonString(payload, state.rootRegistrationInstanceId);
+    } else {
+        payload->append("null");
+    }
+    payload->append(",\"partialRootRemovalBootIdentifier\":");
+    if (state.partialRootRemovalBootIdentifier.empty()) {
+        payload->append("null");
+    } else {
+        AppendJsonAsciiString(
+            payload, state.partialRootRemovalBootIdentifier);
+    }
+    payload->append(",\"partialRootRemovalBinding\":");
+    switch (state.partialRootRemovalBinding) {
+    case InstallJournalStateData::PartialRootRemovalBinding::None:
+        payload->append("null");
+        break;
+    case InstallJournalStateData::PartialRootRemovalBinding::Unbound:
+        AppendJsonAsciiString(payload, "unbound");
+        break;
+    case InstallJournalStateData::PartialRootRemovalBinding::Candidate:
+        AppendJsonAsciiString(payload, "candidate");
+        break;
+    }
+    payload->append(",\"packageStagedHere\":");
+    payload->append(state.packageStagedHere ? "true" : "false");
+    payload->append(",\"bindingMutationStarted\":");
+    payload->append(state.bindingMutationStarted ? "true" : "false");
+    payload->append(",\"rebootRequired\":");
+    payload->append(state.rebootRequired ? "true" : "false");
+    payload->append(",\"freshRebootRequired\":");
+    payload->append(state.freshRebootRequired ? "true" : "false");
+    payload->append(",\"callSucceeded\":");
+    payload->append(state.callSucceeded ? "true" : "false");
+    payload->append(",\"callError\":");
+    payload->append(std::to_string(state.callError));
+    payload->append(",\"deadlineOverrun\":");
+    payload->append(state.deadlineOverrun ? "true" : "false");
+    payload->append(",\"candidate\":");
+    AppendPackageIdentityJson(payload, state.candidate,
+        std::wstring(kInstallRecoveryCandidateDirectory) + L"/ViiperUde.inf");
+    payload->append(",\"publishedCandidate\":");
+    if (state.hasPublishedCandidate) {
+        AppendPackageIdentityJson(payload, state.publishedCandidate,
+            std::wstring(kInstallRecoveryCandidateDirectory) + L"/ViiperUde.inf");
+    } else {
+        payload->append("null");
+    }
+    payload->append(",\"priorPackages\":[");
+    for (size_t index = 0; index < state.prior.packages.size(); ++index) {
+        if (index != 0) payload->push_back(',');
+        AppendPackageIdentityJson(payload, state.prior.packages[index],
+            std::wstring(kInstallRecoveryPriorDirectory) + L"/" +
+                std::to_wstring(index) + L"/ViiperUde.inf");
+    }
+    payload->append("],\"priorDevices\":[");
+    for (size_t index = 0; index < state.prior.devices.size(); ++index) {
+        if (index != 0) payload->push_back(',');
+        const DeviceState& device = state.prior.devices[index];
+        payload->append("{\"instanceId\":");
+        AppendJsonString(payload, device.instanceId);
+        payload->append(",\"present\":");
+        payload->append(device.present ? "true" : "false");
+        payload->append(",\"started\":");
+        payload->append(device.started ? "true" : "false");
+        payload->append(",\"problem\":");
+        payload->append(std::to_string(device.problem));
+        payload->append(",\"service\":");
+        AppendJsonString(payload, device.service);
+        payload->append(",\"publishedInf\":");
+        AppendJsonString(payload, device.publishedInf);
+        payload->append(",\"version\":");
+        AppendJsonString(payload, VersionToString(device.version));
+        payload->append(",\"packageInfSha256\":");
+        AppendJsonAsciiString(payload, LowerAscii(device.package.infSha256));
+        payload->append(",\"packageSysSha256\":");
+        AppendJsonAsciiString(payload, LowerAscii(device.package.sysSha256));
+        payload->append(",\"packageCatSha256\":");
+        AppendJsonAsciiString(payload, LowerAscii(device.package.catSha256));
+        payload->push_back('}');
+    }
+    payload->append("],\"expectedInventory\":[");
+    for (size_t index = 0; index < state.expectedInventory.size(); ++index) {
+        if (index != 0) payload->push_back(',');
+        AppendPackageIdentityJson(payload, state.expectedInventory[index], L"");
+    }
+    payload->append("]}");
+    if (payload->size() > kMaximumRecoveryRecordBytes) {
+        return SetError(error, L"install-journal-size", ERROR_FILE_TOO_LARGE);
+    }
+    return true;
+}
+
+bool WriteInstallJournalRecord(
+    const std::filesystem::path& active,
+    InstallJournalStateData* state,
+    Error* error) {
+    std::string payload;
+    std::string digest;
+    if (!BuildInstallJournalPayload(*state, &payload, error) ||
+        !Sha256Data(payload, &digest, error)) {
+        return false;
+    }
+    std::string record = "{\"schema\":2,\"kind\":";
+    AppendJsonAsciiString(&record, kInstallRecoveryKind);
+    record.append(",\"payloadSha256\":");
+    AppendJsonAsciiString(&record, digest);
+    record.append(",\"payload\":");
+    AppendJsonUtf8String(&record, payload);
+    record.append("}\n");
+    if (record.size() > kMaximumRecoveryRecordBytes) {
+        return SetError(error, L"install-journal-size", ERROR_FILE_TOO_LARGE);
+    }
+
+    std::wostringstream finalName;
+    finalName << kInstallRecoveryJournalPrefix << std::setw(8)
+              << std::setfill(L'0') << state->sequence
+              << kInstallRecoveryJournalSuffix;
+    const std::filesystem::path finalPath = active / finalName.str();
+    const std::filesystem::path temporaryPath =
+        active / (finalName.str() + kInstallRecoveryTemporarySuffix);
+    LocalSecurityDescriptor security;
+    if (!security.Initialize(
+            kRecoveryRecordSecurity, L"install-journal-file-security", error)) {
+        return false;
+    }
+    WinHandle file(CreateFileW(
+        temporaryPath.c_str(),
+        GENERIC_READ | GENERIC_WRITE | FILE_READ_ATTRIBUTES | READ_CONTROL,
+        FILE_SHARE_READ, security.attributes(), CREATE_NEW,
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT |
+            FILE_FLAG_WRITE_THROUGH,
+        nullptr));
+    if (!file) {
+        return SetLastErrorDetail(error, L"install-journal-create");
+    }
+    const auto discard = [&]() noexcept {
+        file.reset();
+        DeleteFileW(temporaryPath.c_str());
+    };
+    FILE_ATTRIBUTE_TAG_INFO attributes{};
+    if (!GetFileInformationByHandleEx(
+            file.get(), FileAttributeTagInfo, &attributes, sizeof(attributes)) ||
+        (attributes.FileAttributes &
+            (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0 ||
+        !VerifyProtectedFileSystemSecurity(
+            file.get(), false, L"install-journal-file-security", error)) {
+        if (error->code == ERROR_SUCCESS) {
+            SetError(error, L"install-journal-create", ERROR_REPARSE_TAG_MISMATCH);
+        }
+        discard();
+        return false;
+    }
+    size_t offset = 0;
+    while (offset < record.size()) {
+        DWORD written = 0;
+        const DWORD requested = static_cast<DWORD>(std::min<size_t>(
+            record.size() - offset, MAXDWORD));
+        if (!WriteFile(file.get(), record.data() + offset, requested,
+                &written, nullptr) || written == 0) {
+            const DWORD code = GetLastError() == ERROR_SUCCESS
+                ? ERROR_WRITE_FAULT : GetLastError();
+            SetError(error, L"install-journal-write", code);
+            discard();
+            return false;
+        }
+        offset += written;
+    }
+    if (!FlushFileBuffers(file.get())) {
+        SetLastErrorDetail(error, L"install-journal-flush");
+        discard();
+        return false;
+    }
+    file.reset();
+    if (!MoveFileExW(
+            temporaryPath.c_str(), finalPath.c_str(), MOVEFILE_WRITE_THROUGH)) {
+        const DWORD code = GetLastError();
+        DeleteFileW(temporaryPath.c_str());
+        return SetError(error, L"install-journal-publish", code);
+    }
+    file.reset(CreateFileW(
+        finalPath.c_str(), GENERIC_READ | FILE_READ_ATTRIBUTES | READ_CONTROL,
+        FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT |
+            FILE_FLAG_SEQUENTIAL_SCAN,
+        nullptr));
+    if (!file || !VerifyProtectedFileSystemSecurity(
+            file.get(), false, L"install-journal-file-security", error)) {
+        if (!file) SetLastErrorDetail(error, L"install-journal-reopen");
+        return false;
+    }
+    std::string observed(record.size(), '\0');
+    DWORD read = 0;
+    if (!ReadFile(file.get(), observed.data(), static_cast<DWORD>(observed.size()),
+            &read, nullptr) || read != observed.size() || observed != record) {
+        return SetError(error, L"install-journal-readback", ERROR_CRC,
+            L"published journal record does not match the flushed bytes");
+    }
+    char trailing = 0;
+    DWORD trailingRead = 0;
+    if (!ReadFile(file.get(), &trailing, 1, &trailingRead, nullptr) ||
+        trailingRead != 0) {
+        return SetError(error, L"install-journal-readback", ERROR_FILE_INVALID,
+            L"published journal record has trailing bytes");
+    }
+    state->lastDigest = digest;
+    state->previousDigest = digest;
+    ++state->sequence;
+    gActiveRecoveryRecordWritten = true;
+    return true;
+}
+
+bool GenerateInstallTransactionId(std::string* identifier, Error* error) {
+    HCRYPTPROV provider = 0;
+    if (!CryptAcquireContextW(
+            &provider, nullptr, nullptr, PROV_RSA_AES,
+            CRYPT_VERIFYCONTEXT | CRYPT_SILENT)) {
+        return SetLastErrorDetail(error, L"install-journal-transaction-id");
+    }
+    std::array<BYTE, 32> random{};
+    const BOOL generated = CryptGenRandom(
+        provider, static_cast<DWORD>(random.size()), random.data());
+    const DWORD code = generated ? ERROR_SUCCESS : GetLastError();
+    CryptReleaseContext(provider, 0);
+    if (!generated) {
+        return SetError(error, L"install-journal-transaction-id", code);
+    }
+    static constexpr char digits[] = "0123456789abcdef";
+    identifier->clear();
+    identifier->reserve(random.size() * 2U);
+    for (BYTE value : random) {
+        identifier->push_back(digits[value >> 4U]);
+        identifier->push_back(digits[value & 0x0fU]);
+    }
+    return true;
+}
+
+bool CopyCandidateIntoInstallJournal(
+    const std::filesystem::path& sourceDirectory,
+    const std::filesystem::path& destinationDirectory,
+    const PackageInfo& expected,
+    bool localTest,
+    PackageInfo* verified,
+    std::vector<WinHandle>* locks,
+    Error* error) {
+    if (!CopyProtectedBackupFile(
+            sourceDirectory / L"ViiperUde.inf",
+            destinationDirectory / L"ViiperUde.inf", error) ||
+        !CopyProtectedBackupFile(
+            sourceDirectory / kDriverFileName,
+            destinationDirectory / kDriverFileName, error) ||
+        !CopyProtectedBackupFile(
+            sourceDirectory / kCatalogName,
+            destinationDirectory / kCatalogName, error) ||
+        !ValidateExactPackageDirectory(destinationDirectory, error)) {
+        return false;
+    }
+    bool owned = false;
+    if (!LoadOwnedPackage(
+            destinationDirectory / L"ViiperUde.inf", true, localTest,
+            verified, &owned, error) || !owned ||
+        !(verified->version == expected.version) ||
+        !SamePackageBytes(*verified, expected)) {
+        if (error->code == ERROR_SUCCESS) {
+            SetError(error, L"install-journal-candidate-identity",
+                ERROR_REVISION_MISMATCH,
+                L"protected candidate copy differs from the reviewed package bytes");
+        }
+        return false;
+    }
+    verified->publishedName.clear();
+    return LockPackageFiles(destinationDirectory, locks, error);
+}
+
+struct InstallJournal::Impl {
+    InstallRecoveryDirectory directory;
+    InstallJournalStateData state;
+    std::vector<PackageBackup> priorBackups;
+    std::vector<WinHandle> candidateLocks;
+    bool preparedRecord = false;
+    bool retired = false;
+    bool poisoned = false;
+    bool evidenceMayBeDurable = false;
+    bool forwardRootRegistrationEntered = false;
+    bool forwardDiInstallEntered = false;
+    bool partialRootRemovalEntered = false;
+
+    ~Impl() noexcept {
+        if (preparedRecord || retired || poisoned || evidenceMayBeDurable ||
+            !directory.activeCreated ||
+            directory.active.empty()) {
+            return;
+        }
+        candidateLocks.clear();
+        priorBackups.clear();
+        directory.activeHandle.reset();
+        std::error_code ignored;
+        std::filesystem::remove_all(directory.active, ignored);
+        std::error_code presenceError;
+        if (!std::filesystem::exists(directory.active, presenceError) &&
+            !presenceError) {
+            ClearActiveRecoveryEvidence();
+        }
+    }
+};
+
+InstallJournal::InstallJournal() = default;
+InstallJournal::~InstallJournal() = default;
+
+bool InstallJournal::Prepare(
+    const Snapshot& prior,
+    const PackageInfo& candidate,
+    const std::filesystem::path& candidateDirectory,
+    const std::vector<PackageInfo>& expectedInventory,
+    const InstallOptions& options,
+    Error* error) {
+    impl_ = std::make_unique<Impl>();
+    bool exists = false;
+    if (!impl_->directory.OpenChain(
+            true, &options.targetUserSid, &exists, error) || !exists ||
+        !PublishInstallRecoveryEvidence(impl_->directory.active, 0, error)) {
+        return false;
+    }
+    bool created = false;
+    WinHandle priorDirectoryHandle;
+    WinHandle candidateDirectoryHandle;
+    const std::filesystem::path priorDirectory =
+        impl_->directory.active / kInstallRecoveryPriorDirectory;
+    const std::filesystem::path protectedCandidateDirectory =
+        impl_->directory.active / kInstallRecoveryCandidateDirectory;
+    if (!CreateOrOpenInstallRecoveryDirectory(
+            priorDirectory, false, true, &priorDirectoryHandle, &created,
+            error) ||
+        !CreateOrOpenInstallRecoveryDirectory(
+            protectedCandidateDirectory, false, true,
+            &candidateDirectoryHandle, &created, error) ||
+        !BackupPackagesIntoDirectory(
+            prior.packages, priorDirectory, &impl_->priorBackups, error)) {
+        return false;
+    }
+    PackageInfo protectedCandidate;
+    if (!CopyCandidateIntoInstallJournal(
+            candidateDirectory, protectedCandidateDirectory, candidate,
+            options.localTest, &protectedCandidate, &impl_->candidateLocks,
+            error)) {
+        return false;
+    }
+
+    impl_->state.prior = prior;
+    impl_->state.candidate = candidate;
+    impl_->state.expectedInventory = expectedInventory;
+    impl_->state.production = options.production;
+    impl_->state.localTest = options.localTest;
+    impl_->state.brokerRequired = !options.brokerExecutable.empty();
+    impl_->state.sourceRevision = options.sourceRevision;
+    if (!GetBootIdentifier(&impl_->state.bootIdentifier, error)) {
+        return false;
+    }
+    if (!options.brokerTokenSha256.empty()) {
+        impl_->state.transactionId = LowerAscii(options.brokerTokenSha256);
+    } else if (!GenerateInstallTransactionId(
+                   &impl_->state.transactionId, error)) {
+        return false;
+    }
+    impl_->state.phase = InstallJournalPhase::Prepared;
+    if (!ValidateInstallJournalTransition(
+            nullptr, impl_->state, error)) {
+        return false;
+    }
+    impl_->evidenceMayBeDurable = true;
+    if (!WriteInstallJournalRecord(
+            impl_->directory.active, &impl_->state, error)) {
+        impl_->poisoned = true;
+        return false;
+    }
+    impl_->preparedRecord = true;
+    if (!PublishInstallRecoveryEvidence(
+            impl_->directory.active, impl_->state.sequence - 1U, error)) {
+        impl_->poisoned = true;
+        return false;
+    }
+    gActiveRecoveryRecordWritten = true;
+    return true;
+}
+
+bool InstallJournal::Record(
+    InstallJournalPhase phase,
+    const PackageInfo* publishedCandidate,
+    bool packageStagedHere,
+    bool bindingMutationStarted,
+    bool rebootRequired,
+    bool callSucceeded,
+    DWORD callError,
+    bool deadlineOverrun,
+    Error* error) {
+    if (!impl_) {
+        return SetError(error, L"install-journal-state", ERROR_INVALID_STATE,
+            L"install journal is not armed for a phase transition");
+    }
+    return RecordNext(impl_->state, phase, publishedCandidate,
+        packageStagedHere, bindingMutationStarted, rebootRequired,
+        callSucceeded, callError, deadlineOverrun, false, error);
+}
+
+bool InstallJournal::RecordAuthoritativeReturn(
+    InstallJournalPhase phase,
+    const PackageInfo* publishedCandidate,
+    bool packageStagedHere,
+    bool bindingMutationStarted,
+    bool rebootRequired,
+    bool freshRebootRequired,
+    bool callSucceeded,
+    DWORD callError,
+    bool deadlineOverrun,
+    Error* error) {
+    if (!impl_ ||
+        (phase != InstallJournalPhase::DiInstallReturned &&
+            phase != InstallJournalPhase::RollbackBindingReturned &&
+            phase !=
+                InstallJournalPhase::PartialRootRemovalReturned)) {
+        return SetError(error, L"install-journal-reboot-return",
+            ERROR_INVALID_PARAMETER);
+    }
+    InstallJournalStateData next = impl_->state;
+    if (freshRebootRequired &&
+        !GetBootIdentifier(
+            &next.pendingRebootBootIdentifier, error)) {
+        return false;
+    }
+    return RecordNext(std::move(next), phase, publishedCandidate,
+        packageStagedHere, bindingMutationStarted, rebootRequired,
+        callSucceeded, callError, deadlineOverrun,
+        freshRebootRequired, error);
+}
+
+bool InstallJournal::RecordNext(
+    InstallJournalStateData next,
+    InstallJournalPhase phase,
+    const PackageInfo* publishedCandidate,
+    bool packageStagedHere,
+    bool bindingMutationStarted,
+    bool rebootRequired,
+    bool callSucceeded,
+    DWORD callError,
+    bool deadlineOverrun,
+    bool freshRebootRequired,
+    Error* error) {
+    if (!impl_ || !impl_->preparedRecord || impl_->retired ||
+        impl_->poisoned) {
+        return SetError(error, L"install-journal-state", ERROR_INVALID_STATE,
+            impl_ && impl_->poisoned
+                ? L"install journal is poisoned after an indeterminate durable append; restart into recovery"
+                : L"install journal is not armed for a phase transition");
+    }
+    next.phase = phase;
+    next.packageStagedHere =
+        next.packageStagedHere || packageStagedHere;
+    const bool phaseMayMutateBinding =
+        phase == InstallJournalPhase::RootRegistrationEntered ||
+        phase == InstallJournalPhase::RootRegistrationReturned ||
+        phase == InstallJournalPhase::DiInstallEntered ||
+        phase == InstallJournalPhase::DiInstallReturned;
+    next.bindingMutationStarted =
+        next.bindingMutationStarted || bindingMutationStarted ||
+        phaseMayMutateBinding;
+    next.rebootRequired = next.rebootRequired || rebootRequired;
+    next.freshRebootRequired = freshRebootRequired;
+    next.callSucceeded = callSucceeded;
+    next.callError = callError;
+    next.deadlineOverrun = next.deadlineOverrun || deadlineOverrun;
+    if (phase == InstallJournalPhase::RollbackBindingEntered) {
+        next.direction = InstallJournalDirection::Rollback;
+        next.rollbackAuthorized = true;
+    }
+    if (publishedCandidate != nullptr) {
+        next.publishedCandidate = *publishedCandidate;
+        next.hasPublishedCandidate = true;
+        if (packageStagedHere &&
+            !ContainsExactPackage(
+                next.expectedInventory, *publishedCandidate)) {
+            next.expectedInventory.push_back(*publishedCandidate);
+            std::sort(next.expectedInventory.begin(),
+                next.expectedInventory.end(),
+                [](const PackageInfo& left, const PackageInfo& right) {
+                    return _wcsicmp(left.publishedName.c_str(),
+                        right.publishedName.c_str()) < 0;
+                });
+        }
+    }
+    if (phase == InstallJournalPhase::BrokerHandoffEntered ||
+        phase == InstallJournalPhase::BrokerHandoffReturned ||
+        phase == InstallJournalPhase::BrokerChildEntered ||
+        phase == InstallJournalPhase::BrokerChildSettled) {
+        next.brokerEntered = true;
+    }
+    if (phase == InstallJournalPhase::BrokerChildSettled) {
+        next.brokerSettled = true;
+    }
+    if (!ValidateInstallJournalTransition(&impl_->state, next, error) ||
+        !WriteInstallJournalRecord(
+            impl_->directory.active, &next, error)) {
+        impl_->poisoned = true;
+        return false;
+    }
+    impl_->state = std::move(next);
+    if (impl_->state.direction == InstallJournalDirection::Forward &&
+        phase == InstallJournalPhase::RootRegistrationEntered) {
+        impl_->forwardRootRegistrationEntered = true;
+    }
+    if (impl_->state.direction == InstallJournalDirection::Forward &&
+        phase == InstallJournalPhase::DiInstallEntered) {
+        impl_->forwardDiInstallEntered = true;
+    }
+    if (phase == InstallJournalPhase::PartialRootRemovalEntered) {
+        impl_->partialRootRemovalEntered = true;
+    }
+    if (!PublishInstallRecoveryEvidence(
+            impl_->directory.active, impl_->state.sequence - 1U, error)) {
+        impl_->poisoned = true;
+        return false;
+    }
+    gActiveRecoveryRecordWritten = true;
+    return true;
+}
+
+bool InstallJournal::RecordCutpoint(
+    InstallJournalPhase phase,
+    bool callSucceeded,
+    DWORD callError,
+    bool deadlineOverrun,
+    bool rebootRequired,
+    bool freshRebootRequired,
+    Error* error) {
+    if (!impl_) {
+        return true;
+    }
+    const PackageInfo* publishedCandidate =
+        impl_->state.hasPublishedCandidate
+            ? &impl_->state.publishedCandidate : nullptr;
+    if (phase == InstallJournalPhase::DiInstallReturned ||
+        phase == InstallJournalPhase::RollbackBindingReturned ||
+        phase == InstallJournalPhase::PartialRootRemovalReturned) {
+        return RecordAuthoritativeReturn(phase, publishedCandidate,
+            impl_->state.packageStagedHere,
+            impl_->state.bindingMutationStarted,
+            impl_->state.rebootRequired || rebootRequired,
+            freshRebootRequired, callSucceeded, callError,
+            deadlineOverrun, error);
+    }
+    if (freshRebootRequired) {
+        return SetError(error, L"install-journal-reboot-return",
+            ERROR_INVALID_PARAMETER,
+            L"fresh reboot authority is legal only on an authoritative returned phase");
+    }
+    return Record(phase, publishedCandidate,
+        impl_->state.packageStagedHere,
+        impl_->state.bindingMutationStarted,
+        impl_->state.rebootRequired || rebootRequired,
+        callSucceeded, callError, deadlineOverrun, error);
+}
+
+bool InstallJournal::RecordPriorAbiProfile(
+    const AbiCompatibilityProfile& profile,
+    const PackageInfo& publishedCandidate,
+    bool packageStagedHere,
+    Error* error) {
+    if (!impl_ || !IsKnownAbiCompatibilityProfile(profile) ||
+        impl_->state.prior.devices.size() != 1U ||
+        !impl_->state.prior.devices[0].started ||
+        impl_->state.prior.devices[0].problem != 0) {
+        return SetError(error, L"install-journal-prior-abi-profile",
+            ERROR_INVALID_PARAMETER);
+    }
+    if (impl_->state.hasPriorAbiProfile &&
+        !SameAbiCompatibilityProfile(
+            impl_->state.priorAbiProfile, profile)) {
+        return SetError(error, L"install-journal-prior-abi-profile",
+            ERROR_REVISION_MISMATCH,
+            L"captured prior ABI profile changed within one transaction");
+    }
+    InstallJournalStateData next = impl_->state;
+    next.priorAbiProfile = profile;
+    next.hasPriorAbiProfile = true;
+    return RecordNext(std::move(next),
+        InstallJournalPhase::PriorAbiProfileCaptured,
+        &publishedCandidate, packageStagedHere,
+        impl_->state.bindingMutationStarted,
+        impl_->state.rebootRequired, true, ERROR_SUCCESS, false,
+        false, error);
+}
+
+bool InstallJournal::RecordRootRegistrationIntent(
+    const std::wstring& instanceId,
+    Error* error) {
+    if (!impl_ || !impl_->state.prior.devices.empty() ||
+        !impl_->state.hasPublishedCandidate ||
+        !IsGeneratedRootInstanceIdForDeviceName(
+            instanceId, kRootDeviceName)) {
+        return SetError(error, L"install-journal-root-intent",
+            ERROR_INVALID_PARAMETER);
+    }
+    if (impl_->state.hasRootRegistrationIntent &&
+        _wcsicmp(impl_->state.rootRegistrationInstanceId.c_str(),
+            instanceId.c_str()) != 0) {
+        return SetError(error, L"install-journal-root-intent",
+            ERROR_REVISION_MISMATCH,
+            L"generated root identity changed within one transaction");
+    }
+    InstallJournalStateData next = impl_->state;
+    next.hasRootRegistrationIntent = true;
+    next.rootRegistrationInstanceId = instanceId;
+    return RecordNext(std::move(next),
+        InstallJournalPhase::RootRegistrationIntentCaptured,
+        &impl_->state.publishedCandidate,
+        impl_->state.packageStagedHere,
+        impl_->state.bindingMutationStarted,
+        impl_->state.rebootRequired,
+        true, ERROR_SUCCESS, false, false, error);
+}
+
+bool InstallJournal::RecordBrokerProof(
+    const BrokerCommitProof& proof,
+    Error* error) {
+    if (!impl_ || !BrokerProofFieldsAreCanonical(
+            proof.success, proof.changed, proof.rollback,
+            proof.exitCode, proof.driverRollbackAuthorized)) {
+        return SetError(error, L"install-journal-broker-proof",
+            ERROR_INVALID_DATA);
+    }
+    if (impl_->state.hasBrokerProof &&
+        (impl_->state.brokerProofSuccess != proof.success ||
+            impl_->state.brokerProofChanged != proof.changed ||
+            impl_->state.brokerProofRollback != proof.rollback ||
+            impl_->state.brokerProofExitCode != proof.exitCode ||
+            impl_->state.brokerDriverRollbackAuthorized !=
+                proof.driverRollbackAuthorized)) {
+        return SetError(error, L"install-journal-broker-proof",
+            ERROR_REVISION_MISMATCH,
+            L"settled broker proof changed within one transaction");
+    }
+    InstallJournalStateData next = impl_->state;
+    next.brokerEntered = true;
+    next.brokerSettled = true;
+    next.hasBrokerProof = true;
+    next.brokerProofSuccess = proof.success;
+    next.brokerProofChanged = proof.changed;
+    next.brokerProofRollback = proof.rollback;
+    next.brokerProofExitCode = proof.exitCode;
+    next.brokerDriverRollbackAuthorized =
+        proof.driverRollbackAuthorized;
+    if (proof.driverRollbackAuthorized) {
+        next.direction = InstallJournalDirection::Rollback;
+        next.rollbackAuthorized = true;
+    }
+    return RecordNext(std::move(next),
+        InstallJournalPhase::BrokerChildSettled,
+        impl_->state.hasPublishedCandidate
+            ? &impl_->state.publishedCandidate : nullptr,
+        impl_->state.packageStagedHere,
+        impl_->state.bindingMutationStarted,
+        impl_->state.rebootRequired,
+        proof.success, proof.exitCode, false, false, error);
+}
+
+bool InstallJournal::RecordRollbackAuthorization(
+    InstallJournalPhase phase,
+    DWORD callError,
+    Error* error) {
+    if (!impl_ ||
+        (phase != InstallJournalPhase::BrokerHandoffReturned &&
+            phase != InstallJournalPhase::BrokerChildSettled)) {
+        return SetError(error, L"install-journal-rollback-authorization",
+            ERROR_INVALID_PARAMETER);
+    }
+    InstallJournalStateData next = impl_->state;
+    next.direction = InstallJournalDirection::Rollback;
+    next.rollbackAuthorized = true;
+    return RecordNext(std::move(next), phase,
+        impl_->state.hasPublishedCandidate
+            ? &impl_->state.publishedCandidate : nullptr,
+        impl_->state.packageStagedHere,
+        impl_->state.bindingMutationStarted,
+        impl_->state.rebootRequired,
+        false, callError, false, false, error);
+}
+
+bool RecordActiveInstallJournalCutpoint(
+    InstallJournalPhase phase,
+    bool callSucceeded,
+    DWORD callError,
+    bool deadlineOverrun,
+    Error* error) {
+    return gActiveInstallJournal == nullptr ||
+        gActiveInstallJournal->RecordCutpoint(
+            phase, callSucceeded, callError, deadlineOverrun,
+            false, false, error);
+}
+
+bool RecordActiveInstallJournalCutpointWithReboot(
+    InstallJournalPhase phase,
+    bool callSucceeded,
+    DWORD callError,
+    bool deadlineOverrun,
+    bool rebootRequired,
+    bool freshRebootRequired,
+    Error* error) {
+    return gActiveInstallJournal == nullptr ||
+        gActiveInstallJournal->RecordCutpoint(
+            phase, callSucceeded, callError, deadlineOverrun,
+            rebootRequired, freshRebootRequired, error);
+}
+
+bool RecordActiveInstallJournalRollbackAuthorization(
+    InstallJournalPhase phase,
+    DWORD callError,
+    Error* error) {
+    return gActiveInstallJournal == nullptr ||
+        gActiveInstallJournal->RecordRollbackAuthorization(
+            phase, callError, error);
+}
+
+bool RecordActiveInstallJournalRootRegistrationIntent(
+    const std::wstring& instanceId,
+    Error* error) {
+    return gActiveInstallJournal == nullptr ||
+        gActiveInstallJournal->RecordRootRegistrationIntent(
+            instanceId, error);
+}
+
+void InstallJournal::AttachEvidence(Error* error) const {
+    if (error == nullptr || !impl_) {
+        return;
+    }
+    error->recoveryBackup = impl_->directory.active.wstring();
+    error->recoveryBackupRetained = true;
+    if (gActiveRecoveryRecord[0] != L'\0') {
+        error->recoveryRecord = gActiveRecoveryRecord.data();
+        error->recoveryRecordWritten = gActiveRecoveryRecordWritten;
+    }
+}
+
+bool InstallJournal::RetireAfterForwardValidation(
+    const PackageInfo& candidate,
+    const std::wstring& publishedName,
+    bool rebootRequired,
+    uint64_t deadlineUnixMs,
+    Error* error) {
+    if (!impl_ || !impl_->preparedRecord || impl_->retired ||
+        impl_->poisoned) {
+        return SetError(error, L"install-journal-retire", ERROR_INVALID_STATE);
+    }
+    if (rebootRequired) {
+        if (impl_->state.pendingRebootBootIdentifier.empty()) {
+            return SetError(error, L"install-journal-forward-reboot-epoch",
+                ERROR_INVALID_DATA,
+                L"forward reboot pending lacks an authoritative returned reboot epoch");
+        }
+        return Record(InstallJournalPhase::ForwardRebootPending,
+            &impl_->state.publishedCandidate,
+            impl_->state.packageStagedHere,
+            impl_->state.bindingMutationStarted, true, true,
+            ERROR_SUCCESS_REBOOT_REQUIRED, false, error);
+    }
+    std::string expectedBuildIdentity;
+    if (!DeriveDriverBuildIdentity(
+            impl_->state.sourceRevision, &expectedBuildIdentity, error) ||
+        !VerifyInstallJournalRawForwardTopology(impl_->state, error) ||
+        !VerifyInstalled(candidate, publishedName, false, deadlineUnixMs,
+            &expectedBuildIdentity, error) ||
+        !VerifyPackageInventory(
+            impl_->state.expectedInventory,
+            L"install-journal-retire-inventory", error) ||
+        !Record(InstallJournalPhase::ForwardValidated,
+            &impl_->state.publishedCandidate,
+            impl_->state.packageStagedHere,
+            impl_->state.bindingMutationStarted, false, true,
+            ERROR_SUCCESS, false, error) ||
+        !VerifyInstallJournalRawForwardTopology(impl_->state, error) ||
+        !VerifyInstalled(candidate, publishedName, false, deadlineUnixMs,
+            &expectedBuildIdentity, error) ||
+        !VerifyPackageInventory(
+            impl_->state.expectedInventory,
+            L"install-journal-retire-revalidation", error)) {
+        return false;
+    }
+    impl_->candidateLocks.clear();
+    impl_->priorBackups.clear();
+    if (!RetireInstallRecoveryActiveDirectory(
+            &impl_->directory, impl_->state.transactionId, error)) {
+        return false;
+    }
+    impl_->retired = true;
+    impl_->preparedRecord = false;
+    ClearActiveRecoveryEvidence();
+    return true;
+}
+
+bool InstallJournal::RetireAfterPriorValidation(
+    bool rebootRequired,
+    Error* error) {
+    if (!impl_ || !impl_->preparedRecord || impl_->retired ||
+        impl_->poisoned) {
+        return SetError(error, L"install-journal-retire", ERROR_INVALID_STATE);
+    }
+    if (rebootRequired &&
+        !impl_->state.pendingRebootBootIdentifier.empty()) {
+        return Record(InstallJournalPhase::RestoreRebootPending,
+            impl_->state.hasPublishedCandidate
+                ? &impl_->state.publishedCandidate : nullptr,
+            impl_->state.packageStagedHere,
+            impl_->state.bindingMutationStarted, true, true,
+            ERROR_SUCCESS_REBOOT_REQUIRED, false, error);
+    }
+    const auto validatePrior = [&]() {
+        Snapshot observed;
+        if (!VerifyInstallJournalRawPriorTopology(impl_->state, error) ||
+            !CaptureSnapshot(&observed, error) ||
+            !SameCapturedRootState(impl_->state.prior, observed) ||
+            !SamePackageInventory(
+                impl_->state.prior.packages, observed.packages)) {
+            return false;
+        }
+        if (impl_->state.bindingMutationStarted &&
+            !impl_->state.prior.devices.empty() &&
+            impl_->state.prior.devices[0].started) {
+            if (!impl_->state.hasPriorAbiProfile) {
+                return SetError(error,
+                    L"install-journal-prior-abi-profile",
+                    ERROR_REVISION_MISMATCH,
+                    L"started prior root lacks its durable exact ABI profile");
+            }
+            return VerifyAbiHealth(
+                CurrentUnixMilliseconds() + 15000U, nullptr, error,
+                AbiHealthPurpose::RollbackHealth,
+                &impl_->state.priorAbiProfile, nullptr);
+        }
+        return true;
+    };
+    if (!validatePrior()) {
+        if (error->code == ERROR_SUCCESS) {
+            SetError(error, L"install-journal-prior-revalidation",
+                ERROR_REVISION_MISMATCH,
+                L"exact captured root and package inventory were not restored");
+        }
+        return false;
+    }
+    if (!Record(InstallJournalPhase::ExactPriorRestored,
+            impl_->state.hasPublishedCandidate
+                ? &impl_->state.publishedCandidate : nullptr,
+            impl_->state.packageStagedHere,
+            impl_->state.bindingMutationStarted, false, true,
+            ERROR_SUCCESS, false, error) ||
+        !validatePrior()) {
+        return false;
+    }
+    impl_->candidateLocks.clear();
+    impl_->priorBackups.clear();
+    if (!RetireInstallRecoveryActiveDirectory(
+            &impl_->directory, impl_->state.transactionId, error)) {
+        return false;
+    }
+    impl_->retired = true;
+    impl_->preparedRecord = false;
+    ClearActiveRecoveryEvidence();
+    return true;
+}
+
+bool RequireJournalObject(
+    const JsonValue& value,
+    const JsonValue::Object** object,
+    Error* error) {
+    *object = std::get_if<JsonValue::Object>(&value.value);
+    return *object != nullptr || SetError(
+        error, L"install-journal-parse", ERROR_INVALID_DATA,
+        L"journal field must be a JSON object");
+}
+
+bool RequireJournalArray(
+    const JsonValue::Object& object,
+    const char* name,
+    const JsonValue::Array** array,
+    Error* error) {
+    const JsonValue* field = ObjectField(object, name);
+    *array = field == nullptr ? nullptr
+        : std::get_if<JsonValue::Array>(&field->value);
+    return *array != nullptr || SetError(
+        error, L"install-journal-parse", ERROR_INVALID_DATA,
+        L"journal array field is missing or malformed");
+}
+
+bool RequireJournalString(
+    const JsonValue::Object& object,
+    const char* name,
+    std::string* value,
+    Error* error) {
+    const JsonValue* field = ObjectField(object, name);
+    const std::string* stringValue = field == nullptr ? nullptr
+        : std::get_if<std::string>(&field->value);
+    if (stringValue == nullptr) {
+        return SetError(error, L"install-journal-parse", ERROR_INVALID_DATA,
+            L"journal string field is missing or malformed");
+    }
+    *value = *stringValue;
+    return true;
+}
+
+bool RequireJournalBool(
+    const JsonValue::Object& object,
+    const char* name,
+    bool* value,
+    Error* error) {
+    const JsonValue* field = ObjectField(object, name);
+    const bool* boolValue = field == nullptr ? nullptr
+        : std::get_if<bool>(&field->value);
+    if (boolValue == nullptr) {
+        return SetError(error, L"install-journal-parse", ERROR_INVALID_DATA,
+            L"journal Boolean field is missing or malformed");
+    }
+    *value = *boolValue;
+    return true;
+}
+
+bool RequireJournalUnsigned(
+    const JsonValue::Object& object,
+    const char* name,
+    uint64_t maximum,
+    uint64_t* value,
+    Error* error) {
+    const JsonValue* field = ObjectField(object, name);
+    const int64_t* integer = field == nullptr ? nullptr
+        : std::get_if<int64_t>(&field->value);
+    if (integer == nullptr || *integer < 0 ||
+        static_cast<uint64_t>(*integer) > maximum) {
+        return SetError(error, L"install-journal-parse", ERROR_INVALID_DATA,
+            L"journal integer field is missing or out of range");
+    }
+    *value = static_cast<uint64_t>(*integer);
+    return true;
+}
+
+bool ParseJournalPackageIdentity(
+    const JsonValue& value,
+    const std::filesystem::path& active,
+    bool requirePublishedName,
+    PackageInfo* package,
+    std::filesystem::path* backupInf,
+    Error* error) {
+    const JsonValue::Object* object = nullptr;
+    std::string published;
+    std::string version;
+    std::string infSha;
+    std::string sysSha;
+    std::string catSha;
+    std::string relative;
+    if (!RequireJournalObject(value, &object, error) ||
+        !RequireJournalString(*object, "publishedInf", &published, error) ||
+        !RequireJournalString(*object, "version", &version, error) ||
+        !RequireJournalString(*object, "infSha256", &infSha, error) ||
+        !RequireJournalString(*object, "sysSha256", &sysSha, error) ||
+        !RequireJournalString(*object, "catSha256", &catSha, error) ||
+        !RequireJournalString(*object, "backupInf", &relative, error)) {
+        return false;
+    }
+    std::wstring publishedWide;
+    std::wstring versionWide;
+    std::wstring relativeWide;
+    if (!Utf8ToWide(published, &publishedWide, error) ||
+        !Utf8ToWide(version, &versionWide, error) ||
+        !Utf8ToWide(relative, &relativeWide, error) ||
+        !ParseVersion(versionWide, &package->version) ||
+        !IsSha256Digest(infSha) || !IsSha256Digest(sysSha) ||
+        !IsSha256Digest(catSha) ||
+        (requirePublishedName && !IsSafePublishedInfName(publishedWide))) {
+        return SetError(error, L"install-journal-package", ERROR_INVALID_DATA,
+            L"journal package identity is malformed");
+    }
+    package->publishedName = std::move(publishedWide);
+    package->infSha256 = LowerAscii(std::move(infSha));
+    package->sysSha256 = LowerAscii(std::move(sysSha));
+    package->catSha256 = LowerAscii(std::move(catSha));
+    if (relativeWide.empty()) {
+        backupInf->clear();
+        package->infPath.clear();
+        return true;
+    }
+    const std::filesystem::path relativePath(relativeWide);
+    if (!IsSafeRecoveryRelativePath(relativePath)) {
+        return SetError(error, L"install-journal-package-path",
+            ERROR_INVALID_NAME);
+    }
+    *backupInf = (active / relativePath).lexically_normal();
+    if (backupInf->lexically_relative(active).empty()) {
+        return SetError(error, L"install-journal-package-path",
+            ERROR_INVALID_NAME);
+    }
+    package->infPath = *backupInf;
+    return true;
+}
+
+bool ParseInstallJournalPayload(
+    std::string_view payload,
+    const std::filesystem::path& active,
+    InstallJournalStateData* state,
+    Error* error) {
+    JsonValue root;
+    std::string parseMessage;
+    if (!JsonParser(payload).Parse(&root, &parseMessage)) {
+        std::wstring message;
+        Utf8ToWide(parseMessage, &message, nullptr);
+        return SetError(error, L"install-journal-parse", ERROR_INVALID_DATA,
+            L"journal payload is not canonical JSON: " + message);
+    }
+    const JsonValue::Object* object = nullptr;
+    if (!RequireJournalObject(root, &object, error)) {
+        return false;
+    }
+    uint64_t sequence = 0;
+    uint64_t callError = 0;
+    std::string previous;
+    std::string phase;
+    std::string direction;
+    if (!RequireJournalUnsigned(*object, "sequence",
+            kMaximumInstallRecoveryRecords - 1U, &sequence, error) ||
+        !RequireJournalString(*object, "previousSha256", &previous, error) ||
+        !RequireJournalString(*object, "phase", &phase, error) ||
+        !RequireJournalString(*object, "direction", &direction, error) ||
+        !RequireJournalBool(*object, "rollbackAuthorized",
+            &state->rollbackAuthorized, error) ||
+        !RequireJournalString(*object, "transactionId", &state->transactionId, error) ||
+        !RequireJournalString(*object, "bootIdentifier", &state->bootIdentifier, error) ||
+        !RequireJournalString(*object, "sourceRevision", &state->sourceRevision, error) ||
+        !RequireJournalBool(*object, "production", &state->production, error) ||
+        !RequireJournalBool(*object, "localTest", &state->localTest, error) ||
+        !RequireJournalBool(*object, "brokerRequired", &state->brokerRequired, error) ||
+        !RequireJournalBool(*object, "brokerEntered", &state->brokerEntered, error) ||
+        !RequireJournalBool(*object, "brokerSettled", &state->brokerSettled, error) ||
+        !RequireJournalBool(*object, "packageStagedHere", &state->packageStagedHere, error) ||
+        !RequireJournalBool(*object, "bindingMutationStarted", &state->bindingMutationStarted, error) ||
+        !RequireJournalBool(*object, "rebootRequired", &state->rebootRequired, error) ||
+        !RequireJournalBool(*object, "freshRebootRequired",
+            &state->freshRebootRequired, error) ||
+        !RequireJournalBool(*object, "callSucceeded", &state->callSucceeded, error) ||
+        !RequireJournalUnsigned(*object, "callError", MAXDWORD, &callError, error) ||
+        !RequireJournalBool(*object, "deadlineOverrun", &state->deadlineOverrun, error)) {
+        return false;
+    }
+    const JsonValue* pendingRebootNode =
+        ObjectField(*object, "pendingRebootBootIdentifier");
+    if (pendingRebootNode == nullptr) {
+        return SetError(error, L"install-journal-reboot-epoch",
+            ERROR_INVALID_DATA);
+    }
+    if (std::holds_alternative<std::nullptr_t>(
+            pendingRebootNode->value)) {
+        state->pendingRebootBootIdentifier.clear();
+    } else {
+        const auto* pendingBoot =
+            std::get_if<std::string>(&pendingRebootNode->value);
+        if (pendingBoot == nullptr ||
+            !IsCanonicalBootIdentifier(*pendingBoot)) {
+            return SetError(error, L"install-journal-reboot-epoch",
+                ERROR_INVALID_DATA,
+                L"pending reboot boot identifier is not one canonical boot epoch");
+        }
+        state->pendingRebootBootIdentifier = *pendingBoot;
+    }
+    const JsonValue* brokerProofNode = ObjectField(*object, "brokerProof");
+    if (brokerProofNode == nullptr) {
+        return SetError(error, L"install-journal-broker-proof",
+            ERROR_INVALID_DATA);
+    }
+    if (std::holds_alternative<std::nullptr_t>(brokerProofNode->value)) {
+        state->hasBrokerProof = false;
+    } else {
+        const JsonValue::Object* brokerProofObject = nullptr;
+        uint64_t exitCode = 0;
+        if (!RequireJournalObject(
+                *brokerProofNode, &brokerProofObject, error) ||
+            brokerProofObject->size() != 5U ||
+            !RequireJournalBool(*brokerProofObject, "success",
+                &state->brokerProofSuccess, error) ||
+            !RequireJournalBool(*brokerProofObject, "changed",
+                &state->brokerProofChanged, error) ||
+            !RequireJournalString(*brokerProofObject, "rollback",
+                &state->brokerProofRollback, error) ||
+            !RequireJournalUnsigned(*brokerProofObject, "exitCode", MAXDWORD,
+                &exitCode, error) ||
+            !RequireJournalBool(*brokerProofObject,
+                "driverRollbackAuthorized",
+                &state->brokerDriverRollbackAuthorized, error)) {
+            return false;
+        }
+        state->brokerProofExitCode = static_cast<DWORD>(exitCode);
+        if (!BrokerProofFieldsAreCanonical(
+                state->brokerProofSuccess,
+                state->brokerProofChanged,
+                state->brokerProofRollback,
+                state->brokerProofExitCode,
+                state->brokerDriverRollbackAuthorized)) {
+            return SetError(error, L"install-journal-broker-proof",
+                ERROR_INVALID_DATA,
+                L"durable child proof is not a canonical settled outcome");
+        }
+        state->hasBrokerProof = true;
+    }
+    const JsonValue* profileNode = ObjectField(*object, "priorAbiProfile");
+    if (profileNode == nullptr) {
+        return SetError(error, L"install-journal-prior-abi-profile",
+            ERROR_INVALID_DATA);
+    }
+    if (std::holds_alternative<std::nullptr_t>(profileNode->value)) {
+        state->hasPriorAbiProfile = false;
+    } else {
+        const JsonValue::Object* profileObject = nullptr;
+        uint64_t minor = 0;
+        uint64_t capabilities = 0;
+        uint64_t statsSize = 0;
+        if (!RequireJournalObject(*profileNode, &profileObject, error) ||
+            profileObject->size() != 4U ||
+            !RequireJournalUnsigned(*profileObject, "minor", UINT16_MAX,
+                &minor, error) ||
+            !RequireJournalUnsigned(*profileObject, "capabilities", UINT32_MAX,
+                &capabilities, error) ||
+            !RequireJournalUnsigned(*profileObject, "statsSize", MAXDWORD,
+                &statsSize, error) ||
+            !RequireJournalBool(*profileObject, "hasReservedPortFields",
+                &state->priorAbiProfile.hasReservedPortFields, error)) {
+            return false;
+        }
+        state->priorAbiProfile.minor =
+            static_cast<VIIPER_UDE_UINT16>(minor);
+        state->priorAbiProfile.capabilities =
+            static_cast<VIIPER_UDE_UINT32>(capabilities);
+        state->priorAbiProfile.statsSize = static_cast<DWORD>(statsSize);
+        if (!IsKnownAbiCompatibilityProfile(state->priorAbiProfile)) {
+            return SetError(error, L"install-journal-prior-abi-profile",
+                ERROR_REVISION_MISMATCH,
+                L"journal prior ABI profile is not an exact supported contract");
+        }
+        state->hasPriorAbiProfile = true;
+    }
+    const JsonValue* rootIntentNode =
+        ObjectField(*object, "rootRegistrationInstanceId");
+    if (rootIntentNode == nullptr) {
+        return SetError(error, L"install-journal-root-intent",
+            ERROR_INVALID_DATA);
+    }
+    if (std::holds_alternative<std::nullptr_t>(rootIntentNode->value)) {
+        state->hasRootRegistrationIntent = false;
+        state->rootRegistrationInstanceId.clear();
+    } else {
+        const auto* encodedInstanceId =
+            std::get_if<std::string>(&rootIntentNode->value);
+        if (encodedInstanceId == nullptr ||
+            !Utf8ToWide(*encodedInstanceId,
+                &state->rootRegistrationInstanceId, error) ||
+            !IsGeneratedRootInstanceIdForDeviceName(
+                state->rootRegistrationInstanceId, kRootDeviceName)) {
+            return SetError(error, L"install-journal-root-intent",
+                ERROR_INVALID_DATA,
+                L"durable root registration intent is not one exact generated VIIPER instance ID");
+        }
+        state->hasRootRegistrationIntent = true;
+    }
+    const JsonValue* rootRemovalBootNode =
+        ObjectField(*object,
+            "partialRootRemovalBootIdentifier");
+    if (rootRemovalBootNode == nullptr) {
+        return SetError(error,
+            L"install-journal-partial-root-removal",
+            ERROR_INVALID_DATA);
+    }
+    if (std::holds_alternative<std::nullptr_t>(
+            rootRemovalBootNode->value)) {
+        state->partialRootRemovalBootIdentifier.clear();
+    } else {
+        const auto* removalBoot =
+            std::get_if<std::string>(&rootRemovalBootNode->value);
+        if (removalBoot == nullptr ||
+            !IsCanonicalBootIdentifier(*removalBoot)) {
+            return SetError(error,
+                L"install-journal-partial-root-removal",
+                ERROR_INVALID_DATA,
+                L"partial root removal lacks one canonical attempt boot epoch");
+        }
+        state->partialRootRemovalBootIdentifier = *removalBoot;
+    }
+    const JsonValue* rootRemovalBindingNode =
+        ObjectField(*object, "partialRootRemovalBinding");
+    if (rootRemovalBindingNode == nullptr) {
+        return SetError(error,
+            L"install-journal-partial-root-removal",
+            ERROR_INVALID_DATA);
+    }
+    if (std::holds_alternative<std::nullptr_t>(
+            rootRemovalBindingNode->value)) {
+        state->partialRootRemovalBinding =
+            InstallJournalStateData::PartialRootRemovalBinding::None;
+    } else {
+        const auto* binding =
+            std::get_if<std::string>(&rootRemovalBindingNode->value);
+        if (binding == nullptr ||
+            (*binding != "unbound" && *binding != "candidate")) {
+            return SetError(error,
+                L"install-journal-partial-root-removal",
+                ERROR_INVALID_DATA,
+                L"partial root removal pre-call binding shape is not canonical");
+        }
+        state->partialRootRemovalBinding = *binding == "unbound"
+            ? InstallJournalStateData::PartialRootRemovalBinding::Unbound
+            : InstallJournalStateData::PartialRootRemovalBinding::Candidate;
+    }
+    const std::optional<InstallJournalPhase> parsedPhase =
+        ParseInstallJournalPhase(phase);
+    const std::optional<InstallJournalDirection> parsedDirection =
+        ParseInstallJournalDirection(direction);
+    const bool partialRootRemovalPhase = parsedPhase &&
+        (*parsedPhase == InstallJournalPhase::PartialRootRemovalEntered ||
+            *parsedPhase == InstallJournalPhase::PartialRootRemovalReturned ||
+            *parsedPhase == InstallJournalPhase::
+                PartialRootRemovalRebootPending);
+    const bool hasPartialRootRemovalBinding =
+        state->partialRootRemovalBinding !=
+            InstallJournalStateData::PartialRootRemovalBinding::None;
+    if (!parsedPhase || !parsedDirection || !IsSha256Digest(previous) ||
+        !IsSha256Digest(state->transactionId) ||
+        !IsCanonicalBootIdentifier(state->bootIdentifier) ||
+        (!state->pendingRebootBootIdentifier.empty() &&
+            !state->rebootRequired) ||
+        (partialRootRemovalPhase &&
+            (state->partialRootRemovalBootIdentifier.empty() ||
+                !hasPartialRootRemovalBinding)) ||
+        (state->partialRootRemovalBootIdentifier.empty() !=
+            !hasPartialRootRemovalBinding) ||
+        (!state->partialRootRemovalBootIdentifier.empty() &&
+            (!state->hasRootRegistrationIntent ||
+                !state->prior.devices.empty() ||
+                *parsedDirection != InstallJournalDirection::Rollback ||
+                !state->rollbackAuthorized)) ||
+        ((*parsedPhase == InstallJournalPhase::ForwardRebootPending ||
+             *parsedPhase == InstallJournalPhase::RestoreRebootPending) &&
+            state->pendingRebootBootIdentifier.empty()) ||
+        (state->freshRebootRequired &&
+            (!state->rebootRequired ||
+                state->pendingRebootBootIdentifier.empty() ||
+                (*parsedPhase != InstallJournalPhase::DiInstallReturned &&
+                    *parsedPhase != InstallJournalPhase::
+                        RollbackBindingReturned &&
+                    *parsedPhase != InstallJournalPhase::
+                        PartialRootRemovalReturned))) ||
+        !IsHexRevision(state->sourceRevision) ||
+        (state->production && state->localTest) ||
+        (state->brokerSettled && !state->brokerEntered) ||
+        (state->hasBrokerProof &&
+            (!state->brokerEntered || !state->brokerSettled ||
+                state->brokerDriverRollbackAuthorized !=
+                    state->rollbackAuthorized)) ||
+        (state->brokerSettled && !state->hasBrokerProof &&
+            !state->rollbackAuthorized)) {
+        return SetError(error, L"install-journal-state", ERROR_INVALID_DATA,
+            L"journal phase or transaction identity is inconsistent");
+    }
+    state->sequence = sequence;
+    state->previousDigest = LowerAscii(std::move(previous));
+    state->phase = *parsedPhase;
+    state->direction = *parsedDirection;
+    state->callError = static_cast<DWORD>(callError);
+
+    const JsonValue* candidateNode = ObjectField(*object, "candidate");
+    std::filesystem::path candidateBackup;
+    if (candidateNode == nullptr ||
+        !ParseJournalPackageIdentity(*candidateNode, active, false,
+            &state->candidate, &candidateBackup, error) ||
+        candidateBackup != active / kInstallRecoveryCandidateDirectory /
+            L"ViiperUde.inf") {
+        if (error->code == ERROR_SUCCESS) {
+            SetError(error, L"install-journal-candidate-path",
+                ERROR_INVALID_NAME);
+        }
+        return false;
+    }
+    const JsonValue* publishedNode = ObjectField(*object, "publishedCandidate");
+    if (publishedNode == nullptr) {
+        return SetError(error, L"install-journal-parse", ERROR_INVALID_DATA);
+    }
+    if (std::holds_alternative<std::nullptr_t>(publishedNode->value)) {
+        state->hasPublishedCandidate = false;
+    } else {
+        std::filesystem::path ignoredBackup;
+        if (!ParseJournalPackageIdentity(*publishedNode, active, true,
+                &state->publishedCandidate, &ignoredBackup, error) ||
+            !SamePackageBytes(state->publishedCandidate, state->candidate) ||
+            !(state->publishedCandidate.version == state->candidate.version)) {
+            return SetError(error, L"install-journal-published-candidate",
+                ERROR_REVISION_MISMATCH);
+        }
+        state->hasPublishedCandidate = true;
+    }
+
+    const JsonValue::Array* priorPackages = nullptr;
+    const JsonValue::Array* priorDevices = nullptr;
+    const JsonValue::Array* expectedInventory = nullptr;
+    if (!RequireJournalArray(*object, "priorPackages", &priorPackages, error) ||
+        !RequireJournalArray(*object, "priorDevices", &priorDevices, error) ||
+        !RequireJournalArray(*object, "expectedInventory", &expectedInventory, error) ||
+        priorPackages->size() > 32U || priorDevices->size() > 1U ||
+        expectedInventory->size() > 33U) {
+        return SetError(error, L"install-journal-inventory",
+            ERROR_INVALID_DATA);
+    }
+    state->prior.packages.clear();
+    for (size_t index = 0; index < priorPackages->size(); ++index) {
+        PackageInfo package;
+        std::filesystem::path backupInf;
+        const std::filesystem::path expectedBackup =
+            active / kInstallRecoveryPriorDirectory /
+            std::to_wstring(index) / L"ViiperUde.inf";
+        if (!ParseJournalPackageIdentity(
+                (*priorPackages)[index], active, true,
+                &package, &backupInf, error) || backupInf != expectedBackup) {
+            if (error->code == ERROR_SUCCESS) {
+                SetError(error, L"install-journal-prior-package-path",
+                    ERROR_INVALID_NAME);
+            }
+            return false;
+        }
+        state->prior.packages.push_back(std::move(package));
+    }
+    state->expectedInventory.clear();
+    for (const JsonValue& packageValue : *expectedInventory) {
+        PackageInfo package;
+        std::filesystem::path backupInf;
+        if (!ParseJournalPackageIdentity(
+                packageValue, active, true, &package, &backupInf, error) ||
+            !backupInf.empty()) {
+            return SetError(error, L"install-journal-expected-inventory",
+                ERROR_INVALID_DATA);
+        }
+        state->expectedInventory.push_back(std::move(package));
+    }
+
+    state->prior.devices.clear();
+    for (const JsonValue& deviceValue : *priorDevices) {
+        const JsonValue::Object* deviceObject = nullptr;
+        std::string instanceId;
+        std::string service;
+        std::string publishedInf;
+        std::string versionValue;
+        std::string infSha;
+        std::string sysSha;
+        std::string catSha;
+        uint64_t problem = 0;
+        DeviceState device;
+        if (!RequireJournalObject(deviceValue, &deviceObject, error) ||
+            !RequireJournalString(*deviceObject, "instanceId", &instanceId, error) ||
+            !RequireJournalBool(*deviceObject, "present", &device.present, error) ||
+            !RequireJournalBool(*deviceObject, "started", &device.started, error) ||
+            !RequireJournalUnsigned(*deviceObject, "problem", MAXDWORD, &problem, error) ||
+            !RequireJournalString(*deviceObject, "service", &service, error) ||
+            !RequireJournalString(*deviceObject, "publishedInf", &publishedInf, error) ||
+            !RequireJournalString(*deviceObject, "version", &versionValue, error) ||
+            !RequireJournalString(*deviceObject, "packageInfSha256", &infSha, error) ||
+            !RequireJournalString(*deviceObject, "packageSysSha256", &sysSha, error) ||
+            !RequireJournalString(*deviceObject, "packageCatSha256", &catSha, error) ||
+            !Utf8ToWide(instanceId, &device.instanceId, error) ||
+            !Utf8ToWide(service, &device.service, error) ||
+            !Utf8ToWide(publishedInf, &device.publishedInf, error)) {
+            return false;
+        }
+        std::wstring versionWide;
+        if (!Utf8ToWide(versionValue, &versionWide, error) ||
+            !ParseVersion(versionWide, &device.version) ||
+            !IsOwnedGeneratedRootInstanceId(device.instanceId) ||
+            _wcsicmp(device.service.c_str(), kServiceName) != 0 ||
+            !IsSafePublishedInfName(device.publishedInf) ||
+            !IsSha256Digest(infSha) || !IsSha256Digest(sysSha) ||
+            !IsSha256Digest(catSha)) {
+            return SetError(error, L"install-journal-prior-device",
+                ERROR_INVALID_DATA);
+        }
+        device.problem = static_cast<ULONG>(problem);
+        size_t matches = 0;
+        for (const PackageInfo& package : state->prior.packages) {
+            if (_wcsicmp(package.publishedName.c_str(),
+                    device.publishedInf.c_str()) == 0 &&
+                package.version == device.version &&
+                _stricmp(package.infSha256.c_str(), infSha.c_str()) == 0 &&
+                _stricmp(package.sysSha256.c_str(), sysSha.c_str()) == 0 &&
+                _stricmp(package.catSha256.c_str(), catSha.c_str()) == 0) {
+                device.package = package;
+                ++matches;
+            }
+        }
+        if (matches != 1U) {
+            return SetError(error, L"install-journal-prior-device-package",
+                ERROR_REVISION_MISMATCH);
+        }
+        state->prior.devices.push_back(std::move(device));
+    }
+    const bool priorRequiresAbiProfile =
+        state->prior.devices.size() == 1U &&
+        state->prior.devices[0].started &&
+        state->prior.devices[0].problem == 0;
+    if ((state->hasPriorAbiProfile && !priorRequiresAbiProfile) ||
+        (state->phase == InstallJournalPhase::PriorAbiProfileCaptured &&
+            !state->hasPriorAbiProfile) ||
+        ((state->direction == InstallJournalDirection::Rollback) !=
+            state->rollbackAuthorized) ||
+        (priorRequiresAbiProfile &&
+            (InstallJournalPhaseRequiresPriorAbiProfile(state->phase) ||
+                state->bindingMutationStarted) &&
+            !state->hasPriorAbiProfile) ||
+        (state->hasRootRegistrationIntent &&
+            (!state->prior.devices.empty() ||
+                !state->hasPublishedCandidate)) ||
+        (!state->hasRootRegistrationIntent &&
+            (state->phase ==
+                    InstallJournalPhase::RootRegistrationIntentCaptured ||
+                (state->prior.devices.empty() &&
+                    state->bindingMutationStarted))) ||
+        (state->phase == InstallJournalPhase::RootRegistrationIntentCaptured &&
+            (state->direction != InstallJournalDirection::Forward ||
+                state->bindingMutationStarted))) {
+        return SetError(error, L"install-journal-prior-abi-profile",
+            ERROR_INVALID_DATA,
+            L"journal ABI profile or root registration intent does not match the captured prior lifecycle");
+    }
+    std::string canonicalPayload;
+    if (!BuildInstallJournalPayload(*state, &canonicalPayload, error) ||
+        canonicalPayload != payload) {
+        if (error->code == ERROR_SUCCESS) {
+            SetError(error, L"install-journal-canonical-payload",
+                ERROR_INVALID_DATA,
+                L"journal payload is not in exact canonical byte form");
+        }
+        return false;
+    }
+    return true;
+}
+
+bool ReadInstallJournalFile(
+    const std::filesystem::path& path,
+    std::string* record,
+    Error* error) {
+    WinHandle file(CreateFileW(
+        path.c_str(), GENERIC_READ | FILE_READ_ATTRIBUTES | READ_CONTROL,
+        FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT |
+            FILE_FLAG_SEQUENTIAL_SCAN,
+        nullptr));
+    if (!file) {
+        return SetLastErrorDetail(error, L"install-journal-read");
+    }
+    FILE_ATTRIBUTE_TAG_INFO attributes{};
+    if (!GetFileInformationByHandleEx(
+            file.get(), FileAttributeTagInfo, &attributes, sizeof(attributes)) ||
+        (attributes.FileAttributes &
+            (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0 ||
+        !VerifyProtectedFileSystemSecurity(
+            file.get(), false, L"install-journal-file-security", error)) {
+        if (error->code == ERROR_SUCCESS) {
+            SetError(error, L"install-journal-read",
+                ERROR_REPARSE_TAG_MISMATCH);
+        }
+        return false;
+    }
+    LARGE_INTEGER size{};
+    if (!GetFileSizeEx(file.get(), &size) || size.QuadPart <= 0 ||
+        static_cast<uint64_t>(size.QuadPart) > kMaximumRecoveryRecordBytes) {
+        return SetError(error, L"install-journal-size",
+            ERROR_FILE_TOO_LARGE);
+    }
+    record->assign(static_cast<size_t>(size.QuadPart), '\0');
+    DWORD read = 0;
+    if (!ReadFile(file.get(), record->data(),
+            static_cast<DWORD>(record->size()), &read, nullptr) ||
+        static_cast<size_t>(read) != record->size()) {
+        return SetLastErrorDetail(error, L"install-journal-read");
+    }
+    return true;
+}
+
+bool ValidateAndDiscardInstallJournalTemporaryFile(
+    const std::filesystem::path& path,
+    Error* error) {
+    WinHandle file(CreateFileW(
+        path.c_str(), GENERIC_READ | FILE_READ_ATTRIBUTES | READ_CONTROL,
+        FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
+        nullptr));
+    if (!file) {
+        return SetLastErrorDetail(error, L"install-journal-temp-open");
+    }
+    FILE_ATTRIBUTE_TAG_INFO attributes{};
+    BY_HANDLE_FILE_INFORMATION identity{};
+    LARGE_INTEGER size{};
+    if (!GetFileInformationByHandleEx(
+            file.get(), FileAttributeTagInfo, &attributes,
+            sizeof(attributes)) ||
+        (attributes.FileAttributes &
+            (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0 ||
+        !GetFileInformationByHandle(file.get(), &identity) ||
+        identity.nNumberOfLinks != 1U ||
+        !GetFileSizeEx(file.get(), &size) || size.QuadPart < 0 ||
+        static_cast<uint64_t>(size.QuadPart) > kMaximumRecoveryRecordBytes ||
+        !VerifyProtectedFileSystemSecurity(
+            file.get(), false, L"install-journal-file-security", error)) {
+        if (error->code == ERROR_SUCCESS) {
+            SetError(error, L"install-journal-temp-identity",
+                ERROR_INVALID_DATA,
+                L"unpublished journal temp must be a bounded, single-link, protected regular file");
+        }
+        return false;
+    }
+    file.reset();
+    if (!DeleteFileW(path.c_str())) {
+        return SetLastErrorDetail(error, L"install-journal-temp-discard");
+    }
+    const DWORD remaining = GetFileAttributesW(path.c_str());
+    const DWORD absenceError = remaining == INVALID_FILE_ATTRIBUTES
+        ? GetLastError() : ERROR_SUCCESS;
+    if (remaining != INVALID_FILE_ATTRIBUTES ||
+        (absenceError != ERROR_FILE_NOT_FOUND &&
+            absenceError != ERROR_PATH_NOT_FOUND)) {
+        return SetError(error, L"install-journal-temp-discard",
+            remaining != INVALID_FILE_ATTRIBUTES
+                ? ERROR_ALREADY_EXISTS : absenceError,
+            L"unpublished journal temp absence could not be proven");
+    }
+    return true;
+}
+
+bool SameJournalPackageIdentity(
+    const PackageInfo& left,
+    const PackageInfo& right) noexcept {
+    return _wcsicmp(left.publishedName.c_str(),
+               right.publishedName.c_str()) == 0 &&
+        left.version == right.version && SamePackageBytes(left, right);
+}
+
+bool SameInstallJournalImmutableState(
+    const InstallJournalStateData& left,
+    const InstallJournalStateData& right) noexcept {
+    if (left.transactionId != right.transactionId ||
+        left.bootIdentifier != right.bootIdentifier ||
+        left.sourceRevision != right.sourceRevision ||
+        left.production != right.production ||
+        left.localTest != right.localTest ||
+        left.brokerRequired != right.brokerRequired ||
+        !SameJournalPackageIdentity(left.candidate, right.candidate) ||
+        !SamePackageInventory(left.prior.packages, right.prior.packages) ||
+        left.prior.devices.size() != right.prior.devices.size()) {
+        return false;
+    }
+    return left.prior.devices.empty() ||
+        (SameRootBinding(left.prior.devices[0], right.prior.devices[0]) &&
+            left.prior.devices[0].started == right.prior.devices[0].started &&
+            left.prior.devices[0].problem == right.prior.devices[0].problem);
+}
+
+bool SameDurableBrokerProof(
+    const InstallJournalStateData& left,
+    const InstallJournalStateData& right) noexcept {
+    return left.hasBrokerProof == right.hasBrokerProof &&
+        (!left.hasBrokerProof ||
+            (left.brokerProofSuccess == right.brokerProofSuccess &&
+                left.brokerProofChanged == right.brokerProofChanged &&
+                left.brokerDriverRollbackAuthorized ==
+                    right.brokerDriverRollbackAuthorized &&
+                left.brokerProofRollback == right.brokerProofRollback &&
+                left.brokerProofExitCode == right.brokerProofExitCode));
+}
+
+int ForwardInstallJournalPhaseRank(
+    InstallJournalPhase phase) noexcept {
+    switch (phase) {
+    case InstallJournalPhase::Prepared: return 0;
+    case InstallJournalPhase::SetupCopyEntered: return 10;
+    case InstallJournalPhase::SetupCopyReturned: return 11;
+    case InstallJournalPhase::StageReceiptCaptured: return 12;
+    case InstallJournalPhase::QuiesceSignalEntered: return 20;
+    case InstallJournalPhase::QuiesceSignalReturned: return 21;
+    case InstallJournalPhase::PriorAbiProfileCaptured: return 30;
+    case InstallJournalPhase::RootRegistrationIntentCaptured: return 39;
+    case InstallJournalPhase::RootRegistrationEntered: return 40;
+    case InstallJournalPhase::RootRegistrationReturned: return 41;
+    case InstallJournalPhase::DiInstallEntered: return 50;
+    case InstallJournalPhase::DiInstallReturned: return 51;
+    case InstallJournalPhase::DriverValidated: return 60;
+    case InstallJournalPhase::BrokerHandoffEntered: return 70;
+    case InstallJournalPhase::BrokerHandoffReturned: return 71;
+    case InstallJournalPhase::BrokerChildEntered: return 80;
+    case InstallJournalPhase::BrokerChildSettled: return 81;
+    case InstallJournalPhase::PartialRootRemovalEntered: return 82;
+    case InstallJournalPhase::PartialRootRemovalReturned: return 83;
+    case InstallJournalPhase::PartialRootRemovalRebootPending: return 84;
+    case InstallJournalPhase::ForwardValidated: return 90;
+    case InstallJournalPhase::ForwardRebootPending: return 90;
+    case InstallJournalPhase::ExactPriorRestored: return 90;
+    case InstallJournalPhase::RestoreRebootPending: return 90;
+    case InstallJournalPhase::ManualReconciliationRequired: return 90;
+    default: return -1;
+    }
+}
+
+bool IsInstallJournalTerminalPhase(InstallJournalPhase phase) noexcept {
+    return phase == InstallJournalPhase::ForwardValidated ||
+        phase == InstallJournalPhase::ExactPriorRestored ||
+        phase == InstallJournalPhase::ForwardRebootPending ||
+        phase == InstallJournalPhase::RestoreRebootPending ||
+        phase == InstallJournalPhase::ManualReconciliationRequired;
+}
+
+bool MatchingInstallJournalReturn(
+    InstallJournalPhase entered,
+    InstallJournalPhase returned) noexcept {
+    return (entered == InstallJournalPhase::SetupCopyEntered &&
+               returned == InstallJournalPhase::SetupCopyReturned) ||
+        (entered == InstallJournalPhase::QuiesceSignalEntered &&
+            returned == InstallJournalPhase::QuiesceSignalReturned) ||
+        (entered == InstallJournalPhase::RootRegistrationEntered &&
+            returned == InstallJournalPhase::RootRegistrationReturned) ||
+        (entered == InstallJournalPhase::DiInstallEntered &&
+            returned == InstallJournalPhase::DiInstallReturned) ||
+        (entered == InstallJournalPhase::BrokerHandoffEntered &&
+            returned == InstallJournalPhase::BrokerHandoffReturned) ||
+        (entered == InstallJournalPhase::BrokerChildEntered &&
+            returned == InstallJournalPhase::BrokerChildSettled) ||
+        (entered == InstallJournalPhase::PartialRootRemovalEntered &&
+            returned == InstallJournalPhase::PartialRootRemovalReturned) ||
+        (entered == InstallJournalPhase::SetupUninstallEntered &&
+            returned == InstallJournalPhase::SetupUninstallReturned);
+}
+
+bool LegalForwardInstallJournalPhaseTransition(
+    InstallJournalPhase previous,
+    InstallJournalPhase next) noexcept {
+    if (previous == next) {
+        return previous == InstallJournalPhase::Prepared ||
+            previous == InstallJournalPhase::SetupCopyReturned ||
+            previous == InstallJournalPhase::QuiesceSignalReturned ||
+            previous == InstallJournalPhase::RootRegistrationReturned ||
+            previous == InstallJournalPhase::DiInstallReturned ||
+            previous == InstallJournalPhase::BrokerHandoffReturned ||
+            previous == InstallJournalPhase::BrokerChildSettled;
+    }
+    switch (next) {
+    case InstallJournalPhase::SetupCopyEntered:
+        return previous == InstallJournalPhase::Prepared;
+    case InstallJournalPhase::SetupCopyReturned:
+    case InstallJournalPhase::QuiesceSignalReturned:
+    case InstallJournalPhase::RootRegistrationReturned:
+    case InstallJournalPhase::DiInstallReturned:
+    case InstallJournalPhase::BrokerHandoffReturned:
+    case InstallJournalPhase::BrokerChildSettled:
+        return MatchingInstallJournalReturn(previous, next);
+    case InstallJournalPhase::StageReceiptCaptured:
+        return previous == InstallJournalPhase::SetupCopyReturned;
+    case InstallJournalPhase::QuiesceSignalEntered:
+        return previous == InstallJournalPhase::Prepared ||
+            previous == InstallJournalPhase::StageReceiptCaptured;
+    case InstallJournalPhase::PriorAbiProfileCaptured:
+        return previous == InstallJournalPhase::Prepared ||
+            previous == InstallJournalPhase::StageReceiptCaptured ||
+            previous == InstallJournalPhase::QuiesceSignalReturned;
+    case InstallJournalPhase::RootRegistrationIntentCaptured:
+        return previous == InstallJournalPhase::Prepared ||
+            previous == InstallJournalPhase::StageReceiptCaptured ||
+            previous == InstallJournalPhase::QuiesceSignalReturned ||
+            previous == InstallJournalPhase::PriorAbiProfileCaptured;
+    case InstallJournalPhase::RootRegistrationEntered:
+        return previous ==
+            InstallJournalPhase::RootRegistrationIntentCaptured;
+    case InstallJournalPhase::DiInstallEntered:
+        return previous == InstallJournalPhase::Prepared ||
+            previous == InstallJournalPhase::StageReceiptCaptured ||
+            previous == InstallJournalPhase::QuiesceSignalReturned ||
+            previous == InstallJournalPhase::PriorAbiProfileCaptured ||
+            previous == InstallJournalPhase::RootRegistrationReturned;
+    case InstallJournalPhase::DriverValidated:
+        return previous == InstallJournalPhase::Prepared ||
+            previous == InstallJournalPhase::DiInstallReturned;
+    case InstallJournalPhase::BrokerHandoffEntered:
+        return previous == InstallJournalPhase::DriverValidated;
+    case InstallJournalPhase::BrokerChildEntered:
+        return previous == InstallJournalPhase::BrokerHandoffReturned;
+    case InstallJournalPhase::ForwardValidated:
+    case InstallJournalPhase::ForwardRebootPending:
+        return previous == InstallJournalPhase::DriverValidated ||
+            previous == InstallJournalPhase::BrokerChildSettled;
+    default:
+        return false;
+    }
+}
+
+bool LegalRollbackInstallJournalPhaseTransition(
+    InstallJournalPhase previous,
+    InstallJournalPhase next) noexcept {
+    if (next == InstallJournalPhase::ManualReconciliationRequired ||
+        next == InstallJournalPhase::ExactPriorRestored ||
+        next == InstallJournalPhase::RestoreRebootPending) {
+        return true;
+    }
+    if (next == InstallJournalPhase::RollbackBindingEntered) {
+        return !IsInstallJournalTerminalPhase(previous);
+    }
+    if (previous == next) return true;
+    if (previous == InstallJournalPhase::BrokerHandoffReturned ||
+        previous == InstallJournalPhase::BrokerChildSettled) {
+        return next == InstallJournalPhase::RollbackBindingEntered;
+    }
+    if (previous == InstallJournalPhase::RollbackBindingEntered) {
+        return next == InstallJournalPhase::PartialRootRemovalEntered ||
+            next == InstallJournalPhase::RootRegistrationEntered ||
+            next == InstallJournalPhase::DiInstallEntered ||
+            next == InstallJournalPhase::SetupUninstallEntered ||
+            next == InstallJournalPhase::RollbackBindingReturned;
+    }
+    if (previous == InstallJournalPhase::RootRegistrationEntered ||
+        previous == InstallJournalPhase::DiInstallEntered ||
+        previous == InstallJournalPhase::SetupUninstallEntered) {
+        return MatchingInstallJournalReturn(previous, next);
+    }
+    if (previous == InstallJournalPhase::PartialRootRemovalEntered) {
+        return next == InstallJournalPhase::PartialRootRemovalReturned ||
+            next == InstallJournalPhase::
+                PartialRootRemovalRebootPending;
+    }
+    if (previous == InstallJournalPhase::RootRegistrationReturned) {
+        return next == InstallJournalPhase::DiInstallEntered ||
+            next == InstallJournalPhase::RollbackBindingReturned;
+    }
+    if (previous == InstallJournalPhase::DiInstallReturned) {
+        return next == InstallJournalPhase::SetupUninstallEntered ||
+            next == InstallJournalPhase::RollbackBindingReturned;
+    }
+    if (previous == InstallJournalPhase::PartialRootRemovalReturned) {
+        return next == InstallJournalPhase::PartialRootRemovalEntered ||
+            next == InstallJournalPhase::PartialRootRemovalRebootPending ||
+            next == InstallJournalPhase::SetupUninstallEntered ||
+            next == InstallJournalPhase::RollbackBindingReturned;
+    }
+    if (previous ==
+        InstallJournalPhase::PartialRootRemovalRebootPending) {
+        return next == InstallJournalPhase::RollbackBindingEntered;
+    }
+    if (previous == InstallJournalPhase::SetupUninstallReturned) {
+        return next == InstallJournalPhase::RollbackBindingReturned;
+    }
+    if (previous == InstallJournalPhase::RollbackBindingReturned) {
+        return next == InstallJournalPhase::ExactPriorRestored ||
+            next == InstallJournalPhase::RestoreRebootPending;
+    }
+    return false;
+}
+
+bool ValidateInstallJournalTransition(
+    const InstallJournalStateData* previous,
+    const InstallJournalStateData& next,
+    Error* error) {
+    if (previous == nullptr) {
+        if (next.sequence != 0U ||
+            next.phase != InstallJournalPhase::Prepared ||
+            next.direction != InstallJournalDirection::Forward ||
+            next.rollbackAuthorized || next.brokerEntered ||
+            next.brokerSettled || next.hasBrokerProof ||
+            next.hasPriorAbiProfile ||
+            next.hasRootRegistrationIntent ||
+            !next.rootRegistrationInstanceId.empty() ||
+            next.partialRootRemovalBinding !=
+                InstallJournalStateData::PartialRootRemovalBinding::None ||
+            !next.partialRootRemovalBootIdentifier.empty() ||
+            !next.pendingRebootBootIdentifier.empty() ||
+            next.freshRebootRequired ||
+            next.hasPublishedCandidate ||
+            next.packageStagedHere || next.bindingMutationStarted ||
+            next.rebootRequired || next.deadlineOverrun ||
+            !next.callSucceeded || next.callError != ERROR_SUCCESS) {
+            return SetError(error, L"install-journal-initial-state",
+                ERROR_INVALID_DATA,
+                L"first journal record is not the exact immutable Prepared state");
+        }
+        return true;
+    }
+    const InstallJournalStateData& prior = *previous;
+    if (IsInstallJournalTerminalPhase(prior.phase) ||
+        (prior.direction == InstallJournalDirection::Rollback &&
+            next.direction != InstallJournalDirection::Rollback) ||
+        (prior.rollbackAuthorized && !next.rollbackAuthorized) ||
+        (prior.brokerEntered && !next.brokerEntered) ||
+        (prior.brokerSettled && !next.brokerSettled) ||
+        (prior.packageStagedHere && !next.packageStagedHere) ||
+        (prior.bindingMutationStarted && !next.bindingMutationStarted) ||
+        (prior.rebootRequired && !next.rebootRequired) ||
+        (prior.deadlineOverrun && !next.deadlineOverrun) ||
+        (prior.hasPublishedCandidate && !next.hasPublishedCandidate) ||
+        (prior.hasPriorAbiProfile && !next.hasPriorAbiProfile) ||
+        (prior.hasRootRegistrationIntent &&
+            !next.hasRootRegistrationIntent) ||
+        (prior.partialRootRemovalBinding !=
+                InstallJournalStateData::PartialRootRemovalBinding::None &&
+            next.partialRootRemovalBinding ==
+                InstallJournalStateData::PartialRootRemovalBinding::None) ||
+        (!prior.partialRootRemovalBootIdentifier.empty() &&
+            next.partialRootRemovalBootIdentifier.empty()) ||
+        (prior.hasBrokerProof && !next.hasBrokerProof)) {
+        return SetError(error, L"install-journal-monotonic-state",
+            ERROR_INVALID_DATA,
+            L"terminal, direction, ownership, or diagnostic state regressed");
+    }
+    const bool pendingRebootEpochChanged =
+        prior.pendingRebootBootIdentifier !=
+            next.pendingRebootBootIdentifier;
+    const bool authoritativeRebootReturn =
+        next.phase == InstallJournalPhase::DiInstallReturned ||
+        next.phase == InstallJournalPhase::RollbackBindingReturned ||
+        next.phase ==
+            InstallJournalPhase::PartialRootRemovalReturned;
+    if ((pendingRebootEpochChanged &&
+            !next.freshRebootRequired) ||
+        (next.freshRebootRequired &&
+            (!authoritativeRebootReturn ||
+                !next.rebootRequired ||
+                !IsCanonicalBootIdentifier(
+                    next.pendingRebootBootIdentifier))) ||
+        (!next.freshRebootRequired &&
+            pendingRebootEpochChanged) ||
+        (!next.rebootRequired &&
+            !next.pendingRebootBootIdentifier.empty()) ||
+        ((next.phase == InstallJournalPhase::ForwardRebootPending ||
+             next.phase == InstallJournalPhase::RestoreRebootPending) &&
+            next.pendingRebootBootIdentifier.empty())) {
+        return SetError(error, L"install-journal-reboot-epoch-chain",
+            ERROR_INVALID_DATA,
+            L"pending reboot epoch changed outside an authoritative fresh-reboot returned record");
+    }
+    if (prior.hasPublishedCandidate &&
+        !SameJournalPackageIdentity(
+            prior.publishedCandidate, next.publishedCandidate)) {
+        return SetError(error, L"install-journal-publication-chain",
+            ERROR_REVISION_MISMATCH,
+            L"published candidate identity changed across records");
+    }
+    if (!prior.hasPublishedCandidate && next.hasPublishedCandidate &&
+        next.phase != InstallJournalPhase::Prepared &&
+        next.phase != InstallJournalPhase::StageReceiptCaptured) {
+        return SetError(error, L"install-journal-publication-chain",
+            ERROR_INVALID_DATA,
+            L"candidate publication first appeared outside exact prepublication or stage receipt");
+    }
+    if (!prior.packageStagedHere && next.packageStagedHere &&
+        next.phase != InstallJournalPhase::StageReceiptCaptured) {
+        return SetError(error, L"install-journal-stage-ownership-chain",
+            ERROR_INVALID_DATA,
+            L"transaction-owned stage identity first appeared outside its exact durable receipt");
+    }
+    if (!SamePackageInventory(
+            prior.expectedInventory, next.expectedInventory)) {
+        std::vector<PackageInfo> permittedInventory =
+            prior.expectedInventory;
+        if (!prior.packageStagedHere && next.packageStagedHere &&
+            next.hasPublishedCandidate &&
+            !ContainsExactPackage(
+                permittedInventory, next.publishedCandidate)) {
+            permittedInventory.push_back(next.publishedCandidate);
+            std::sort(permittedInventory.begin(), permittedInventory.end(),
+                [](const PackageInfo& left, const PackageInfo& right) {
+                    return _wcsicmp(left.publishedName.c_str(),
+                        right.publishedName.c_str()) < 0;
+                });
+        }
+        if (!SamePackageInventory(
+                permittedInventory, next.expectedInventory)) {
+            return SetError(error, L"install-journal-inventory-chain",
+                ERROR_REVISION_MISMATCH,
+                L"expected package inventory changed outside exact stage publication");
+        }
+    }
+    if (prior.hasPriorAbiProfile &&
+        !SameAbiCompatibilityProfile(
+            prior.priorAbiProfile, next.priorAbiProfile)) {
+        return SetError(error, L"install-journal-prior-abi-profile-chain",
+            ERROR_REVISION_MISMATCH,
+            L"durable prior ABI profile changed across records");
+    }
+    if (prior.hasRootRegistrationIntent &&
+        _wcsicmp(prior.rootRegistrationInstanceId.c_str(),
+            next.rootRegistrationInstanceId.c_str()) != 0) {
+        return SetError(error, L"install-journal-root-intent-chain",
+            ERROR_REVISION_MISMATCH,
+            L"durable generated root registration identity changed across records");
+    }
+    const bool rootRemovalBootChanged =
+        prior.partialRootRemovalBootIdentifier !=
+            next.partialRootRemovalBootIdentifier;
+    const bool rootRemovalBindingChanged =
+        prior.partialRootRemovalBinding !=
+            next.partialRootRemovalBinding;
+    const bool hasRootRemovalBinding =
+        next.partialRootRemovalBinding !=
+            InstallJournalStateData::PartialRootRemovalBinding::None;
+    if (((rootRemovalBootChanged || rootRemovalBindingChanged) &&
+            next.phase !=
+                InstallJournalPhase::PartialRootRemovalEntered) ||
+        (next.partialRootRemovalBootIdentifier.empty() !=
+            !hasRootRemovalBinding) ||
+        (!next.partialRootRemovalBootIdentifier.empty() &&
+            (!next.hasRootRegistrationIntent ||
+                !next.prior.devices.empty() ||
+                next.direction != InstallJournalDirection::Rollback ||
+                !next.rollbackAuthorized)) ||
+        ((next.phase ==
+                InstallJournalPhase::PartialRootRemovalEntered ||
+             next.phase ==
+                InstallJournalPhase::PartialRootRemovalReturned ||
+             next.phase == InstallJournalPhase::
+                PartialRootRemovalRebootPending) &&
+            (next.partialRootRemovalBootIdentifier.empty() ||
+                !hasRootRemovalBinding))) {
+        return SetError(error,
+            L"install-journal-partial-root-removal-chain",
+            ERROR_INVALID_DATA,
+            L"partial root removal boot authority changed outside its exact rollback entry record");
+    }
+    if (prior.hasBrokerProof && !SameDurableBrokerProof(prior, next)) {
+        return SetError(error, L"install-journal-broker-proof-chain",
+            ERROR_REVISION_MISMATCH,
+            L"settled broker proof changed across records");
+    }
+    if (!prior.hasPriorAbiProfile && next.hasPriorAbiProfile &&
+        next.phase != InstallJournalPhase::PriorAbiProfileCaptured) {
+        return SetError(error, L"install-journal-prior-abi-profile-chain",
+            ERROR_INVALID_DATA,
+            L"durable prior ABI profile first appeared outside its capture phase");
+    }
+    if (!prior.hasRootRegistrationIntent &&
+        next.hasRootRegistrationIntent &&
+        (next.phase !=
+                InstallJournalPhase::RootRegistrationIntentCaptured ||
+            next.direction != InstallJournalDirection::Forward ||
+            !next.prior.devices.empty() ||
+            !next.hasPublishedCandidate ||
+            !IsGeneratedRootInstanceIdForDeviceName(
+                next.rootRegistrationInstanceId, kRootDeviceName))) {
+        return SetError(error, L"install-journal-root-intent-chain",
+            ERROR_INVALID_DATA,
+            L"root registration identity first appeared outside exact forward pre-registration admission");
+    }
+    if (!prior.hasBrokerProof && next.hasBrokerProof &&
+        next.phase != InstallJournalPhase::BrokerChildSettled) {
+        return SetError(error, L"install-journal-broker-proof-chain",
+            ERROR_INVALID_DATA,
+            L"durable broker proof first appeared outside child settlement");
+    }
+    if (!prior.brokerEntered && next.brokerEntered &&
+        next.phase != InstallJournalPhase::BrokerHandoffEntered) {
+        return SetError(error, L"install-journal-broker-chain",
+            ERROR_INVALID_DATA,
+            L"broker ownership first appeared outside handoff admission");
+    }
+    if (!prior.brokerSettled && next.brokerSettled &&
+        next.phase != InstallJournalPhase::BrokerChildSettled) {
+        return SetError(error, L"install-journal-broker-chain",
+            ERROR_INVALID_DATA,
+            L"broker settlement first appeared outside child settlement");
+    }
+    if (!prior.rollbackAuthorized && next.rollbackAuthorized &&
+        (next.direction != InstallJournalDirection::Rollback ||
+            (next.phase != InstallJournalPhase::BrokerHandoffReturned &&
+                next.phase != InstallJournalPhase::BrokerChildSettled &&
+                next.phase != InstallJournalPhase::RollbackBindingEntered))) {
+        return SetError(error, L"install-journal-rollback-authorization-chain",
+            ERROR_INVALID_DATA,
+            L"rollback authority first appeared outside an authoritative admission record");
+    }
+    if ((next.phase == InstallJournalPhase::ExactPriorRestored ||
+            next.phase == InstallJournalPhase::RestoreRebootPending) &&
+        next.brokerEntered &&
+        (next.direction != InstallJournalDirection::Rollback ||
+            !next.rollbackAuthorized)) {
+        return SetError(error, L"install-journal-terminal-authority",
+            ERROR_INVALID_DATA,
+            L"prior terminal phase lacks durable broker-safe rollback authority");
+    }
+    if ((next.phase == InstallJournalPhase::ForwardValidated ||
+            next.phase == InstallJournalPhase::ForwardRebootPending) &&
+        next.brokerRequired &&
+        (!next.brokerEntered || !next.brokerSettled ||
+            !next.hasBrokerProof || !next.brokerProofSuccess ||
+            next.brokerDriverRollbackAuthorized ||
+            next.direction != InstallJournalDirection::Forward ||
+            next.rollbackAuthorized)) {
+        return SetError(error, L"install-journal-terminal-authority",
+            ERROR_INVALID_DATA,
+            L"forward terminal phase lacks exact canonical broker commit authority");
+    }
+    if (prior.direction == InstallJournalDirection::Forward &&
+        next.direction == InstallJournalDirection::Rollback) {
+        if (!next.rollbackAuthorized ||
+            (next.phase != InstallJournalPhase::BrokerHandoffReturned &&
+                next.phase != InstallJournalPhase::BrokerChildSettled &&
+                next.phase != InstallJournalPhase::RollbackBindingEntered)) {
+            return SetError(error, L"install-journal-direction-chain",
+                ERROR_INVALID_DATA,
+                L"forward ownership changed to rollback without a legal durable admission");
+        }
+        return true;
+    }
+    if (next.direction == InstallJournalDirection::Rollback) {
+        if (!LegalRollbackInstallJournalPhaseTransition(
+                prior.phase, next.phase)) {
+            return SetError(error, L"install-journal-phase-chain",
+                ERROR_INVALID_DATA,
+                L"rollback journal phase transition is not legal");
+        }
+        return true;
+    }
+    if (next.phase == InstallJournalPhase::RollbackBindingEntered ||
+        next.phase == InstallJournalPhase::RollbackBindingReturned ||
+        next.phase == InstallJournalPhase::PartialRootRemovalEntered ||
+        next.phase == InstallJournalPhase::PartialRootRemovalReturned ||
+        next.phase == InstallJournalPhase::
+            PartialRootRemovalRebootPending ||
+        next.phase == InstallJournalPhase::SetupUninstallEntered ||
+        next.phase == InstallJournalPhase::SetupUninstallReturned) {
+        return SetError(error, L"install-journal-phase-chain",
+            ERROR_INVALID_DATA,
+            L"rollback-only phase was published in forward direction");
+    }
+    if (next.phase == InstallJournalPhase::ManualReconciliationRequired ||
+        next.phase == InstallJournalPhase::ExactPriorRestored ||
+        next.phase == InstallJournalPhase::RestoreRebootPending) {
+        return true;
+    }
+    if (!LegalForwardInstallJournalPhaseTransition(
+            prior.phase, next.phase)) {
+        return SetError(error, L"install-journal-phase-chain",
+            ERROR_INVALID_DATA,
+            L"forward journal phase transition is not legal");
+    }
+    return true;
+}
+
+struct LoadedInstallJournal {
+    InstallRecoveryDirectory directory;
+    InstallJournalStateData state;
+    bool hasRecord = false;
+    bool forwardRootRegistrationEntered = false;
+    bool forwardDiInstallEntered = false;
+    bool partialRootRemovalEntered = false;
+    std::vector<WinHandle> evidenceLocks;
+};
+
+bool ParseInstallJournalEnvelope(
+    std::string_view record,
+    const std::filesystem::path& active,
+    InstallJournalStateData* state,
+    std::string* digest,
+    Error* error) {
+    JsonValue root;
+    std::string parseMessage;
+    if (!JsonParser(record).Parse(&root, &parseMessage)) {
+        std::wstring message;
+        Utf8ToWide(parseMessage, &message, nullptr);
+        return SetError(error, L"install-journal-chain",
+            ERROR_INVALID_DATA,
+            L"journal envelope is truncated or malformed: " + message);
+    }
+    const JsonValue::Object* object = nullptr;
+    uint64_t schema = 0;
+    std::string kind;
+    std::string payloadDigest;
+    std::string payload;
+    if (!RequireJournalObject(root, &object, error) ||
+        object->size() != 4U ||
+        !RequireJournalUnsigned(*object, "schema", 2U, &schema, error) ||
+        schema != 2U ||
+        !RequireJournalString(*object, "kind", &kind, error) ||
+        kind != kInstallRecoveryKind ||
+        !RequireJournalString(
+            *object, "payloadSha256", &payloadDigest, error) ||
+        !RequireJournalString(*object, "payload", &payload, error) ||
+        !IsSha256Digest(payloadDigest)) {
+        if (error->code == ERROR_SUCCESS) {
+            SetError(error, L"install-journal-chain", ERROR_INVALID_DATA,
+                L"journal envelope is not the exact v2 contract");
+        }
+        return false;
+    }
+    std::string canonicalEnvelope = "{\"schema\":2,\"kind\":";
+    AppendJsonAsciiString(&canonicalEnvelope, kInstallRecoveryKind);
+    canonicalEnvelope.append(",\"payloadSha256\":");
+    AppendJsonAsciiString(&canonicalEnvelope, LowerAscii(payloadDigest));
+    canonicalEnvelope.append(",\"payload\":");
+    AppendJsonUtf8String(&canonicalEnvelope, payload);
+    canonicalEnvelope.append("}\n");
+    if (record != canonicalEnvelope) {
+        return SetError(error, L"install-journal-canonical-envelope",
+            ERROR_INVALID_DATA,
+            L"journal envelope is not in exact canonical byte form");
+    }
+    std::string observedDigest;
+    if (!Sha256Data(payload, &observedDigest, error) ||
+        _stricmp(observedDigest.c_str(), payloadDigest.c_str()) != 0) {
+        if (error->code == ERROR_SUCCESS) {
+            SetError(error, L"install-journal-chain", ERROR_CRC,
+                L"journal payload hash does not match its published receipt");
+        }
+        return false;
+    }
+    if (!ParseInstallJournalPayload(payload, active, state, error)) {
+        return false;
+    }
+    *digest = LowerAscii(std::move(payloadDigest));
+    return true;
+}
+
+bool ParseJournalRecordFileName(
+    std::wstring_view name,
+    uint64_t* sequence) noexcept {
+    const std::wstring_view prefix(kInstallRecoveryJournalPrefix);
+    const std::wstring_view suffix(kInstallRecoveryJournalSuffix);
+    if (!name.starts_with(prefix) || !name.ends_with(suffix) ||
+        name.size() != prefix.size() + 8U + suffix.size()) {
+        return false;
+    }
+    uint64_t parsed = 0;
+    for (size_t index = prefix.size(); index < prefix.size() + 8U; ++index) {
+        if (name[index] < L'0' || name[index] > L'9') {
+            return false;
+        }
+        parsed = parsed * 10U + static_cast<uint64_t>(name[index] - L'0');
+    }
+    *sequence = parsed;
+    return true;
+}
+
+bool ParseJournalTemporaryFileName(
+    std::wstring_view name,
+    uint64_t* sequence) noexcept {
+    const std::wstring_view temporarySuffix(
+        kInstallRecoveryTemporarySuffix);
+    return name.ends_with(temporarySuffix) &&
+        ParseJournalRecordFileName(
+            name.substr(0, name.size() - temporarySuffix.size()),
+            sequence);
+}
+
+bool InstallJournalTemporarySequenceIsRecoverable(
+    uint64_t temporarySequence,
+    size_t publishedRecordCount) noexcept {
+    return publishedRecordCount < kMaximumInstallRecoveryRecords &&
+        temporarySequence == publishedRecordCount;
+}
+
+bool ValidateLoadedInstallJournalEvidence(
+    LoadedInstallJournal* loaded,
+    Error* error) {
+    WinHandle priorHandle;
+    WinHandle candidateHandle;
+    if (!OpenStableDirectory(
+            loaded->directory.active / kInstallRecoveryPriorDirectory,
+            true, &priorHandle, error) ||
+        !OpenStableDirectory(
+            loaded->directory.active / kInstallRecoveryCandidateDirectory,
+            true, &candidateHandle, error)) {
+        return false;
+    }
+    loaded->evidenceLocks.push_back(std::move(priorHandle));
+    loaded->evidenceLocks.push_back(std::move(candidateHandle));
+
+    const std::filesystem::path candidateDirectory =
+        loaded->directory.active / kInstallRecoveryCandidateDirectory;
+    PackageInfo candidateCopy;
+    bool owned = false;
+    if (!ValidateExactPackageDirectory(candidateDirectory, error) ||
+        !LoadOwnedPackage(candidateDirectory / L"ViiperUde.inf", true,
+            loaded->state.localTest, &candidateCopy, &owned, error) ||
+        !owned || !(candidateCopy.version == loaded->state.candidate.version) ||
+        !SamePackageBytes(candidateCopy, loaded->state.candidate)) {
+        if (error->code == ERROR_SUCCESS) {
+            SetError(error, L"install-journal-candidate-evidence",
+                ERROR_REVISION_MISMATCH);
+        }
+        return false;
+    }
+    std::vector<WinHandle> candidateLocks;
+    if (!LockPackageFiles(candidateDirectory, &candidateLocks, error)) {
+        return false;
+    }
+    for (WinHandle& lock : candidateLocks) {
+        loaded->evidenceLocks.push_back(std::move(lock));
+    }
+    for (size_t index = 0; index < loaded->state.prior.packages.size(); ++index) {
+        PackageInfo& prior = loaded->state.prior.packages[index];
+        const std::filesystem::path directory =
+            loaded->directory.active / kInstallRecoveryPriorDirectory /
+            std::to_wstring(index);
+        WinHandle directoryHandle;
+        if (!OpenStableDirectory(directory, true, &directoryHandle, error) ||
+            !ValidateExactPackageDirectory(directory, error)) {
+            return false;
+        }
+        loaded->evidenceLocks.push_back(std::move(directoryHandle));
+        PackageInfo copy;
+        owned = false;
+        if (!LoadOwnedPackage(directory / L"ViiperUde.inf", true, false,
+                &copy, &owned, error) || !owned ||
+            !(copy.version == prior.version) ||
+            !SamePackageBytes(copy, prior)) {
+            if (error->code == ERROR_SUCCESS) {
+                SetError(error, L"install-journal-prior-evidence",
+                    ERROR_REVISION_MISMATCH);
+            }
+            return false;
+        }
+        std::vector<WinHandle> locks;
+        if (!LockPackageFiles(directory, &locks, error)) {
+            return false;
+        }
+        for (WinHandle& lock : locks) {
+            loaded->evidenceLocks.push_back(std::move(lock));
+        }
+    }
+    std::filesystem::path systemInf;
+    if (!GetSystemInfDirectory(&systemInf, error)) {
+        return false;
+    }
+    for (PackageInfo& package : loaded->state.prior.packages) {
+        package.infPath = systemInf / package.publishedName;
+    }
+    for (DeviceState& device : loaded->state.prior.devices) {
+        for (const PackageInfo& package : loaded->state.prior.packages) {
+            if (_wcsicmp(package.publishedName.c_str(),
+                    device.publishedInf.c_str()) == 0) {
+                device.package = package;
+            }
+        }
+    }
+    if (loaded->state.hasPublishedCandidate) {
+        loaded->state.publishedCandidate.infPath =
+            systemInf / loaded->state.publishedCandidate.publishedName;
+    }
+    return true;
+}
+
+bool LoadInstallJournal(
+    InstallRecoveryDirectory&& directory,
+    LoadedInstallJournal* loaded,
+    Error* error) {
+    loaded->directory = std::move(directory);
+    std::map<uint64_t, std::filesystem::path> records;
+    std::optional<std::pair<uint64_t, std::filesystem::path>> temporary;
+    std::error_code enumerationError;
+    for (std::filesystem::directory_iterator iterator(
+             loaded->directory.active, enumerationError), end;
+         !enumerationError && iterator != end;
+         iterator.increment(enumerationError)) {
+        const std::wstring name = iterator->path().filename().wstring();
+        const DWORD attributes = GetFileAttributesW(iterator->path().c_str());
+        if (attributes == INVALID_FILE_ATTRIBUTES ||
+            (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+            return SetError(error, L"install-journal-discovery",
+                ERROR_REPARSE_TAG_MISMATCH);
+        }
+        if ((attributes & FILE_ATTRIBUTE_DIRECTORY) != 0 &&
+            (name == kInstallRecoveryPriorDirectory ||
+                name == kInstallRecoveryCandidateDirectory)) {
+            continue;
+        }
+        uint64_t sequence = 0;
+        if ((attributes & FILE_ATTRIBUTE_DIRECTORY) == 0 &&
+            ParseJournalRecordFileName(name, &sequence)) {
+            if (sequence >= kMaximumInstallRecoveryRecords ||
+                !records.emplace(sequence, iterator->path()).second) {
+                return SetError(error, L"install-journal-chain",
+                    ERROR_DUPLICATE_SERVICE_NAME);
+            }
+            continue;
+        }
+        if ((attributes & FILE_ATTRIBUTE_DIRECTORY) == 0 &&
+            ParseJournalTemporaryFileName(name, &sequence)) {
+            if (sequence >= kMaximumInstallRecoveryRecords || temporary) {
+                return SetError(error, L"install-journal-temp-chain",
+                    ERROR_INVALID_DATA,
+                    L"transaction contains more than one canonical unpublished temp or an out-of-range temp");
+            }
+            temporary.emplace(sequence, iterator->path());
+            continue;
+        }
+        return SetError(error, L"install-journal-discovery",
+            ERROR_INVALID_DATA,
+            L"protected transaction directory contains an unexpected entry");
+    }
+    if (enumerationError) {
+        return SetError(error, L"install-journal-discovery",
+            static_cast<DWORD>(enumerationError.value()));
+    }
+    if ((!records.empty() &&
+            (records.begin()->first != 0U ||
+                records.rbegin()->first + 1U != records.size())) ||
+        (temporary && !InstallJournalTemporarySequenceIsRecoverable(
+            temporary->first, records.size()))) {
+        return SetError(error, L"install-journal-chain", ERROR_INVALID_DATA,
+            L"journal sequence or unpublished temp is missing, stale, or out of order");
+    }
+    if (temporary &&
+        !ValidateAndDiscardInstallJournalTemporaryFile(
+            temporary->second, error)) {
+        return false;
+    }
+    if (records.empty()) {
+        loaded->hasRecord = false;
+        return true;
+    }
+    std::string priorDigest(kZeroSha256);
+    std::optional<InstallJournalStateData> immutable;
+    std::optional<InstallJournalStateData> previousState;
+    std::optional<AbiCompatibilityProfile> capturedPriorAbiProfile;
+    for (const auto& [expectedSequence, path] : records) {
+        std::string record;
+        InstallJournalStateData parsed;
+        std::string digest;
+        if (!ReadInstallJournalFile(path, &record, error) ||
+            !ParseInstallJournalEnvelope(
+                record, loaded->directory.active, &parsed, &digest, error) ||
+            parsed.sequence != expectedSequence ||
+            _stricmp(parsed.previousDigest.c_str(), priorDigest.c_str()) != 0 ||
+            (immutable && !SameInstallJournalImmutableState(
+                *immutable, parsed)) ||
+            !ValidateInstallJournalTransition(
+                previousState ? &*previousState : nullptr,
+                parsed, error)) {
+            if (error->code == ERROR_SUCCESS) {
+                SetError(error, L"install-journal-chain", ERROR_CRC,
+                    L"journal hash chain or immutable transaction identity changed");
+            }
+            return false;
+        }
+        if (parsed.hasPriorAbiProfile) {
+            if (!capturedPriorAbiProfile &&
+                parsed.phase != InstallJournalPhase::PriorAbiProfileCaptured) {
+                return SetError(error,
+                    L"install-journal-prior-abi-profile-chain",
+                    ERROR_INVALID_DATA,
+                    L"durable prior ABI profile first appeared outside its capture phase");
+            }
+            if (capturedPriorAbiProfile &&
+                !SameAbiCompatibilityProfile(
+                    *capturedPriorAbiProfile, parsed.priorAbiProfile)) {
+                return SetError(error,
+                    L"install-journal-prior-abi-profile-chain",
+                    ERROR_REVISION_MISMATCH,
+                    L"durable prior ABI profile changed across phase records");
+            }
+            capturedPriorAbiProfile = parsed.priorAbiProfile;
+        } else if (capturedPriorAbiProfile) {
+            return SetError(error,
+                L"install-journal-prior-abi-profile-chain",
+                ERROR_INVALID_DATA,
+                L"durable prior ABI profile disappeared from a later phase record");
+        }
+        if (parsed.direction == InstallJournalDirection::Forward) {
+            loaded->forwardRootRegistrationEntered =
+                loaded->forwardRootRegistrationEntered ||
+                parsed.phase == InstallJournalPhase::RootRegistrationEntered;
+            loaded->forwardDiInstallEntered =
+                loaded->forwardDiInstallEntered ||
+                parsed.phase == InstallJournalPhase::DiInstallEntered;
+        }
+        loaded->partialRootRemovalEntered =
+            loaded->partialRootRemovalEntered ||
+            parsed.phase ==
+                InstallJournalPhase::PartialRootRemovalEntered;
+        if (!immutable) {
+            immutable = parsed;
+        }
+        previousState = parsed;
+        priorDigest = digest;
+        loaded->state = std::move(parsed);
+        loaded->state.lastDigest = digest;
+    }
+    loaded->state.previousDigest = priorDigest;
+    loaded->state.sequence = records.size();
+    loaded->hasRecord = true;
+    return ValidateLoadedInstallJournalEvidence(loaded, error);
+}
+
+bool RetireLoadedInstallJournal(
+    LoadedInstallJournal* loaded,
+    Error* error) {
+    loaded->evidenceLocks.clear();
+    return RetireInstallRecoveryActiveDirectory(
+        &loaded->directory, loaded->state.transactionId, error);
+}
+
+bool CurrentStateMatchesPrior(
+    const InstallJournalStateData& state,
+    uint64_t deadlineUnixMs,
+    Error* error) {
+    Snapshot observed;
+    if (!CaptureSnapshot(&observed, error)) {
+        return false;
+    }
+    if (!SameCapturedRootState(state.prior, observed) ||
+        !SamePackageInventory(state.prior.packages, observed.packages)) {
+        return SetError(error, L"install-journal-prior-state",
+            ERROR_REVISION_MISMATCH);
+    }
+    if (state.bindingMutationStarted && !state.prior.devices.empty() &&
+        state.prior.devices[0].started) {
+        if (!state.hasPriorAbiProfile) {
+            return SetError(error, L"install-journal-prior-abi-profile",
+                ERROR_REVISION_MISMATCH,
+                L"started prior root lacks its durable exact ABI profile");
+        }
+        return VerifyAbiHealth(deadlineUnixMs, nullptr, error,
+            AbiHealthPurpose::RollbackHealth,
+            &state.priorAbiProfile, nullptr);
+    }
+    return true;
+}
+
+bool RootSnapshotIsAuthorizedForInstallRollback(
+    const InstallJournalStateData& state,
+    const Snapshot& observed) noexcept {
+    if (state.prior.devices.empty()) {
+        if (observed.devices.empty()) return true;
+        if (observed.devices.size() != 1U ||
+            !state.bindingMutationStarted ||
+            !state.hasPublishedCandidate) {
+            return false;
+        }
+        const DeviceState& current = observed.devices[0];
+        if (!IsOwnedGeneratedRootInstanceId(current.instanceId) ||
+            !current.present ||
+            _wcsicmp(current.service.c_str(), kServiceName) != 0 ||
+            _wcsicmp(current.publishedInf.c_str(),
+                state.publishedCandidate.publishedName.c_str()) != 0 ||
+            !(current.version == state.candidate.version) ||
+            !SamePackageBytes(current.package, state.candidate)) {
+            return false;
+        }
+        return true;
+    }
+    if (observed.devices.size() != 1U) {
+        return false;
+    }
+    const DeviceState& prior = state.prior.devices[0];
+    const DeviceState& current = observed.devices[0];
+    if (_wcsicmp(prior.instanceId.c_str(), current.instanceId.c_str()) != 0 ||
+        !current.present ||
+        _wcsicmp(current.service.c_str(), kServiceName) != 0) {
+        return false;
+    }
+    if (SameRootBinding(prior, current)) return true;
+    if (state.hasPublishedCandidate &&
+        _wcsicmp(current.publishedInf.c_str(),
+            state.publishedCandidate.publishedName.c_str()) == 0 &&
+        current.version == state.candidate.version &&
+        SamePackageBytes(current.package, state.candidate)) {
+        return true;
+    }
+    return false;
+}
+
+enum class PartialInstallRootRecoveryAction {
+    PriorEmpty,
+    RemoveUnboundExactRoot,
+    RemoveCandidateBoundExactRoot,
+    PendingExactRootRemoval,
+    Manual,
+};
+
+struct PartialInstallRootRecoveryFacts {
+    bool priorEmpty = false;
+    bool bindingMutationStarted = false;
+    bool forwardRootRegistrationEntered = false;
+    bool forwardDiInstallEntered = false;
+    bool partialRootRemovalEntered = false;
+    size_t relatedRootCount = 0;
+    bool hardwareIdAbsent = false;
+    bool exactHardwareId = false;
+    bool exactClass = false;
+    bool exactGeneratedInstance = false;
+    bool present = false;
+    bool serviceEmpty = false;
+    bool publishedInfEmpty = false;
+    bool driverVersionEmpty = false;
+    bool exactCandidateService = false;
+    bool exactCandidateInf = false;
+    bool exactCandidateVersion = false;
+    bool exactCandidateBytes = false;
+    bool pendingRemovalLifecycle = false;
+};
+
+PartialInstallRootRecoveryAction ClassifyPartialInstallRootRecovery(
+    const PartialInstallRootRecoveryFacts& facts) noexcept {
+    if (!facts.priorEmpty) {
+        return PartialInstallRootRecoveryAction::Manual;
+    }
+    if (facts.relatedRootCount == 0U) {
+        return PartialInstallRootRecoveryAction::PriorEmpty;
+    }
+    if (facts.relatedRootCount != 1U ||
+        !facts.bindingMutationStarted ||
+        !facts.forwardRootRegistrationEntered ||
+        !facts.exactClass || !facts.exactGeneratedInstance) {
+        return PartialInstallRootRecoveryAction::Manual;
+    }
+    const bool emptyBinding = facts.serviceEmpty &&
+        facts.publishedInfEmpty && facts.driverVersionEmpty;
+    const bool exactCandidateBinding =
+        facts.forwardDiInstallEntered &&
+        facts.exactCandidateService && facts.exactCandidateInf &&
+        facts.exactCandidateVersion && facts.exactCandidateBytes;
+    const bool hasCandidateBindingFragment =
+        facts.exactCandidateService || facts.exactCandidateInf ||
+        facts.exactCandidateVersion;
+    const bool canonicalPendingBinding =
+        (facts.serviceEmpty || facts.exactCandidateService) &&
+        (facts.publishedInfEmpty || facts.exactCandidateInf) &&
+        (facts.driverVersionEmpty || facts.exactCandidateVersion) &&
+        (facts.publishedInfEmpty || facts.exactCandidateBytes) &&
+        (!hasCandidateBindingFragment || facts.forwardDiInstallEntered);
+    if (facts.partialRootRemovalEntered &&
+        (facts.hardwareIdAbsent || facts.exactHardwareId) &&
+        facts.pendingRemovalLifecycle &&
+        canonicalPendingBinding) {
+        return PartialInstallRootRecoveryAction::PendingExactRootRemoval;
+    }
+    if (!facts.exactHardwareId || !facts.present) {
+        return PartialInstallRootRecoveryAction::Manual;
+    }
+    if (emptyBinding) {
+        return PartialInstallRootRecoveryAction::RemoveUnboundExactRoot;
+    }
+    if (exactCandidateBinding) {
+        return PartialInstallRootRecoveryAction::RemoveCandidateBoundExactRoot;
+    }
+    return PartialInstallRootRecoveryAction::Manual;
+}
+
+bool InstallJournalRecoveryUsesStrictBindingRestore(
+    const InstallJournalStateData& state) noexcept {
+    return !state.prior.devices.empty() &&
+        state.bindingMutationStarted;
+}
+
+bool IsInGeneratedRootDeviceNamespace(
+    const std::wstring& instanceId,
+    const wchar_t* deviceName) {
+    const std::wstring prefix = std::wstring(L"ROOT\\") + deviceName + L"\\";
+    return instanceId.size() >= prefix.size() &&
+        _wcsnicmp(instanceId.c_str(), prefix.c_str(), prefix.size()) == 0;
+}
+
+bool ReadInstallRecoveryRootInstanceId(
+    HDEVINFO set,
+    SP_DEVINFO_DATA& data,
+    std::wstring* instanceId,
+    Error* error) {
+    DWORD required = 0;
+    SetupDiGetDeviceInstanceIdW(set, &data, nullptr, 0, &required);
+    if (required == 0 || GetLastError() != ERROR_INSUFFICIENT_BUFFER) {
+        return SetLastErrorDetail(
+            error, L"install-journal-raw-root-instance-id");
+    }
+    std::vector<wchar_t> value(required);
+    if (!SetupDiGetDeviceInstanceIdW(
+            set, &data, value.data(), required, nullptr)) {
+        return SetLastErrorDetail(
+            error, L"install-journal-raw-root-instance-id");
+    }
+    *instanceId = value.data();
+    return true;
+}
+
+struct InstallRecoveryHardwareIdObservation {
+    bool absent = false;
+    bool containsExpected = false;
+    bool exact = false;
+};
+
+bool ClassifyCanonicalInstallRecoveryHardwareIds(
+    const std::vector<wchar_t>& value,
+    InstallRecoveryHardwareIdObservation* observation) noexcept {
+    *observation = InstallRecoveryHardwareIdObservation{};
+    if (value.size() < 3U || value.back() != L'\0' ||
+        value[value.size() - 2U] != L'\0' || value.front() == L'\0') {
+        return false;
+    }
+    size_t cursor = 0;
+    size_t entries = 0;
+    while (cursor < value.size() - 1U) {
+        const auto terminator = std::find(
+            value.begin() + static_cast<std::ptrdiff_t>(cursor),
+            value.end() - 1, L'\0');
+        if (terminator == value.end() - 1 ||
+            terminator == value.begin() +
+                static_cast<std::ptrdiff_t>(cursor)) {
+            return false;
+        }
+        const size_t length = static_cast<size_t>(
+            terminator - (value.begin() +
+                static_cast<std::ptrdiff_t>(cursor)));
+        const size_t expectedLength = wcslen(kHardwareId);
+        if (length == expectedLength &&
+            _wcsnicmp(value.data() + cursor,
+                kHardwareId, expectedLength) == 0) {
+            observation->containsExpected = true;
+        }
+        ++entries;
+        cursor += length + 1U;
+    }
+    if (cursor != value.size() - 1U) {
+        return false;
+    }
+    observation->exact = entries == 1U &&
+        observation->containsExpected;
+    return true;
+}
+
+bool ReadInstallRecoveryHardwareIds(
+    HDEVINFO set,
+    SP_DEVINFO_DATA& data,
+    InstallRecoveryHardwareIdObservation* observation,
+    Error* error) {
+    *observation = InstallRecoveryHardwareIdObservation{};
+    DWORD type = 0;
+    DWORD required = 0;
+    if (SetupDiGetDeviceRegistryPropertyW(
+            set, &data, SPDRP_HARDWAREID, &type, nullptr, 0, &required)) {
+        return SetError(error, L"install-journal-raw-root-hardware-id",
+            ERROR_INVALID_DATA,
+            L"root hardware ID query returned an invalid zero-length value");
+    }
+    const DWORD queryError = GetLastError();
+    if (queryError == ERROR_INVALID_DATA) {
+        observation->absent = true;
+        return true;
+    }
+    if (queryError != ERROR_INSUFFICIENT_BUFFER || type != REG_MULTI_SZ ||
+        required < 3U * sizeof(wchar_t) ||
+        required % sizeof(wchar_t) != 0U ||
+        required > 64U * 1024U) {
+        return SetError(error, L"install-journal-raw-root-hardware-id",
+            queryError == ERROR_SUCCESS ? ERROR_INVALID_DATA : queryError,
+            L"root hardware ID is unreadable or not an exact MULTI_SZ value");
+    }
+    std::vector<wchar_t> value(required / sizeof(wchar_t));
+    DWORD returned = 0;
+    DWORD returnedType = 0;
+    if (!SetupDiGetDeviceRegistryPropertyW(
+            set, &data, SPDRP_HARDWAREID, &returnedType,
+            reinterpret_cast<PBYTE>(value.data()), required, &returned)) {
+        return SetLastErrorDetail(
+            error, L"install-journal-raw-root-hardware-id");
+    }
+    if (returnedType != REG_MULTI_SZ || returned != required ||
+        !ClassifyCanonicalInstallRecoveryHardwareIds(
+            value, observation)) {
+        return SetError(error, L"install-journal-raw-root-hardware-id",
+            ERROR_INVALID_DATA,
+            L"root hardware ID changed during observation or is not canonical MULTI_SZ data");
+    }
+    return true;
+}
+
+bool DecodeCanonicalInstallRecoveryString(
+    const std::vector<wchar_t>& buffer,
+    std::wstring* value) noexcept {
+    if (buffer.empty() || buffer.back() != L'\0' ||
+        std::find(buffer.begin(), buffer.end() - 1, L'\0') !=
+            buffer.end() - 1) {
+        return false;
+    }
+    value->assign(buffer.data(), buffer.size() - 1U);
+    return true;
+}
+
+bool ReadCanonicalInstallRecoveryService(
+    HDEVINFO set,
+    SP_DEVINFO_DATA& data,
+    std::wstring* service,
+    Error* error) {
+    DWORD type = 0;
+    DWORD required = 0;
+    if (SetupDiGetDeviceRegistryPropertyW(
+            set, &data, SPDRP_SERVICE, &type, nullptr, 0, &required)) {
+        return SetError(error, L"install-journal-raw-root-service",
+            ERROR_INVALID_DATA);
+    }
+    const DWORD queryError = GetLastError();
+    if (queryError == ERROR_INVALID_DATA) {
+        service->clear();
+        return true;
+    }
+    if (queryError != ERROR_INSUFFICIENT_BUFFER || type != REG_SZ ||
+        required < sizeof(wchar_t) ||
+        required % sizeof(wchar_t) != 0U ||
+        required > 64U * 1024U) {
+        return SetError(error, L"install-journal-raw-root-service",
+            queryError == ERROR_SUCCESS ? ERROR_INVALID_DATA : queryError,
+            L"root service is unreadable or not canonical REG_SZ data");
+    }
+    std::vector<wchar_t> buffer(required / sizeof(wchar_t));
+    DWORD returned = 0;
+    DWORD returnedType = 0;
+    if (!SetupDiGetDeviceRegistryPropertyW(
+            set, &data, SPDRP_SERVICE, &returnedType,
+            reinterpret_cast<PBYTE>(buffer.data()), required, &returned)) {
+        return SetLastErrorDetail(
+            error, L"install-journal-raw-root-service");
+    }
+    if (returnedType != REG_SZ || returned != required ||
+        !DecodeCanonicalInstallRecoveryString(buffer, service)) {
+        return SetError(error, L"install-journal-raw-root-service",
+            ERROR_INVALID_DATA,
+            L"root service changed during observation or contains hidden string data");
+    }
+    return true;
+}
+
+bool ReadCanonicalInstallRecoveryDevicePropertyString(
+    HDEVINFO set,
+    SP_DEVINFO_DATA& data,
+    const DEVPROPKEY& key,
+    const wchar_t* phase,
+    std::wstring* value,
+    Error* error) {
+    DEVPROPTYPE type = 0;
+    DWORD required = 0;
+    if (SetupDiGetDevicePropertyW(
+            set, &data, &key, &type, nullptr, 0, &required, 0)) {
+        return SetError(error, phase, ERROR_INVALID_DATA);
+    }
+    const DWORD queryError = GetLastError();
+    if (queryError == ERROR_NOT_FOUND) {
+        value->clear();
+        return true;
+    }
+    if (queryError != ERROR_INSUFFICIENT_BUFFER ||
+        type != DEVPROP_TYPE_STRING || required < sizeof(wchar_t) ||
+        required % sizeof(wchar_t) != 0U ||
+        required > 64U * 1024U) {
+        return SetError(error, phase,
+            queryError == ERROR_SUCCESS ? ERROR_INVALID_DATA : queryError,
+            L"root device property is unreadable or not canonical string data");
+    }
+    std::vector<wchar_t> buffer(required / sizeof(wchar_t));
+    DWORD returned = 0;
+    DEVPROPTYPE returnedType = 0;
+    if (!SetupDiGetDevicePropertyW(
+            set, &data, &key, &returnedType,
+            reinterpret_cast<PBYTE>(buffer.data()), required,
+            &returned, 0)) {
+        return SetLastErrorDetail(error, phase);
+    }
+    if (returnedType != DEVPROP_TYPE_STRING || returned != required ||
+        !DecodeCanonicalInstallRecoveryString(buffer, value)) {
+        return SetError(error, phase, ERROR_INVALID_DATA,
+            L"root device property changed during observation or contains hidden string data");
+    }
+    return true;
+}
+
+struct InstallRecoveryRootObservation {
+    PartialInstallRootRecoveryAction action =
+        PartialInstallRootRecoveryAction::Manual;
+    DeviceInfoSet set{INVALID_HANDLE_VALUE};
+    SP_DEVINFO_DATA data{};
+};
+
+bool ObservePriorEmptyInstallRecoveryRoot(
+    const LoadedInstallJournal& loaded,
+    InstallRecoveryRootObservation* observation,
+    Error* error) {
+    *observation = InstallRecoveryRootObservation{};
+    DeviceInfoSet set = OpenRootDevices();
+    if (!set) {
+        return SetLastErrorDetail(error, L"install-journal-raw-root-open");
+    }
+    struct RelatedRoot {
+        SP_DEVINFO_DATA data{};
+        std::wstring instanceId;
+        bool hardwareIdAbsent = false;
+        bool exactHardwareId = false;
+    };
+    std::vector<RelatedRoot> related;
+    for (DWORD index = 0;; ++index) {
+        SP_DEVINFO_DATA data{};
+        data.cbSize = sizeof(data);
+        if (!SetupDiEnumDeviceInfo(set.get(), index, &data)) {
+            if (GetLastError() != ERROR_NO_MORE_ITEMS) {
+                return SetLastErrorDetail(
+                    error, L"install-journal-raw-root-enumeration");
+            }
+            break;
+        }
+        std::wstring instanceId;
+        if (!ReadInstallRecoveryRootInstanceId(
+                set.get(), data, &instanceId, error)) {
+            return false;
+        }
+        InstallRecoveryHardwareIdObservation hardwareIds;
+        if (!ReadInstallRecoveryHardwareIds(
+                set.get(), data, &hardwareIds, error)) {
+            return false;
+        }
+        const bool inTransactionNamespace =
+            IsInGeneratedRootDeviceNamespace(instanceId, kRootDeviceName);
+        if (!hardwareIds.containsExpected && !inTransactionNamespace) {
+            continue;
+        }
+        related.push_back(RelatedRoot{
+            data, std::move(instanceId), hardwareIds.absent,
+            hardwareIds.exact});
+    }
+
+    PartialInstallRootRecoveryFacts facts;
+    facts.priorEmpty = loaded.state.prior.devices.empty();
+    facts.bindingMutationStarted = loaded.state.bindingMutationStarted;
+    facts.forwardRootRegistrationEntered =
+        loaded.forwardRootRegistrationEntered;
+    facts.forwardDiInstallEntered = loaded.forwardDiInstallEntered;
+    facts.partialRootRemovalEntered =
+        loaded.partialRootRemovalEntered;
+    facts.relatedRootCount = related.size();
+    if (related.size() == 1U) {
+        RelatedRoot& root = related[0];
+        facts.hardwareIdAbsent = root.hardwareIdAbsent;
+        facts.exactHardwareId = root.exactHardwareId;
+        if (!ReadDevicePresence(
+                set.get(), root.data, &facts.present, error)) {
+            return false;
+        }
+        if (!facts.present) {
+            facts.pendingRemovalLifecycle = true;
+        } else {
+            ULONG status = 0;
+            ULONG problem = 0;
+            const CONFIGRET configuration = CM_Get_DevNode_Status(
+                &status, &problem, root.data.DevInst, 0);
+            if (configuration != CR_SUCCESS) {
+                return SetError(error,
+                    L"install-journal-raw-root-lifecycle",
+                    ERROR_INVALID_DATA,
+                    L"present receipt-bound root lifecycle could not be observed canonically");
+            }
+            facts.pendingRemovalLifecycle =
+                problem == CM_PROB_WILL_BE_REMOVED;
+        }
+        facts.exactClass =
+            IsEqualGUID(root.data.ClassGuid, GUID_DEVCLASS_USB) != FALSE;
+        facts.exactGeneratedInstance =
+            loaded.state.hasRootRegistrationIntent &&
+            IsGeneratedRootInstanceIdForDeviceName(
+                root.instanceId, kRootDeviceName) &&
+            _wcsicmp(root.instanceId.c_str(),
+                loaded.state.rootRegistrationInstanceId.c_str()) == 0;
+
+        std::wstring service;
+        std::wstring publishedInf;
+        std::wstring driverVersion;
+        if (!ReadCanonicalInstallRecoveryService(
+                set.get(), root.data, &service, error) ||
+            !ReadCanonicalInstallRecoveryDevicePropertyString(
+                set.get(), root.data, DEVPKEY_Device_DriverInfPath,
+                L"install-journal-raw-root-driver-inf",
+                &publishedInf, error) ||
+            !ReadCanonicalInstallRecoveryDevicePropertyString(
+                set.get(), root.data, DEVPKEY_Device_DriverVersion,
+                L"install-journal-raw-root-driver-version",
+                &driverVersion, error)) {
+            return false;
+        }
+        facts.serviceEmpty = service.empty();
+        facts.publishedInfEmpty = publishedInf.empty();
+        facts.driverVersionEmpty = driverVersion.empty();
+        facts.exactCandidateService =
+            _wcsicmp(service.c_str(), kServiceName) == 0;
+        facts.exactCandidateInf = loaded.state.hasPublishedCandidate &&
+            _wcsicmp(publishedInf.c_str(),
+                loaded.state.publishedCandidate.publishedName.c_str()) == 0;
+        Version observedVersion;
+        facts.exactCandidateVersion = !driverVersion.empty() &&
+            ParseVersion(driverVersion, &observedVersion) &&
+            observedVersion == loaded.state.candidate.version;
+        if (facts.exactCandidateInf) {
+            PackageInfo verified;
+            bool owned = false;
+            if (!LoadOwnedPackage(
+                    loaded.state.publishedCandidate.infPath,
+                    true, false, &verified, &owned, error)) {
+                return false;
+            }
+            verified.publishedName = publishedInf;
+            facts.exactCandidateBytes = owned &&
+                SameJournalPackageIdentity(
+                    verified, loaded.state.publishedCandidate) &&
+                SamePackageBytes(verified, loaded.state.candidate);
+        }
+    }
+
+    observation->action = ClassifyPartialInstallRootRecovery(facts);
+    if (observation->action == PartialInstallRootRecoveryAction::Manual) {
+        return SetError(error, L"install-journal-raw-root-authority",
+            related.size() > 1U
+                ? ERROR_DUPLICATE_SERVICE_NAME : ERROR_REVISION_MISMATCH,
+            L"prior-empty recovery observed a foreign, ambiguous, or unauthorized partial root topology");
+    }
+    if (observation->action ==
+            PartialInstallRootRecoveryAction::RemoveUnboundExactRoot ||
+        observation->action ==
+            PartialInstallRootRecoveryAction::RemoveCandidateBoundExactRoot) {
+        observation->set = std::move(set);
+        observation->data = related[0].data;
+    }
+    return true;
+}
+
+bool VerifyInstallJournalRawPriorTopology(
+    const InstallJournalStateData& state,
+    Error* error) {
+    if (!state.hasRootRegistrationIntent ||
+        !state.prior.devices.empty()) {
+        return true;
+    }
+    LoadedInstallJournal active;
+    active.state = state;
+    active.forwardRootRegistrationEntered = true;
+    active.forwardDiInstallEntered = true;
+    InstallRecoveryRootObservation observation;
+    if (!ObservePriorEmptyInstallRecoveryRoot(
+            active, &observation, error)) {
+        return false;
+    }
+    return observation.action ==
+            PartialInstallRootRecoveryAction::PriorEmpty ||
+        SetError(error, L"install-journal-prior-raw-root",
+            ERROR_REVISION_MISMATCH,
+            L"prior-empty retirement still has a related root present");
+}
+
+bool VerifyInstallJournalRawForwardTopology(
+    const InstallJournalStateData& state,
+    Error* error) {
+    if (!state.hasRootRegistrationIntent ||
+        !state.prior.devices.empty()) {
+        return true;
+    }
+    LoadedInstallJournal active;
+    active.state = state;
+    active.forwardRootRegistrationEntered = true;
+    active.forwardDiInstallEntered = true;
+    InstallRecoveryRootObservation observation;
+    if (!ObservePriorEmptyInstallRecoveryRoot(
+            active, &observation, error)) {
+        return false;
+    }
+    return observation.action == PartialInstallRootRecoveryAction::
+            RemoveCandidateBoundExactRoot ||
+        SetError(error, L"install-journal-forward-raw-root",
+            ERROR_REVISION_MISMATCH,
+            L"forward retirement lacks exactly one receipt-bound candidate root and no related extras");
+}
+
+bool InstallJournal::VerifyPriorTopologyBeforePackageRollback(
+    Error* error) const {
+    if (!impl_ || !impl_->preparedRecord || impl_->retired ||
+        impl_->poisoned ||
+        impl_->state.direction != InstallJournalDirection::Rollback ||
+        !impl_->state.rollbackAuthorized) {
+        return SetError(error,
+            L"install-journal-pre-package-root-authority",
+            ERROR_INVALID_STATE);
+    }
+    return VerifyInstallJournalRawPriorTopology(impl_->state, error);
+}
+
+bool InstallJournal::RemoveAuthorizedPriorEmptyRootAfterAdmission(
+    uint64_t rollbackDeadlineUnixMs,
+    bool* rebootRequired,
+    bool* rootRemovalRebootPending,
+    Error* error) {
+    if (rootRemovalRebootPending == nullptr) {
+        return SetError(error, L"install-journal-raw-root-cleanup",
+            ERROR_INVALID_PARAMETER);
+    }
+    *rootRemovalRebootPending = false;
+    if (!impl_ || !impl_->preparedRecord || impl_->retired ||
+        impl_->poisoned) {
+        return SetError(error, L"install-journal-raw-root-cleanup",
+            ERROR_INVALID_STATE);
+    }
+    if (!impl_->state.prior.devices.empty() ||
+        !impl_->state.hasRootRegistrationIntent) {
+        return true;
+    }
+    const auto observe = [&](bool removalMayHaveRun,
+                             InstallRecoveryRootObservation* observed,
+                             Error* observationError) {
+        LoadedInstallJournal active;
+        active.state = impl_->state;
+        active.forwardRootRegistrationEntered =
+            impl_->forwardRootRegistrationEntered;
+        active.forwardDiInstallEntered =
+            impl_->forwardDiInstallEntered;
+        active.partialRootRemovalEntered =
+            removalMayHaveRun && impl_->partialRootRemovalEntered;
+        return ObservePriorEmptyInstallRecoveryRoot(
+            active, observed, observationError);
+    };
+    InstallRecoveryRootObservation observation;
+    if (!observe(false, &observation, error)) {
+        return false;
+    }
+    if (observation.action ==
+            PartialInstallRootRecoveryAction::PriorEmpty) {
+        return true;
+    }
+    if (observation.action !=
+            PartialInstallRootRecoveryAction::RemoveUnboundExactRoot &&
+        observation.action != PartialInstallRootRecoveryAction::
+            RemoveCandidateBoundExactRoot) {
+        return SetError(error, L"install-journal-raw-root-cleanup",
+            ERROR_REVISION_MISMATCH,
+            L"post-admission root topology is outside the exact receipt-bound cleanup authority");
+    }
+    if (!CheckTransactionDeadline(rollbackDeadlineUnixMs,
+            L"install-rollback-deadline-receipt-root", error)) {
+        return false;
+    }
+    InstallJournalStateData entered = impl_->state;
+    if (!GetBootIdentifier(
+            &entered.partialRootRemovalBootIdentifier, error)) {
+        return false;
+    }
+    entered.partialRootRemovalBinding =
+        observation.action == PartialInstallRootRecoveryAction::
+                RemoveCandidateBoundExactRoot
+            ? InstallJournalStateData::PartialRootRemovalBinding::Candidate
+            : InstallJournalStateData::PartialRootRemovalBinding::Unbound;
+    const PackageInfo* publishedCandidate =
+        impl_->state.hasPublishedCandidate
+            ? &impl_->state.publishedCandidate : nullptr;
+    if (!RecordNext(std::move(entered),
+            InstallJournalPhase::PartialRootRemovalEntered,
+            publishedCandidate, impl_->state.packageStagedHere,
+            impl_->state.bindingMutationStarted,
+            impl_->state.rebootRequired, true, ERROR_SUCCESS,
+            false, false, error)) {
+        return false;
+    }
+    if (!VerifyPackageInventory(impl_->state.expectedInventory,
+            L"install-partial-root-removal-post-admission-inventory",
+            error)) {
+        return false;
+    }
+    InstallRecoveryRootObservation confirmed;
+    if (!observe(false, &confirmed, error)) {
+        return false;
+    }
+    if (confirmed.action == PartialInstallRootRecoveryAction::PriorEmpty ||
+        confirmed.action ==
+            PartialInstallRootRecoveryAction::PendingExactRootRemoval) {
+        if (!Record(InstallJournalPhase::PartialRootRemovalRebootPending,
+                publishedCandidate, impl_->state.packageStagedHere,
+                impl_->state.bindingMutationStarted, true, false,
+                ERROR_SUCCESS_REBOOT_REQUIRED, false, error)) {
+            return false;
+        }
+        *rebootRequired = true;
+        *rootRemovalRebootPending = true;
+        return true;
+    }
+    if (confirmed.action != observation.action) {
+        return SetError(error, L"install-journal-raw-root-cleanup",
+            ERROR_REVISION_MISMATCH,
+            L"receipt-bound root topology changed after durable removal admission");
+    }
+
+    bool freshRemovalReboot = false;
+    Error removalError;
+    const bool removed = RemoveDevice(
+        confirmed.set.get(), confirmed.data, 0,
+        L"install-rollback-deadline-receipt-root",
+        nullptr, rebootRequired, &removalError,
+        &freshRemovalReboot);
+    Error returnRecordError;
+    if (!RecordAuthoritativeReturn(
+            InstallJournalPhase::PartialRootRemovalReturned,
+            publishedCandidate, impl_->state.packageStagedHere,
+            impl_->state.bindingMutationStarted,
+            *rebootRequired, freshRemovalReboot,
+            removed, removed ? ERROR_SUCCESS : removalError.code,
+            false, &returnRecordError)) {
+        *error = std::move(returnRecordError);
+        return false;
+    }
+    if (!removed) {
+        *error = std::move(removalError);
+        return false;
+    }
+    InstallRecoveryRootObservation after;
+    if (!observe(true, &after, error)) {
+        return false;
+    }
+    if (freshRemovalReboot) {
+        if (after.action != PartialInstallRootRecoveryAction::PriorEmpty &&
+            after.action != PartialInstallRootRecoveryAction::
+                PendingExactRootRemoval) {
+            return SetError(error,
+                L"install-journal-raw-root-cleanup",
+                ERROR_REVISION_MISMATCH,
+                L"successful reboot-requiring root removal left a noncanonical topology");
+        }
+        if (!Record(InstallJournalPhase::PartialRootRemovalRebootPending,
+                publishedCandidate, impl_->state.packageStagedHere,
+                impl_->state.bindingMutationStarted, true, true,
+                ERROR_SUCCESS_REBOOT_REQUIRED, false, error)) {
+            return false;
+        }
+        *rootRemovalRebootPending = true;
+        return true;
+    }
+    if (after.action != PartialInstallRootRecoveryAction::PriorEmpty) {
+        return SetError(error, L"install-journal-raw-root-cleanup",
+            ERROR_REVISION_MISMATCH,
+            L"successful root removal without a restart did not restore exact prior-empty topology");
+    }
+    return true;
+}
+
+bool CurrentRootIsAuthorizedForInstallRollback(
+    const LoadedInstallJournal& loaded,
+    InstallRecoveryRootObservation* observation,
+    Error* error) {
+    *observation = InstallRecoveryRootObservation{};
+    const InstallJournalStateData& state = loaded.state;
+    if (state.prior.devices.empty()) {
+        return ObservePriorEmptyInstallRecoveryRoot(
+            loaded, observation, error);
+    }
+    Snapshot observed;
+    if (!CaptureSnapshot(&observed, error)) {
+        if (error->code == ERROR_SUCCESS) {
+            SetError(error, L"install-journal-rollback-root",
+                ERROR_INVALID_DATA);
+        }
+        return false;
+    }
+    if (!RootSnapshotIsAuthorizedForInstallRollback(state, observed)) {
+        return SetError(error, L"install-journal-rollback-root",
+            ERROR_REVISION_MISMATCH,
+            L"current root is missing, foreign, duplicated, or bound outside the exact prior/candidate transaction authority");
+    }
+    observation->action = PartialInstallRootRecoveryAction::PriorEmpty;
+    return true;
+}
+
+bool CurrentStateMatchesForward(
+    const InstallJournalStateData& state,
+    uint64_t deadlineUnixMs,
+    Error* error) {
+    if (!state.hasPublishedCandidate) {
+        return SetError(error, L"install-journal-forward-state",
+            ERROR_INVALID_DATA);
+    }
+    std::string expectedBuildIdentity;
+    return DeriveDriverBuildIdentity(
+               state.sourceRevision, &expectedBuildIdentity, error) &&
+        VerifyInstalled(state.candidate,
+            state.publishedCandidate.publishedName, false,
+            deadlineUnixMs, &expectedBuildIdentity, error) &&
+        VerifyPackageInventory(state.expectedInventory,
+            L"install-journal-forward-inventory", error);
+}
+
+bool RecoveryStateMatchesPrior(
+    const LoadedInstallJournal& loaded,
+    uint64_t deadlineUnixMs,
+    Error* error) {
+    if (loaded.state.hasRootRegistrationIntent &&
+        loaded.state.prior.devices.empty()) {
+        InstallRecoveryRootObservation rawRoot;
+        if (!ObservePriorEmptyInstallRecoveryRoot(
+                loaded, &rawRoot, error)) {
+            return false;
+        }
+        if (rawRoot.action !=
+            PartialInstallRootRecoveryAction::PriorEmpty) {
+            return SetError(error, L"install-journal-prior-raw-root",
+                ERROR_REVISION_MISMATCH,
+                L"exact prior-empty restoration still has the transaction root present");
+        }
+    }
+    return CurrentStateMatchesPrior(
+        loaded.state, deadlineUnixMs, error);
+}
+
+bool RecoveryStateMatchesForward(
+    const LoadedInstallJournal& loaded,
+    uint64_t deadlineUnixMs,
+    Error* error) {
+    if (loaded.state.hasRootRegistrationIntent &&
+        loaded.state.prior.devices.empty()) {
+        InstallRecoveryRootObservation rawRoot;
+        if (!ObservePriorEmptyInstallRecoveryRoot(
+                loaded, &rawRoot, error)) {
+            return false;
+        }
+        if (rawRoot.action != PartialInstallRootRecoveryAction::
+                RemoveCandidateBoundExactRoot) {
+            return SetError(error, L"install-journal-forward-raw-root",
+                ERROR_REVISION_MISMATCH,
+                L"forward validation lacks the exact receipt-bound candidate root topology");
+        }
+    }
+    return CurrentStateMatchesForward(
+        loaded.state, deadlineUnixMs, error);
+}
+
+void SetInstallJournalRecoveryOutcome(
+    LoadedInstallJournal* loaded,
+    const wchar_t* phase,
+    DWORD code,
+    std::wstring message,
+    ExitCode exitCode,
+    Outcome* outcome) {
+    SetError(&outcome->error, phase, code, std::move(message));
+    outcome->exitCode = exitCode;
+    outcome->rebootRequired = exitCode == ExitCode::RebootRequired;
+    outcome->rollback = exitCode == ExitCode::RollbackFailed
+        ? L"failed" : L"not-needed";
+    outcome->error.recoveryBackup = loaded->directory.active.wstring();
+    outcome->error.recoveryBackupRetained = true;
+    if (gActiveRecoveryRecord[0] != L'\0') {
+        outcome->error.recoveryRecord = gActiveRecoveryRecord.data();
+        outcome->error.recoveryRecordWritten = gActiveRecoveryRecordWritten;
+    }
+}
+
+bool InstallJournalNeedsRestoreRebootPending(
+    const InstallJournalStateData& state,
+    bool sameBoot) noexcept {
+    return sameBoot &&
+        state.direction == InstallJournalDirection::Rollback &&
+        state.phase == InstallJournalPhase::RollbackBindingReturned &&
+        state.callSucceeded && state.rebootRequired;
+}
+
+bool InstallJournalRollbackRetryRebootSeed(
+    const InstallJournalStateData& state,
+    bool sameBoot) noexcept {
+    return sameBoot && state.rebootRequired;
+}
+
+bool InstallJournalHasAuthoritativeRollbackSettlement(
+    const InstallJournalStateData& state) noexcept {
+    return state.bindingMutationStarted &&
+        state.direction == InstallJournalDirection::Rollback &&
+        state.rollbackAuthorized &&
+        state.phase == InstallJournalPhase::RollbackBindingReturned &&
+        state.callSucceeded;
+}
+
+enum class PartialRootRemovalRecoveryDisposition {
+    ContinueRollback,
+    RetryRemoval,
+    RebootPending,
+    Manual,
+};
+
+PartialRootRemovalRecoveryDisposition
+ClassifyPartialRootRemovalJournalRecovery(
+    InstallJournalPhase phase,
+    bool callSucceeded,
+    bool freshRebootRequired,
+    bool sameRemovalBoot,
+    InstallJournalStateData::PartialRootRemovalBinding recordedBinding,
+    PartialInstallRootRecoveryAction rootAction) noexcept {
+    const bool absent = rootAction ==
+        PartialInstallRootRecoveryAction::PriorEmpty;
+    const bool exactOriginal =
+        rootAction ==
+            PartialInstallRootRecoveryAction::RemoveUnboundExactRoot ||
+        rootAction == PartialInstallRootRecoveryAction::
+            RemoveCandidateBoundExactRoot;
+    const bool exactPending = rootAction ==
+        PartialInstallRootRecoveryAction::PendingExactRootRemoval;
+    const bool exactOriginalMatchesRecord =
+        (recordedBinding ==
+                InstallJournalStateData::PartialRootRemovalBinding::Unbound &&
+            rootAction == PartialInstallRootRecoveryAction::
+                RemoveUnboundExactRoot) ||
+        (recordedBinding == InstallJournalStateData::
+                PartialRootRemovalBinding::Candidate &&
+            rootAction == PartialInstallRootRecoveryAction::
+                RemoveCandidateBoundExactRoot);
+    if (phase == InstallJournalPhase::PartialRootRemovalEntered) {
+        if (sameRemovalBoot) {
+            if (exactOriginal && exactOriginalMatchesRecord) {
+                return PartialRootRemovalRecoveryDisposition::RetryRemoval;
+            }
+            if (absent || exactPending) {
+                return PartialRootRemovalRecoveryDisposition::RebootPending;
+            }
+        } else if (absent) {
+            return PartialRootRemovalRecoveryDisposition::ContinueRollback;
+        }
+        return PartialRootRemovalRecoveryDisposition::Manual;
+    }
+    if (phase == InstallJournalPhase::PartialRootRemovalReturned) {
+        if (!callSucceeded) {
+            return PartialRootRemovalRecoveryDisposition::Manual;
+        }
+        if (freshRebootRequired && sameRemovalBoot) {
+            return absent || exactPending
+                ? PartialRootRemovalRecoveryDisposition::RebootPending
+                : PartialRootRemovalRecoveryDisposition::Manual;
+        }
+        return absent
+            ? PartialRootRemovalRecoveryDisposition::ContinueRollback
+            : PartialRootRemovalRecoveryDisposition::Manual;
+    }
+    if (phase ==
+        InstallJournalPhase::PartialRootRemovalRebootPending) {
+        if (sameRemovalBoot) {
+            return absent || exactPending
+                ? PartialRootRemovalRecoveryDisposition::RebootPending
+                : PartialRootRemovalRecoveryDisposition::Manual;
+        }
+        return absent
+            ? PartialRootRemovalRecoveryDisposition::ContinueRollback
+            : PartialRootRemovalRecoveryDisposition::Manual;
+    }
+    return PartialRootRemovalRecoveryDisposition::ContinueRollback;
+}
+
+bool ReconcileInstallJournal(
+    bool explicitRecovery,
+    uint64_t deadlineUnixMs,
+    Outcome* outcome) {
+    // Automatic admission and the explicit recover command deliberately run
+    // the same reconciler under the same global transaction mutex. The mode
+    // changes diagnostics only; it cannot weaken recovery authority.
+    *outcome = Outcome{};
+    InstallRecoveryDirectory directory;
+    bool exists = false;
+    Error discoveryError;
+    if (!directory.OpenChain(
+            false, nullptr, &exists, &discoveryError)) {
+        outcome->error = std::move(discoveryError);
+        outcome->exitCode = ExitCode::RollbackFailed;
+        return false;
+    }
+    if (!exists) {
+        outcome->success = true;
+        outcome->exitCode = ExitCode::Success;
+        return true;
+    }
+    if (!PublishInstallRecoveryEvidence(directory.active, 0, &discoveryError)) {
+        outcome->error = std::move(discoveryError);
+        outcome->exitCode = ExitCode::RollbackFailed;
+        return false;
+    }
+    LoadedInstallJournal loaded;
+    if (!LoadInstallJournal(
+            std::move(directory), &loaded, &discoveryError)) {
+        SetInstallJournalRecoveryOutcome(&loaded,
+            L"install-journal-manual-reconciliation",
+            discoveryError.code == ERROR_SUCCESS
+                ? ERROR_INVALID_DATA : discoveryError.code,
+            L"the durable transaction chain or protected package evidence is invalid; no driver mutation was attempted: " +
+                discoveryError.message,
+            ExitCode::RollbackFailed, outcome);
+        return false;
+    }
+    if (!loaded.hasRecord) {
+        if (!GenerateInstallTransactionId(
+                &loaded.state.transactionId, &outcome->error) ||
+            !RetireLoadedInstallJournal(&loaded, &outcome->error)) {
+            outcome->exitCode = ExitCode::RollbackFailed;
+            return false;
+        }
+        outcome->success = true;
+        outcome->exitCode = ExitCode::Success;
+        return true;
+    }
+    gActiveRecoveryRecordWritten = true;
+    PublishInstallRecoveryEvidence(
+        loaded.directory.active, loaded.state.sequence - 1U, nullptr);
+    gActiveRecoveryRecordWritten = true;
+
+    const auto appendInstallJournalRecord =
+        [&](InstallJournalPhase phase,
+            bool callSucceeded,
+            DWORD callError,
+            bool rebootRequired,
+            bool freshRebootRequired,
+            InstallJournalStateData::PartialRootRemovalBinding
+                partialRootRemovalBinding,
+            Error* error) {
+        InstallJournalStateData next = loaded.state;
+        next.phase = phase;
+        next.callSucceeded = callSucceeded;
+        next.callError = callError;
+        next.rebootRequired = next.rebootRequired || rebootRequired;
+        next.freshRebootRequired = freshRebootRequired;
+        if (phase == InstallJournalPhase::PartialRootRemovalEntered) {
+            if (partialRootRemovalBinding ==
+                    InstallJournalStateData::
+                        PartialRootRemovalBinding::None ||
+                !GetBootIdentifier(
+                    &next.partialRootRemovalBootIdentifier, error)) {
+                if (error->code == ERROR_SUCCESS) {
+                    SetError(error,
+                        L"install-journal-partial-root-removal",
+                        ERROR_INVALID_PARAMETER);
+                }
+                return false;
+            }
+            next.partialRootRemovalBinding =
+                partialRootRemovalBinding;
+        } else if (partialRootRemovalBinding !=
+            InstallJournalStateData::PartialRootRemovalBinding::None) {
+            return SetError(error,
+                L"install-journal-partial-root-removal",
+                ERROR_INVALID_PARAMETER);
+        }
+        if (freshRebootRequired &&
+            !GetBootIdentifier(
+                &next.pendingRebootBootIdentifier, error)) {
+            return false;
+        }
+        if (phase == InstallJournalPhase::RollbackBindingEntered) {
+            next.direction = InstallJournalDirection::Rollback;
+            next.rollbackAuthorized = true;
+        }
+        if (phase == InstallJournalPhase::RootRegistrationEntered ||
+            phase == InstallJournalPhase::RootRegistrationReturned ||
+            phase == InstallJournalPhase::DiInstallEntered ||
+            phase == InstallJournalPhase::DiInstallReturned) {
+            next.bindingMutationStarted = true;
+        }
+        if (!ValidateInstallJournalTransition(
+                &loaded.state, next, error) ||
+            !WriteInstallJournalRecord(
+                loaded.directory.active, &next, error)) {
+            return false;
+        }
+        loaded.state = std::move(next);
+        if (phase == InstallJournalPhase::PartialRootRemovalEntered) {
+            loaded.partialRootRemovalEntered = true;
+        }
+        if (!PublishInstallRecoveryEvidence(
+                loaded.directory.active, loaded.state.sequence - 1U, error)) {
+            return false;
+        }
+        gActiveRecoveryRecordWritten = true;
+        return true;
+    };
+    const auto appendPhase =
+        [&](InstallJournalPhase phase,
+            bool callSucceeded,
+            DWORD callError,
+            bool rebootRequired,
+            Error* error) {
+            return appendInstallJournalRecord(phase, callSucceeded,
+                callError, rebootRequired, false,
+                InstallJournalStateData::PartialRootRemovalBinding::None,
+                error);
+        };
+    const auto appendPartialRootRemovalEntered =
+        [&](InstallJournalStateData::PartialRootRemovalBinding binding,
+            Error* error) {
+            return appendInstallJournalRecord(
+                InstallJournalPhase::PartialRootRemovalEntered,
+                true, ERROR_SUCCESS, loaded.state.rebootRequired,
+                false, binding, error);
+        };
+    const auto appendAuthoritativeReturn =
+        [&](InstallJournalPhase phase,
+            bool callSucceeded,
+            DWORD callError,
+            bool rebootRequired,
+            bool freshRebootRequired,
+            Error* error) {
+            if (phase != InstallJournalPhase::DiInstallReturned &&
+                phase != InstallJournalPhase::RollbackBindingReturned &&
+                phase != InstallJournalPhase::
+                    PartialRootRemovalReturned) {
+                return SetError(error,
+                    L"install-journal-reboot-return",
+                    ERROR_INVALID_PARAMETER);
+            }
+            return appendInstallJournalRecord(phase, callSucceeded,
+                callError, rebootRequired,
+                freshRebootRequired,
+                InstallJournalStateData::PartialRootRemovalBinding::None,
+                error);
+        };
+    const auto finishSuccess = [&](bool changed) {
+        outcome->success = true;
+        outcome->changed = changed;
+        outcome->exitCode = ExitCode::Success;
+        outcome->rollback = changed ? L"succeeded" : L"not-needed";
+        return true;
+    };
+    const auto manual = [&](std::wstring message, const Error* cause = nullptr) {
+        message.insert(0, explicitRecovery
+            ? L"explicit recover: " : L"automatic admission recovery: ");
+        if (cause != nullptr && !cause->message.empty()) {
+            message.append(L"; observed: ");
+            message.append(cause->message);
+        }
+        SetInstallJournalRecoveryOutcome(&loaded,
+            L"install-journal-manual-reconciliation",
+            cause != nullptr && cause->code != ERROR_SUCCESS
+                ? cause->code : ERROR_INSTALL_SUSPEND,
+            std::move(message), ExitCode::RollbackFailed, outcome);
+        return false;
+    };
+    const auto rebootPending = [&](const wchar_t* message) {
+        SetInstallJournalRecoveryOutcome(&loaded,
+            L"install-journal-reboot-pending",
+            ERROR_SUCCESS_REBOOT_REQUIRED, message,
+            ExitCode::RebootRequired, outcome);
+        return false;
+    };
+
+    std::string currentBoot;
+    Error bootError;
+    if (!GetBootIdentifier(&currentBoot, &bootError)) {
+        return manual(L"the current boot session cannot be compared with the durable transaction", &bootError);
+    }
+    const bool sameBoot =
+        !loaded.state.pendingRebootBootIdentifier.empty() &&
+        currentBoot == loaded.state.pendingRebootBootIdentifier;
+    const bool samePartialRootRemovalBoot =
+        !loaded.state.partialRootRemovalBootIdentifier.empty() &&
+        currentBoot == loaded.state.partialRootRemovalBootIdentifier;
+    if (loaded.state.phase == InstallJournalPhase::ManualReconciliationRequired) {
+        return manual(L"a prior authoritative owner retained the transaction for manual reconciliation");
+    }
+    const bool partialRootRemovalPhase =
+        loaded.state.phase ==
+            InstallJournalPhase::PartialRootRemovalEntered ||
+        loaded.state.phase ==
+            InstallJournalPhase::PartialRootRemovalReturned ||
+        loaded.state.phase == InstallJournalPhase::
+            PartialRootRemovalRebootPending;
+    if (partialRootRemovalPhase) {
+        InstallRecoveryRootObservation observedRoot;
+        Error observationError;
+        if (!ObservePriorEmptyInstallRecoveryRoot(
+                loaded, &observedRoot, &observationError)) {
+            return manual(
+                L"partial root removal topology is not within the exact durable receipt authority",
+                &observationError);
+        }
+        const PartialRootRemovalRecoveryDisposition disposition =
+            ClassifyPartialRootRemovalJournalRecovery(
+                loaded.state.phase, loaded.state.callSucceeded,
+                loaded.state.freshRebootRequired,
+                samePartialRootRemovalBoot,
+                loaded.state.partialRootRemovalBinding,
+                observedRoot.action);
+        if (disposition ==
+            PartialRootRemovalRecoveryDisposition::Manual) {
+            return manual(
+                L"partial root removal outcome and current topology do not prove a safe automatic continuation");
+        }
+        if (disposition ==
+            PartialRootRemovalRecoveryDisposition::RebootPending) {
+            if (loaded.state.phase != InstallJournalPhase::
+                    PartialRootRemovalRebootPending) {
+                Error pendingError;
+                if (!appendPhase(InstallJournalPhase::
+                        PartialRootRemovalRebootPending,
+                        loaded.state.phase == InstallJournalPhase::
+                            PartialRootRemovalReturned &&
+                            loaded.state.callSucceeded,
+                        ERROR_SUCCESS_REBOOT_REQUIRED, true,
+                        &pendingError)) {
+                    return manual(
+                        L"partial root removal requires a restart but its durable pending phase could not be published",
+                        &pendingError);
+                }
+            }
+            return rebootPending(
+                L"receipt-bound root removal must cross the recorded restart before package rollback can continue");
+        }
+    }
+    if (loaded.state.phase == InstallJournalPhase::ForwardRebootPending && sameBoot) {
+        return rebootPending(
+            L"forward driver activation is still pending the recorded restart");
+    }
+    if (loaded.state.phase == InstallJournalPhase::RestoreRebootPending && sameBoot) {
+        return rebootPending(
+            L"exact prior-state restoration is still pending the recorded restart");
+    }
+    if (InstallJournalNeedsRestoreRebootPending(
+            loaded.state, sameBoot)) {
+        Error pendingError;
+        if (!appendPhase(InstallJournalPhase::RestoreRebootPending,
+                true, ERROR_SUCCESS_REBOOT_REQUIRED, true,
+                &pendingError)) {
+            return manual(
+                L"rollback returned with a required restart but its pending phase could not be published",
+                &pendingError);
+        }
+        return rebootPending(
+            L"exact prior-state rollback returned successfully and still requires the recorded restart");
+    }
+
+    const bool forwardTerminal =
+        loaded.state.phase == InstallJournalPhase::ForwardValidated ||
+        loaded.state.phase == InstallJournalPhase::ForwardRebootPending;
+    if (forwardTerminal) {
+        const bool exactBrokerCommit =
+            loaded.state.brokerRequired && loaded.state.brokerEntered &&
+            loaded.state.brokerSettled && loaded.state.hasBrokerProof &&
+            loaded.state.brokerProofSuccess &&
+            !loaded.state.brokerDriverRollbackAuthorized &&
+            loaded.state.direction == InstallJournalDirection::Forward &&
+            !loaded.state.rollbackAuthorized;
+        if ((loaded.state.brokerRequired && !exactBrokerCommit) ||
+            (!loaded.state.brokerRequired && loaded.state.brokerEntered)) {
+            return manual(
+                L"terminal forward state lacks its exact canonical broker commit authority");
+        }
+        Error validationError;
+        if (!RecoveryStateMatchesForward(
+                loaded, deadlineUnixMs, &validationError)) {
+            return manual(
+                L"a terminal forward record did not revalidate; exact evidence was retained",
+                &validationError);
+        }
+        if (!RetireLoadedInstallJournal(&loaded, &outcome->error)) {
+            outcome->exitCode = ExitCode::RollbackFailed;
+            return false;
+        }
+        return finishSuccess(false);
+    }
+    const bool restoreTerminal =
+        loaded.state.phase == InstallJournalPhase::ExactPriorRestored ||
+        loaded.state.phase == InstallJournalPhase::RestoreRebootPending;
+    if (restoreTerminal) {
+        if (loaded.state.brokerEntered &&
+            (loaded.state.direction != InstallJournalDirection::Rollback ||
+                !loaded.state.rollbackAuthorized)) {
+            return manual(
+                L"terminal prior state lacks durable broker-safe rollback authority");
+        }
+        Error validationError;
+        if (!RecoveryStateMatchesPrior(
+                loaded, deadlineUnixMs, &validationError)) {
+            return manual(
+                L"a terminal prior-state record did not revalidate; exact evidence was retained",
+                &validationError);
+        }
+        if (!RetireLoadedInstallJournal(&loaded, &outcome->error)) {
+            outcome->exitCode = ExitCode::RollbackFailed;
+            return false;
+        }
+        return finishSuccess(false);
+    }
+
+    const bool durableBrokerForwardSuccess =
+        loaded.state.brokerRequired && loaded.state.brokerEntered &&
+        loaded.state.brokerSettled && loaded.state.hasBrokerProof &&
+        loaded.state.brokerProofSuccess &&
+        !loaded.state.brokerDriverRollbackAuthorized &&
+        loaded.state.direction == InstallJournalDirection::Forward;
+    const bool durableNonBrokerForwardSuccess =
+        !loaded.state.brokerRequired && !loaded.state.brokerEntered &&
+        loaded.state.phase == InstallJournalPhase::DriverValidated &&
+        loaded.state.direction == InstallJournalDirection::Forward;
+    if (loaded.state.hasPublishedCandidate &&
+        (durableBrokerForwardSuccess || durableNonBrokerForwardSuccess)) {
+        Error forwardValidation;
+        if (RecoveryStateMatchesForward(
+                loaded, deadlineUnixMs, &forwardValidation)) {
+            Error appendError;
+            if (!appendPhase(InstallJournalPhase::ForwardValidated,
+                    true, ERROR_SUCCESS, false, &appendError) ||
+                !RecoveryStateMatchesForward(
+                    loaded, deadlineUnixMs, &appendError) ||
+                !RetireLoadedInstallJournal(&loaded, &appendError)) {
+                return manual(
+                    L"the validated forward state could not be terminally recorded and retired",
+                    &appendError);
+            }
+            return finishSuccess(false);
+        }
+        if (durableBrokerForwardSuccess) {
+            return manual(
+                L"the child durably committed but the forward driver state did not revalidate; no driver rollback is authorized",
+                &forwardValidation);
+        }
+    }
+
+    if (loaded.state.brokerEntered &&
+        loaded.state.phase == InstallJournalPhase::BrokerHandoffReturned &&
+        loaded.state.callSucceeded && !loaded.state.brokerSettled &&
+        !loaded.state.hasBrokerProof &&
+        loaded.state.direction == InstallJournalDirection::Forward) {
+        Error authorizationError;
+        if (!appendPhase(InstallJournalPhase::RollbackBindingEntered,
+                true, ERROR_SUCCESS, false, &authorizationError)) {
+            return manual(
+                L"pre-child rollback authority could not be durably admitted",
+                &authorizationError);
+        }
+    }
+    if (loaded.state.phase == InstallJournalPhase::BrokerChildEntered &&
+        loaded.state.direction == InstallJournalDirection::Forward &&
+        !loaded.state.rollbackAuthorized &&
+        !loaded.state.hasBrokerProof) {
+        return manual(
+            L"broker child creation was admitted without a durable canonical settlement proof; driver evidence was retained and no mutation was attempted");
+    }
+
+    const bool priorRequiresAbiProfile =
+        loaded.state.bindingMutationStarted &&
+        loaded.state.prior.devices.size() == 1U &&
+        loaded.state.prior.devices[0].started &&
+        loaded.state.prior.devices[0].problem == 0;
+    if (priorRequiresAbiProfile && !loaded.state.hasPriorAbiProfile) {
+        Snapshot observedBeforeProfile;
+        Error profileError;
+        AbiCompatibilityProfile negotiatedProfile{};
+        if (!CaptureSnapshot(&observedBeforeProfile, &profileError) ||
+            !SameCapturedRootState(
+                loaded.state.prior, observedBeforeProfile) ||
+            !VerifyAbiHealth(deadlineUnixMs, nullptr, &profileError,
+                AbiHealthPurpose::PristineUpgrade, nullptr,
+                &negotiatedProfile)) {
+            if (profileError.code == ERROR_SUCCESS) {
+                SetError(&profileError,
+                    L"install-journal-prior-abi-profile",
+                    ERROR_REVISION_MISMATCH,
+                    L"missing prior ABI profile cannot be negotiated after the captured binding changed");
+            }
+            return manual(
+                L"started prior root lacks a durable exact ABI profile; no recovery mutation was attempted",
+                &profileError);
+        }
+        loaded.state.priorAbiProfile = negotiatedProfile;
+        loaded.state.hasPriorAbiProfile = true;
+        if (!appendPhase(InstallJournalPhase::PriorAbiProfileCaptured,
+                true, ERROR_SUCCESS, false, &profileError)) {
+            return manual(
+                L"the exact prior ABI profile was negotiated but could not be published before recovery mutation",
+                &profileError);
+        }
+    }
+
+    const bool rollbackWasAuthorized =
+        loaded.state.direction == InstallJournalDirection::Rollback &&
+        loaded.state.rollbackAuthorized;
+    Error priorValidation;
+    const bool priorValid =
+        RecoveryStateMatchesPrior(
+            loaded, deadlineUnixMs, &priorValidation);
+    if (priorValid &&
+        (!loaded.state.bindingMutationStarted ||
+            InstallJournalHasAuthoritativeRollbackSettlement(
+                loaded.state))) {
+        if (loaded.state.brokerEntered &&
+            !rollbackWasAuthorized) {
+            return manual(
+                L"the driver resembles the prior state, but broker handoff lacks a durable settled rollback authorization; evidence was retained");
+        }
+        Error appendError;
+        if (!appendPhase(InstallJournalPhase::ExactPriorRestored,
+                true, ERROR_SUCCESS, false, &appendError) ||
+            !RecoveryStateMatchesPrior(
+                loaded, deadlineUnixMs, &appendError) ||
+            !RetireLoadedInstallJournal(&loaded, &appendError)) {
+            return manual(
+                L"the prior state was present but could not be terminally recorded and retired",
+                &appendError);
+        }
+        return finishSuccess(false);
+    }
+
+    std::vector<PackageInfo> currentPackages;
+    Error inventoryError;
+    if (!EnumerateOwnedPackages(&currentPackages, &inventoryError)) {
+        return manual(L"the current Driver Store inventory could not be classified", &inventoryError);
+    }
+    if (!loaded.state.hasPublishedCandidate) {
+        size_t matches = 0;
+        for (const PackageInfo& package : currentPackages) {
+            if (package.version == loaded.state.candidate.version &&
+                SamePackageBytes(package, loaded.state.candidate) &&
+                !ContainsExactPackage(loaded.state.prior.packages, package)) {
+                loaded.state.publishedCandidate = package;
+                loaded.state.hasPublishedCandidate = true;
+                ++matches;
+            }
+        }
+        if (matches > 1U) {
+            return manual(L"more than one exact candidate publication exists");
+        }
+        if (matches == 1U) {
+            return manual(
+                L"an exact candidate publication exists without a durable StageReceiptCaptured ownership record; it may be concurrent and will not be removed automatically");
+        }
+    }
+
+    Error forwardValidation;
+    const bool forwardValid = loaded.state.hasPublishedCandidate &&
+        RecoveryStateMatchesForward(
+            loaded, deadlineUnixMs, &forwardValidation);
+    const bool settledForwardBroker =
+        loaded.state.brokerRequired && loaded.state.brokerEntered &&
+        loaded.state.brokerSettled && loaded.state.hasBrokerProof &&
+        loaded.state.brokerProofSuccess &&
+        !loaded.state.brokerDriverRollbackAuthorized &&
+        loaded.state.direction == InstallJournalDirection::Forward;
+    if (forwardValid &&
+        ((!loaded.state.brokerRequired &&
+             !loaded.state.brokerEntered &&
+             loaded.state.phase == InstallJournalPhase::DriverValidated &&
+             loaded.state.direction == InstallJournalDirection::Forward) ||
+            settledForwardBroker)) {
+        Error appendError;
+        if (!appendPhase(InstallJournalPhase::ForwardValidated,
+                true, ERROR_SUCCESS, false, &appendError) ||
+            !RecoveryStateMatchesForward(
+                loaded, deadlineUnixMs, &appendError) ||
+            !RetireLoadedInstallJournal(&loaded, &appendError)) {
+            return manual(
+                L"the validated forward state could not be terminally recorded and retired",
+                &appendError);
+        }
+        return finishSuccess(false);
+    }
+
+    if (loaded.state.brokerEntered &&
+        !rollbackWasAuthorized) {
+        return manual(
+            L"broker handoff was entered without a durable, settled rollback authorization; driver evidence was retained and no mutation was attempted");
+    }
+    for (const PackageInfo& priorPackage : loaded.state.prior.packages) {
+        const size_t exactMatches = static_cast<size_t>(std::count_if(
+            currentPackages.begin(), currentPackages.end(),
+            [&](const PackageInfo& current) {
+                return _wcsicmp(current.publishedName.c_str(),
+                           priorPackage.publishedName.c_str()) == 0 &&
+                    current.version == priorPackage.version &&
+                    SamePackageBytes(current, priorPackage);
+            }));
+        if (exactMatches != 1U) {
+            return manual(
+                L"the exact prior published package name and bytes are not available in the Driver Store; protected package bytes were retained, but automatic republishing cannot promise the same OEM identity");
+        }
+    }
+
+    bool stagedCandidateStillPresent = false;
+    if (loaded.state.packageStagedHere &&
+        loaded.state.hasPublishedCandidate) {
+        size_t publishedNameMatches = 0;
+        for (const PackageInfo& current : currentPackages) {
+            if (_wcsicmp(current.publishedName.c_str(),
+                    loaded.state.publishedCandidate.publishedName.c_str()) != 0) {
+                continue;
+            }
+            ++publishedNameMatches;
+            if (!SameJournalPackageIdentity(
+                    current, loaded.state.publishedCandidate)) {
+                return manual(
+                    L"the staged-here published name now identifies different bytes; no automatic removal was attempted");
+            }
+            stagedCandidateStillPresent = true;
+        }
+        if (publishedNameMatches > 1U) {
+            return manual(
+                L"the staged-here published identity is duplicated; no automatic removal was attempted");
+        }
+    }
+    std::vector<PackageInfo> exactPreRollbackInventory =
+        loaded.state.prior.packages;
+    if (stagedCandidateStillPresent) {
+        exactPreRollbackInventory.push_back(
+            loaded.state.publishedCandidate);
+    }
+    std::sort(exactPreRollbackInventory.begin(),
+        exactPreRollbackInventory.end(),
+        [](const PackageInfo& left, const PackageInfo& right) {
+            return _wcsicmp(left.publishedName.c_str(),
+                right.publishedName.c_str()) < 0;
+        });
+    if (!SamePackageInventory(
+            currentPackages, exactPreRollbackInventory)) {
+        return manual(
+            L"current Driver Store inventory is not exactly the captured prior set plus the one transaction-owned staged candidate; no rollback mutation was attempted");
+    }
+    Error rootAuthorityError;
+    InstallRecoveryRootObservation rootAuthority;
+    if (!CurrentRootIsAuthorizedForInstallRollback(
+            loaded, &rootAuthority, &rootAuthorityError)) {
+        return manual(
+            L"current root topology is outside the exact rollback authority of this transaction; no device mutation was attempted",
+            &rootAuthorityError);
+    }
+
+    Error appendError;
+    if (!appendPhase(InstallJournalPhase::RollbackBindingEntered,
+            true, ERROR_SUCCESS, false, &appendError)) {
+        return manual(
+            L"write-ahead rollback admission could not be published; no recovery mutation was attempted",
+            &appendError);
+    }
+    Error confirmedInventoryError;
+    if (!VerifyPackageInventory(exactPreRollbackInventory,
+            L"install-journal-post-admission-inventory",
+            &confirmedInventoryError)) {
+        return manual(
+            L"Driver Store inventory changed after write-ahead rollback admission; no device mutation was attempted",
+            &confirmedInventoryError);
+    }
+    InstallRecoveryRootObservation confirmedRoot;
+    Error confirmedRootError;
+    if (!CurrentRootIsAuthorizedForInstallRollback(
+            loaded, &confirmedRoot, &confirmedRootError)) {
+        return manual(
+            L"current root topology changed after write-ahead rollback admission; no device mutation was attempted",
+            &confirmedRootError);
+    }
+    const PackageInfo* stagedCandidate =
+        loaded.state.packageStagedHere &&
+            loaded.state.hasPublishedCandidate && stagedCandidateStillPresent
+            ? &loaded.state.publishedCandidate : nullptr;
+    bool rollbackReboot = InstallJournalRollbackRetryRebootSeed(
+        loaded.state, sameBoot);
+    const bool rollbackRebootAtAdmission = rollbackReboot;
+    Error rollbackError;
+    const uint64_t rollbackDeadline =
+        CurrentUnixMilliseconds() + kDriverRollbackCeilingMs;
+    bool rollbackSucceeded = true;
+    if (confirmedRoot.action ==
+            PartialInstallRootRecoveryAction::RemoveUnboundExactRoot ||
+        confirmedRoot.action ==
+            PartialInstallRootRecoveryAction::RemoveCandidateBoundExactRoot) {
+        if (!CheckTransactionDeadline(rollbackDeadline,
+                L"install-journal-rollback-deadline-partial-root",
+                &rollbackError)) {
+            return manual(
+                L"receipt-bound root removal missed its deadline before durable API admission",
+                &rollbackError);
+        }
+        Error removalEnteredError;
+        const InstallJournalStateData::PartialRootRemovalBinding
+            removalBinding = confirmedRoot.action ==
+                    PartialInstallRootRecoveryAction::
+                        RemoveCandidateBoundExactRoot
+                ? InstallJournalStateData::PartialRootRemovalBinding::Candidate
+                : InstallJournalStateData::PartialRootRemovalBinding::Unbound;
+        if (!appendPartialRootRemovalEntered(
+                removalBinding, &removalEnteredError)) {
+            return manual(
+                L"receipt-bound root removal could not publish its exact write-ahead API admission",
+                &removalEnteredError);
+        }
+        Error removalInventoryError;
+        if (!VerifyPackageInventory(exactPreRollbackInventory,
+                L"install-journal-partial-root-removal-inventory",
+                &removalInventoryError)) {
+            return manual(
+                L"Driver Store inventory changed after receipt-bound root removal admission; no device API was called",
+                &removalInventoryError);
+        }
+        InstallRecoveryRootObservation removalRoot;
+        Error removalRootError;
+        LoadedInstallJournal preCallLoaded;
+        preCallLoaded.state = loaded.state;
+        preCallLoaded.forwardRootRegistrationEntered =
+            loaded.forwardRootRegistrationEntered;
+        preCallLoaded.forwardDiInstallEntered =
+            loaded.forwardDiInstallEntered;
+        preCallLoaded.partialRootRemovalEntered = false;
+        if (!CurrentRootIsAuthorizedForInstallRollback(
+                preCallLoaded, &removalRoot, &removalRootError)) {
+            return manual(
+                L"root topology changed after receipt-bound root removal admission; no device API was called",
+                &removalRootError);
+        }
+        if (removalRoot.action ==
+                PartialInstallRootRecoveryAction::PriorEmpty ||
+            removalRoot.action == PartialInstallRootRecoveryAction::
+                PendingExactRootRemoval) {
+            Error pendingError;
+            if (!appendPhase(InstallJournalPhase::
+                    PartialRootRemovalRebootPending,
+                    false, ERROR_SUCCESS_REBOOT_REQUIRED, true,
+                    &pendingError)) {
+                return manual(
+                    L"indeterminate receipt-bound root removal could not publish its conservative reboot boundary",
+                    &pendingError);
+            }
+            return rebootPending(
+                L"receipt-bound root removal changed after admission and must cross the recorded restart before package rollback");
+        }
+        if (removalRoot.action != confirmedRoot.action) {
+            return manual(
+                L"receipt-bound root identity changed after durable removal admission; no device API was called");
+        }
+        bool freshRemovalReboot = false;
+        rollbackSucceeded = RemoveDevice(
+            removalRoot.set.get(), removalRoot.data, 0,
+            L"install-journal-rollback-deadline-partial-root",
+            nullptr, &rollbackReboot, &rollbackError,
+            &freshRemovalReboot);
+        Error removalReturnedError;
+        if (!appendAuthoritativeReturn(
+                InstallJournalPhase::PartialRootRemovalReturned,
+                rollbackSucceeded,
+                rollbackSucceeded ? ERROR_SUCCESS : rollbackError.code,
+                rollbackReboot, freshRemovalReboot,
+                &removalReturnedError)) {
+            return manual(
+                L"receipt-bound root removal returned but its exact authoritative outcome could not be published",
+                &removalReturnedError);
+        }
+        if (!rollbackSucceeded) {
+            return manual(
+                L"receipt-bound root removal returned failure; exact evidence was retained",
+                &rollbackError);
+        }
+        InstallRecoveryRootObservation afterRemoval;
+        Error afterRemovalError;
+        if (!ObservePriorEmptyInstallRecoveryRoot(
+                loaded, &afterRemoval, &afterRemovalError)) {
+            return manual(
+                L"receipt-bound root removal returned but its resulting topology is not canonical",
+                &afterRemovalError);
+        }
+        if (freshRemovalReboot) {
+            if (afterRemoval.action !=
+                    PartialInstallRootRecoveryAction::PriorEmpty &&
+                afterRemoval.action != PartialInstallRootRecoveryAction::
+                    PendingExactRootRemoval) {
+                return manual(
+                    L"reboot-requiring receipt-bound root removal left an unauthorized topology");
+            }
+            Error pendingError;
+            if (!appendPhase(InstallJournalPhase::
+                    PartialRootRemovalRebootPending,
+                    true, ERROR_SUCCESS_REBOOT_REQUIRED, true,
+                    &pendingError)) {
+                return manual(
+                    L"receipt-bound root removal requires a restart but its pending phase could not be published",
+                    &pendingError);
+            }
+            return rebootPending(
+                L"receipt-bound root removal returned successfully and requires the recorded restart before package rollback");
+        }
+        if (afterRemoval.action !=
+            PartialInstallRootRecoveryAction::PriorEmpty) {
+            return manual(
+                L"receipt-bound root removal returned without a restart but exact prior-empty topology was not restored");
+        }
+    }
+    if (rollbackSucceeded) {
+        rollbackSucceeded = VerifyPackageInventory(
+                exactPreRollbackInventory,
+                L"install-journal-pre-package-rollback-inventory",
+                &rollbackError) &&
+            VerifyInstallJournalRawPriorTopology(
+                loaded.state, &rollbackError);
+    }
+    if (rollbackSucceeded) {
+        const bool restoreBindingThroughStrictSnapshot =
+            InstallJournalRecoveryUsesStrictBindingRestore(
+                loaded.state);
+        rollbackSucceeded = RollbackInstall(
+            loaded.state.prior, stagedCandidate,
+            restoreBindingThroughStrictSnapshot,
+            loaded.state.hasPriorAbiProfile
+                ? &loaded.state.priorAbiProfile : nullptr,
+            rollbackDeadline, &rollbackReboot, &rollbackError);
+    }
+    if (!rollbackSucceeded) {
+        Error ignored;
+        appendAuthoritativeReturn(
+            InstallJournalPhase::RollbackBindingReturned,
+            false, rollbackError.code, rollbackReboot,
+            rollbackReboot && !rollbackRebootAtAdmission,
+            &ignored);
+        appendPhase(InstallJournalPhase::ManualReconciliationRequired,
+            false, rollbackError.code, rollbackReboot, &ignored);
+        return manual(L"authoritative exact-prior recovery failed", &rollbackError);
+    }
+    Error returnedError;
+    if (!appendAuthoritativeReturn(
+            InstallJournalPhase::RollbackBindingReturned,
+            true, ERROR_SUCCESS, rollbackReboot,
+            rollbackReboot && !rollbackRebootAtAdmission,
+            &returnedError)) {
+        return manual(
+            L"rollback returned authoritatively, but its returned phase could not be published",
+            &returnedError);
+    }
+    if (rollbackReboot) {
+        Error pendingError;
+        if (!appendPhase(InstallJournalPhase::RestoreRebootPending,
+                true, ERROR_SUCCESS_REBOOT_REQUIRED, true,
+                &pendingError)) {
+            return manual(
+                L"rollback requires reboot but its pending state could not be published",
+                &pendingError);
+        }
+        return rebootPending(
+            L"exact prior-state rollback completed with a required restart; evidence remains retained");
+    }
+    Error restoredError;
+    if (!RecoveryStateMatchesPrior(
+            loaded, rollbackDeadline, &restoredError) ||
+        !appendPhase(InstallJournalPhase::ExactPriorRestored,
+            true, ERROR_SUCCESS, false, &restoredError) ||
+        !RecoveryStateMatchesPrior(
+            loaded, rollbackDeadline, &restoredError) ||
+        !RetireLoadedInstallJournal(&loaded, &restoredError)) {
+        return manual(
+            L"rollback returned but exact prior-state revalidation or journal retirement failed",
+            &restoredError);
+    }
+    return finishSuccess(true);
+}
+
 bool RollbackRemove(
     const Snapshot& prior,
     const std::vector<PackageBackup>& backups,
@@ -5607,6 +11553,11 @@ Outcome Remove(const RemoveOptions& options) {
     if (!mutex.Acquire(&outcome.error)) {
         outcome.exitCode = ExitCode::PreflightRejected;
         return outcome;
+    }
+    Outcome recoveryOutcome;
+    if (!ReconcileInstallJournal(
+            false, options.transactionDeadlineUnixMs, &recoveryOutcome)) {
+        return recoveryOutcome;
     }
     if (!CheckTransactionDeadline(
             options.transactionDeadlineUnixMs, L"remove-deadline-before-snapshot", &outcome.error)) {
@@ -5754,6 +11705,1011 @@ Outcome Remove(const RemoveOptions& options) {
     return outcome;
 }
 
+Outcome Recover(uint64_t transactionDeadlineUnixMs) {
+    Outcome outcome;
+    if (!ValidateTransactionDeadlineBudget(
+            transactionDeadlineUnixMs, &outcome.error)) {
+        outcome.exitCode = ExitCode::PreflightRejected;
+        return outcome;
+    }
+    if (!IsElevated()) {
+        SetError(&outcome.error, L"elevation", ERROR_ELEVATION_REQUIRED);
+        outcome.exitCode = ExitCode::PreflightRejected;
+        return outcome;
+    }
+    TransactionMutex mutex;
+    if (!mutex.Acquire(&outcome.error)) {
+        outcome.exitCode = ExitCode::PreflightRejected;
+        return outcome;
+    }
+    if (!ReconcileInstallJournal(
+            true, transactionDeadlineUnixMs, &outcome)) {
+        return outcome;
+    }
+    outcome.success = true;
+    outcome.exitCode = ExitCode::Success;
+    return outcome;
+}
+
+enum class InstallJournalRecoveryModelAction {
+    RetirePrior,
+    RetireForward,
+    RollbackPrior,
+    RebootPending,
+    Manual,
+};
+
+InstallJournalRecoveryModelAction ClassifyInstallJournalRecoveryModel(
+    InstallJournalPhase phase,
+    bool chainValid,
+    bool securityValid,
+    bool sameBoot,
+    bool priorValid,
+    bool forwardValid,
+    bool brokerEntered,
+    bool brokerSettled,
+    bool brokerSucceeded) noexcept {
+    if (!chainValid || !securityValid ||
+        phase == InstallJournalPhase::ManualReconciliationRequired) {
+        return InstallJournalRecoveryModelAction::Manual;
+    }
+    if ((phase == InstallJournalPhase::ForwardRebootPending ||
+            phase == InstallJournalPhase::RestoreRebootPending) &&
+        sameBoot) {
+        return InstallJournalRecoveryModelAction::RebootPending;
+    }
+    if (priorValid) {
+        return InstallJournalRecoveryModelAction::RetirePrior;
+    }
+    if (forwardValid &&
+        (phase == InstallJournalPhase::ForwardValidated ||
+            phase == InstallJournalPhase::ForwardRebootPending ||
+            (!brokerEntered && phase == InstallJournalPhase::DriverValidated) ||
+            (brokerSettled && brokerSucceeded))) {
+        return InstallJournalRecoveryModelAction::RetireForward;
+    }
+    if (brokerEntered && !brokerSettled) {
+        return InstallJournalRecoveryModelAction::Manual;
+    }
+    return InstallJournalRecoveryModelAction::RollbackPrior;
+}
+
+bool RunInstallJournalModelSelfTest(Error* error) {
+    const std::wstring modelTargetUserSid =
+        L"S-1-5-21-1-2-3-1001";
+    std::wstring modelProductSecurity;
+    if (!ProductDirectoryMaskIsReadExecuteOnly(0x001200a9U) ||
+        !ProductDirectoryMaskIsReadExecuteOnly(
+            GENERIC_READ | GENERIC_EXECUTE) ||
+        ProductDirectoryMaskIsReadExecuteOnly(
+            GENERIC_READ | GENERIC_WRITE) ||
+        ProductDirectoryMaskIsReadExecuteOnly(
+            0x001200a9U | FILE_ADD_FILE) ||
+        ProductDirectoryMaskIsReadExecuteOnly(
+            0x001200a9U | FILE_DELETE_CHILD) ||
+        ProductDirectoryMaskIsReadExecuteOnly(
+            0x001200a9U | DELETE) ||
+        ProductDirectoryMaskIsReadExecuteOnly(
+            0x001200a9U | WRITE_DAC) ||
+        ProductDirectoryMaskIsReadExecuteOnly(
+            0x001200a9U | WRITE_OWNER) ||
+        !BuildInstallRecoveryProductDirectorySecurity(
+            modelTargetUserSid, &modelProductSecurity, error) ||
+        modelProductSecurity !=
+            L"O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
+            L"(A;OICI;GRGX;;;S-1-5-21-1-2-3-1001)" ||
+        !InstallRecoveryChainHasActive(true, true, true, true) ||
+        InstallRecoveryChainHasActive(true, false, false, false) ||
+        InstallRecoveryChainHasActive(true, true, false, false) ||
+        InstallRecoveryChainHasActive(true, true, true, false) ||
+        InstallRecoveryChainHasActive(false, false, false, false)) {
+        return SetError(error,
+            L"self-test-install-journal-product-security",
+            ERROR_INVALID_DATA);
+    }
+    for (InstallJournalPhase phase : {
+            InstallJournalPhase::Prepared,
+            InstallJournalPhase::SetupCopyEntered,
+            InstallJournalPhase::SetupCopyReturned,
+            InstallJournalPhase::StageReceiptCaptured,
+            InstallJournalPhase::QuiesceSignalEntered,
+            InstallJournalPhase::QuiesceSignalReturned,
+            InstallJournalPhase::RootRegistrationIntentCaptured,
+            InstallJournalPhase::RootRegistrationEntered,
+            InstallJournalPhase::RootRegistrationReturned,
+            InstallJournalPhase::DiInstallEntered,
+            InstallJournalPhase::DiInstallReturned,
+            InstallJournalPhase::PriorAbiProfileCaptured,
+            InstallJournalPhase::DriverValidated,
+            InstallJournalPhase::BrokerHandoffEntered,
+            InstallJournalPhase::BrokerHandoffReturned,
+            InstallJournalPhase::BrokerChildEntered,
+            InstallJournalPhase::BrokerChildSettled,
+            InstallJournalPhase::RollbackBindingEntered,
+            InstallJournalPhase::PartialRootRemovalEntered,
+            InstallJournalPhase::PartialRootRemovalReturned,
+            InstallJournalPhase::PartialRootRemovalRebootPending,
+            InstallJournalPhase::RollbackBindingReturned,
+            InstallJournalPhase::SetupUninstallEntered,
+            InstallJournalPhase::SetupUninstallReturned,
+            InstallJournalPhase::ForwardValidated,
+            InstallJournalPhase::ExactPriorRestored,
+            InstallJournalPhase::ForwardRebootPending,
+            InstallJournalPhase::RestoreRebootPending,
+            InstallJournalPhase::ManualReconciliationRequired}) {
+        const char* name = InstallJournalPhaseName(phase);
+        const std::optional<InstallJournalPhase> parsed =
+            ParseInstallJournalPhase(name);
+        if (!parsed || *parsed != phase) {
+            return SetError(error, L"self-test-install-journal-phase",
+                ERROR_INVALID_DATA);
+        }
+    }
+    if (ParseInstallJournalPhase("setup-copy-entered") ||
+        ParseInstallJournalDirection("Forward") ||
+        ParseInstallJournalDirection("rollback ") ||
+        ParseInstallJournalDirection("forward") !=
+            InstallJournalDirection::Forward ||
+        ParseInstallJournalDirection("rollback") !=
+            InstallJournalDirection::Rollback ||
+        InstallJournalPhaseRequiresPriorAbiProfile(
+            InstallJournalPhase::DriverValidated) ||
+        !InstallJournalPhaseRequiresPriorAbiProfile(
+            InstallJournalPhase::DiInstallEntered) ||
+        !IsKnownAbiCompatibilityProfile(kAbiCompatibilityProfiles[0]) ||
+        !IsSafeRecoveryRelativePath(
+            std::filesystem::path(L"candidate") / L"ViiperUde.inf") ||
+        IsSafeRecoveryRelativePath(std::filesystem::path(L"..") / L"escape") ||
+        IsSafeRecoveryRelativePath(
+            std::filesystem::path(L"C:\\Windows\\INF\\oem1.inf"))) {
+        return SetError(error, L"self-test-install-journal-security-model",
+            ERROR_INVALID_DATA);
+    }
+    uint64_t recordSequence = 0;
+    if (!ParseJournalRecordFileName(
+            L"journal-00000042.json", &recordSequence) ||
+        recordSequence != 42U ||
+        ParseJournalRecordFileName(L"journal-42.json", &recordSequence) ||
+        ParseJournalRecordFileName(
+            L"journal-00000042.json.tmp", &recordSequence) ||
+        !ParseJournalTemporaryFileName(
+            L"journal-00000042.json.tmp", &recordSequence) ||
+        recordSequence != 42U ||
+        ParseJournalTemporaryFileName(
+            L"journal-00000042.json.tmp.tmp", &recordSequence) ||
+        !InstallJournalTemporarySequenceIsRecoverable(42U, 42U) ||
+        InstallJournalTemporarySequenceIsRecoverable(41U, 42U) ||
+        InstallJournalTemporarySequenceIsRecoverable(43U, 42U)) {
+        return SetError(error, L"self-test-install-journal-cutpoint",
+            ERROR_INVALID_DATA);
+    }
+
+    InstallJournalStateData state;
+    state.transactionId = std::string(64, 'a');
+    state.bootIdentifier = std::string(32, 'b');
+    state.sourceRevision = std::string(40, 'c');
+    state.candidate.version.parts = {1, 2, 3, 4};
+    state.candidate.infSha256 = std::string(64, 'd');
+    state.candidate.sysSha256 = std::string(64, 'e');
+    state.candidate.catSha256 = std::string(64, 'f');
+    std::string payload;
+    std::string digest;
+    if (!BuildInstallJournalPayload(state, &payload, error) ||
+        !Sha256Data(payload, &digest, error)) {
+        return false;
+    }
+    Error transitionError;
+    if (!ValidateInstallJournalTransition(nullptr, state,
+            &transitionError)) {
+        *error = std::move(transitionError);
+        return false;
+    }
+    InstallJournalStateData entered = state;
+    entered.sequence = 1U;
+    entered.phase = InstallJournalPhase::SetupCopyEntered;
+    InstallJournalStateData returned = entered;
+    returned.sequence = 2U;
+    returned.phase = InstallJournalPhase::SetupCopyReturned;
+    InstallJournalStateData receipt = returned;
+    receipt.sequence = 3U;
+    receipt.phase = InstallJournalPhase::StageReceiptCaptured;
+    if (!ValidateInstallJournalTransition(&state, entered, error) ||
+        !ValidateInstallJournalTransition(&entered, returned, error) ||
+        !ValidateInstallJournalTransition(&returned, receipt, error)) {
+        return false;
+    }
+    InstallJournalStateData illegalSkip = state;
+    illegalSkip.sequence = 1U;
+    illegalSkip.phase = InstallJournalPhase::BrokerChildEntered;
+    Error illegalTransition;
+    if (ValidateInstallJournalTransition(
+            &state, illegalSkip, &illegalTransition) ||
+        illegalTransition.code == ERROR_SUCCESS) {
+        return SetError(error, L"self-test-install-journal-phase-chain",
+            ERROR_INVALID_DATA);
+    }
+    InstallJournalStateData sticky = returned;
+    sticky.deadlineOverrun = true;
+    InstallJournalStateData cleared = sticky;
+    cleared.phase = InstallJournalPhase::StageReceiptCaptured;
+    cleared.deadlineOverrun = false;
+    Error stickyError;
+    if (ValidateInstallJournalTransition(
+            &sticky, cleared, &stickyError) ||
+        stickyError.code == ERROR_SUCCESS) {
+        return SetError(error, L"self-test-install-journal-sticky-chain",
+            ERROR_INVALID_DATA);
+    }
+    for (InstallJournalPhase interrupted : {
+            InstallJournalPhase::RollbackBindingEntered,
+            InstallJournalPhase::RootRegistrationEntered,
+            InstallJournalPhase::RootRegistrationReturned,
+            InstallJournalPhase::DiInstallEntered,
+            InstallJournalPhase::DiInstallReturned,
+            InstallJournalPhase::SetupUninstallEntered,
+            InstallJournalPhase::SetupUninstallReturned,
+            InstallJournalPhase::RollbackBindingReturned}) {
+        InstallJournalStateData interruptedState = state;
+        interruptedState.direction = InstallJournalDirection::Rollback;
+        interruptedState.rollbackAuthorized = true;
+        interruptedState.phase = interrupted;
+        InstallJournalStateData readmitted = interruptedState;
+        readmitted.phase = InstallJournalPhase::RollbackBindingEntered;
+        if (!ValidateInstallJournalTransition(
+                &interruptedState, readmitted, error)) {
+            return false;
+        }
+    }
+    struct CanonicalBrokerProofCase {
+        bool success;
+        bool changed;
+        const char* rollback;
+        DWORD exitCode;
+        bool rollbackAuthorized;
+    };
+    constexpr std::array<CanonicalBrokerProofCase, 5> brokerProofCases{{
+        {true, false, "not-needed", 0U, false},
+        {true, true, "not-needed", 0U, false},
+        {false, false, "not-needed", 4U, true},
+        {false, true, "succeeded", 1U, true},
+        {false, true, "failed", 3U, false},
+    }};
+    for (const CanonicalBrokerProofCase& proof : brokerProofCases) {
+        if (!BrokerProofFieldsAreCanonical(
+                proof.success, proof.changed, proof.rollback,
+                proof.exitCode, proof.rollbackAuthorized)) {
+            return SetError(error,
+                L"self-test-install-journal-broker-proof",
+                ERROR_INVALID_DATA);
+        }
+    }
+    if (BrokerProofFieldsAreCanonical(
+            false, false, "not-needed", 1U, true)) {
+        return SetError(error,
+            L"self-test-install-journal-broker-proof",
+            ERROR_INVALID_DATA);
+    }
+    std::string envelope = "{\"schema\":2,\"kind\":";
+    AppendJsonAsciiString(&envelope, kInstallRecoveryKind);
+    envelope.append(",\"payloadSha256\":");
+    AppendJsonAsciiString(&envelope, digest);
+    envelope.append(",\"payload\":");
+    AppendJsonUtf8String(&envelope, payload);
+    envelope.append("}\n");
+    InstallJournalStateData parsedState;
+    std::string parsedDigest;
+    const std::filesystem::path modelRoot =
+        std::filesystem::path(L"C:\\ProgramData\\VIIPER\\UdeCx\\Transactions\\active-v2");
+    if (!ParseInstallJournalEnvelope(
+            envelope, modelRoot, &parsedState, &parsedDigest, error) ||
+        parsedDigest != digest || parsedState.sequence != 0U ||
+        parsedState.previousDigest != kZeroSha256 ||
+        !SameJournalPackageIdentity(
+            parsedState.candidate, state.candidate)) {
+        if (error->code == ERROR_SUCCESS) {
+            SetError(error, L"self-test-install-journal-chain",
+                ERROR_INVALID_DATA);
+        }
+        return false;
+    }
+    for (const CanonicalBrokerProofCase& proof : brokerProofCases) {
+        InstallJournalStateData proofState = state;
+        proofState.phase = InstallJournalPhase::BrokerChildSettled;
+        proofState.brokerRequired = true;
+        proofState.brokerEntered = true;
+        proofState.brokerSettled = true;
+        proofState.hasBrokerProof = true;
+        proofState.brokerProofSuccess = proof.success;
+        proofState.brokerProofChanged = proof.changed;
+        proofState.brokerProofRollback = proof.rollback;
+        proofState.brokerProofExitCode = proof.exitCode;
+        proofState.brokerDriverRollbackAuthorized =
+            proof.rollbackAuthorized;
+        proofState.rollbackAuthorized = proof.rollbackAuthorized;
+        proofState.direction = proof.rollbackAuthorized
+            ? InstallJournalDirection::Rollback
+            : InstallJournalDirection::Forward;
+        std::string proofPayload;
+        std::string proofDigest;
+        if (!BuildInstallJournalPayload(proofState, &proofPayload, error) ||
+            !Sha256Data(proofPayload, &proofDigest, error)) {
+            return false;
+        }
+        std::string proofEnvelope = "{\"schema\":2,\"kind\":";
+        AppendJsonAsciiString(&proofEnvelope, kInstallRecoveryKind);
+        proofEnvelope.append(",\"payloadSha256\":");
+        AppendJsonAsciiString(&proofEnvelope, proofDigest);
+        proofEnvelope.append(",\"payload\":");
+        AppendJsonUtf8String(&proofEnvelope, proofPayload);
+        proofEnvelope.append("}\n");
+        InstallJournalStateData proofRoundTrip;
+        std::string observedProofDigest;
+        if (!ParseInstallJournalEnvelope(
+                proofEnvelope, modelRoot, &proofRoundTrip,
+                &observedProofDigest, error) ||
+            observedProofDigest != proofDigest ||
+            !SameDurableBrokerProof(proofState, proofRoundTrip) ||
+            proofRoundTrip.direction != proofState.direction ||
+            proofRoundTrip.rollbackAuthorized !=
+                proofState.rollbackAuthorized) {
+            return SetError(error,
+                L"self-test-install-journal-broker-proof-roundtrip",
+                ERROR_INVALID_DATA);
+        }
+    }
+    InstallJournalStateData durableReceipt = returned;
+    durableReceipt.phase = InstallJournalPhase::StageReceiptCaptured;
+    durableReceipt.hasPublishedCandidate = true;
+    durableReceipt.publishedCandidate = durableReceipt.candidate;
+    durableReceipt.publishedCandidate.publishedName = L"oem42.inf";
+    durableReceipt.packageStagedHere = true;
+    durableReceipt.expectedInventory.push_back(
+        durableReceipt.publishedCandidate);
+    if (!ValidateInstallJournalTransition(
+            &returned, durableReceipt, error)) {
+        return false;
+    }
+    InstallJournalStateData rootIntent = durableReceipt;
+    rootIntent.phase =
+        InstallJournalPhase::RootRegistrationIntentCaptured;
+    rootIntent.hasRootRegistrationIntent = true;
+    rootIntent.rootRegistrationInstanceId =
+        L"ROOT\\VIIPERUDE\\0042";
+    InstallJournalStateData rootRegistrationEntered = rootIntent;
+    rootRegistrationEntered.phase =
+        InstallJournalPhase::RootRegistrationEntered;
+    rootRegistrationEntered.bindingMutationStarted = true;
+    if (!ValidateInstallJournalTransition(
+            &durableReceipt, rootIntent, error) ||
+        !ValidateInstallJournalTransition(
+            &rootIntent, rootRegistrationEntered, error)) {
+        return false;
+    }
+    InstallJournalStateData changedRootIntent =
+        rootRegistrationEntered;
+    changedRootIntent.phase =
+        InstallJournalPhase::RootRegistrationReturned;
+    changedRootIntent.rootRegistrationInstanceId =
+        L"ROOT\\VIIPERUDE\\0043";
+    Error changedRootIntentError;
+    if (ValidateInstallJournalTransition(
+            &rootRegistrationEntered, changedRootIntent,
+            &changedRootIntentError) ||
+        changedRootIntentError.code == ERROR_SUCCESS) {
+        return SetError(error,
+            L"self-test-install-journal-root-intent-chain",
+            ERROR_INVALID_DATA);
+    }
+    std::string rootIntentPayload;
+    if (!BuildInstallJournalPayload(
+            rootIntent, &rootIntentPayload, error) ||
+        rootIntentPayload.find(
+            "\"rootRegistrationInstanceId\":\"ROOT\\\\VIIPERUDE\\\\0042\"") ==
+            std::string::npos) {
+        return SetError(error,
+            L"self-test-install-journal-root-intent-roundtrip",
+            ERROR_INVALID_DATA);
+    }
+
+    PartialInstallRootRecoveryFacts partialRoot;
+    partialRoot.priorEmpty = true;
+    partialRoot.bindingMutationStarted = true;
+    partialRoot.forwardRootRegistrationEntered = true;
+    if (ClassifyPartialInstallRootRecovery(partialRoot) !=
+            PartialInstallRootRecoveryAction::PriorEmpty) {
+        return SetError(error,
+            L"self-test-install-journal-partial-root-before-register",
+            ERROR_INVALID_DATA);
+    }
+    partialRoot.relatedRootCount = 1U;
+    partialRoot.exactHardwareId = true;
+    partialRoot.exactClass = true;
+    partialRoot.exactGeneratedInstance = true;
+    partialRoot.present = true;
+    partialRoot.serviceEmpty = true;
+    partialRoot.publishedInfEmpty = true;
+    partialRoot.driverVersionEmpty = true;
+    if (ClassifyPartialInstallRootRecovery(partialRoot) !=
+            PartialInstallRootRecoveryAction::RemoveUnboundExactRoot) {
+        return SetError(error,
+            L"self-test-install-journal-partial-root-after-register",
+            ERROR_INVALID_DATA,
+            L"failed/timed-out DIF_REGISTER exact receipt root was not cleanup-authorized");
+    }
+    partialRoot.serviceEmpty = false;
+    partialRoot.publishedInfEmpty = false;
+    partialRoot.driverVersionEmpty = false;
+    partialRoot.exactCandidateService = true;
+    partialRoot.exactCandidateInf = true;
+    partialRoot.exactCandidateVersion = true;
+    partialRoot.exactCandidateBytes = true;
+    if (ClassifyPartialInstallRootRecovery(partialRoot) !=
+            PartialInstallRootRecoveryAction::Manual) {
+        return SetError(error,
+            L"self-test-install-journal-partial-root-before-diinstall",
+            ERROR_INVALID_DATA);
+    }
+    partialRoot.forwardDiInstallEntered = true;
+    if (ClassifyPartialInstallRootRecovery(partialRoot) !=
+            PartialInstallRootRecoveryAction::RemoveCandidateBoundExactRoot) {
+        return SetError(error,
+            L"self-test-install-journal-partial-root-after-diinstall",
+            ERROR_INVALID_DATA);
+    }
+    PartialInstallRootRecoveryFacts pendingRoot = partialRoot;
+    pendingRoot.partialRootRemovalEntered = true;
+    pendingRoot.present = false;
+    pendingRoot.pendingRemovalLifecycle = true;
+    if (ClassifyPartialInstallRootRecovery(pendingRoot) !=
+            PartialInstallRootRecoveryAction::PendingExactRootRemoval) {
+        return SetError(error,
+            L"self-test-install-journal-partial-root-pending-candidate",
+            ERROR_INVALID_DATA);
+    }
+    pendingRoot.exactHardwareId = false;
+    pendingRoot.hardwareIdAbsent = true;
+    pendingRoot.serviceEmpty = true;
+    pendingRoot.exactCandidateService = false;
+    pendingRoot.driverVersionEmpty = true;
+    pendingRoot.exactCandidateVersion = false;
+    if (ClassifyPartialInstallRootRecovery(pendingRoot) !=
+            PartialInstallRootRecoveryAction::PendingExactRootRemoval) {
+        return SetError(error,
+            L"self-test-install-journal-partial-root-pending-cleared",
+            ERROR_INVALID_DATA);
+    }
+    pendingRoot.pendingRemovalLifecycle = false;
+    if (ClassifyPartialInstallRootRecovery(pendingRoot) !=
+            PartialInstallRootRecoveryAction::Manual) {
+        return SetError(error,
+            L"self-test-install-journal-partial-root-not-pending",
+            ERROR_INVALID_DATA);
+    }
+    for (const auto mutateUnauthorized : {
+            0, 1, 2, 3, 4, 5}) {
+        PartialInstallRootRecoveryFacts unauthorized = partialRoot;
+        switch (mutateUnauthorized) {
+        case 0: unauthorized.relatedRootCount = 2U; break;
+        case 1: unauthorized.exactHardwareId = false; break;
+        case 2: unauthorized.exactClass = false; break;
+        case 3: unauthorized.exactGeneratedInstance = false; break;
+        case 4: unauthorized.present = false; break;
+        case 5: unauthorized.forwardRootRegistrationEntered = false; break;
+        }
+        if (ClassifyPartialInstallRootRecovery(unauthorized) !=
+                PartialInstallRootRecoveryAction::Manual) {
+            return SetError(error,
+                L"self-test-install-journal-partial-root-manual",
+                ERROR_INVALID_DATA);
+        }
+    }
+    if (InstallJournalRecoveryUsesStrictBindingRestore(
+            rootRegistrationEntered)) {
+        return SetError(error,
+            L"self-test-install-journal-prior-empty-strict-restore",
+            ERROR_INVALID_DATA);
+    }
+
+    InstallJournalStateData partialRollback = rootRegistrationEntered;
+    partialRollback.sequence += 1U;
+    partialRollback.phase = InstallJournalPhase::RollbackBindingEntered;
+    partialRollback.direction = InstallJournalDirection::Rollback;
+    partialRollback.rollbackAuthorized = true;
+    InstallJournalStateData partialRemovalEntered = partialRollback;
+    partialRemovalEntered.sequence += 1U;
+    partialRemovalEntered.phase =
+        InstallJournalPhase::PartialRootRemovalEntered;
+    partialRemovalEntered.partialRootRemovalBootIdentifier =
+        std::string(32, '1');
+    partialRemovalEntered.partialRootRemovalBinding =
+        InstallJournalStateData::PartialRootRemovalBinding::Unbound;
+    InstallJournalStateData partialRemovalReturned =
+        partialRemovalEntered;
+    partialRemovalReturned.sequence += 1U;
+    partialRemovalReturned.phase =
+        InstallJournalPhase::PartialRootRemovalReturned;
+    InstallJournalStateData partialRemovalPending =
+        partialRemovalEntered;
+    partialRemovalPending.sequence += 1U;
+    partialRemovalPending.phase = InstallJournalPhase::
+        PartialRootRemovalRebootPending;
+    partialRemovalPending.rebootRequired = true;
+    partialRemovalPending.callSucceeded = false;
+    partialRemovalPending.callError = ERROR_SUCCESS_REBOOT_REQUIRED;
+    if (!ValidateInstallJournalTransition(
+            &rootRegistrationEntered, partialRollback, error) ||
+        !ValidateInstallJournalTransition(
+            &partialRollback, partialRemovalEntered, error) ||
+        !ValidateInstallJournalTransition(
+            &partialRemovalEntered, partialRemovalReturned, error) ||
+        !ValidateInstallJournalTransition(
+            &partialRemovalEntered, partialRemovalPending, error)) {
+        return false;
+    }
+    InstallJournalStateData illegalRemovalShape =
+        partialRemovalReturned;
+    illegalRemovalShape.partialRootRemovalBinding =
+        InstallJournalStateData::PartialRootRemovalBinding::Candidate;
+    Error illegalRemovalShapeError;
+    if (ValidateInstallJournalTransition(
+            &partialRemovalEntered, illegalRemovalShape,
+            &illegalRemovalShapeError) ||
+        illegalRemovalShapeError.code == ERROR_SUCCESS) {
+        return SetError(error,
+            L"self-test-install-journal-partial-root-shape-chain",
+            ERROR_INVALID_DATA);
+    }
+    std::string partialRemovalPayload;
+    std::string partialRemovalDigest;
+    if (!BuildInstallJournalPayload(
+            partialRemovalEntered, &partialRemovalPayload, error) ||
+        partialRemovalPayload.find(
+            "\"partialRootRemovalBinding\":\"unbound\"") ==
+            std::string::npos ||
+        !Sha256Data(partialRemovalPayload,
+            &partialRemovalDigest, error)) {
+        return false;
+    }
+    InstallJournalStateData partialRemovalFreshReturn =
+        partialRemovalEntered;
+    partialRemovalFreshReturn.sequence += 1U;
+    partialRemovalFreshReturn.phase =
+        InstallJournalPhase::PartialRootRemovalReturned;
+    partialRemovalFreshReturn.rebootRequired = true;
+    partialRemovalFreshReturn.freshRebootRequired = true;
+    partialRemovalFreshReturn.pendingRebootBootIdentifier =
+        std::string(32, '2');
+    InstallJournalStateData partialRemovalFreshPending =
+        partialRemovalFreshReturn;
+    partialRemovalFreshPending.sequence += 1U;
+    partialRemovalFreshPending.phase = InstallJournalPhase::
+        PartialRootRemovalRebootPending;
+    partialRemovalFreshPending.freshRebootRequired = false;
+    if (!ValidateInstallJournalTransition(
+            &partialRemovalEntered, partialRemovalFreshReturn, error) ||
+        !ValidateInstallJournalTransition(
+            &partialRemovalFreshReturn,
+            partialRemovalFreshPending, error)) {
+        return false;
+    }
+    std::string partialFreshPayload;
+    std::string partialFreshDigest;
+    if (!BuildInstallJournalPayload(
+            partialRemovalFreshReturn, &partialFreshPayload, error) ||
+        !Sha256Data(partialFreshPayload,
+            &partialFreshDigest, error)) {
+        return false;
+    }
+    std::string partialFreshEnvelope = "{\"schema\":2,\"kind\":";
+    AppendJsonAsciiString(&partialFreshEnvelope, kInstallRecoveryKind);
+    partialFreshEnvelope.append(",\"payloadSha256\":");
+    AppendJsonAsciiString(&partialFreshEnvelope, partialFreshDigest);
+    partialFreshEnvelope.append(",\"payload\":");
+    AppendJsonUtf8String(&partialFreshEnvelope, partialFreshPayload);
+    partialFreshEnvelope.append("}\n");
+    InstallJournalStateData partialFreshRoundTrip;
+    std::string observedPartialFreshDigest;
+    if (!ParseInstallJournalEnvelope(
+            partialFreshEnvelope, modelRoot, &partialFreshRoundTrip,
+            &observedPartialFreshDigest, error) ||
+        observedPartialFreshDigest != partialFreshDigest ||
+        partialFreshRoundTrip.partialRootRemovalBinding !=
+            InstallJournalStateData::PartialRootRemovalBinding::Unbound ||
+        partialFreshRoundTrip.partialRootRemovalBootIdentifier !=
+            partialRemovalFreshReturn.partialRootRemovalBootIdentifier ||
+        partialFreshRoundTrip.pendingRebootBootIdentifier !=
+            partialRemovalFreshReturn.pendingRebootBootIdentifier ||
+        !partialFreshRoundTrip.freshRebootRequired) {
+        return SetError(error,
+            L"self-test-install-journal-partial-root-roundtrip",
+            ERROR_INVALID_DATA);
+    }
+    for (const InstallJournalStateData* interruptedPartial : {
+            &partialRemovalReturned, &partialRemovalFreshPending}) {
+        InstallJournalStateData readmittedPartial =
+            *interruptedPartial;
+        readmittedPartial.sequence += 1U;
+        readmittedPartial.phase =
+            InstallJournalPhase::RollbackBindingEntered;
+        readmittedPartial.freshRebootRequired = false;
+        if (!ValidateInstallJournalTransition(
+                interruptedPartial, readmittedPartial, error)) {
+            return false;
+        }
+    }
+    struct PartialRemovalRecoveryCase {
+        InstallJournalPhase phase;
+        bool callSucceeded;
+        bool freshRebootRequired;
+        bool sameBoot;
+        InstallJournalStateData::PartialRootRemovalBinding binding;
+        PartialInstallRootRecoveryAction root;
+        PartialRootRemovalRecoveryDisposition expected;
+    };
+    const std::array<PartialRemovalRecoveryCase, 13>
+        partialRemovalCases{{
+            {InstallJournalPhase::PartialRootRemovalEntered,
+                true, false, true,
+                InstallJournalStateData::PartialRootRemovalBinding::Unbound,
+                PartialInstallRootRecoveryAction::RemoveUnboundExactRoot,
+                PartialRootRemovalRecoveryDisposition::RetryRemoval},
+            {InstallJournalPhase::PartialRootRemovalEntered,
+                true, false, true,
+                InstallJournalStateData::PartialRootRemovalBinding::Unbound,
+                PartialInstallRootRecoveryAction::RemoveCandidateBoundExactRoot,
+                PartialRootRemovalRecoveryDisposition::Manual},
+            {InstallJournalPhase::PartialRootRemovalEntered,
+                true, false, true,
+                InstallJournalStateData::PartialRootRemovalBinding::Unbound,
+                PartialInstallRootRecoveryAction::PriorEmpty,
+                PartialRootRemovalRecoveryDisposition::RebootPending},
+            {InstallJournalPhase::PartialRootRemovalEntered,
+                true, false, false,
+                InstallJournalStateData::PartialRootRemovalBinding::Unbound,
+                PartialInstallRootRecoveryAction::PriorEmpty,
+                PartialRootRemovalRecoveryDisposition::ContinueRollback},
+            {InstallJournalPhase::PartialRootRemovalEntered,
+                true, false, false,
+                InstallJournalStateData::PartialRootRemovalBinding::Unbound,
+                PartialInstallRootRecoveryAction::RemoveUnboundExactRoot,
+                PartialRootRemovalRecoveryDisposition::Manual},
+            {InstallJournalPhase::PartialRootRemovalReturned,
+                true, false, true,
+                InstallJournalStateData::PartialRootRemovalBinding::Unbound,
+                PartialInstallRootRecoveryAction::PriorEmpty,
+                PartialRootRemovalRecoveryDisposition::ContinueRollback},
+            {InstallJournalPhase::PartialRootRemovalReturned,
+                true, false, true,
+                InstallJournalStateData::PartialRootRemovalBinding::Unbound,
+                PartialInstallRootRecoveryAction::PendingExactRootRemoval,
+                PartialRootRemovalRecoveryDisposition::Manual},
+            {InstallJournalPhase::PartialRootRemovalReturned,
+                true, true, true,
+                InstallJournalStateData::PartialRootRemovalBinding::Unbound,
+                PartialInstallRootRecoveryAction::PendingExactRootRemoval,
+                PartialRootRemovalRecoveryDisposition::RebootPending},
+            {InstallJournalPhase::PartialRootRemovalReturned,
+                true, true, false,
+                InstallJournalStateData::PartialRootRemovalBinding::Unbound,
+                PartialInstallRootRecoveryAction::PriorEmpty,
+                PartialRootRemovalRecoveryDisposition::ContinueRollback},
+            {InstallJournalPhase::PartialRootRemovalReturned,
+                false, false, true,
+                InstallJournalStateData::PartialRootRemovalBinding::Unbound,
+                PartialInstallRootRecoveryAction::PriorEmpty,
+                PartialRootRemovalRecoveryDisposition::Manual},
+            {InstallJournalPhase::PartialRootRemovalRebootPending,
+                true, false, true,
+                InstallJournalStateData::PartialRootRemovalBinding::Unbound,
+                PartialInstallRootRecoveryAction::PendingExactRootRemoval,
+                PartialRootRemovalRecoveryDisposition::RebootPending},
+            {InstallJournalPhase::PartialRootRemovalRebootPending,
+                true, false, false,
+                InstallJournalStateData::PartialRootRemovalBinding::Unbound,
+                PartialInstallRootRecoveryAction::PriorEmpty,
+                PartialRootRemovalRecoveryDisposition::ContinueRollback},
+            {InstallJournalPhase::PartialRootRemovalRebootPending,
+                true, false, false,
+                InstallJournalStateData::PartialRootRemovalBinding::Unbound,
+                PartialInstallRootRecoveryAction::PendingExactRootRemoval,
+                PartialRootRemovalRecoveryDisposition::Manual},
+        }};
+    for (const PartialRemovalRecoveryCase& test :
+            partialRemovalCases) {
+        if (ClassifyPartialRootRemovalJournalRecovery(
+                test.phase, test.callSucceeded,
+                test.freshRebootRequired, test.sameBoot,
+                test.binding, test.root) != test.expected) {
+            return SetError(error,
+                L"self-test-install-journal-partial-root-recovery-matrix",
+                ERROR_INVALID_DATA);
+        }
+    }
+
+    std::vector<wchar_t> canonicalHardwareId(
+        std::begin(kHardwareId), std::end(kHardwareId));
+    canonicalHardwareId.push_back(L'\0');
+    InstallRecoveryHardwareIdObservation hardwareObservation;
+    std::vector<wchar_t> malformedHardwareId = canonicalHardwareId;
+    malformedHardwareId.push_back(L'x');
+    if (!ClassifyCanonicalInstallRecoveryHardwareIds(
+            canonicalHardwareId, &hardwareObservation) ||
+        !hardwareObservation.containsExpected ||
+        !hardwareObservation.exact ||
+        ClassifyCanonicalInstallRecoveryHardwareIds(
+            malformedHardwareId, &hardwareObservation)) {
+        return SetError(error,
+            L"self-test-install-journal-raw-hardware-id",
+            ERROR_INVALID_DATA);
+    }
+    const std::vector<wchar_t> canonicalService{
+        L'V', L'i', L'i', L'p', L'e', L'r', L'U', L'd', L'e', L'\0'};
+    std::vector<wchar_t> hiddenService = canonicalService;
+    hiddenService.push_back(L'x');
+    hiddenService.push_back(L'\0');
+    const std::vector<wchar_t> hiddenAfterEmpty{
+        L'\0', L'x', L'\0'};
+    std::wstring decodedService;
+    if (!DecodeCanonicalInstallRecoveryString(
+            canonicalService, &decodedService) ||
+        decodedService != kServiceName ||
+        DecodeCanonicalInstallRecoveryString(
+            hiddenService, &decodedService) ||
+        DecodeCanonicalInstallRecoveryString(
+            hiddenAfterEmpty, &decodedService)) {
+        return SetError(error,
+            L"self-test-install-journal-raw-string",
+            ERROR_INVALID_DATA);
+    }
+    InstallJournalStateData ambiguousOwnership = durableReceipt;
+    ambiguousOwnership.phase = InstallJournalPhase::RollbackBindingEntered;
+    ambiguousOwnership.direction = InstallJournalDirection::Rollback;
+    ambiguousOwnership.rollbackAuthorized = true;
+    Error ownershipError;
+    if (ValidateInstallJournalTransition(
+            &returned, ambiguousOwnership, &ownershipError) ||
+        ownershipError.code == ERROR_SUCCESS) {
+        return SetError(error,
+            L"self-test-install-journal-stage-ownership",
+            ERROR_INVALID_DATA);
+    }
+
+    InstallJournalStateData rootAuthority = durableReceipt;
+    rootAuthority.bindingMutationStarted = true;
+    DeviceState priorDevice;
+    priorDevice.instanceId = L"ROOT\\VIIPERUDE\\0000";
+    priorDevice.present = true;
+    priorDevice.service = kServiceName;
+    priorDevice.publishedInf = L"oem41.inf";
+    priorDevice.version.parts = {1, 2, 3, 3};
+    priorDevice.package = rootAuthority.candidate;
+    priorDevice.package.version = priorDevice.version;
+    priorDevice.package.publishedName = priorDevice.publishedInf;
+    rootAuthority.prior.devices = {priorDevice};
+    Snapshot priorRootSnapshot;
+    priorRootSnapshot.devices = {priorDevice};
+    Snapshot candidateRootSnapshot = priorRootSnapshot;
+    candidateRootSnapshot.devices[0].publishedInf =
+        rootAuthority.publishedCandidate.publishedName;
+    candidateRootSnapshot.devices[0].version = rootAuthority.candidate.version;
+    candidateRootSnapshot.devices[0].package = rootAuthority.candidate;
+    candidateRootSnapshot.devices[0].package.publishedName =
+        rootAuthority.publishedCandidate.publishedName;
+    Snapshot foreignRootSnapshot = candidateRootSnapshot;
+    foreignRootSnapshot.devices[0].instanceId = L"ROOT\\VIIPERUDE\\9999";
+    Snapshot extraRootSnapshot = candidateRootSnapshot;
+    extraRootSnapshot.devices.push_back(candidateRootSnapshot.devices[0]);
+    if (!RootSnapshotIsAuthorizedForInstallRollback(
+            rootAuthority, priorRootSnapshot) ||
+        !RootSnapshotIsAuthorizedForInstallRollback(
+            rootAuthority, candidateRootSnapshot) ||
+        RootSnapshotIsAuthorizedForInstallRollback(
+            rootAuthority, foreignRootSnapshot) ||
+        RootSnapshotIsAuthorizedForInstallRollback(
+            rootAuthority, extraRootSnapshot)) {
+        return SetError(error,
+            L"self-test-install-journal-root-authority",
+            ERROR_INVALID_DATA);
+    }
+    std::vector<PackageInfo> exactInventory{
+        priorDevice.package, rootAuthority.publishedCandidate};
+    std::vector<PackageInfo> extraInventory = exactInventory;
+    PackageInfo externalPackage = rootAuthority.candidate;
+    externalPackage.publishedName = L"oem99.inf";
+    externalPackage.version.parts[3] += 5;
+    extraInventory.push_back(externalPackage);
+    std::vector<PackageInfo> conflictingInventory = exactInventory;
+    conflictingInventory[1].sysSha256[0] = '0';
+    if (SamePackageInventory(exactInventory, extraInventory) ||
+        SamePackageInventory(exactInventory, conflictingInventory)) {
+        return SetError(error,
+            L"self-test-install-journal-inventory-authority",
+            ERROR_INVALID_DATA);
+    }
+    InstallJournalStateData rebootCutpoint = state;
+    rebootCutpoint.direction = InstallJournalDirection::Rollback;
+    rebootCutpoint.rollbackAuthorized = true;
+    rebootCutpoint.bindingMutationStarted = true;
+    rebootCutpoint.phase = InstallJournalPhase::RollbackBindingReturned;
+    rebootCutpoint.callSucceeded = true;
+    rebootCutpoint.rebootRequired = true;
+    rebootCutpoint.freshRebootRequired = true;
+    rebootCutpoint.pendingRebootBootIdentifier =
+        std::string(32, 'd');
+    if (!InstallJournalNeedsRestoreRebootPending(rebootCutpoint, true) ||
+        InstallJournalNeedsRestoreRebootPending(rebootCutpoint, false) ||
+        !InstallJournalRollbackRetryRebootSeed(rebootCutpoint, true) ||
+        InstallJournalRollbackRetryRebootSeed(rebootCutpoint, false) ||
+        !InstallJournalHasAuthoritativeRollbackSettlement(
+            rebootCutpoint)) {
+        return SetError(error,
+            L"self-test-install-journal-reboot-cutpoint",
+            ERROR_INVALID_DATA);
+    }
+    InstallJournalStateData rollbackEntered = state;
+    rollbackEntered.direction = InstallJournalDirection::Rollback;
+    rollbackEntered.rollbackAuthorized = true;
+    rollbackEntered.phase =
+        InstallJournalPhase::RollbackBindingEntered;
+    InstallJournalStateData firstBootReturn = rollbackEntered;
+    firstBootReturn.phase =
+        InstallJournalPhase::RollbackBindingReturned;
+    firstBootReturn.rebootRequired = true;
+    firstBootReturn.freshRebootRequired = true;
+    firstBootReturn.pendingRebootBootIdentifier =
+        std::string(32, 'd');
+    InstallJournalStateData retryEntered = firstBootReturn;
+    retryEntered.phase =
+        InstallJournalPhase::RollbackBindingEntered;
+    retryEntered.freshRebootRequired = false;
+    InstallJournalStateData laterBootReturn = retryEntered;
+    laterBootReturn.phase =
+        InstallJournalPhase::RollbackBindingReturned;
+    laterBootReturn.freshRebootRequired = true;
+    laterBootReturn.pendingRebootBootIdentifier =
+        std::string(32, 'e');
+    InstallJournalStateData laterBootPending = laterBootReturn;
+    laterBootPending.phase =
+        InstallJournalPhase::RestoreRebootPending;
+    laterBootPending.freshRebootRequired = false;
+    if (!ValidateInstallJournalTransition(
+            &rollbackEntered, firstBootReturn, error) ||
+        !ValidateInstallJournalTransition(
+            &firstBootReturn, retryEntered, error) ||
+        !ValidateInstallJournalTransition(
+            &retryEntered, laterBootReturn, error) ||
+        !ValidateInstallJournalTransition(
+            &laterBootReturn, laterBootPending, error) ||
+        laterBootPending.pendingRebootBootIdentifier ==
+            laterBootPending.bootIdentifier) {
+        return SetError(error,
+            L"self-test-install-journal-reboot-epoch",
+            ERROR_INVALID_DATA,
+            L"later-boot rollback NeedReboot did not replace and retain the pending epoch");
+    }
+    InstallJournalStateData illegalEpochChange = laterBootPending;
+    illegalEpochChange.phase =
+        InstallJournalPhase::ExactPriorRestored;
+    illegalEpochChange.pendingRebootBootIdentifier =
+        std::string(32, 'f');
+    Error illegalEpochError;
+    if (ValidateInstallJournalTransition(
+            &laterBootPending, illegalEpochChange,
+            &illegalEpochError) ||
+        illegalEpochError.code == ERROR_SUCCESS) {
+        return SetError(error,
+            L"self-test-install-journal-reboot-epoch-chain",
+            ERROR_INVALID_DATA);
+    }
+    std::string rebootPayload;
+    std::string rebootDigest;
+    if (!BuildInstallJournalPayload(
+            laterBootReturn, &rebootPayload, error) ||
+        !Sha256Data(rebootPayload, &rebootDigest, error)) {
+        return false;
+    }
+    std::string rebootEnvelope = "{\"schema\":2,\"kind\":";
+    AppendJsonAsciiString(&rebootEnvelope, kInstallRecoveryKind);
+    rebootEnvelope.append(",\"payloadSha256\":");
+    AppendJsonAsciiString(&rebootEnvelope, rebootDigest);
+    rebootEnvelope.append(",\"payload\":");
+    AppendJsonUtf8String(&rebootEnvelope, rebootPayload);
+    rebootEnvelope.append("}\n");
+    InstallJournalStateData rebootRoundTrip;
+    std::string observedRebootDigest;
+    if (!ParseInstallJournalEnvelope(
+            rebootEnvelope, modelRoot, &rebootRoundTrip,
+            &observedRebootDigest, error) ||
+        rebootRoundTrip.pendingRebootBootIdentifier !=
+            laterBootReturn.pendingRebootBootIdentifier ||
+        !rebootRoundTrip.freshRebootRequired ||
+        observedRebootDigest != rebootDigest) {
+        return SetError(error,
+            L"self-test-install-journal-reboot-epoch-roundtrip",
+            ERROR_INVALID_DATA);
+    }
+    AbiCompatibilityProfile malformedProfile =
+        kAbiCompatibilityProfiles[0];
+    ++malformedProfile.statsSize;
+    if (IsKnownAbiCompatibilityProfile(malformedProfile)) {
+        return SetError(error,
+            L"self-test-install-journal-abi-profile",
+            ERROR_INVALID_DATA);
+    }
+    std::string truncated = envelope.substr(0, envelope.size() - 3U);
+    Error truncatedError;
+    if (ParseInstallJournalEnvelope(
+            truncated, modelRoot, &parsedState, &parsedDigest,
+            &truncatedError) || truncatedError.code == ERROR_SUCCESS) {
+        return SetError(error, L"self-test-install-journal-truncated-chain",
+            ERROR_INVALID_DATA);
+    }
+    std::string tampered = envelope;
+    const size_t payloadOffset = tampered.find("previousSha256");
+    if (payloadOffset == std::string::npos) {
+        return SetError(error, L"self-test-install-journal-chain",
+            ERROR_INVALID_DATA);
+    }
+    tampered[payloadOffset] = 'P';
+    Error tamperedError;
+    if (ParseInstallJournalEnvelope(
+            tampered, modelRoot, &parsedState, &parsedDigest,
+            &tamperedError) || tamperedError.code == ERROR_SUCCESS) {
+        return SetError(error, L"self-test-install-journal-hash-chain",
+            ERROR_INVALID_DATA);
+    }
+
+    struct RecoveryCase {
+        InstallJournalPhase phase;
+        bool chainValid;
+        bool securityValid;
+        bool sameBoot;
+        bool priorValid;
+        bool forwardValid;
+        bool brokerEntered;
+        bool brokerSettled;
+        bool brokerSucceeded;
+        InstallJournalRecoveryModelAction expected;
+    };
+    const std::array<RecoveryCase, 8> cases{{
+        {InstallJournalPhase::Prepared, true, true, true, true,
+            false, false, false, false,
+            InstallJournalRecoveryModelAction::RetirePrior},
+        {InstallJournalPhase::DriverValidated, true, true, true, false,
+            true, false, false, false,
+            InstallJournalRecoveryModelAction::RetireForward},
+        {InstallJournalPhase::SetupCopyReturned, true, true, true, false,
+            false, false, false, false,
+            InstallJournalRecoveryModelAction::RollbackPrior},
+        {InstallJournalPhase::BrokerChildEntered, true, true, true, false,
+            true, true, false, false,
+            InstallJournalRecoveryModelAction::Manual},
+        {InstallJournalPhase::ForwardRebootPending, true, true, true, false,
+            false, false, false, false,
+            InstallJournalRecoveryModelAction::RebootPending},
+        {InstallJournalPhase::RestoreRebootPending, true, true, false, true,
+            false, false, false, false,
+            InstallJournalRecoveryModelAction::RetirePrior},
+        {InstallJournalPhase::ForwardValidated, false, true, false, false,
+            true, false, false, false,
+            InstallJournalRecoveryModelAction::Manual},
+        {InstallJournalPhase::ForwardValidated, true, false, false, false,
+            true, false, false, false,
+            InstallJournalRecoveryModelAction::Manual},
+    }};
+    for (const RecoveryCase& test : cases) {
+        if (ClassifyInstallJournalRecoveryModel(
+                test.phase, test.chainValid, test.securityValid,
+                test.sameBoot, test.priorValid, test.forwardValid,
+                test.brokerEntered, test.brokerSettled,
+                test.brokerSucceeded) != test.expected) {
+            return SetError(error, L"self-test-install-journal-recovery-model",
+                ERROR_INVALID_DATA);
+        }
+    }
+    return true;
+}
+
 Outcome SelfTest();
 
 Outcome Status() {
@@ -5787,6 +12743,9 @@ Outcome Status() {
 
 Outcome SelfTest() {
     Outcome outcome;
+    if (!RunInstallJournalModelSelfTest(&outcome.error)) {
+        return outcome;
+    }
     InstallOptions brokerCommandOptions;
     brokerCommandOptions.brokerExecutable = LR"(C:\Program Files\VIIPER\viiper.exe)";
     brokerCommandOptions.brokerToken = LR"(C:\ProgramData\VIIPER\package.token)";
@@ -6804,6 +13763,7 @@ void Usage() {
            L"--expected-cat-sha256 <64 hex> "
            L"--transaction-deadline-unix-ms <positive integer>\n"
         << L"  ViiperUdeCtl.exe remove [--transaction-deadline-unix-ms <positive integer>]\n"
+        << L"  ViiperUdeCtl.exe recover [--transaction-deadline-unix-ms <positive integer>]\n"
         << L"  ViiperUdeCtl.exe status\n"
         << L"  ViiperUdeCtl.exe self-test\n";
 }
@@ -6855,6 +13815,21 @@ int RunViiperUdeCtl(int argc, wchar_t** argv) {
         EmitOutcome(L"remove", outcome);
         return static_cast<int>(outcome.exitCode);
     }
+    if (argc >= 2 && _wcsicmp(argv[1], L"recover") == 0) {
+        RemoveOptions options;
+        Error argumentError;
+        if (!ParseRemoveOptions(argc, argv, &options, &argumentError)) {
+            Usage();
+            Outcome outcome;
+            outcome.error = std::move(argumentError);
+            outcome.exitCode = ExitCode::Usage;
+            EmitOutcome(L"recover", outcome);
+            return static_cast<int>(outcome.exitCode);
+        }
+        Outcome outcome = Recover(options.transactionDeadlineUnixMs);
+        EmitOutcome(L"recover", outcome);
+        return static_cast<int>(outcome.exitCode);
+    }
     if (argc == 2 && _wcsicmp(argv[1], L"status") == 0) {
         Outcome outcome = Status();
         EmitOutcome(L"status", outcome);
@@ -6878,7 +13853,7 @@ const wchar_t* ExceptionOperation(int argc, wchar_t** argv) noexcept {
         return L"unknown";
     }
     for (const wchar_t* operation :
-            {L"install", L"verify", L"remove", L"status", L"self-test"}) {
+            {L"install", L"verify", L"remove", L"recover", L"status", L"self-test"}) {
         if (_wcsicmp(argv[1], operation) == 0) {
             return operation;
         }

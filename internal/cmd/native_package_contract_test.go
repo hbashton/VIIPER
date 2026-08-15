@@ -223,6 +223,362 @@ func TestNativePackageProductionSourceContract(t *testing.T) {
 			t.Errorf("driver helper lost %q", fragment)
 		}
 	}
+	sourceRegion := func(name, start, end string, lastStart bool) string {
+		t.Helper()
+		startIndex := strings.Index(helperSource, start)
+		if lastStart {
+			startIndex = strings.LastIndex(helperSource, start)
+		}
+		endIndex := -1
+		if startIndex >= 0 {
+			if relative := strings.Index(helperSource[startIndex+len(start):], end); relative >= 0 {
+				endIndex = startIndex + len(start) + relative
+			}
+		}
+		if startIndex < 0 || endIndex <= startIndex {
+			t.Fatalf("driver helper %s source region is missing or malformed", name)
+		}
+		return helperSource[startIndex:endIndex]
+	}
+	assertOrdered := func(name, source string, fragments ...string) {
+		t.Helper()
+		cursor := -1
+		for _, fragment := range fragments {
+			relative := strings.Index(source[cursor+1:], fragment)
+			if relative < 0 {
+				t.Fatalf("driver helper violates %s ordering at %q", name, fragment)
+			}
+			cursor += relative + 1
+		}
+	}
+
+	journalRequired := []string{
+		"SHGetKnownFolderPath(", "FOLDERID_ProgramData",
+		`kInstallRecoveryProductDirectory[] = L"VIIPER"`,
+		`kInstallRecoveryComponentDirectory[] = L"UdeCx"`,
+		`kInstallRecoveryTransactionsDirectory[] = L"Transactions"`,
+		`kInstallRecoveryActiveDirectory[] = L"active-v2"`,
+		`kInstallRecoveryJournalPrefix[] = L"journal-"`,
+		"OpenStableDirectory(", "CreateOrOpenInstallRecoveryDirectory(",
+		"FILE_FLAG_OPEN_REPARSE_POINT", "FILE_ATTRIBUTE_REPARSE_POINT",
+		"VerifyProtectedFileSystemSecurity(", "WriteInstallJournalRecord(",
+		`\"previousSha256\"`, `\"payloadSha256\"`,
+		"FILE_FLAG_WRITE_THROUGH", "FlushFileBuffers(file.get())",
+		"MOVEFILE_WRITE_THROUGH", "install-journal-readback",
+		"Outcome Recover(", `L"recover"`, "ReconcileInstallJournal(",
+		"SynchronousMutationWatchdog", "InvokeAuthoritativeSynchronousMutation(",
+		"deadlineOverrun", "ManualReconciliationRequired",
+		"ForwardRebootPending", "RestoreRebootPending",
+		`\"direction\"`, `\"rollbackAuthorized\"`,
+		"ValidateInstallJournalTransition(", "impl_->poisoned = true",
+		"ValidateAndDiscardInstallJournalTemporaryFile(",
+		"OpenExistingInstallRecoveryDirectory(", "MapGenericMask(",
+		"StageReceiptCaptured ownership record", "exactPreRollbackInventory",
+		"RootSnapshotIsAuthorizedForInstallRollback(",
+		"InstallJournalNeedsRestoreRebootPending(",
+		"pendingRebootBootIdentifier", "freshRebootRequired",
+		"rootRegistrationInstanceId", "RootRegistrationIntentCaptured",
+		"ObservePriorEmptyInstallRecoveryRoot(",
+		"ReadInstallRecoveryHardwareIds(",
+		"DecodeCanonicalInstallRecoveryString(",
+		"RemoveAuthorizedPriorEmptyRootAfterAdmission(",
+		"PartialRootRemovalEntered", "PartialRootRemovalReturned",
+		"PartialRootRemovalRebootPending", "partialRootRemovalBinding",
+		"partialRootRemovalBootIdentifier",
+		"InstallRecoveryChainHasActive(",
+		"BuildInstallRecoveryProductDirectorySecurity(",
+		"VerifyProtectedProductDirectorySecurity(",
+	}
+	for _, fragment := range journalRequired {
+		if !strings.Contains(helperSource, fragment) {
+			t.Errorf("driver helper install journal lost %q", fragment)
+		}
+	}
+	journalPhases := []string{
+		"Prepared",
+		"SetupCopyEntered", "SetupCopyReturned", "StageReceiptCaptured",
+		"QuiesceSignalEntered", "QuiesceSignalReturned",
+		"RootRegistrationIntentCaptured",
+		"RootRegistrationEntered", "RootRegistrationReturned",
+		"DiInstallEntered", "DiInstallReturned", "PriorAbiProfileCaptured",
+		"DriverValidated",
+		"BrokerHandoffEntered", "BrokerHandoffReturned",
+		"BrokerChildEntered", "BrokerChildSettled",
+		"RollbackBindingEntered", "PartialRootRemovalEntered",
+		"PartialRootRemovalReturned", "PartialRootRemovalRebootPending",
+		"RollbackBindingReturned",
+		"SetupUninstallEntered", "SetupUninstallReturned",
+		"ForwardValidated", "ExactPriorRestored",
+		"ForwardRebootPending", "RestoreRebootPending",
+		"ManualReconciliationRequired",
+	}
+	for _, phase := range journalPhases {
+		qualified := "InstallJournalPhase::" + phase
+		if strings.Count(helperSource, qualified) < 2 {
+			t.Errorf("driver helper install journal does not both define and use phase %q", phase)
+		}
+	}
+
+	recoveryPathSource := sourceRegion("fixed recovery path",
+		"bool ResolveInstallRecoveryPaths(", "bool GetBootIdentifier(", false)
+	assertOrdered("fixed ProgramData path", recoveryPathSource,
+		"SHGetKnownFolderPath(", "FOLDERID_ProgramData",
+		"*product = *programData / kInstallRecoveryProductDirectory;",
+		"*component = *product / kInstallRecoveryComponentDirectory;",
+		"*transactions = *component / kInstallRecoveryTransactionsDirectory;",
+		"*active = *transactions / kInstallRecoveryActiveDirectory;")
+	for _, fragment := range []string{
+		"FILE_FLAG_OPEN_REPARSE_POINT", "FILE_ATTRIBUTE_REPARSE_POINT",
+		"VerifyProtectedFileSystemSecurity(",
+		"CreateOrOpenInstallRecoveryDirectory(",
+		"active, false, true, &activeHandle",
+	} {
+		if !strings.Contains(recoveryPathSource, fragment) {
+			t.Errorf("driver helper fixed recovery path lost %q", fragment)
+		}
+	}
+
+	journalWriterSource := sourceRegion("append-only journal writer",
+		"bool WriteInstallJournalRecord(", "bool GenerateInstallTransactionId(", false)
+	assertOrdered("durable journal publication", journalWriterSource,
+		"BuildInstallJournalPayload(", "Sha256Data(payload, &digest",
+		`\"payloadSha256\"`, "CREATE_NEW", "FILE_FLAG_WRITE_THROUGH",
+		"FlushFileBuffers(file.get())", "MoveFileExW(", "MOVEFILE_WRITE_THROUGH",
+		"OPEN_EXISTING", "ReadFile(file.get(), observed.data()",
+		"observed != record", "trailingRead != 0",
+		"state->previousDigest = digest", "++state->sequence")
+	if strings.Contains(journalWriterSource, "MOVEFILE_REPLACE_EXISTING") {
+		t.Error("driver helper append-only journal can replace a published record")
+	}
+	journalLoadSource := sourceRegion("journal chain loader",
+		"bool LoadInstallJournal(", "bool RetireLoadedInstallJournal(", false)
+	assertOrdered("journal hash-chain validation", journalLoadSource,
+		"std::string priorDigest(kZeroSha256)",
+		"ParseInstallJournalEnvelope(",
+		"parsed.sequence != expectedSequence",
+		"parsed.previousDigest.c_str(), priorDigest.c_str()",
+		"priorDigest = digest")
+
+	journalPrepareSource := sourceRegion("install journal preparation",
+		"bool InstallJournal::Prepare(", "bool InstallJournal::Record(", false)
+	assertOrdered("protected evidence before Prepared", journalPrepareSource,
+		"BackupPackagesIntoDirectory(", "CopyCandidateIntoInstallJournal(",
+		"impl_->state.prior = prior;", "impl_->state.candidate = candidate;",
+		"impl_->state.phase = InstallJournalPhase::Prepared;",
+		"WriteInstallJournalRecord(")
+
+	journalRecordSource := sourceRegion("atomic journal record",
+		"bool InstallJournal::RecordNext(", "bool InstallJournal::RecordCutpoint(", false)
+	assertOrdered("atomic journal state publication", journalRecordSource,
+		"ValidateInstallJournalTransition(&impl_->state, next",
+		"WriteInstallJournalRecord(", "impl_->state = std::move(next);",
+		"PublishInstallRecoveryEvidence(")
+	if !strings.Contains(journalRecordSource, "impl_->poisoned = true") {
+		t.Error("driver helper can continue after an indeterminate journal append")
+	}
+
+	watchdogSource := sourceRegion("authoritative mutation watchdog",
+		"class SynchronousMutationWatchdog final", "class DeviceInfoSet final", false)
+	for _, fragment := range []string{
+		"completion_.get(), waitMilliseconds",
+		"timedOut_.store(true", "WaitForSingleObject(completion_.get(), INFINITE)",
+		"thread_.join()", "gLastSynchronousMutationTimedOut = watchdog.Complete()",
+	} {
+		if !strings.Contains(watchdogSource, fragment) {
+			t.Errorf("driver helper authoritative watchdog lost %q", fragment)
+		}
+	}
+	for _, forbidden := range []string{
+		"CancelIoEx(", "CancelSynchronousIo(", "TerminateThread(",
+		"TerminateProcess(", ".detach()",
+	} {
+		if strings.Contains(watchdogSource, forbidden) {
+			t.Errorf("driver helper authoritative watchdog contains forbidden cancellation %q", forbidden)
+		}
+	}
+
+	installEntrySource := sourceRegion("install entry",
+		"Outcome Install(const InstallOptions& options)", "struct PackageBackup {", false)
+	assertOrdered("install pre-mutation reconciliation", installEntrySource,
+		"mutex.Acquire(", "ReconcileInstallJournal(", "ValidateCandidateInputs(",
+		"CaptureSnapshot(", "installJournal.Prepare(")
+	if strings.Count(installEntrySource,
+		"RemoveAuthorizedPriorEmptyRootAfterAdmission(") != 2 ||
+		strings.Count(installEntrySource,
+			"VerifyPriorTopologyBeforePackageRollback(") != 2 ||
+		strings.Count(installEntrySource,
+			"!prior.devices.empty() && bindingMutationStarted") != 2 {
+		t.Error("driver helper must apply receipt-bound root cleanup and strict post-removal proof in both in-process rollback branches without generic prior-empty deletion")
+	}
+	removeEntrySource := sourceRegion("remove entry",
+		"Outcome Remove(const RemoveOptions& options)", "Outcome Recover(", false)
+	assertOrdered("remove pre-mutation reconciliation", removeEntrySource,
+		"mutex.Acquire(", "ReconcileInstallJournal(", "CaptureSnapshot(",
+		"BackupPackages(")
+
+	reconcileSource := sourceRegion("startup journal reconciliation",
+		"bool ReconcileInstallJournal(", "bool RollbackRemove(", true)
+	for _, fragment := range []string{
+		"ForwardRebootPending && sameBoot", "RestoreRebootPending && sameBoot",
+		"return rebootPending(",
+		"loaded.state.phase == InstallJournalPhase::BrokerChildEntered",
+		"loaded.state.phase == InstallJournalPhase::BrokerHandoffReturned",
+		"loaded.state.rollbackAuthorized", "loaded.state.hasBrokerProof",
+		"loaded.state.brokerProofSuccess",
+		"no mutation was attempted", "InstallJournalPhase::ManualReconciliationRequired",
+		"appendPartialRootRemovalEntered",
+		"install-journal-partial-root-removal-inventory",
+		"install-journal-pre-package-rollback-inventory",
+		"ClassifyPartialRootRemovalJournalRecovery(",
+	} {
+		if !strings.Contains(reconcileSource, fragment) {
+			t.Errorf("driver helper startup reconciliation lost %q", fragment)
+		}
+	}
+
+	type phaseWrappedAPI struct {
+		name, start, end, entered, wrapper, api, returned string
+	}
+	phaseWrappedAPIs := []phaseWrappedAPI{
+		{"SetupCopyOEMInfW", "bool StageCandidatePackage(", "bool RemoveDevice(",
+			"SetupCopyEntered", "InvokeAuthoritativeSynchronousMutation(",
+			"SetupCopyOEMInfW(", "SetupCopyReturned"},
+		{"DiInstallDevice", "bool CommitPreparedDriverBinding(",
+			"bool InstallPreinstalledDriverOnDevice(", "DiInstallEntered",
+			"InvokeAuthoritativeSynchronousMutation(", "DiInstallDevice(", "DiInstallReturned"},
+		{"SetupUninstallOEMInfW", "bool RemoveStagedCandidateExact(",
+			"bool RestorePriorBinding(", "SetupUninstallEntered",
+			"InvokeAuthoritativeSynchronousMutation(", "SetupUninstallOEMInfW(",
+			"SetupUninstallReturned"},
+		{"broker quiescence signal", "bool RequestBrokerQuiescence(",
+			"bool SignalBrokerHandoff(", "QuiesceSignalEntered", "",
+			"SetEvent(options.brokerQuiesceRequest)", "QuiesceSignalReturned"},
+		{"broker handoff signal", "bool SignalBrokerHandoff(",
+			"bool ValidateTransactionDeadlineBudget(", "BrokerHandoffEntered", "",
+			"SetEvent(options.brokerHandoff)", "BrokerHandoffReturned"},
+		{"broker child", "bool RunBrokerInstall(", "Outcome Install(",
+			"BrokerChildEntered", "", "CreateProcessW(", "BrokerChildSettled"},
+	}
+	for _, contract := range phaseWrappedAPIs {
+		region := sourceRegion("phase-wrapped "+contract.name,
+			contract.start, contract.end, false)
+		fragments := []string{contract.entered}
+		if contract.wrapper != "" {
+			fragments = append(fragments, contract.wrapper)
+		}
+		fragments = append(fragments, contract.api, contract.returned)
+		assertOrdered("phase-wrapped "+contract.name, region, fragments...)
+	}
+	for _, registration := range []struct {
+		name, start, end string
+	}{
+		{"forward root registration", "bool RegisterRootDevice(",
+			"bool DriverInfoUsesPublishedPackage("},
+		{"restore root registration", "bool RegisterRootDeviceExact(",
+			"bool IssueAbiNegotiation("},
+	} {
+		region := sourceRegion(registration.name, registration.start, registration.end, false)
+		entered := strings.Index(region, "RootRegistrationEntered")
+		mutation := strings.Index(region, "SetupDiCallClassInstaller(")
+		returned := strings.LastIndex(region, "RootRegistrationReturned")
+		if entered < 0 || mutation <= entered || returned <= mutation ||
+			!strings.Contains(region[entered:mutation], "InvokeAuthoritativeSynchronousMutation(") {
+			t.Errorf("driver helper %s is not enclosed by authoritative entered/returned phases", registration.name)
+		}
+	}
+	forwardRegistrationSource := sourceRegion("forward root registration receipt",
+		"bool RegisterRootDevice(", "bool DriverInfoUsesPublishedPackage(", false)
+	assertOrdered("generated root receipt before every registration mutation",
+		forwardRegistrationSource,
+		"SetupDiCreateDeviceInfoW(", "DICD_GENERATE_ID",
+		"SetupDiGetDeviceInstanceIdW(",
+		"RecordActiveInstallJournalRootRegistrationIntent(",
+		"InstallJournalPhase::RootRegistrationEntered",
+		"SetupDiSetDeviceRegistryPropertyW(",
+		"SetupDiCallClassInstaller(", "DIF_REGISTERDEVICE",
+		"InstallJournalPhase::RootRegistrationReturned")
+
+	partialRootSource := sourceRegion("in-process receipt-bound partial root removal",
+		"bool InstallJournal::RemoveAuthorizedPriorEmptyRootAfterAdmission(",
+		"bool CurrentRootIsAuthorizedForInstallRollback(", false)
+	assertOrdered("partial root removal write-ahead and authoritative return",
+		partialRootSource,
+		"InstallJournalPhase::PartialRootRemovalEntered",
+		"VerifyPackageInventory(", "observe(false, &confirmed", "RemoveDevice(",
+		"RecordAuthoritativeReturn(",
+		"InstallJournalPhase::PartialRootRemovalReturned", "observe(true, &after")
+	for _, fragment := range []string{
+		"RemoveUnboundExactRoot", "RemoveCandidateBoundExactRoot",
+		"PendingExactRootRemoval", "freshRemovalReboot",
+		"rootRemovalRebootPending",
+	} {
+		if !strings.Contains(partialRootSource, fragment) {
+			t.Errorf("driver helper partial root removal lost %q", fragment)
+		}
+	}
+
+	rawRootSource := sourceRegion("broad raw root topology observer",
+		"bool ObservePriorEmptyInstallRecoveryRoot(",
+		"bool VerifyInstallJournalRawPriorTopology(", false)
+	for _, fragment := range []string{
+		"ReadInstallRecoveryHardwareIds(",
+		"IsInGeneratedRootDeviceNamespace(", "hardwareIds.containsExpected",
+		"related.size() == 1U", "loaded.state.hasRootRegistrationIntent",
+		"loaded.state.rootRegistrationInstanceId.c_str()",
+		"ReadCanonicalInstallRecoveryService(",
+		"ReadCanonicalInstallRecoveryDevicePropertyString(",
+		"CM_PROB_WILL_BE_REMOVED", "ClassifyPartialInstallRootRecovery(",
+	} {
+		if !strings.Contains(rawRootSource, fragment) {
+			t.Errorf("driver helper broad raw root observer lost %q", fragment)
+		}
+	}
+
+	openChainSource := sourceRegion("install recovery directory chain",
+		"    bool OpenChain(", "};", false)
+	assertOrdered("product-only recovery discovery", openChainSource,
+		"bool productExists = false;", "bool componentExists = false;",
+		"bool transactionsExist = false;", "bool activeExists = false;",
+		"if (!productExists) return true;",
+		"if (!componentExists) return true;",
+		"if (!transactionsExist) return true;",
+		"*exists = InstallRecoveryChainHasActive(")
+	for _, fragment := range []string{
+		"BuildInstallRecoveryProductDirectorySecurity(", "*exactTargetUserSid",
+		"CreateOrOpenInstallRecoveryDirectoryWithSecurity(",
+		"VerifyProtectedProductDirectorySecurity(", "exactTargetUserSid",
+	} {
+		if !strings.Contains(openChainSource, fragment) {
+			t.Errorf("driver helper install recovery chain lost %q", fragment)
+		}
+	}
+
+	forwardRetireSource := sourceRegion("forward journal retirement",
+		"bool InstallJournal::RetireAfterForwardValidation(",
+		"bool InstallJournal::RetireAfterPriorValidation(", false)
+	forwardPendingEnd := strings.Index(forwardRetireSource, "std::string expectedBuildIdentity")
+	if forwardPendingEnd < 0 {
+		t.Fatal("driver helper forward reboot-pending branch is missing")
+	}
+	forwardPending := forwardRetireSource[:forwardPendingEnd]
+	if !strings.Contains(forwardPending, "InstallJournalPhase::ForwardRebootPending") ||
+		strings.Contains(forwardPending, "remove_all(") ||
+		strings.Contains(forwardPending, "ClearActiveRecoveryEvidence(") {
+		t.Error("driver helper forward reboot-pending path does not retain journal evidence")
+	}
+	priorRetireSource := sourceRegion("prior journal retirement",
+		"bool InstallJournal::RetireAfterPriorValidation(",
+		"bool RequireJournalObject(", false)
+	priorPendingEnd := strings.Index(priorRetireSource, "const auto validatePrior")
+	if priorPendingEnd < 0 {
+		t.Fatal("driver helper restore reboot-pending branch is missing")
+	}
+	priorPending := priorRetireSource[:priorPendingEnd]
+	if !strings.Contains(priorPending, "InstallJournalPhase::RestoreRebootPending") ||
+		strings.Contains(priorPending, "remove_all(") ||
+		strings.Contains(priorPending, "ClearActiveRecoveryEvidence(") {
+		t.Error("driver helper restore reboot-pending path does not retain journal evidence")
+	}
 	for _, obsolete := range []string{
 		"--expected-token-sha256", "--expected-broker-sha256",
 	} {
@@ -240,6 +596,12 @@ func TestNativePackageProductionSourceContract(t *testing.T) {
 		t.Fatal("driver helper forward install transaction is missing or malformed")
 	}
 	forwardInstall := helperSource[installStart:installEnd]
+	if strings.Contains(forwardInstall, "InstallJournalPhase::DiInstallReturned") {
+		t.Error("forward install synthesizes DiInstallReturned outside the actual API wrapper")
+	}
+	if !strings.Contains(forwardInstall, "InstallJournalPhase::StageReceiptCaptured") {
+		t.Error("forward install lost the distinct exact stage-receipt phase")
+	}
 	for _, forbidden := range []string{
 		"DiInstallDriverW(", "UpdateDriverForPlugAndPlayDevicesW(",
 		`L"upgrade-deadline-before-device-removal"`,
@@ -317,7 +679,7 @@ func TestNativePackageProductionSourceContract(t *testing.T) {
 	}
 	mutationDecision := strings.Index(forwardInstall,
 		"const bool driverMutation =")
-	stageCall := strings.Index(forwardInstall, "if (!StageCandidatePackage(")
+	stageCall := strings.Index(forwardInstall, "StageCandidatePackage(")
 	stageInventory := strings.Index(forwardInstall,
 		`L"stage-package-inventory-verification"`)
 	stageRootProof := strings.Index(forwardInstall, `L"stage-root-binding-verification"`)

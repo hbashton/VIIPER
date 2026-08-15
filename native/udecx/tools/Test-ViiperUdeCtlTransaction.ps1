@@ -12,6 +12,50 @@ if ([string]::IsNullOrWhiteSpace($SourcePath)) {
 }
 
 $source = Get-Content -LiteralPath $SourcePath -Raw
+
+function Get-SourceContractRegion {
+    param(
+        [Parameter(Mandatory = $true)][string]$Text,
+        [Parameter(Mandatory = $true)][string]$Start,
+        [Parameter(Mandatory = $true)][string]$End,
+        [Parameter(Mandatory = $true)][string]$Name,
+        [switch]$LastStart
+    )
+
+    $startIndex = if ($LastStart) {
+        $Text.LastIndexOf($Start, [StringComparison]::Ordinal)
+    } else {
+        $Text.IndexOf($Start, [StringComparison]::Ordinal)
+    }
+    $endIndex = if ($startIndex -ge 0) {
+        $Text.IndexOf($End, $startIndex + $Start.Length, [StringComparison]::Ordinal)
+    } else {
+        -1
+    }
+    if ($startIndex -lt 0 -or $endIndex -le $startIndex) {
+        throw "ViiperUdeCtl $Name source region is missing or malformed."
+    }
+    return $Text.Substring($startIndex, $endIndex - $startIndex)
+}
+
+function Assert-OrderedSourceFragments {
+    param(
+        [Parameter(Mandatory = $true)][string]$Text,
+        [Parameter(Mandatory = $true)][string[]]$Fragments,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    $cursor = -1
+    foreach ($fragment in $Fragments) {
+        $next = $Text.IndexOf(
+            $fragment, $cursor + 1, [StringComparison]::Ordinal)
+        if ($next -lt 0) {
+            throw "ViiperUdeCtl violates its $Name ordering contract at '$fragment'."
+        }
+        $cursor = $next
+    }
+}
+
 $requiredContracts = [ordered]@{
     'source-manifest preflight' = 'ValidateManifest\('
     'installer manifest hash binding' = '--manifest-sha256'
@@ -75,7 +119,7 @@ $requiredContracts = [ordered]@{
     'captured stopped rollback state proof' = 'rollback-stopped-state-verification'
     'exact rollback lifecycle comparator' = 'RollbackLifecycleStateMatches\('
     'stage mutation marked before SetupCopy' =
-        'MarkTransactionMutationStarted\(\);[\s\S]{0,180}SetupCopyOEMInfW\('
+        'MarkTransactionMutationStarted\(\);[\s\S]{0,500}SetupCopyOEMInfW\('
     'successful stage retains cleanup ownership' = '\*stagedHere = true'
     'malformed stage receipt recovery' =
         'FindPublishedCandidate\([\s\S]{0,160}recoveredReceipt'
@@ -91,7 +135,7 @@ $requiredContracts = [ordered]@{
     'immediate selected-device binding commit' = 'CommitPreparedDriverBinding\('
     'exact final pristine ABI recheck' = 'AbiHealthPurpose::PristineRecheck'
     'broker deadline before quiescence signal' =
-        'transaction-deadline-before-broker-quiescence[\s\S]{0,180}SetEvent\(options\.brokerQuiesceRequest\)'
+        'transaction-deadline-before-broker-quiescence[\s\S]{0,700}SetEvent\(options\.brokerQuiesceRequest\)'
     'broker health transaction' = 'RunBrokerInstall\('
     'canonical broker proof parser' = 'ParseBrokerCommitProof\('
     'bounded broker proof channel' = 'kMaximumBrokerProofBytes'
@@ -202,25 +246,403 @@ foreach ($entry in $requiredContracts.GetEnumerator()) {
     }
 }
 
+$installJournalRequired = [ordered]@{
+    'known-folder ProgramData resolution' = 'SHGetKnownFolderPath\('
+    'exact ProgramData known-folder identity' = 'FOLDERID_ProgramData'
+    'fixed VIIPER recovery segment' = 'kInstallRecoveryProductDirectory\[\] = L"VIIPER"'
+    'fixed UdeCx recovery segment' = 'kInstallRecoveryComponentDirectory\[\] = L"UdeCx"'
+    'fixed transaction recovery segment' = 'kInstallRecoveryTransactionsDirectory\[\] = L"Transactions"'
+    'single active recovery identity' = 'kInstallRecoveryActiveDirectory\[\] = L"active-v2"'
+    'append-only journal prefix' = 'kInstallRecoveryJournalPrefix\[\] = L"journal-"'
+    'protected recovery directory open' = 'OpenStableDirectory\('
+    'reparse-safe recovery directory handles' = 'FILE_FLAG_OPEN_REPARSE_POINT'
+    'reparse rejection for recovery directories' = 'FILE_ATTRIBUTE_REPARSE_POINT'
+    'exact recovery ACL verification' = 'VerifyProtectedFileSystemSecurity\('
+    'install journal writer' = 'WriteInstallJournalRecord\('
+    'journal previous-record hash' = '\\"previousSha256\\"'
+    'journal envelope hash' = '\\"payloadSha256\\"'
+    'journal hash-chain comparison' = 'parsed\.previousDigest[\s\S]{0,120}priorDigest'
+    'write-through journal file' = 'FILE_FLAG_WRITE_THROUGH'
+    'flushed journal bytes' = 'install-journal-flush'
+    'write-through journal publication' = 'MOVEFILE_WRITE_THROUGH'
+    'published journal readback' = 'install-journal-readback'
+    'explicit recovery command' = 'Outcome Recover\('
+    'automatic pre-mutation recovery' = 'ReconcileInstallJournal\('
+    'recovery CLI route' = '_wcsicmp\(argv\[1\], L"recover"\)'
+    'broker-unsettled manual retention' =
+        'loaded\.state\.brokerEntered[\s\S]{0,120}!rollbackWasAuthorized[\s\S]{0,500}no mutation was attempted'
+    'durable rollback direction' = '\"direction\"[\s\S]{0,200}\"rollbackAuthorized\"'
+    'legal journal transitions' = 'ValidateInstallJournalTransition\('
+    'poisoned append latch' = 'impl_->poisoned = true'
+    'canonical next-temp cleanup' = 'ValidateAndDiscardInstallJournalTemporaryFile\('
+    'verified existing component walk' = 'OpenExistingInstallRecoveryDirectory\('
+    'generic ACL normalization' = 'MapGenericMask\('
+    'durable-only stage ownership' = 'StageReceiptCaptured ownership record'
+    'exact pre-rollback inventory' = 'exactPreRollbackInventory'
+    'exact root rollback authority' = 'RootSnapshotIsAuthorizedForInstallRollback\('
+    'same-boot rollback reboot cutpoint' = 'InstallJournalNeedsRestoreRebootPending\('
+    'durable pending reboot boot epoch' = 'pendingRebootBootIdentifier'
+    'fresh reboot epoch authority' = 'freshRebootRequired'
+    'durable generated root receipt' = 'rootRegistrationInstanceId'
+    'pre-registration root receipt phase' = 'RootRegistrationIntentCaptured'
+    'broad prior-empty root observer' = 'ObservePriorEmptyInstallRecoveryRoot\('
+    'canonical raw hardware ID reader' = 'ReadInstallRecoveryHardwareIds\('
+    'canonical raw string reader' = 'DecodeCanonicalInstallRecoveryString\('
+    'receipt-bound partial root cleanup' = 'RemoveAuthorizedPriorEmptyRootAfterAdmission\('
+    'partial root removal entered receipt' = 'PartialRootRemovalEntered'
+    'partial root removal returned receipt' = 'PartialRootRemovalReturned'
+    'partial root removal reboot boundary' = 'PartialRootRemovalRebootPending'
+    'partial root removal exact shape' = 'partialRootRemovalBinding'
+    'partial root removal attempt epoch' = 'partialRootRemovalBootIdentifier'
+    'product-only chain discovery model' = 'InstallRecoveryChainHasActive\('
+    'target-user product ACL builder' = 'BuildInstallRecoveryProductDirectorySecurity\('
+    'exact target-user product ACL verifier' = 'VerifyProtectedProductDirectorySecurity\('
+    'forward reboot-pending phase' = 'ForwardRebootPending'
+    'restore reboot-pending phase' = 'RestoreRebootPending'
+    'manual reconciliation phase' = 'ManualReconciliationRequired'
+    'authoritative mutation watchdog' = 'SynchronousMutationWatchdog'
+    'authoritative mutation wrapper' = 'InvokeAuthoritativeSynchronousMutation\('
+    'deadline overrun retained in journal' = 'deadlineOverrun'
+}
+
+foreach ($entry in $installJournalRequired.GetEnumerator()) {
+    if ($source -notmatch $entry.Value) {
+        throw "ViiperUdeCtl is missing its $($entry.Key) install-journal contract."
+    }
+}
+
+$installJournalPhases = @(
+    'Prepared',
+    'SetupCopyEntered',
+    'SetupCopyReturned',
+    'StageReceiptCaptured',
+    'QuiesceSignalEntered',
+    'QuiesceSignalReturned',
+    'RootRegistrationIntentCaptured',
+    'RootRegistrationEntered',
+    'RootRegistrationReturned',
+    'DiInstallEntered',
+    'DiInstallReturned',
+    'PriorAbiProfileCaptured',
+    'DriverValidated',
+    'BrokerHandoffEntered',
+    'BrokerHandoffReturned',
+    'BrokerChildEntered',
+    'BrokerChildSettled',
+    'RollbackBindingEntered',
+    'PartialRootRemovalEntered',
+    'PartialRootRemovalReturned',
+    'PartialRootRemovalRebootPending',
+    'RollbackBindingReturned',
+    'SetupUninstallEntered',
+    'SetupUninstallReturned',
+    'ForwardValidated',
+    'ExactPriorRestored',
+    'ForwardRebootPending',
+    'RestoreRebootPending',
+    'ManualReconciliationRequired'
+)
+foreach ($phase in $installJournalPhases) {
+    $qualified = 'InstallJournalPhase::' + $phase
+    if ([regex]::Matches($source, [regex]::Escape($qualified)).Count -lt 2) {
+        throw "ViiperUdeCtl install journal does not both define and use phase '$phase'."
+    }
+}
+
+$recoveryPathSource = Get-SourceContractRegion -Text $source `
+    -Start 'bool ResolveInstallRecoveryPaths(' -End 'bool GetBootIdentifier(' `
+    -Name 'fixed recovery path'
+Assert-OrderedSourceFragments -Text $recoveryPathSource -Name 'fixed ProgramData path' `
+    -Fragments @(
+        'SHGetKnownFolderPath(',
+        'FOLDERID_ProgramData',
+        '*product = *programData / kInstallRecoveryProductDirectory;',
+        '*component = *product / kInstallRecoveryComponentDirectory;',
+        '*transactions = *component / kInstallRecoveryTransactionsDirectory;',
+        '*active = *transactions / kInstallRecoveryActiveDirectory;'
+    )
+foreach ($fragment in @(
+    'FILE_FLAG_OPEN_REPARSE_POINT',
+    'FILE_ATTRIBUTE_REPARSE_POINT',
+    'VerifyProtectedFileSystemSecurity(',
+    'CreateOrOpenInstallRecoveryDirectory(',
+    'active, false, true, &activeHandle'
+)) {
+    if (-not $recoveryPathSource.Contains($fragment)) {
+        throw "ViiperUdeCtl fixed recovery path lost '$fragment'."
+    }
+}
+
+$journalWriterSource = Get-SourceContractRegion -Text $source `
+    -Start 'bool WriteInstallJournalRecord(' -End 'bool GenerateInstallTransactionId(' `
+    -Name 'append-only journal writer'
+Assert-OrderedSourceFragments -Text $journalWriterSource -Name 'durable journal publication' `
+    -Fragments @(
+        'BuildInstallJournalPayload(',
+        'Sha256Data(payload, &digest',
+        '\"payloadSha256\"',
+        'CREATE_NEW',
+        'FILE_FLAG_WRITE_THROUGH',
+        'FlushFileBuffers(file.get())',
+        'MoveFileExW(',
+        'MOVEFILE_WRITE_THROUGH',
+        'OPEN_EXISTING',
+        'ReadFile(file.get(), observed.data()',
+        'observed != record',
+        'trailingRead != 0',
+        'state->previousDigest = digest',
+        '++state->sequence'
+    )
+if ($journalWriterSource.Contains('MOVEFILE_REPLACE_EXISTING')) {
+    throw 'ViiperUdeCtl append-only journal must never replace a published record.'
+}
+
+$journalPrepareSource = Get-SourceContractRegion -Text $source `
+    -Start 'bool InstallJournal::Prepare(' -End 'bool InstallJournal::Record(' `
+    -Name 'install journal preparation'
+Assert-OrderedSourceFragments -Text $journalPrepareSource -Name 'pre-Prepared protected evidence' `
+    -Fragments @(
+        'BackupPackagesIntoDirectory(',
+        'CopyCandidateIntoInstallJournal(',
+        'impl_->state.prior = prior;',
+        'impl_->state.candidate = candidate;',
+        'impl_->state.phase = InstallJournalPhase::Prepared;',
+        'WriteInstallJournalRecord('
+    )
+
+$journalRecordSource = Get-SourceContractRegion -Text $source `
+    -Start 'bool InstallJournal::RecordNext(' -End 'bool InstallJournal::RecordCutpoint(' `
+    -Name 'atomic install journal record'
+Assert-OrderedSourceFragments -Text $journalRecordSource -Name 'atomic journal state publication' `
+    -Fragments @(
+        'ValidateInstallJournalTransition(&impl_->state, next',
+        'WriteInstallJournalRecord(',
+        'impl_->state = std::move(next);',
+        'PublishInstallRecoveryEvidence('
+    )
+if (-not $journalRecordSource.Contains('impl_->poisoned = true')) {
+    throw 'ViiperUdeCtl must poison the in-process journal after an indeterminate append or publication.'
+}
+
+$watchdogSource = Get-SourceContractRegion -Text $source `
+    -Start 'class SynchronousMutationWatchdog final' -End 'class DeviceInfoSet final' `
+    -Name 'authoritative synchronous mutation watchdog'
+foreach ($fragment in @(
+    'completion_.get(), waitMilliseconds',
+    'timedOut_.store(true',
+    'WaitForSingleObject(completion_.get(), INFINITE)',
+    'thread_.join()',
+    'gLastSynchronousMutationTimedOut = watchdog.Complete()'
+)) {
+    if (-not $watchdogSource.Contains($fragment)) {
+        throw "ViiperUdeCtl authoritative watchdog lost '$fragment'."
+    }
+}
+foreach ($forbidden in @(
+    'CancelIoEx(', 'CancelSynchronousIo(', 'TerminateThread(',
+    'TerminateProcess(', '.detach()'
+)) {
+    if ($watchdogSource.Contains($forbidden)) {
+        throw "ViiperUdeCtl authoritative watchdog contains forbidden cancellation '$forbidden'."
+    }
+}
+
+$installEntrySource = Get-SourceContractRegion -Text $source `
+    -Start 'Outcome Install(const InstallOptions& options)' -End 'struct PackageBackup {' `
+    -Name 'install entry'
+Assert-OrderedSourceFragments -Text $installEntrySource -Name 'install pre-mutation reconciliation' `
+    -Fragments @(
+        'mutex.Acquire(',
+        'ReconcileInstallJournal(',
+        'ValidateCandidateInputs(',
+        'CaptureSnapshot(',
+        'installJournal.Prepare('
+    )
+if ([regex]::Matches($installEntrySource,
+        'RemoveAuthorizedPriorEmptyRootAfterAdmission\(').Count -ne 2 -or
+    [regex]::Matches($installEntrySource,
+        'VerifyPriorTopologyBeforePackageRollback\(').Count -ne 2 -or
+    [regex]::Matches($installEntrySource,
+        '!prior\.devices\.empty\(\) && bindingMutationStarted').Count -ne 2) {
+    throw 'ViiperUdeCtl must apply receipt-bound root cleanup and strict post-removal proof in both in-process rollback branches without generic prior-empty deletion.'
+}
+
+$removeEntrySource = Get-SourceContractRegion -Text $source `
+    -Start 'Outcome Remove(const RemoveOptions& options)' -End 'Outcome Recover(' `
+    -Name 'remove entry'
+Assert-OrderedSourceFragments -Text $removeEntrySource -Name 'remove pre-mutation reconciliation' `
+    -Fragments @(
+        'mutex.Acquire(',
+        'ReconcileInstallJournal(',
+        'CaptureSnapshot(',
+        'BackupPackages('
+    )
+
+$reconcileSource = Get-SourceContractRegion -Text $source `
+    -Start 'bool ReconcileInstallJournal(' -End 'bool RollbackRemove(' `
+    -Name 'startup journal reconciliation' -LastStart
+foreach ($fragment in @(
+    'ForwardRebootPending && sameBoot',
+    'RestoreRebootPending && sameBoot',
+    'return rebootPending(',
+    'loaded.state.phase == InstallJournalPhase::BrokerChildEntered',
+    'loaded.state.phase == InstallJournalPhase::BrokerHandoffReturned',
+    'loaded.state.rollbackAuthorized',
+    'loaded.state.hasBrokerProof',
+    'loaded.state.brokerProofSuccess',
+    'no mutation was attempted',
+    'InstallJournalPhase::ManualReconciliationRequired'
+    'appendPartialRootRemovalEntered'
+    'install-journal-partial-root-removal-inventory'
+    'install-journal-pre-package-rollback-inventory'
+    'ClassifyPartialRootRemovalJournalRecovery('
+)) {
+    if (-not $reconcileSource.Contains($fragment)) {
+        throw "ViiperUdeCtl startup reconciliation lost '$fragment'."
+    }
+}
+
+$apiPhaseContracts = @(
+    @('bool StageCandidatePackage(', 'bool RemoveDevice(', 'SetupCopyEntered', 'SetupCopyOEMInfW(', 'SetupCopyReturned'),
+    @('bool CommitPreparedDriverBinding(', 'bool InstallPreinstalledDriverOnDevice(', 'DiInstallEntered', 'DiInstallDevice(', 'DiInstallReturned'),
+    @('bool RemoveStagedCandidateExact(', 'bool RestorePriorBinding(', 'SetupUninstallEntered', 'SetupUninstallOEMInfW(', 'SetupUninstallReturned'),
+    @('bool RequestBrokerQuiescence(', 'bool SignalBrokerHandoff(', 'QuiesceSignalEntered', 'SetEvent(options.brokerQuiesceRequest)', 'QuiesceSignalReturned'),
+    @('bool SignalBrokerHandoff(', 'bool ValidateTransactionDeadlineBudget(', 'BrokerHandoffEntered', 'SetEvent(options.brokerHandoff)', 'BrokerHandoffReturned'),
+    @('bool RunBrokerInstall(', 'Outcome Install(', 'BrokerChildEntered', 'CreateProcessW(', 'BrokerChildSettled')
+)
+foreach ($contract in $apiPhaseContracts) {
+    $region = Get-SourceContractRegion -Text $source -Start $contract[0] `
+        -End $contract[1] -Name ("phase-wrapped API " + $contract[3])
+    Assert-OrderedSourceFragments -Text $region -Name ("phase-wrapped API " + $contract[3]) `
+        -Fragments @($contract[2], $contract[3], $contract[4])
+}
+
+foreach ($registrationStart in @('bool RegisterRootDevice(', 'bool RegisterRootDeviceExact(')) {
+    $registrationEnd = if ($registrationStart -eq 'bool RegisterRootDevice(') {
+        'bool DriverInfoUsesPublishedPackage('
+    } else {
+        'bool IssueAbiNegotiation('
+    }
+    $region = Get-SourceContractRegion -Text $source -Start $registrationStart `
+        -End $registrationEnd -Name 'phase-wrapped root registration'
+    $entered = $region.IndexOf('RootRegistrationEntered', [StringComparison]::Ordinal)
+    $mutation = $region.IndexOf('SetupDiCallClassInstaller(', [StringComparison]::Ordinal)
+    $returned = $region.LastIndexOf('RootRegistrationReturned', [StringComparison]::Ordinal)
+    if ($entered -lt 0 -or $mutation -le $entered -or $returned -le $mutation) {
+        throw 'ViiperUdeCtl root registration is not enclosed by durable entered/returned phases.'
+    }
+}
+
+$forwardRegistrationSource = Get-SourceContractRegion -Text $source `
+    -Start 'bool RegisterRootDevice(' -End 'bool DriverInfoUsesPublishedPackage(' `
+    -Name 'forward root registration receipt'
+Assert-OrderedSourceFragments -Text $forwardRegistrationSource `
+    -Name 'generated root receipt before every registration mutation' `
+    -Fragments @(
+        'SetupDiCreateDeviceInfoW(',
+        'DICD_GENERATE_ID',
+        'SetupDiGetDeviceInstanceIdW(',
+        'RecordActiveInstallJournalRootRegistrationIntent(',
+        'InstallJournalPhase::RootRegistrationEntered',
+        'SetupDiSetDeviceRegistryPropertyW(',
+        'SetupDiCallClassInstaller(',
+        'DIF_REGISTERDEVICE',
+        'InstallJournalPhase::RootRegistrationReturned'
+    )
+
+$partialRootSource = Get-SourceContractRegion -Text $source `
+    -Start 'bool InstallJournal::RemoveAuthorizedPriorEmptyRootAfterAdmission(' `
+    -End 'bool CurrentRootIsAuthorizedForInstallRollback(' `
+    -Name 'in-process receipt-bound partial root removal'
+Assert-OrderedSourceFragments -Text $partialRootSource `
+    -Name 'partial root removal write-ahead and authoritative return' `
+    -Fragments @(
+        'InstallJournalPhase::PartialRootRemovalEntered',
+        'VerifyPackageInventory(',
+        'observe(false, &confirmed',
+        'RemoveDevice(',
+        'RecordAuthoritativeReturn(',
+        'InstallJournalPhase::PartialRootRemovalReturned',
+        'observe(true, &after'
+    )
+foreach ($fragment in @(
+    'RemoveUnboundExactRoot',
+    'RemoveCandidateBoundExactRoot',
+    'PendingExactRootRemoval',
+    'freshRemovalReboot',
+    'rootRemovalRebootPending'
+)) {
+    if (-not $partialRootSource.Contains($fragment)) {
+        throw "ViiperUdeCtl partial root removal lost '$fragment'."
+    }
+}
+
+$rawRootSource = Get-SourceContractRegion -Text $source `
+    -Start 'bool ObservePriorEmptyInstallRecoveryRoot(' `
+    -End 'bool VerifyInstallJournalRawPriorTopology(' `
+    -Name 'broad raw root topology observer'
+foreach ($fragment in @(
+    'ReadInstallRecoveryHardwareIds(',
+    'IsInGeneratedRootDeviceNamespace(',
+    'hardwareIds.containsExpected',
+    'related.size() == 1U',
+    'loaded.state.hasRootRegistrationIntent',
+    'loaded.state.rootRegistrationInstanceId.c_str()',
+    'ReadCanonicalInstallRecoveryService(',
+    'ReadCanonicalInstallRecoveryDevicePropertyString(',
+    'CM_PROB_WILL_BE_REMOVED',
+    'ClassifyPartialInstallRootRecovery('
+)) {
+    if (-not $rawRootSource.Contains($fragment)) {
+        throw "ViiperUdeCtl broad raw root observer lost '$fragment'."
+    }
+}
+
+$openChainSource = Get-SourceContractRegion -Text $source `
+    -Start '    bool OpenChain(' -End '};' -Name 'install recovery directory chain'
+Assert-OrderedSourceFragments -Text $openChainSource `
+    -Name 'product-only recovery discovery' `
+    -Fragments @(
+        'bool productExists = false;',
+        'bool componentExists = false;',
+        'bool transactionsExist = false;',
+        'bool activeExists = false;',
+        'if (!productExists) return true;',
+        'if (!componentExists) return true;',
+        'if (!transactionsExist) return true;',
+        '*exists = InstallRecoveryChainHasActive('
+    )
+foreach ($fragment in @(
+    'BuildInstallRecoveryProductDirectorySecurity(',
+    '*exactTargetUserSid',
+    'CreateOrOpenInstallRecoveryDirectoryWithSecurity(',
+    'VerifyProtectedProductDirectorySecurity(',
+    'exactTargetUserSid'
+)) {
+    if (-not $openChainSource.Contains($fragment)) {
+        throw "ViiperUdeCtl install recovery chain lost '$fragment'."
+    }
+}
+
 $orderedMutationContracts = [ordered]@{
     'driver package staging deadline immediately precedes add-only mutation' =
-        'transaction-deadline-before-driver-stage[\s\S]{0,1800}MarkTransactionMutationStarted\(\);[\s\S]{0,180}SetupCopyOEMInfW\('
+        'transaction-deadline-before-driver-stage[\s\S]{0,1800}MarkTransactionMutationStarted\(\);[\s\S]{0,500}SetupCopyOEMInfW\('
     'root property deadline immediately precedes mutation' =
-        'transaction-deadline-before-root-properties[\s\S]{0,240}mutationStarted[\s\S]{0,180}SetupDiSetDeviceRegistryPropertyW\('
+        'transaction-deadline-before-root-properties[\s\S]{0,900}mutationStarted[\s\S]{0,300}SetupDiSetDeviceRegistryPropertyW\('
     'root registration deadline immediately precedes mutation' =
-        'transaction-deadline-before-root-registration[\s\S]{0,240}SetupDiCallClassInstaller\(DIF_REGISTERDEVICE'
+        'transaction-deadline-before-root-registration[\s\S]{0,900}SetupDiCallClassInstaller\([\s\S]{0,120}DIF_REGISTERDEVICE'
     'selected driver deadline immediately precedes mutation' =
-        'transaction-deadline-before-selected-device-binding[\s\S]{0,300}mutationStarted[\s\S]{0,220}SetupDiSetSelectedDriverW\([\s\S]{0,500}DiInstallDevice\('
+        'transaction-deadline-before-selected-device-binding[\s\S]{0,700}mutationStarted[\s\S]{0,400}SetupDiSetSelectedDriverW\([\s\S]{0,1800}DiInstallDevice\('
     'broker deadline immediately precedes quiescence signal' =
-        'transaction-deadline-before-broker-quiescence[\s\S]{0,180}SetEvent\(options\.brokerQuiesceRequest\)'
+        'transaction-deadline-before-broker-quiescence[\s\S]{0,700}SetEvent\(options\.brokerQuiesceRequest\)'
     'remove deadline immediately precedes device mutation' =
         'CheckTransactionDeadline\(transactionDeadlineUnixMs, deadlinePhase, error\)[\s\S]{0,300}mutationStarted[\s\S]{0,180}DiUninstallDevice\('
     'first-time root creation uses the owned device name' =
         'SetupDiCreateDeviceInfoW\([\s\S]{0,120}kRootDeviceName[\s\S]{0,120}DICD_GENERATE_ID'
-    'registered devnode cleanup state survives post-registration validation' =
-        'const bool registeredAndVerified = inventoryVerified && RegisterRootDevice\([\s\S]{0,500}createdHere = registrationSucceeded;[\s\S]{0,160}if \(registeredAndVerified\)'
+    'failed registration cannot suppress receipt-authorized cleanup' =
+        'bool registrationSucceeded = false[\s\S]{0,30000}RemoveAuthorizedPriorEmptyRootAfterAdmission\('
     'add-only stage inventory and exact root proof precede broker quiescence' =
-        '!StageCandidatePackage\([\s\S]{0,2600}stage-package-inventory-verification[\s\S]{0,800}stage-root-binding-verification[\s\S]{0,1800}RequestBrokerQuiescence\('
+        'StageCandidatePackage\([\s\S]{0,5000}stage-package-inventory-verification[\s\S]{0,1600}stage-root-binding-verification[\s\S]{0,3000}RequestBrokerQuiescence\('
     'broker quiescence inventory and fresh root proof precede pristine admission' =
         'RequestBrokerQuiescence\([\s\S]{0,1200}post-quiescence-package-inventory-verification[\s\S]{0,1000}post-quiescence-root-verification[\s\S]{0,1800}AbiHealthPurpose::PristineUpgrade'
     'driver preparation and final proofs precede immediate in-place binding' =
@@ -228,7 +650,7 @@ $orderedMutationContracts = [ordered]@{
     'new root registration is confined to an absent captured root' =
         'if \(prior\.devices\.empty\(\)\) \{[\s\S]{0,300}RegisterRootDevice\('
     'post-stage failure reaches exact common rollback' =
-        '!StageCandidatePackage\([\s\S]{0,14000}if \(outcome\.error\.code != ERROR_SUCCESS && driverMutationStarted\)[\s\S]{0,1800}packageStagedHere \? &publishedCandidate : nullptr[\s\S]{0,300}RollbackInstall\('
+        'StageCandidatePackage\([\s\S]{0,22000}if \(outcome\.error\.code != ERROR_SUCCESS && driverMutationStarted\)[\s\S]{0,3000}packageStagedHere \? &publishedCandidate : nullptr[\s\S]{0,600}RollbackInstall\('
     'binding restore precedes exact staged cleanup and inventory proof' =
         'if \(bindingMutationStarted\)[\s\S]{0,300}RestorePriorBinding\([\s\S]{0,700}RemoveStagedCandidateExact\([\s\S]{0,500}VerifyPackageInventory\('
     'formerly-running rollback requires exact start and ABI health' =
@@ -236,7 +658,7 @@ $orderedMutationContracts = [ordered]@{
     'captured-stopped rollback requires exact stopped problem state' =
         'AbiHealthPurpose::RollbackHealth[\s\S]{0,400}RollbackLifecycleStateMatches\([\s\S]{0,300}rollback-stopped-state-verification'
     'broker handoff follows exact binding verification and precedes nested commit' =
-        'VerifyInstalledBinding\([\s\S]{0,5000}SignalBrokerHandoff\([\s\S]{0,180}RunBrokerInstall\('
+        'VerifyInstalledBinding\([\s\S]{0,12000}SignalBrokerHandoff\([\s\S]{0,800}RunBrokerInstall\('
     'recovery journal is published and preservation armed before mutation' =
         'BuildRemoveRecoveryRecord\([\s\S]{0,300}WriteProtectedRecoveryRecord\([\s\S]{0,240}ArmPreservation\([\s\S]{0,700}RemoveAllExactDevices\('
     'failed remove rollback preserves published evidence before return' =
@@ -264,6 +686,12 @@ if ($forwardInstallStart -lt 0 -or $forwardInstallEnd -le $forwardInstallStart) 
 }
 $forwardInstallSource = $source.Substring(
     $forwardInstallStart, $forwardInstallEnd - $forwardInstallStart)
+if ($forwardInstallSource.Contains('InstallJournalPhase::DiInstallReturned')) {
+    throw 'Forward install must not synthesize a DiInstallReturned phase outside the actual API wrapper.'
+}
+if (-not $forwardInstallSource.Contains('InstallJournalPhase::StageReceiptCaptured')) {
+    throw 'Forward install must durably separate the exact stage receipt from SetupCopyOEMInfW return.'
+}
 if ($forwardInstallSource -match '\b(?:DiInstallDriverW|UpdateDriverForPlugAndPlayDevicesW)\s*\(') {
     throw 'Forward install must use add-only staging plus exact selected-device binding, never a device-auto-binding package API.'
 }
