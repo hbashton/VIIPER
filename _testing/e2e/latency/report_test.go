@@ -2,6 +2,9 @@ package latency
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -118,6 +121,53 @@ func TestFinalizeRequiresExactToolExecutableProvenance(t *testing.T) {
 	}
 }
 
+func TestFinalizeSeparatesProductionAndLocalTestPackageEvidence(t *testing.T) {
+	local := validReport(t)
+	local.Provenance.NativePackageValidationMode = PackageValidationLocalTest
+	local.Provenance.NativeLocalTestCertificateSHA256 = strings.Repeat("9", 64)
+	if err := Finalize(local); err != nil {
+		t.Fatalf("exact local-test evidence was rejected: %v", err)
+	}
+
+	contradictory := validReport(t)
+	contradictory.Provenance.NativeLocalTestCertificateSHA256 = strings.Repeat("9", 64)
+	if err := Finalize(contradictory); err == nil ||
+		!strings.Contains(err.Error(), "validation mode") {
+		t.Fatalf("production evidence with a local-test signer error=%v", err)
+	}
+}
+
+func TestUSBIPRuntimeProvenanceIsBoundToItsExactRawCapture(t *testing.T) {
+	proof := validUSBIPRuntimeProvenance()
+	if err := ValidateUSBIPRuntimeProvenance(proof); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("structured mutation", func(t *testing.T) {
+		mutated := proof
+		mutated.Services = append([]USBIPServiceProvenance(nil), proof.Services...)
+		mutated.Services[1].Image.SHA256 = strings.Repeat("d", 64)
+		if err := ValidateUSBIPRuntimeProvenance(mutated); err == nil ||
+			!strings.Contains(err.Error(), "raw capture") {
+			t.Fatalf("structured USB/IP mutation error=%v", err)
+		}
+	})
+
+	t.Run("raw mutation", func(t *testing.T) {
+		mutated := proof
+		raw, err := base64.StdEncoding.DecodeString(mutated.CaptureBase64)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw[len(raw)-2] ^= 1
+		mutated.CaptureBase64 = base64.StdEncoding.EncodeToString(raw)
+		if err = ValidateUSBIPRuntimeProvenance(mutated); err == nil ||
+			!strings.Contains(err.Error(), "SHA-256") {
+			t.Fatalf("raw USB/IP mutation error=%v", err)
+		}
+	})
+}
+
 func TestUSBIPAnchorUsesINFHardwareIDAndOSAssignedInstance(t *testing.T) {
 	// usbip-win2's INF binds ROOT\USBIP_WIN2\UDE to usbip2_ude, while live
 	// SetupAPI/pnputil evidence exposes the present OS-assigned instance as
@@ -148,14 +198,31 @@ func TestUSBIPAnchorUsesINFHardwareIDAndOSAssignedInstance(t *testing.T) {
 }
 
 func TestProductionBlockScheduleIsCounterbalancedAndComplete(t *testing.T) {
-	want := []BlockSpec{
+	wantABBA := []BlockSpec{
 		{Order: 1, Transport: TransportUSBIP, TransportBlock: 1, FirstSequence: 1, SamplePairs: 128},
 		{Order: 2, Transport: TransportNativeUDE, TransportBlock: 1, FirstSequence: 1, SamplePairs: 128},
 		{Order: 3, Transport: TransportNativeUDE, TransportBlock: 2, FirstSequence: 129, SamplePairs: 129},
 		{Order: 4, Transport: TransportUSBIP, TransportBlock: 2, FirstSequence: 129, SamplePairs: 129},
 	}
-	if got := ProductionBlockSchedule(257); !reflect.DeepEqual(got, want) {
-		t.Fatalf("schedule=%+v want %+v", got, want)
+	if got := ProductionBlockSchedule(257); !reflect.DeepEqual(got, wantABBA) {
+		t.Fatalf("ABBA schedule=%+v want %+v", got, wantABBA)
+	}
+	wantBAAB := []BlockSpec{
+		{Order: 1, Transport: TransportNativeUDE, TransportBlock: 1, FirstSequence: 1, SamplePairs: 128},
+		{Order: 2, Transport: TransportUSBIP, TransportBlock: 1, FirstSequence: 1, SamplePairs: 128},
+		{Order: 3, Transport: TransportUSBIP, TransportBlock: 2, FirstSequence: 129, SamplePairs: 129},
+		{Order: 4, Transport: TransportNativeUDE, TransportBlock: 2, FirstSequence: 129, SamplePairs: 129},
+	}
+	if got := ProductionBlockScheduleForOrientation(257, ScheduleOrientationBAAB); !reflect.DeepEqual(got, wantBAAB) {
+		t.Fatalf("BAAB schedule=%+v want %+v", got, wantBAAB)
+	}
+	for cycleIndex, want := range []string{
+		ScheduleOrientationABBA, ScheduleOrientationBAAB,
+		ScheduleOrientationABBA, ScheduleOrientationBAAB,
+	} {
+		if got := ScheduleOrientationForCycle(cycleIndex + 1); got != want {
+			t.Fatalf("cycle %d orientation=%q want %q", cycleIndex+1, got, want)
+		}
 	}
 	offsets := ProductionPhaseSweepOffsetsNS()
 	wantOffsets := []int64{0, 125_000, 250_000, 375_000, 500_000, 625_000, 750_000, 875_000}
@@ -359,11 +426,19 @@ func TestFinalizeRejectsWeakenedPolicyAndOutOfOrderSamples(t *testing.T) {
 		}
 	})
 
-	t.Run("non-ABBA block order", func(t *testing.T) {
+	t.Run("non-balanced block order", func(t *testing.T) {
 		report := validReport(t)
 		report.Runs[2].Transport = TransportUSBIP
-		if err := Finalize(report); err == nil || !strings.Contains(err.Error(), "ABBA") {
+		if err := Finalize(report); err == nil || !strings.Contains(err.Error(), "order") {
 			t.Fatalf("block order error=%v", err)
+		}
+	})
+
+	t.Run("orientation does not match cycle", func(t *testing.T) {
+		report := validReport(t)
+		report.Workload.ScheduleOrientation = ScheduleOrientationBAAB
+		if err := Finalize(report); err == nil || !strings.Contains(err.Error(), "balanced schedule") {
+			t.Fatalf("cycle orientation error=%v", err)
 		}
 	})
 
@@ -537,7 +612,7 @@ func TestFinalizeRejectsSameMachineNativeTailRegression(t *testing.T) {
 func validReport(t *testing.T) *Report {
 	t.Helper()
 	report := &Report{
-		Schema:      SchemaV2,
+		Schema:      SchemaV3,
 		GeneratedAt: time.Date(2026, 8, 11, 12, 0, 0, 0, time.UTC),
 		Provenance: Provenance{
 			SourceRevision:              strings.Repeat("a", 40),
@@ -545,6 +620,7 @@ func validReport(t *testing.T) *Report {
 			SDLBinaryPath:               `C:\source\SDL3.dll`,
 			SDLBinarySHA256:             strings.Repeat("c", 64),
 			NativePackageManifestSHA256: strings.Repeat("d", 64),
+			NativePackageValidationMode: PackageValidationProduction,
 			NativeDriverSHA256:          strings.Repeat("e", 64),
 			NativeDriverBuildIdentity:   strings.Repeat("1", 64),
 			QPCFrequency:                1_000_000_000,
@@ -553,6 +629,7 @@ func validReport(t *testing.T) *Report {
 			TraceProfileSHA256:          strings.Repeat("f", 64),
 			USBIPBaselineMode:           USBIPBaselineMode,
 			USBIPBaselineVersion:        USBIPBaselineVersion,
+			USBIPRuntime:                validUSBIPRuntimeProvenance(),
 			GoVersion:                   "go1.26.2",
 			GOOS:                        "windows",
 			GOARCH:                      "amd64",
@@ -583,6 +660,10 @@ func validReport(t *testing.T) *Report {
 			InterTransitionDelayNS: int64(2 * time.Millisecond),
 			PhaseSweepOffsetsNS:    ProductionPhaseSweepOffsetsNS(),
 			Authentication:         AuthenticationMode,
+			ScheduleOrientation:    ScheduleOrientationABBA,
+			CycleID:                strings.Repeat("5", 32),
+			CycleIndex:             1,
+			CycleCount:             2,
 		},
 		Policy: Policy{
 			MinimumSamplePairs:      MinimumProductionSamplePairs,
@@ -596,7 +677,8 @@ func validReport(t *testing.T) *Report {
 	}
 	report.Workload.PhaseSweepSHA256 = PhaseSweepScheduleSHA256(report.Workload.PhaseSweepOffsetsNS)
 
-	for runIndex, block := range ProductionBlockSchedule(MinimumProductionSamplePairs) {
+	for runIndex, block := range ProductionBlockScheduleForOrientation(
+		MinimumProductionSamplePairs, report.Workload.ScheduleOrientation) {
 		run := Run{
 			Order:                   block.Order,
 			TransportBlock:          block.TransportBlock,
@@ -673,12 +755,14 @@ func validReport(t *testing.T) *Report {
 					LatencyNS: base, EventTimestampNS: timestamp, SDLFenceTimestampNS: timestamp - 1,
 					StartQPCTicks: pressStartQPC, EndQPCTicks: pressEndQPC,
 					MarkerQPCTicks: pressEndQPC + 1,
-					MarkerID:       SampleMarkerID("xbox360", run.Transport, run.TransportBlock, sequence, TransitionPress)},
+					MarkerID: SampleMarkerID(report.Workload.CycleID, report.Workload.CycleIndex,
+						"xbox360", run.Transport, run.TransportBlock, sequence, TransitionPress)},
 				Sample{Sequence: sequence, Transition: TransitionRelease,
 					LatencyNS: base + 5, EventTimestampNS: timestamp + 1, SDLFenceTimestampNS: timestamp,
 					StartQPCTicks: releaseStartQPC, EndQPCTicks: releaseEndQPC,
 					MarkerQPCTicks: releaseEndQPC + 1,
-					MarkerID:       SampleMarkerID("xbox360", run.Transport, run.TransportBlock, sequence, TransitionRelease)})
+					MarkerID: SampleMarkerID(report.Workload.CycleID, report.Workload.CycleIndex,
+						"xbox360", run.Transport, run.TransportBlock, sequence, TransitionRelease)})
 			qpcCursor = pressStartQPC + 20_000_000
 		}
 		report.Runs = append(report.Runs, run)
@@ -692,6 +776,55 @@ func validReport(t *testing.T) *Report {
 	return report
 }
 
+func validUSBIPRuntimeProvenance() USBIPRuntimeProvenance {
+	signed := func(path, hash string) USBIPFileIdentity {
+		return USBIPFileIdentity{
+			Path: path, Length: 1024, SHA256: hash,
+			SignatureStatus:  "Valid",
+			SignerSubject:    "CN=Microsoft Windows Hardware Compatibility Publisher, O=Microsoft Corporation",
+			SignerThumbprint: strings.Repeat("a", 40),
+		}
+	}
+	unsigned := func(path, hash string) USBIPFileIdentity {
+		return USBIPFileIdentity{Path: path, Length: 512, SHA256: hash}
+	}
+	proof := USBIPRuntimeProvenance{
+		Schema: USBIPRuntimeSchemaV1,
+		Services: []USBIPServiceProvenance{
+			{
+				Name: "usbip2_filter", Start: 3, Type: 1, PublishedINFName: "oem55.inf",
+				Image:        signed(`C:\Windows\System32\DriverStore\FileRepository\usbip2_filter\usbip2_filter.sys`, strings.Repeat("6", 64)),
+				INF:          unsigned(`C:\Windows\System32\DriverStore\FileRepository\usbip2_filter\usbip2_filter.inf`, strings.Repeat("7", 64)),
+				PublishedINF: unsigned(`C:\Windows\INF\oem55.inf`, strings.Repeat("7", 64)),
+				Catalog:      signed(`C:\Windows\System32\DriverStore\FileRepository\usbip2_filter\usbip2_filter.cat`, strings.Repeat("8", 64)),
+			},
+			{
+				Name: "usbip2_ude", Start: 3, Type: 1, PublishedINFName: "oem64.inf",
+				Image:        signed(`C:\Windows\System32\DriverStore\FileRepository\usbip2_ude\usbip2_ude.sys`, strings.Repeat("9", 64)),
+				INF:          unsigned(`C:\Windows\System32\DriverStore\FileRepository\usbip2_ude\usbip2_ude.inf`, strings.Repeat("b", 64)),
+				PublishedINF: unsigned(`C:\Windows\INF\oem64.inf`, strings.Repeat("b", 64)),
+				Catalog:      signed(`C:\Windows\System32\DriverStore\FileRepository\usbip2_ude\usbip2_ude.cat`, strings.Repeat("c", 64)),
+			},
+		},
+		RootControllers: []USBIPRootControllerProvenance{
+			{
+				InstanceID: `ROOT\USB\0001`, HardwareIDs: []string{`ROOT\USBIP_WIN2\UDE`},
+				Service: "usbip2_ude", Provider: "USBIP-WIN2", DriverVersion: "21.14.27.907",
+				PublishedINF: "oem64.inf", Signer: "Microsoft Windows Hardware Compatibility Publisher",
+				IsSigned: true,
+			},
+		},
+	}
+	raw, err := json.Marshal(proof)
+	if err != nil {
+		panic(err)
+	}
+	digest := sha256.Sum256(raw)
+	proof.CaptureSHA256 = hex.EncodeToString(digest[:])
+	proof.CaptureBase64 = base64.StdEncoding.EncodeToString(raw)
+	return proof
+}
+
 func setSampleLatency(sample *Sample, latencyNS, qpcFrequency int64) {
 	sample.LatencyNS = latencyNS
 	sample.EndQPCTicks = sample.StartQPCTicks + latencyNS*qpcFrequency/int64(time.Second)
@@ -702,7 +835,7 @@ func validSuite(t *testing.T) *SuiteReport {
 	t.Helper()
 	xbox := validReport(t)
 	suite := &SuiteReport{
-		Schema: SuiteSchemaV2, GeneratedAt: xbox.GeneratedAt, Provenance: xbox.Provenance,
+		Schema: SuiteSchemaV3, GeneratedAt: xbox.GeneratedAt, Provenance: xbox.Provenance,
 	}
 	identities := []struct {
 		controller string
@@ -735,7 +868,8 @@ func validSuite(t *testing.T) *SuiteReport {
 			run.Controller.SDLPath = identity.controller + "-" + run.Transport
 			for sampleIndex := range run.Samples {
 				sample := &run.Samples[sampleIndex]
-				sample.MarkerID = SampleMarkerID(identity.controller, run.Transport,
+				sample.MarkerID = SampleMarkerID(report.Workload.CycleID,
+					report.Workload.CycleIndex, identity.controller, run.Transport,
 					run.TransportBlock, sample.Sequence, sample.Transition)
 			}
 		}

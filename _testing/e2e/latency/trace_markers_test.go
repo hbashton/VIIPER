@@ -2,7 +2,11 @@ package latency
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -34,16 +38,35 @@ func TestTraceMarkerEvidenceRejectsMissingDuplicateTruncatedAndForged(t *testing
 		})
 	}
 
-	encoded, err := json.Marshal(markers)
+	tracePath := filepath.Join(t.TempDir(), "cycle.etl")
+	traceBytes := []byte("exact sequential ETL fixture")
+	if err := os.WriteFile(tracePath, traceBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(traceBytes)
+	evidence := TraceMarkerEvidence{
+		Schema: TraceMarkerEvidenceSchemaV1, SourceTraceLength: int64(len(traceBytes)),
+		SourceTraceSHA256: hex.EncodeToString(digest[:]), Markers: markers,
+	}
+	if err := VerifyTraceMarkerSource(&evidence, tracePath); err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(evidence)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = ParseTraceMarkers(bytes.NewReader(encoded[:len(encoded)-1])); err == nil {
+	if _, err = ParseTraceMarkerEvidence(bytes.NewReader(encoded[:len(encoded)-1])); err == nil {
 		t.Fatal("truncated marker JSON was accepted")
 	}
-	if _, err = ParseTraceMarkers(bytes.NewReader(append(encoded, []byte(` {}`)...))); err == nil ||
+	if _, err = ParseTraceMarkerEvidence(bytes.NewReader(append(encoded, []byte(` {}`)...))); err == nil ||
 		!strings.Contains(err.Error(), "trailing JSON") {
 		t.Fatalf("trailing marker JSON error=%v", err)
+	}
+	if err = os.WriteFile(tracePath, []byte("swapped ETL"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err = VerifyTraceMarkerSource(&evidence, tracePath); err == nil {
+		t.Fatal("swapped raw ETL was accepted")
 	}
 }
 

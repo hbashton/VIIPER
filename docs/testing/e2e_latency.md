@@ -11,9 +11,9 @@ must not be presented as interchangeable evidence.
   compares authenticated USB/IP and native UDE runs, and emits a strict JSON
   evidence artifact plus a source-controlled sequential-file WPR trace.
 - `_testing/e2e/scripts/Invoke-ViiperE2ELatencyMatrix.ps1` is the release
-  entry point. It runs the complete gate once at Normal and once at High
-  process priority, then binds both raw JSON/ETL/decoded-marker sets into one
-  hash manifest.
+  entry point. By default it runs eight alternating ABBA/BAAB cycles at Normal
+  priority and eight more at High priority, then binds every raw
+  JSON/ETL/decoded-marker set into one hash manifest and descriptive result.
 
 No live latency result is checked into this document. A passing result exists
 only when the production command below succeeds on the stated machine and its
@@ -23,15 +23,20 @@ source-bound artifacts are retained.
 
 This is an exact-source native-path, production-authentic API-to-consumer gate.
 The USB/IP comparator is deliberately labeled
-`version-probed-functional-baseline-not-source-bound`: the wrapper proves the
-supported 0.9.7.7 command and functional port contract, not the source revision
-of that third-party installed driver. The Go
-test starts `cmd.Server` in process at the clean `HEAD` under test and uses the
-repository's Go client over real localhost TCP. Beyond that process boundary it
-uses the installed USB/IP or native UDE transport, the actual Windows controller
-stack, and the source-bound SDL DLL. Authentication, API framing, controller
-serialization, transport delivery, HID consumption, SDL event delivery, and
-consumer wake-up are therefore live rather than mocked.
+`exact-installed-usbip-win2-runtime-and-source-bound-server`. Before every
+cycle the wrapper captures the exact installed `usbip2_filter` and
+`usbip2_ude` service images, driver-store and published INF bytes, catalog and
+SYS hashes, Microsoft signatures and signer thumbprints, plus the exact
+`ROOT\USBIP_WIN2\UDE` controller inventory. That canonical provenance is
+hashed, embedded in the report, and required to remain identical throughout
+the matrix. This proves the exact installed comparator bytes, not their
+unavailable third-party source revision. The Go test starts `cmd.Server` in
+process at the clean `HEAD` under test and uses the repository's Go client over
+real localhost TCP. Beyond that process boundary it uses the installed USB/IP
+or native UDE transport, the actual Windows controller stack, and the
+source-bound SDL DLL. Authentication, API framing, controller serialization,
+transport delivery, HID consumption, SDL event delivery, and consumer wake-up
+are therefore live rather than mocked.
 
 It is not a packaged-executable, service/task-hosted broker, DS4Windows, physical
 controller, display, or game-engine-frame test. The signed-package/broker live
@@ -51,16 +56,17 @@ button states, and waits for the corresponding game-facing SDL transition:
 | `dualsensegamepadv5` | PS5 | `054c:0ce6` | Cross |
 
 Each controller uses a fresh server, bus, device, stream, and exact SDL binding
-for four counterbalanced blocks: USB/IP, native UDE, native UDE, USB/IP (ABBA).
+for four counterbalanced blocks. Odd cycles use USB/IP, native UDE, native UDE,
+USB/IP (ABBA); even cycles reverse that order (BAAB).
 Sixteen unrecorded press/release pairs warm the complete path at the start of
 every block. The declared sample count is then split as evenly as possible
 between the two blocks for each transport; `-Samples 256` therefore records 128
 pairs in each block and aggregates 256 press plus 256 release samples per
-transport. ABBA makes both the first/last positions USB/IP and both middle
-positions native, reducing one-way warm-up and monotonic-drift bias without
-discarding per-block source identity.
+transport. Alternating ABBA and BAAB gives each transport every block position
+equally within each priority stratum, reducing order, warm-up, and
+monotonic-drift bias without discarding per-block source identity.
 
-The v2 JSON retains every raw sample and publishes nearest-rank p50, p90, p95,
+The v3 JSON retains every raw sample and publishes nearest-rank p50, p90, p95,
 p99, p99.9, and max values plus population jitter. Its provenance includes the
 host name, Windows product/display/build identity, CPU model, logical processor
 count, token elevation, and the measured process priority class. Reports from
@@ -70,7 +76,7 @@ All four blocks use the same API address, credential, bus/device position,
 input sequence, warm-up count, one-second event timeout, and deterministic
 unmeasured dwell schedule. Xbox success cannot certify either PlayStation path.
 Missing, ambiguous, or misidentified DualShock 4 or DualSense enumeration—or a
-failure in any ABBA block—fails the whole suite.
+failure in any ABBA/BAAB block—fails the whole suite.
 
 A fixed 2 ms dwell could repeatedly land writes at the same phase of a 1 ms HID
 service interval. The gate instead retains a 2 ms minimum state dwell and adds
@@ -198,10 +204,20 @@ transport performance. The gate does not say native is lower latency unless the
 retained live artifact actually shows negative native-minus-USB/IP deltas.
 
 The parser rejects unknown fields, trailing JSON, weakened absolute or
-same-machine limits, a non-ABBA schedule, mixed transport proof, workload drift
+same-machine limits, a schedule that contradicts the cycle-bound ABBA/BAAB
+orientation, mixed transport proof, workload drift
 between controllers, reordered or missing press/release samples, and block,
 aggregate, comparison, or verdict fields that do not exactly recompute from the
 individual records.
+
+The matrix gate adds a stricter descriptive condition: for Normal and High
+priority, native mean, p95, and p99 must each be lower than USB/IP for press and
+release on every controller in every observed balanced cycle. It retains every
+cycle delta and the worst cycle. The result is deliberately scoped to that
+exact source-bound machine session. Back-to-back cycles are not claimed to be
+independent, and the artifact makes no 95% confidence, population, other-host,
+or future-run inference. A pass therefore means “native was lower in every
+observed matrix cycle,” not “native is universally faster.”
 
 ## Running the production gate
 
@@ -209,7 +225,7 @@ Prerequisites are an elevated Windows PowerShell session, an exact clean
 checkout, Go 1.26 or newer, CGO with a working C toolchain, CMake, the
 source-built SDL submodule, WPR, USB/IP win2
 0.9.7.7, and an already installed Microsoft-signed VIIPER UDE package matching
-its submission manifest.
+its submission manifest. Production validation is the default.
 
 The SDL wrapper currently links the multi-configuration Debug output. Build and
 record that exact binary before running the gate:
@@ -223,8 +239,8 @@ $sdlHash = (Get-FileHash .\_testing\e2e\deps\SDL\build\Debug\SDL3.dll -Algorithm
 Choose an existing evidence directory outside the checkout. Existing files are
 never overwritten. `-Samples` is the total pair count per
 controller/transport and is bounded to 256–10,000. The release matrix defaults
-to 10,000 and produces independent Normal/High JSON, ETL, and decoded-marker
-artifacts.
+to 10,000 pairs and eight counterbalanced cycles per priority, producing unique
+cycle-bound Normal/High JSON, ETL, and decoded-marker artifacts.
 
 ```powershell
 $revision = (git rev-parse HEAD).Trim()
@@ -242,11 +258,25 @@ $goExe = 'C:\Go\bin\go.exe'
   -Samples 10000
 ```
 
+On a disposable Windows 11 test laptop, the same source-bound matrix may be
+run against an exact local-test package by adding both explicit arguments:
+
+```powershell
+  -PackageValidationMode LocalTest `
+  -LocalTestCertificatePath C:\ViiperUde\ViiperUdeTest.cer
+```
+
+LocalTest mode passes the package through VIIPER's dedicated local-test
+signature gate, requires the installed SYS to be signed by that exact
+certificate, and records the certificate SHA-256 and non-production validation
+mode in every report. It cannot satisfy or be relabeled as the default
+Microsoft production-signature mode.
+
 For a single diagnostic run, call `Invoke-ViiperE2ELatencyGate.ps1` directly
 with `-PriorityClass Normal` or `-PriorityClass High` and new `-OutputPath` and
 `-WprTracePath` values. Both wrappers require absolute, non-reparse Git and Go
 executable paths; the system WPR image is pinned automatically. Their paths and
-SHA-256 values are retained in the v2 provenance. A single run is not the
+SHA-256 values are retained in the v3 provenance. A single run is not the
 release priority matrix.
 
 The wrapper verifies and uses the checked-in `ViiperLatency.wprp` in sequential
@@ -259,9 +289,11 @@ the ETL oldest-first and requires exact chronological, one-to-one marker and
 QPC/timestamp/latency payload equality with the strictly parsed JSON; missing,
 duplicate, reordered, extra, or undecodable markers fail closed.
 The exact decoded marker set is retained beside the JSON as
-`<OutputPath>.etl-markers.json`, and the production wrapper invokes the same Go
-strict parser/recomputation verifier used by deterministic tests on the JSON,
-decoded-marker, and ETL evidence pair.
+`<OutputPath>.etl-markers.json`. Its strict envelope records the source ETL's
+exact length and SHA-256, preventing a decoded marker stream from being paired
+with a swapped raw trace. The production wrapper invokes the same Go strict
+parser/recomputation verifier used by deterministic tests on the JSON,
+decoded-marker, and ETL evidence triple.
 The ETL remains corroborating scheduler evidence, not a substitute for SDL's
 consumer timestamp.
 

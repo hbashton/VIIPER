@@ -1,11 +1,19 @@
 package latency
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"regexp"
 )
+
+const TraceMarkerEvidenceSchemaV1 = "viiper.controller-to-game.latency-trace-markers/v1"
+
+var traceEvidenceHashPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 type TraceMarker struct {
 	MarkerID            string `json:"trace_marker_id"`
@@ -22,11 +30,18 @@ type TraceMarker struct {
 	SDLFenceTimestampNS uint64 `json:"sdl_prewrite_fence_timestamp_ns"`
 }
 
-func ParseTraceMarkers(reader io.Reader) ([]TraceMarker, error) {
+type TraceMarkerEvidence struct {
+	Schema            string        `json:"schema"`
+	SourceTraceLength int64         `json:"source_trace_length"`
+	SourceTraceSHA256 string        `json:"source_trace_sha256"`
+	Markers           []TraceMarker `json:"markers"`
+}
+
+func ParseTraceMarkerEvidence(reader io.Reader) (*TraceMarkerEvidence, error) {
 	decoder := json.NewDecoder(reader)
 	decoder.DisallowUnknownFields()
-	var markers []TraceMarker
-	if err := decoder.Decode(&markers); err != nil {
+	var evidence TraceMarkerEvidence
+	if err := decoder.Decode(&evidence); err != nil {
 		return nil, fmt.Errorf("decode ETL marker evidence: %w", err)
 	}
 	var trailing any
@@ -36,7 +51,45 @@ func ParseTraceMarkers(reader io.Reader) ([]TraceMarker, error) {
 		}
 		return nil, fmt.Errorf("decode trailing ETL marker evidence: %w", err)
 	}
-	return markers, nil
+	if evidence.Schema != TraceMarkerEvidenceSchemaV1 || evidence.SourceTraceLength <= 0 ||
+		!traceEvidenceHashPattern.MatchString(evidence.SourceTraceSHA256) ||
+		len(evidence.Markers) == 0 {
+		return nil, errors.New("ETL marker evidence header is incomplete or noncanonical")
+	}
+	return &evidence, nil
+}
+
+// VerifyTraceMarkerSource binds the decoded marker envelope to the exact raw
+// sequential ETL file from which PowerShell decoded it.
+func VerifyTraceMarkerSource(evidence *TraceMarkerEvidence, tracePath string) error {
+	if evidence == nil {
+		return errors.New("nil ETL marker evidence")
+	}
+	info, err := os.Lstat(tracePath)
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 ||
+		info.Size() != evidence.SourceTraceLength {
+		return errors.New("raw ETL is not the exact regular file bound by marker evidence")
+	}
+	file, err := os.Open(tracePath)
+	if err != nil {
+		return err
+	}
+	hash := sha256.New()
+	_, copyErr := io.Copy(hash, file)
+	closeErr := file.Close()
+	if copyErr != nil {
+		return copyErr
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	if hex.EncodeToString(hash.Sum(nil)) != evidence.SourceTraceSHA256 {
+		return errors.New("raw ETL SHA-256 does not match decoded marker evidence")
+	}
+	return nil
 }
 
 // VerifyTraceMarkers requires an exact, chronological, one-to-one copy of every
