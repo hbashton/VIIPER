@@ -1213,6 +1213,8 @@ func TestValidateNativeBrokerPingRequiresExactContract(t *testing.T) {
 			Capabilities:                 uint32(udecx.AdvertisedCapabilities),
 			ExpectedDriverPackageVersion: udecx.DriverPackageVersion,
 			LoadedDriverBuildIdentity:    udecx.BuildIdentityHex(expected),
+			ControllerSessionID:          "17",
+			ControllerInstanceID:         `ROOT\VIIPERUDE\0042`,
 		},
 	}
 	if err := validateNativeBrokerPingAgainstIdentity(valid, expected); err != nil {
@@ -1230,6 +1232,18 @@ func TestValidateNativeBrokerPingRequiresExactContract(t *testing.T) {
 		},
 		"malformed loaded identity": func(p *viipertypes.PingResponse) {
 			p.NativeUDE.LoadedDriverBuildIdentity = strings.Repeat("z", 64)
+		},
+		"missing controller session identity": func(p *viipertypes.PingResponse) {
+			p.NativeUDE.ControllerSessionID = ""
+		},
+		"noncanonical controller session identity": func(p *viipertypes.PingResponse) {
+			p.NativeUDE.ControllerSessionID = "017"
+		},
+		"missing controller identity": func(p *viipertypes.PingResponse) {
+			p.NativeUDE.ControllerInstanceID = ""
+		},
+		"noncanonical controller identity": func(p *viipertypes.PingResponse) {
+			p.NativeUDE.ControllerInstanceID = `ROOT\VIIPERUDE\42`
 		},
 		"stale loaded identity with matching ABI and caps": func(p *viipertypes.PingResponse) {
 			p.NativeUDE.LoadedDriverBuildIdentity = strings.Repeat("0", 64)
@@ -1270,6 +1284,8 @@ func TestValidateNativeBrokerPingUsesInjectedBuildIdentity(t *testing.T) {
 			Capabilities:                 uint32(udecx.AdvertisedCapabilities),
 			ExpectedDriverPackageVersion: udecx.DriverPackageVersion,
 			LoadedDriverBuildIdentity:    udecx.BuildIdentityHex(expected),
+			ControllerSessionID:          "17",
+			ControllerInstanceID:         `ROOT\VIIPERUDE\0042`,
 		},
 	}
 	if err := validateNativeBrokerPing(response); err != nil {

@@ -636,6 +636,8 @@ ViiperCreateVirtualDevice(
     VIIPER_UDE_CONTROLLER_CONTEXT *controllerContext = ViiperGetControllerContext(controller);
     VIIPER_UDE_CREATE_DEVICE *input;
     size_t inputLength;
+    VIIPER_UDE_CREATE_DEVICE_RESULT *output;
+    size_t outputLength;
     WDFFILEOBJECT ownerFile;
     PUDECXUSBDEVICE_INIT deviceInit;
     UDECX_USB_DEVICE_STATE_CHANGE_CALLBACKS callbacks;
@@ -647,6 +649,7 @@ ViiperCreateVirtualDevice(
     UDECX_USB_DEVICE_PLUG_IN_OPTIONS plugOptions;
     ULONG slot;
     ULONG generation;
+    ULONG requestedSpeed;
     ULONGLONG deviceId;
     ULONGLONG portReservation;
 
@@ -659,8 +662,18 @@ ViiperCreateVirtualDevice(
         InterlockedIncrement64(&controllerContext->InvalidMessages);
         return STATUS_INVALID_PARAMETER;
     }
+    // Validate the complete output contract before acquiring ownership or
+    // mutating UdeCx. METHOD_BUFFERED aliases the input and output system
+    // buffer, so do not write the receipt until every input descriptor has
+    // been consumed and PlugIn has committed successfully.
+    status = WdfRequestRetrieveOutputBuffer(
+        Request, sizeof(*output), (PVOID *)&output, &outputLength);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
     deviceId = input->DeviceId;
     generation = input->Generation;
+    requestedSpeed = input->Speed;
     speed = ViiperMapSpeed(input->Speed);
     if (speed == (UDECX_USB_DEVICE_SPEED)0) {
         return STATUS_NOT_SUPPORTED;
@@ -781,7 +794,17 @@ ViiperCreateVirtualDevice(
         goto ExitAdmission;
     }
 
-    WdfRequestSetInformation(Request, 0);
+    RtlZeroMemory(output, sizeof(*output));
+    output->Header.Magic = VIIPER_UDE_MAGIC;
+    output->Header.Major = VIIPER_UDE_ABI_MAJOR;
+    output->Header.Minor = VIIPER_UDE_ABI_MINOR;
+    output->Header.Size = sizeof(*output);
+    output->DeviceId = deviceId;
+    output->Generation = generation;
+    output->Speed = requestedSpeed;
+    output->Usb20PortNumber = plugOptions.Usb20PortNumber;
+    output->Usb30PortNumber = plugOptions.Usb30PortNumber;
+    WdfRequestSetInformation(Request, sizeof(*output));
     status = STATUS_SUCCESS;
 
 ExitAdmission:

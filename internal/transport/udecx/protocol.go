@@ -10,18 +10,19 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 )
 
 const (
 	Magic    uint32 = 0x45445556
 	ABIMajor uint16 = 1
-	ABIMinor uint16 = 13
+	ABIMinor uint16 = 14
 	// DriverPackageVersion is the native driver package version built and
 	// shipped with this service. Runtime negotiation proves the loaded driver
 	// carries this version in its source-bound build identity; package
 	// installation additionally verifies DriverVer and the signed catalog.
-	DriverPackageVersion = "0.1.0.37"
+	DriverPackageVersion = "0.1.0.38"
 	BuildIdentitySize    = sha256.Size
 
 	HeaderSize               = 16
@@ -29,6 +30,7 @@ const (
 	NegotiateResponseSize    = 88
 	DescriptorRecordSize     = 16
 	CreateDeviceSize         = 56
+	CreateDeviceResultSize   = 40
 	DeviceIdentitySize       = 32
 	IsoPacketSize            = 16
 	OperationSize            = 108
@@ -83,10 +85,11 @@ const (
 	CapabilityDeviceLifecycle
 	CapabilityInputReports
 	CapabilityLifecycleTrace
+	CapabilityDeviceCorrelation
 )
 
 const AdvertisedCapabilities = CapabilityIsochronous | CapabilityDeviceLifecycle |
-	CapabilityInputReports | CapabilityLifecycleTrace
+	CapabilityInputReports | CapabilityLifecycleTrace | CapabilityDeviceCorrelation
 
 const (
 	TraceSourceDevice uint8 = iota + 1
@@ -191,6 +194,27 @@ func ExpectedBuildIdentity() ([BuildIdentitySize]byte, error) {
 
 func BuildIdentityHex(identity [BuildIdentitySize]byte) string {
 	return hex.EncodeToString(identity[:])
+}
+
+func IsCanonicalControllerInstanceID(value string) bool {
+	const prefix = `ROOT\VIIPERUDE\`
+	if len(value) != len(prefix)+4 || !strings.EqualFold(value[:len(prefix)], prefix) {
+		return false
+	}
+	for _, digit := range value[len(prefix):] {
+		if digit < '0' || digit > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// IsCanonicalControllerSessionID accepts only the exact decimal encoding
+// emitted by strconv.FormatUint for a nonzero kernel session nonce. This
+// avoids lossy JSON-number handling and alternate textual identities.
+func IsCanonicalControllerSessionID(value string) bool {
+	parsed, err := strconv.ParseUint(value, 10, 64)
+	return err == nil && parsed != 0 && strconv.FormatUint(parsed, 10) == value
 }
 
 type Header struct {
@@ -325,6 +349,62 @@ const (
 type DeviceIdentity struct {
 	DeviceID   uint64
 	Generation uint32
+}
+
+// CreateDeviceResult is the kernel-authored receipt for the exact successful
+// UdeCx plug-in. Exactly one port number is nonzero. It is deliberately not
+// inferred from descriptors or Windows enumeration order.
+type CreateDeviceResult struct {
+	DeviceID        uint64
+	Generation      uint32
+	Speed           DeviceSpeed
+	USB20PortNumber uint32
+	USB30PortNumber uint32
+}
+
+// DeviceRegistration binds the kernel receipt to the exact controller
+// devnode whose exclusive interface handle produced it. ControllerInstanceID
+// is queried from that interface while the handle is held, so callers can
+// correlate HID and UAC descendants without a VID/PID or enumeration-order
+// fallback.
+type DeviceRegistration struct {
+	DeviceIdentity
+	Speed                DeviceSpeed
+	USB20PortNumber      uint32
+	USB30PortNumber      uint32
+	ControllerSessionID  uint64
+	ControllerInstanceID string
+}
+
+func ParseCreateDeviceResult(src []byte) (CreateDeviceResult, error) {
+	h, err := ParseHeader(src)
+	if err != nil {
+		return CreateDeviceResult{}, err
+	}
+	if h.Size != CreateDeviceResultSize || len(src) != CreateDeviceResultSize {
+		return CreateDeviceResult{}, ErrInvalidSize
+	}
+	result := CreateDeviceResult{
+		DeviceID:        binary.LittleEndian.Uint64(src[16:24]),
+		Generation:      binary.LittleEndian.Uint32(src[24:28]),
+		Speed:           DeviceSpeed(binary.LittleEndian.Uint32(src[28:32])),
+		USB20PortNumber: binary.LittleEndian.Uint32(src[32:36]),
+		USB30PortNumber: binary.LittleEndian.Uint32(src[36:40]),
+	}
+	if result.DeviceID == 0 || result.Generation == 0 ||
+		result.Speed < DeviceSpeedLow || result.Speed > DeviceSpeedSuper ||
+		(result.USB20PortNumber == 0) == (result.USB30PortNumber == 0) {
+		return CreateDeviceResult{}, ErrInvalidRange
+	}
+	if result.Speed == DeviceSpeedSuper {
+		if result.USB20PortNumber != 0 || result.USB30PortNumber <= MaxDevices ||
+			result.USB30PortNumber > 2*MaxDevices {
+			return CreateDeviceResult{}, ErrInvalidRange
+		}
+	} else if result.USB30PortNumber != 0 || result.USB20PortNumber > MaxDevices {
+		return CreateDeviceResult{}, ErrInvalidRange
+	}
+	return result, nil
 }
 
 func (m DeviceIdentity) MarshalBinary() ([]byte, error) {

@@ -91,6 +91,7 @@ $requiredContracts = [ordered]@{
         'self-test-pristine-runtime-stats'
     'loaded-kernel build identity negotiation' = 'response\.BuildIdentity'
     'exact negotiated capability identity' = 'response\.Capabilities == profile\.capabilities'
+    'explicit ABI 1.14 profile' = '\{14, 61, 152, true\}'
     'explicit ABI 1.13 profile' = '\{13, 29, 152, true\}'
     'explicit ABI 1.12 profile' = '\{12, 29, 152, true\}'
     'explicit ABI 1.11 profile' = '\{11, 29, 144, false\}'

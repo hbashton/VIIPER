@@ -1490,6 +1490,14 @@ func validateNativeBrokerPingAgainstIdentity(
 		return fmt.Errorf("native broker package version=%q expected=%q",
 			native.ExpectedDriverPackageVersion, udecx.DriverPackageVersion)
 	}
+	if !udecx.IsCanonicalControllerSessionID(native.ControllerSessionID) {
+		return fmt.Errorf("native broker controller session identity=%q is not canonical",
+			native.ControllerSessionID)
+	}
+	if !udecx.IsCanonicalControllerInstanceID(native.ControllerInstanceID) {
+		return fmt.Errorf("native broker controller instance identity=%q is not canonical",
+			native.ControllerInstanceID)
+	}
 	if len(native.LoadedDriverBuildIdentity) != 64 {
 		return errors.New("native broker omitted the negotiated loaded-driver build identity")
 	}

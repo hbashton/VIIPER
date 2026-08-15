@@ -254,6 +254,48 @@ func TestKernelPlugInPublishesCleanupAccountingBeforeUdeCxExposure(t *testing.T)
 	}
 }
 
+func TestKernelCreatePublishesAuthoritativeCorrelationReceipt(t *testing.T) {
+	device := nativeContractSource(t, "native", "udecx", "driver", "Device.c")
+	create := normalizedContract(nativeCFunction(t, device, "ViiperCreateVirtualDevice"))
+	requireContractOrder(t, create,
+		"WdfRequestRetrieveInputBuffer(Request, sizeof(*input), (PVOID *)&input, &inputLength);",
+		"ViiperValidateCreateDevice(input, inputLength)",
+		"WdfRequestRetrieveOutputBuffer( Request, sizeof(*output), (PVOID *)&output, &outputLength);",
+		"deviceId = input->DeviceId;",
+		"generation = input->Generation;",
+		"requestedSpeed = input->Speed;",
+		"ViiperBeginOwnerAdmission(controller, Request, &ownerFile);",
+		"ViiperClaimDeviceSlot(",
+		"plugOptions.Usb30PortNumber = (USHORT)(VIIPER_UDE_USB20_PORT_COUNT + slot + 1);",
+		"plugOptions.Usb20PortNumber = (USHORT)(slot + 1);",
+		"status = UdecxUsbDevicePlugIn(device, &plugOptions);")
+
+	plug := strings.Index(create, "status = UdecxUsbDevicePlugIn(device, &plugOptions);")
+	if plug < 0 {
+		t.Fatal("kernel create lost its authoritative UdeCx plug-in boundary")
+	}
+	postPlug := create[plug:]
+	requireContractOrder(t, postPlug,
+		"status = UdecxUsbDevicePlugIn(device, &plugOptions);",
+		"if (!NT_SUCCESS(status))",
+		"goto ExitAdmission;",
+		"RtlZeroMemory(output, sizeof(*output));",
+		"output->Header.Magic = VIIPER_UDE_MAGIC;",
+		"output->Header.Major = VIIPER_UDE_ABI_MAJOR;",
+		"output->Header.Minor = VIIPER_UDE_ABI_MINOR;",
+		"output->Header.Size = sizeof(*output);",
+		"output->DeviceId = deviceId;",
+		"output->Generation = generation;",
+		"output->Speed = requestedSpeed;",
+		"output->Usb20PortNumber = plugOptions.Usb20PortNumber;",
+		"output->Usb30PortNumber = plugOptions.Usb30PortNumber;",
+		"WdfRequestSetInformation(Request, sizeof(*output));",
+		"status = STATUS_SUCCESS;")
+	if strings.Contains(create[:plug], "WdfRequestSetInformation") {
+		t.Fatal("kernel create publishes a correlation receipt before UdeCx accepts the device")
+	}
+}
+
 type modeledPortDevice struct {
 	slot   int
 	token  uint64

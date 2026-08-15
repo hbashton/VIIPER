@@ -152,6 +152,7 @@ func (s *Server) StartServer(ctx context.Context, logger *slog.Logger, rawLogger
 	r.Register("bus/{id}/list", handler.BusDevicesList(usbSrv))
 	r.Register("bus/{id}/add", handler.BusDeviceAdd(usbSrv, apiSrv))
 	r.Register("bus/{id}/remove", handler.BusDeviceRemove(usbSrv))
+	r.Register("bus/{id}/remove-native", handler.BusDeviceRemoveNative(usbSrv))
 	r.RegisterStream("bus/{busId}/{deviceid}", api.DeviceStreamHandler(usbSrv))
 
 	if s.APIServerConfig.AutoAttachLocalClient && transport == "usbip" {

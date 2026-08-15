@@ -61,7 +61,8 @@ ViiperHandleNegotiate(
         input->ClientNonce == 0 || input->Reserved != 0 ||
         (input->RequestedCapabilities & ~(VIIPER_UDE_CAP_ISOCHRONOUS |
             VIIPER_UDE_CAP_STREAMS | VIIPER_UDE_CAP_DEVICE_LIFECYCLE |
-            VIIPER_UDE_CAP_INPUT_REPORTS | VIIPER_UDE_CAP_LIFECYCLE_TRACE)) != 0) {
+            VIIPER_UDE_CAP_INPUT_REPORTS | VIIPER_UDE_CAP_LIFECYCLE_TRACE |
+            VIIPER_UDE_CAP_DEVICE_CORRELATION)) != 0) {
         return STATUS_INVALID_PARAMETER;
     }
     if (input->Header.Major != VIIPER_UDE_ABI_MAJOR ||

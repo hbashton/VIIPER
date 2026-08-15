@@ -131,9 +131,11 @@ func (c *Client) DeviceAddCtx(ctx context.Context, busID uint32, devType string,
 	return parse[viipertypes.Device](raw)
 }
 
-// DeviceRemove removes a device from the specified bus by its device ID.
+// DeviceRemove removes a USB/IP device from the specified bus by its device ID.
 // The devID parameter is the device number (e.g., "1") on the given bus.
 // Active USB-IP connections to the device will be closed.
+// Native UDE callers must use DeviceRemoveRegistered so the exact correlation
+// receipt is compared atomically and an ID-reusing successor is preserved.
 // Returns the removed device's bus and device ID or an error if not found.
 func (c *Client) DeviceRemove(busID uint32, devID string) (*viipertypes.DeviceRemoveResponse, error) {
 	return c.DeviceRemoveCtx(context.Background(), busID, devID)
@@ -147,6 +149,56 @@ func (c *Client) DeviceRemoveCtx(ctx context.Context, busID uint32, devID string
 		return nil, err
 	}
 	return parse[viipertypes.DeviceRemoveResponse](raw)
+}
+
+// DeviceRemoveNative conditionally removes the exact native registration
+// identified by the immutable add/list receipt.
+func (c *Client) DeviceRemoveNative(
+	busID uint32, devID string, native *viipertypes.NativeUDEDeviceInfo,
+) (*viipertypes.DeviceRemoveResponse, error) {
+	return c.DeviceRemoveNativeCtx(context.Background(), busID, devID, native)
+}
+
+func (c *Client) DeviceRemoveNativeCtx(
+	ctx context.Context, busID uint32, devID string, native *viipertypes.NativeUDEDeviceInfo,
+) (*viipertypes.DeviceRemoveResponse, error) {
+	if native == nil {
+		return nil, errors.New("native UDE removal requires the exact correlation receipt")
+	}
+	request := viipertypes.NativeUDEDeviceRemoveRequest{
+		DevID: devID, Transport: "native-ude", NativeUDE: native,
+	}
+	pathParams := map[string]string{"id": fmt.Sprintf("%d", busID)}
+	const path = "bus/{id}/remove-native"
+	raw, err := c.transport.DoCtx(ctx, path, request, pathParams)
+	if err != nil {
+		return nil, err
+	}
+	return parse[viipertypes.DeviceRemoveResponse](raw)
+}
+
+// DeviceRemoveRegistered selects the only safe removal contract for the
+// transport recorded in a DeviceAdd/DevicesList result.
+func (c *Client) DeviceRemoveRegistered(
+	device *viipertypes.Device,
+) (*viipertypes.DeviceRemoveResponse, error) {
+	return c.DeviceRemoveRegisteredCtx(context.Background(), device)
+}
+
+func (c *Client) DeviceRemoveRegisteredCtx(
+	ctx context.Context, device *viipertypes.Device,
+) (*viipertypes.DeviceRemoveResponse, error) {
+	if device == nil {
+		return nil, errors.New("device removal requires a device registration")
+	}
+	switch device.Transport {
+	case "native-ude":
+		return c.DeviceRemoveNativeCtx(ctx, device.BusID, device.DevID, device.NativeUDE)
+	case "", "usbip":
+		return c.DeviceRemoveCtx(ctx, device.BusID, device.DevID)
+	default:
+		return nil, fmt.Errorf("unsupported device transport %q", device.Transport)
+	}
 }
 
 // DevicesList retrieves a list of all devices attached to the specified bus.

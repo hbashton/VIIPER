@@ -69,6 +69,15 @@ type contractCreateDevice struct {
 	Reserved                uint32
 }
 
+type contractCreateDeviceResult struct {
+	Header          contractHeader
+	DeviceId        uint64
+	Generation      uint32
+	Speed           uint32
+	Usb20PortNumber uint32
+	Usb30PortNumber uint32
+}
+
 type contractDeviceIdentity struct {
 	Header     contractHeader
 	DeviceId   uint64
@@ -278,6 +287,7 @@ func TestNativeProtocolHeaderMatchesGoContract(t *testing.T) {
 		"VIIPER_UDE_CAP_DEVICE_LIFECYCLE":               uint64(CapabilityDeviceLifecycle),
 		"VIIPER_UDE_CAP_INPUT_REPORTS":                  uint64(CapabilityInputReports),
 		"VIIPER_UDE_CAP_LIFECYCLE_TRACE":                uint64(CapabilityLifecycleTrace),
+		"VIIPER_UDE_CAP_DEVICE_CORRELATION":             uint64(CapabilityDeviceCorrelation),
 		"VIIPER_UDE_LIFECYCLE_TRACE_CAPACITY":           LifecycleTraceCapacity,
 		"VIIPER_UDE_TRACE_ENDPOINT_QUIESCENCE_WATCHDOG": uint64(TraceEndpointQuiescenceWatchdog),
 		"VIIPER_UDE_TRACE_COMPLETION_RUNDOWN_WATCHDOG":  uint64(TraceCompletionRundownWatchdog),
@@ -300,6 +310,7 @@ func TestNativeProtocolHeaderMatchesGoContract(t *testing.T) {
 		"NEGOTIATE_RESPONSE":     reflect.TypeOf(contractNegotiateResponse{}),
 		"DESCRIPTOR_RECORD":      reflect.TypeOf(contractDescriptorRecord{}),
 		"CREATE_DEVICE":          reflect.TypeOf(contractCreateDevice{}),
+		"CREATE_DEVICE_RESULT":   reflect.TypeOf(contractCreateDeviceResult{}),
 		"DEVICE_IDENTITY":        reflect.TypeOf(contractDeviceIdentity{}),
 		"ISO_PACKET":             reflect.TypeOf(contractISOPacket{}),
 		"OPERATION":              reflect.TypeOf(contractOperation{}),
@@ -312,8 +323,9 @@ func TestNativeProtocolHeaderMatchesGoContract(t *testing.T) {
 	wantSizes := map[string]uintptr{
 		"HEADER": HeaderSize, "NEGOTIATE_REQUEST": NegotiateRequestSize,
 		"NEGOTIATE_RESPONSE": NegotiateResponseSize, "DESCRIPTOR_RECORD": DescriptorRecordSize,
-		"CREATE_DEVICE": CreateDeviceSize, "DEVICE_IDENTITY": DeviceIdentitySize,
-		"ISO_PACKET": IsoPacketSize, "OPERATION": OperationSize, "COMPLETION": CompletionSize,
+		"CREATE_DEVICE": CreateDeviceSize, "CREATE_DEVICE_RESULT": CreateDeviceResultSize,
+		"DEVICE_IDENTITY": DeviceIdentitySize,
+		"ISO_PACKET":      IsoPacketSize, "OPERATION": OperationSize, "COMPLETION": CompletionSize,
 		"INPUT_REPORT": InputReportSize, "STATS": StatsSize,
 		"LIFECYCLE_TRACE_RECORD": LifecycleTraceRecordSize,
 		"LIFECYCLE_TRACE":        LifecycleTraceSize,
@@ -395,9 +407,14 @@ func TestNativeProtocolHeaderMatchesGoContract(t *testing.T) {
 	if !strings.Contains(header, `#define VIIPER_UDE_DRIVER_PACKAGE_VERSION "`+DriverPackageVersion+`"`) {
 		t.Fatalf("C driver package version does not match Go %q", DriverPackageVersion)
 	}
-	advertised := regexp.MustCompile(`(?s)#define\s+VIIPER_UDE_ADVERTISED_CAPABILITIES\s+\\\s*\(VIIPER_UDE_CAP_ISOCHRONOUS\s*\|\s*VIIPER_UDE_CAP_DEVICE_LIFECYCLE\s*\|\s*\\?\s*VIIPER_UDE_CAP_INPUT_REPORTS\s*\|\s*VIIPER_UDE_CAP_LIFECYCLE_TRACE\)`).MatchString(header)
+	advertised := regexp.MustCompile(`(?s)#define\s+VIIPER_UDE_ADVERTISED_CAPABILITIES\s+\\\s*\(VIIPER_UDE_CAP_ISOCHRONOUS\s*\|\s*VIIPER_UDE_CAP_DEVICE_LIFECYCLE\s*\|\s*\\?\s*VIIPER_UDE_CAP_INPUT_REPORTS\s*\|\s*VIIPER_UDE_CAP_LIFECYCLE_TRACE\s*\|\s*\\?\s*VIIPER_UDE_CAP_DEVICE_CORRELATION\)`).MatchString(header)
 	if !advertised {
 		t.Fatal("C advertised capability identity tuple does not match Go")
+	}
+	ioctl := nativeContractSource(t, "native", "udecx", "driver", "Ioctl.c")
+	negotiable := regexp.MustCompile(`(?s)input->RequestedCapabilities\s*&\s*~\(.*?VIIPER_UDE_CAP_ISOCHRONOUS.*?VIIPER_UDE_CAP_DEVICE_LIFECYCLE.*?VIIPER_UDE_CAP_INPUT_REPORTS.*?VIIPER_UDE_CAP_LIFECYCLE_TRACE.*?VIIPER_UDE_CAP_DEVICE_CORRELATION\)`).MatchString(ioctl)
+	if !negotiable {
+		t.Fatal("kernel negotiation rejects one or more advertised Go capabilities")
 	}
 }
 

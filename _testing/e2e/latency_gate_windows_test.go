@@ -597,11 +597,12 @@ func runLiveLatencyTransport(
 		return result
 	}
 	var (
-		busCreated bool
-		deviceID   string
-		gamepadID  sdl.GamepadID
-		gamepad    *sdl.Gamepad
-		stream     *viiperclient.DeviceStream
+		busCreated         bool
+		deviceID           string
+		deviceRegistration *viipertypes.Device
+		gamepadID          sdl.GamepadID
+		gamepad            *sdl.Gamepad
+		stream             *viiperclient.DeviceStream
 	)
 	defer func() {
 		if stream != nil {
@@ -612,15 +613,16 @@ func runLiveLatencyTransport(
 		if gamepad != nil {
 			gamepad.Close()
 		}
-		if deviceID != "" {
+		if deviceRegistration != nil {
 			cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			_, removeErr := server.client.DeviceRemoveCtx(cleanupCtx, 1, deviceID)
+			_, removeErr := server.client.DeviceRemoveRegisteredCtx(cleanupCtx, deviceRegistration)
 			cancel()
 			if removeErr != nil {
 				appendLatencyFailure(&result, "remove API device: %v", removeErr)
 			}
 		}
-		if busCreated {
+		if busCreated && (deviceRegistration == nil ||
+			deviceRegistration.Transport != "native-ude") {
 			cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			_, removeErr := server.client.BusRemoveCtx(cleanupCtx, 1)
 			cancel()
@@ -703,6 +705,7 @@ func runLiveLatencyTransport(
 		return result
 	}
 	deviceID = device.DevID
+	deviceRegistration = device
 	result.Device = latency.DeviceProof{
 		BusID: 1, DeviceID: device.DevID, Type: device.Type,
 		VendorID: controller.vendorID, ProductID: controller.productID, USBIPPort: device.USBIPPort,

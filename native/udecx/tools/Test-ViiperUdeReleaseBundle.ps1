@@ -156,12 +156,12 @@ $driverVersion = $versionNodes[0].InnerText.Trim()
 $expectedBuildIdentity = & (Join-Path $PSScriptRoot 'Get-ViiperUdeBuildIdentity.ps1') `
     -SourceRevision $ExpectedSourceRevision `
     -DriverPackageVersion $driverVersion `
-    -ABIMajor 1 -ABIMinor 13 -Capabilities 29
+    -ABIMajor 1 -ABIMinor 14 -Capabilities 61
 if ($manifest.schema -ne 2 -or
         [string]$manifest.sourceRevision -cne $ExpectedSourceRevision -or
         [string]$manifest.driverPackageVersion -cne $driverVersion -or
-        [int]$manifest.driverABIMajor -ne 1 -or [int]$manifest.driverABIMinor -ne 13 -or
-        [string]$manifest.driverCapabilities -cne '0x0000001d' -or
+        [int]$manifest.driverABIMajor -ne 1 -or [int]$manifest.driverABIMinor -ne 14 -or
+        [string]$manifest.driverCapabilities -cne '0x0000003d' -or
         [string]$manifest.driverBuildIdentity -cne $expectedBuildIdentity -or
         -not [bool]$manifest.releaseEligible -or
         [string]$manifest.signingRoute -cne 'HLK/WHCP') {

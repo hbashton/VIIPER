@@ -103,7 +103,8 @@ struct AbiCompatibilityProfile {
     bool hasReservedPortFields;
 };
 
-constexpr std::array<AbiCompatibilityProfile, 4> kAbiCompatibilityProfiles{{
+constexpr std::array<AbiCompatibilityProfile, 5> kAbiCompatibilityProfiles{{
+    {14, 61, 152, true},
     {13, 29, 152, true},
     {12, 29, 152, true},
     {11, 29, 144, false},
@@ -115,26 +116,31 @@ constexpr bool AbiCompatibilityProfilesAreValid() noexcept {
         kAbiCompatibilityProfiles[0].capabilities == VIIPER_UDE_ADVERTISED_CAPABILITIES &&
         kAbiCompatibilityProfiles[0].statsSize == sizeof(VIIPER_UDE_STATS) &&
         kAbiCompatibilityProfiles[0].hasReservedPortFields &&
-        kAbiCompatibilityProfiles[1].minor == 12 &&
+        kAbiCompatibilityProfiles[1].minor == 13 &&
         kAbiCompatibilityProfiles[1].capabilities == 29 &&
         kAbiCompatibilityProfiles[1].statsSize == 152 &&
         kAbiCompatibilityProfiles[1].hasReservedPortFields &&
-        kAbiCompatibilityProfiles[2].minor == 11 &&
+        kAbiCompatibilityProfiles[2].minor == 12 &&
         kAbiCompatibilityProfiles[2].capabilities == 29 &&
-        kAbiCompatibilityProfiles[2].statsSize == 144 &&
-        !kAbiCompatibilityProfiles[2].hasReservedPortFields &&
-        kAbiCompatibilityProfiles[3].minor == 10 &&
-        kAbiCompatibilityProfiles[3].capabilities == 13 &&
+        kAbiCompatibilityProfiles[2].statsSize == 152 &&
+        kAbiCompatibilityProfiles[2].hasReservedPortFields &&
+        kAbiCompatibilityProfiles[3].minor == 11 &&
+        kAbiCompatibilityProfiles[3].capabilities == 29 &&
         kAbiCompatibilityProfiles[3].statsSize == 144 &&
         !kAbiCompatibilityProfiles[3].hasReservedPortFields &&
+        kAbiCompatibilityProfiles[4].minor == 10 &&
+        kAbiCompatibilityProfiles[4].capabilities == 13 &&
+        kAbiCompatibilityProfiles[4].statsSize == 144 &&
+        !kAbiCompatibilityProfiles[4].hasReservedPortFields &&
         kAbiCompatibilityProfiles[0].minor == kAbiCompatibilityProfiles[1].minor + 1 &&
         kAbiCompatibilityProfiles[1].minor == kAbiCompatibilityProfiles[2].minor + 1 &&
-        kAbiCompatibilityProfiles[2].minor == kAbiCompatibilityProfiles[3].minor + 1;
+        kAbiCompatibilityProfiles[2].minor == kAbiCompatibilityProfiles[3].minor + 1 &&
+        kAbiCompatibilityProfiles[3].minor == kAbiCompatibilityProfiles[4].minor + 1;
 }
 
 static_assert(VIIPER_UDE_ABI_MAJOR == 1, "ABI compatibility table major drift");
-static_assert(VIIPER_UDE_ABI_MINOR == 13, "ABI compatibility table current minor drift");
-static_assert(VIIPER_UDE_ADVERTISED_CAPABILITIES == 29,
+static_assert(VIIPER_UDE_ABI_MINOR == 14, "ABI compatibility table current minor drift");
+static_assert(VIIPER_UDE_ADVERTISED_CAPABILITIES == 61,
     "ABI compatibility table current capabilities drift");
 static_assert(sizeof(VIIPER_UDE_STATS) == 152,
     "ABI compatibility table current statistics size drift");
@@ -17259,7 +17265,7 @@ bool RunRemoveJournalModelSelfTest(Error* error) {
     }
     PackageInfo package;
     package.publishedName = L"oem42.inf";
-    package.version.parts = {0, 1, 0, 37};
+    package.version.parts = {0, 1, 0, 38};
     package.infSha256 = std::string(64, 'a');
     package.sysSha256 = std::string(64, 'b');
     package.catSha256 = std::string(64, 'c');
@@ -17786,7 +17792,7 @@ Outcome SelfTest() {
             "0123456789abcdef0123456789abcdef01234567",
             &buildIdentity, &outcome.error) ||
         buildIdentity !=
-            "b6bdcfe32dec8eb48bfde2f70b72542695588d2483ab71218636ce0b733aa067") {
+            "9a8c5a75d8c54569f3a8f7e1b2c9a68b8b40bf06494285fa93b56895a98ba3fe") {
         if (outcome.error.code == ERROR_SUCCESS) {
             SetError(&outcome.error, L"self-test-build-identity", ERROR_INVALID_DATA);
         }
@@ -17949,8 +17955,9 @@ Outcome SelfTest() {
     }
     pristineStats.ReservedPorts = 1;
     if (RuntimeStatsArePristine(pristineStats, kAbiCompatibilityProfiles[1]) ||
-        !RuntimeStatsArePristine(pristineStats, kAbiCompatibilityProfiles[2]) ||
-        !RuntimeStatsArePristine(pristineStats, kAbiCompatibilityProfiles[3])) {
+        RuntimeStatsArePristine(pristineStats, kAbiCompatibilityProfiles[2]) ||
+        !RuntimeStatsArePristine(pristineStats, kAbiCompatibilityProfiles[3]) ||
+        !RuntimeStatsArePristine(pristineStats, kAbiCompatibilityProfiles[4])) {
         SetError(&outcome.error, L"self-test-pristine-runtime-stats", ERROR_INVALID_DATA,
             L"a legacy ABI inspected a counter outside its returned statistics record");
         return outcome;

@@ -115,3 +115,72 @@ func TestContextCancellation(t *testing.T) {
 	_, err := c.BusListCtx(ctx)
 	assert.Error(t, err)
 }
+
+func TestDeviceRemoveRegisteredUsesTransportScopedAuthority(t *testing.T) {
+	tests := []struct {
+		name     string
+		device   *viipertypes.Device
+		wantPath string
+		wantErr  string
+	}{
+		{
+			name: "native exact receipt",
+			device: &viipertypes.Device{
+				BusID: 1, DevID: "1", Transport: "native-ude",
+				NativeUDE: &viipertypes.NativeUDEDeviceInfo{
+					DeviceID: "4294967297", DeviceGeneration: 2,
+					ControllerSessionID: "17", ControllerInstanceID: `ROOT\VIIPERUDE\0000`,
+					USB20PortNumber: 1,
+				},
+			},
+			wantPath: "bus/{id}/remove-native",
+		},
+		{
+			name: "usbip legacy id",
+			device: &viipertypes.Device{
+				BusID: 1, DevID: "1", Transport: "usbip",
+			},
+			wantPath: "bus/{id}/remove",
+		},
+		{
+			name: "native missing receipt",
+			device: &viipertypes.Device{
+				BusID: 1, DevID: "1", Transport: "native-ude",
+			},
+			wantErr: "exact correlation receipt",
+		},
+		{
+			name: "unknown transport",
+			device: &viipertypes.Device{
+				BusID: 1, DevID: "1", Transport: "future",
+			},
+			wantErr: "unsupported device transport",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var gotPath string
+			var gotPayload any
+			client := viiperclient.WithTransport(viiperclient.NewMockTransport(
+				func(path string, payload any, _ map[string]string) (string, error) {
+					gotPath, gotPayload = path, payload
+					return `{"busId":1,"devId":"1"}`, nil
+				},
+			))
+			_, err := client.DeviceRemoveRegistered(test.device)
+			if test.wantErr != "" {
+				assert.ErrorContains(t, err, test.wantErr)
+				assert.Empty(t, gotPath)
+				return
+			}
+			assert.NoError(t, err)
+			assert.Equal(t, test.wantPath, gotPath)
+			if test.device.Transport == "native-ude" {
+				request, ok := gotPayload.(viipertypes.NativeUDEDeviceRemoveRequest)
+				assert.True(t, ok)
+				assert.Equal(t, test.device.DevID, request.DevID)
+				assert.Equal(t, test.device.NativeUDE, request.NativeUDE)
+			}
+		})
+	}
+}

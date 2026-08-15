@@ -191,10 +191,12 @@ kept matched.
       "ready": true,
       "nativeUde": {
         "abiMajor": 1,
-        "abiMinor": 10,
-        "capabilities": 13,
-        "expectedDriverPackageVersion": "0.1.0.26",
+        "abiMinor": 14,
+        "capabilities": 61,
+        "expectedDriverPackageVersion": "0.1.0.38",
         "loadedDriverBuildIdentity": "<64 lowercase hexadecimal characters returned by the loaded kernel>",
+        "controllerSessionId": "<nonzero canonical decimal uint64>",
+        "controllerInstanceId": "ROOT\\VIIPERUDE\\0000",
         "maxDevices": 32,
         "maxDescriptorBytes": 262144,
         "maxTransferBytes": 1048576,
@@ -246,9 +248,18 @@ kept matched.
           "devId": "1",
           "vid": "0x045e",
           "pid": "0x028e",
-          "type": "xbox360"
+          "type": "xbox360",
           "deviceSpecific": {
             "subType": 1
+          },
+          "transport": "native-ude",
+          "nativeUde": {
+            "deviceId": "4294967297",
+            "deviceGeneration": 1,
+            "controllerSessionId": "123456789",
+            "controllerInstanceId": "ROOT\\VIIPERUDE\\0000",
+            "usb20PortNumber": 1,
+            "usb30PortNumber": 0
           }
         }
       ]
@@ -285,6 +296,15 @@ kept matched.
       "type": "xbox360",
       "deviceSpecific": {
         "subType":7
+      },
+      "transport": "native-ude",
+      "nativeUde": {
+        "deviceId": "4294967297",
+        "deviceGeneration": 1,
+        "controllerSessionId": "123456789",
+        "controllerInstanceId": "ROOT\\VIIPERUDE\\0000",
+        "usb20PortNumber": 1,
+        "usb30PortNumber": 0
       }
     }
     ```
@@ -293,7 +313,7 @@ kept matched.
         After add, the server starts a connect timer (default `5s`). You must open a device stream before the timeout expires, otherwise the device is auto-removed.
     
     !!! info "Auto-attach"
-        If [auto-attach](../cli/server.md#api.auto-attach-local-client) is enabled (default), the server automatically attaches the new device to a local USBIP client on the same host (localhost only). Failures are logged but do not affect the API response.
+        In explicit USB/IP mode, [auto-attach](../cli/server.md#api.auto-attach-local-client) can attach the new device to a local USBIP client. Native UDE mode never performs USB/IP attach/detach; its response instead carries the authenticated `nativeUde` ownership tuple. Exactly one of `usb20PortNumber` and `usb30PortNumber` is nonzero. Treat `deviceId` and `controllerSessionId` as decimal strings rather than JSON numbers, and fail closed if any native ownership field is absent or inconsistent with `ping`.
 
 #### `bus/{id}/remove <deviceId>` {.toc-anchor}
 
@@ -301,8 +321,35 @@ kept matched.
     **Request:** `bus/1/remove 1`
 
     **Payload:** Numeric device ID (e.g., `1` for device 1-1 on the bus)
-    
+
+    This legacy ID-only endpoint is available only in explicit USB/IP mode.
+    Native UDE clients must use `remove-native`; an ID-only native removal is
+    rejected because IDs can be reused after a controller restart.
+
     **Response:** `{ "busId": <id>, "devId": "<dev>" }`
+
+#### `bus/{id}/remove-native <json_payload>` {.toc-anchor}
+
+??? info "bus/{id}/remove-native - Conditionally remove one exact native UDE device"
+    **Request:**
+
+    ```text
+    bus/1/remove-native {"devId":"1","transport":"native-ude","nativeUde":{"deviceId":"4294967297","deviceGeneration":1,"controllerSessionId":"123456789","controllerInstanceId":"ROOT\\VIIPERUDE\\0000","usb20PortNumber":1,"usb30PortNumber":0}}
+    ```
+
+    The payload must echo the exact `devId`, `transport`, and complete
+    `nativeUde` receipt returned by `add` or `list`. Field names, decimal string
+    encodings, and object shape are canonical; duplicate, missing, unknown, or
+    trailing JSON fields are rejected.
+
+    VIIPER compares the receipt with the current native registration while
+    holding the same lifecycle lock used for unregistration. A stale receipt
+    returns `409 Conflict` and removes nothing. Clients must treat that result as
+    a retired lifetime and must never retry through the ID-only endpoint. A
+    successful removal owns empty-bus cleanup; clients must not issue a separate
+    `bus/remove` operation.
+
+    **Response:** `{ "busId": 1, "devId": "1" }`
 
 ### Device Control / Feedback {#device-control--feedback}
 

@@ -4,6 +4,7 @@ package cmd
 
 import (
 	"context"
+	"strconv"
 
 	serverusb "github.com/Alia5/VIIPER/internal/server/usb"
 	"github.com/Alia5/VIIPER/internal/transport/udecx"
@@ -38,6 +39,8 @@ func startNativeUDETransport(ctx context.Context, server *serverusb.Server) (nat
 			Capabilities:                 uint32(client.Capabilities()),
 			ExpectedDriverPackageVersion: udecx.DriverPackageVersion,
 			LoadedDriverBuildIdentity:    udecx.BuildIdentityHex(client.BuildIdentity()),
+			ControllerSessionID:          strconv.FormatUint(client.ControllerSessionID(), 10),
+			ControllerInstanceID:         client.ControllerInstanceID(),
 			MaxDevices:                   limits.MaxDevices, MaxDescriptorBytes: limits.MaxDescriptorBytes,
 			MaxTransferBytes: limits.MaxTransferBytes, MaxIsoPackets: limits.MaxIsoPackets,
 			MaxPendingOperations: limits.MaxPendingOperations,

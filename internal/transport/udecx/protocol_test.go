@@ -13,7 +13,7 @@ func TestBuildIdentityCanonicalVectorAndValidation(t *testing.T) {
 	t.Parallel()
 
 	const revision = "0123456789abcdef0123456789abcdef01234567"
-	const wantHex = "b6bdcfe32dec8eb48bfde2f70b72542695588d2483ab71218636ce0b733aa067"
+	const wantHex = "9a8c5a75d8c54569f3a8f7e1b2c9a68b8b40bf06494285fa93b56895a98ba3fe"
 	identity, err := DeriveBuildIdentity(revision, DriverPackageVersion,
 		ABIMajor, ABIMinor, AdvertisedCapabilities)
 	if err != nil {
@@ -84,13 +84,92 @@ func TestABISizes(t *testing.T) {
 	for name, got := range map[string]int{
 		"header": HeaderSize, "negotiate request": NegotiateRequestSize,
 		"negotiate response": NegotiateResponseSize, "descriptor": DescriptorRecordSize,
-		"create device": CreateDeviceSize, "identity": DeviceIdentitySize,
+		"create device": CreateDeviceSize, "create device result": CreateDeviceResultSize,
+		"identity":   DeviceIdentitySize,
 		"iso packet": IsoPacketSize, "operation": OperationSize,
 		"completion": CompletionSize, "input report": InputReportSize,
 		"stats": StatsSize,
 	} {
 		if got%4 != 0 {
 			t.Fatalf("%s ABI size %d is not 32-bit aligned", name, got)
+		}
+	}
+}
+
+func TestCreateDeviceResultRequiresExactPortCorrelation(t *testing.T) {
+	makeResult := func(speed DeviceSpeed, usb20, usb30 uint32) []byte {
+		raw := make([]byte, CreateDeviceResultSize)
+		header, _ := NewHeader(CreateDeviceResultSize)
+		putHeader(raw, header)
+		binary.LittleEndian.PutUint64(raw[16:24], 0x100000002)
+		binary.LittleEndian.PutUint32(raw[24:28], 7)
+		binary.LittleEndian.PutUint32(raw[28:32], uint32(speed))
+		binary.LittleEndian.PutUint32(raw[32:36], usb20)
+		binary.LittleEndian.PutUint32(raw[36:40], usb30)
+		return raw
+	}
+
+	for _, tc := range []struct {
+		name    string
+		speed   DeviceSpeed
+		usb20   uint32
+		usb30   uint32
+		wantErr bool
+	}{
+		{name: "USB2", speed: DeviceSpeedHigh, usb20: 3},
+		{name: "USB3", speed: DeviceSpeedSuper, usb30: MaxDevices + 3},
+		{name: "no port", speed: DeviceSpeedHigh, wantErr: true},
+		{name: "two ports", speed: DeviceSpeedHigh, usb20: 1, usb30: 33, wantErr: true},
+		{name: "USB2 on USB3 field", speed: DeviceSpeedHigh, usb30: 33, wantErr: true},
+		{name: "USB3 on USB2 field", speed: DeviceSpeedSuper, usb20: 1, wantErr: true},
+		{name: "USB2 port above controller range", speed: DeviceSpeedHigh, usb20: MaxDevices + 1, wantErr: true},
+		{name: "USB3 port below controller range", speed: DeviceSpeedSuper, usb30: MaxDevices, wantErr: true},
+		{name: "USB3 port above controller range", speed: DeviceSpeedSuper, usb30: 2*MaxDevices + 1, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := ParseCreateDeviceResult(makeResult(tc.speed, tc.usb20, tc.usb30))
+			if tc.wantErr {
+				if !errors.Is(err, ErrInvalidRange) {
+					t.Fatalf("error=%v want ErrInvalidRange", err)
+				}
+				return
+			}
+			if err != nil || result.DeviceID != 0x100000002 || result.Generation != 7 ||
+				result.USB20PortNumber != tc.usb20 || result.USB30PortNumber != tc.usb30 {
+				t.Fatalf("result=%+v error=%v", result, err)
+			}
+		})
+	}
+}
+
+func TestCanonicalControllerSessionID(t *testing.T) {
+	for value, want := range map[string]bool{
+		"1":                    true,
+		"18446744073709551615": true,
+		"":                     false,
+		"0":                    false,
+		"01":                   false,
+		"+1":                   false,
+		" 1":                   false,
+		"18446744073709551616": false,
+	} {
+		if got := IsCanonicalControllerSessionID(value); got != want {
+			t.Errorf("IsCanonicalControllerSessionID(%q)=%t want %t", value, got, want)
+		}
+	}
+}
+
+func TestCanonicalControllerInstanceID(t *testing.T) {
+	for value, want := range map[string]bool{
+		`ROOT\VIIPERUDE\0000`:  true,
+		`root\viiperude\0042`:  true,
+		`ROOT\VIIPERUDE\42`:    false,
+		`ROOT\VIIPERUDE\000A`:  false,
+		`ROOT\OTHER\0000`:      false,
+		` ROOT\VIIPERUDE\0000`: false,
+	} {
+		if got := IsCanonicalControllerInstanceID(value); got != want {
+			t.Errorf("IsCanonicalControllerInstanceID(%q)=%t want %t", value, got, want)
 		}
 	}
 }

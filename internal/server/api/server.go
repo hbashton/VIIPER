@@ -18,6 +18,7 @@ import (
 	"github.com/Alia5/VIIPER/internal/server/api/auth"
 	apierror "github.com/Alia5/VIIPER/internal/server/api/error"
 	"github.com/Alia5/VIIPER/internal/server/usb"
+	"github.com/Alia5/VIIPER/internal/transport/udecx"
 	pusb "github.com/Alia5/VIIPER/usb"
 	"github.com/Alia5/VIIPER/viipertypes"
 )
@@ -82,11 +83,12 @@ func (s *Server) Config() *ServerConfig { return s.config }
 // generation owner used for reconnects. A stream that claims the device before
 // the timeout atomically cancels this cleanup.
 func (s *Server) ScheduleDeviceCleanup(busID uint32, devID string,
-	deviceContext context.Context) {
-	key := deviceStreamKey{busID: busID, devID: devID}
+	deviceContext context.Context, nativeRegistration *udecx.DeviceRegistration) {
+	expected := cloneNativeRegistration(nativeRegistration)
+	key := newDeviceStreamKey(busID, devID, deviceContext)
 	s.deviceStreams.scheduleCleanup(key,
 		s.config.DeviceHandlerConnectTimeout, deviceContext, func() {
-			if err := s.usbs.RemoveDeviceByID(busID, devID); err != nil {
+			if err := s.removeRegisteredDevice(busID, devID, expected); err != nil {
 				s.logger.Error("timeout: failed to remove device",
 					"busID", busID, "deviceID", devID, "error", err)
 			} else {
@@ -94,6 +96,29 @@ func (s *Server) ScheduleDeviceCleanup(busID uint32, devID string,
 					"busID", busID, "deviceID", devID)
 			}
 		})
+}
+
+func cloneNativeRegistration(
+	registration *udecx.DeviceRegistration,
+) *udecx.DeviceRegistration {
+	if registration == nil {
+		return nil
+	}
+	copy := *registration
+	return &copy
+}
+
+func (s *Server) removeRegisteredDevice(
+	busID uint32, devID string, nativeRegistration *udecx.DeviceRegistration,
+) error {
+	if nativeRegistration != nil {
+		return s.usbs.RemoveNativeDeviceExact(busID, devID, *nativeRegistration)
+	}
+	if s.usbs.NativeTransportEnabled() {
+		return fmt.Errorf("%w: cleanup has no exact native registration for bus %d device %s",
+			usb.ErrNativeDeviceCorrelationMismatch, busID, devID)
+	}
+	return s.usbs.RemoveDeviceByID(busID, devID)
 }
 
 // Addr returns the actual address the server is listening on.
@@ -339,11 +364,13 @@ func (s *Server) handleConn(conn net.Conn) {
 		}
 		var dev pusb.Device
 		var devCtx context.Context
+		var devID uint32
 		metas := bus.GetAllDeviceMetas()
 		for _, meta := range metas {
 			if fmt.Sprintf("%d", meta.Meta.DevID) == devIDStr {
 				dev = meta.Dev
 				devCtx = bus.GetDeviceContext(dev)
+				devID = meta.Meta.DevID
 				break
 			}
 		}
@@ -351,9 +378,23 @@ func (s *Server) handleConn(conn net.Conn) {
 			s.writeError(w, apierror.ErrNotFound(fmt.Sprintf("device %s not found on bus %d", devIDStr, busID)))
 			return
 		}
+		var nativeRegistration *udecx.DeviceRegistration
+		if s.usbs.NativeTransportEnabled() {
+			registration, found := s.usbs.NativeDeviceRegistrationForDevice(
+				uint32(busID), devID, dev, devCtx)
+			if !found {
+				s.writeError(w, apierror.ErrConflict(
+					"native device lifetime changed before stream admission"))
+				return
+			}
+			nativeRegistration = cloneNativeRegistration(&registration)
+		}
 
-		streamKey := deviceStreamKey{busID: uint32(busID), devID: devIDStr}
+		streamKey := newDeviceStreamKey(uint32(busID), devIDStr, devCtx)
 		lease := s.deviceStreams.claim(streamKey, streamConn)
+		if lease == nil {
+			return
+		}
 		handlerStarted := false
 		defer func() {
 			if !handlerStarted {
@@ -366,7 +407,8 @@ func (s *Server) handleConn(conn net.Conn) {
 						resetter.ResetMicrophonePCM()
 					}
 				}, func() {
-					if err := s.usbs.RemoveDeviceByID(uint32(busID), devIDStr); err != nil {
+					if err := s.removeRegisteredDevice(
+						uint32(busID), devIDStr, nativeRegistration); err != nil {
 						connLogger.Error("disconnect timeout: failed to remove device",
 							"busID", busID, "deviceID", devIDStr, "error", err)
 					} else {

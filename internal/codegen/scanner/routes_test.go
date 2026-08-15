@@ -29,6 +29,7 @@ func TestScannerSuite(t *testing.T) {
 					"bus/{id}/list":          true,
 					"bus/{id}/add":           true,
 					"bus/{id}/remove":        true,
+					"bus/{id}/remove-native": true,
 					"bus/{busId}/{deviceid}": true,
 				}
 				found := make(map[string]bool)
@@ -76,6 +77,14 @@ func TestScannerSuite(t *testing.T) {
 				assertPayload("bus/create", PayloadNumeric, false)
 				assertPayload("bus/remove", PayloadNumeric, true)
 				assertPayload("bus/{id}/remove", PayloadString, true)
+				assertPayload("bus/{id}/remove-native", PayloadJSON, true)
+				for _, route := range enriched {
+					if route.Path == "bus/{id}/remove-native" &&
+						route.Payload.RawType != "NativeUDEDeviceRemoveRequest" {
+						t.Errorf("native remove payload type=%q want NativeUDEDeviceRemoveRequest",
+							route.Payload.RawType)
+					}
+				}
 				assertPayload("bus/list", PayloadNone, false)
 				assertPayload("bus/{id}/list", PayloadNone, false)
 			},

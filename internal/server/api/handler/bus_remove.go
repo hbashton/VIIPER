@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -22,7 +23,16 @@ func BusRemove(s *usb.Server) api.HandlerFunc {
 		if err != nil {
 			return apierror.ErrBadRequest(fmt.Sprintf("invalid busId: %v", err))
 		}
-		if err := s.RemoveBus(uint32(busID)); err != nil {
+		remove := s.RemoveBus
+		if s.NativeTransportEnabled() {
+			remove = s.RemoveBusIfEmpty
+		}
+		if err := remove(uint32(busID)); err != nil {
+			if errors.Is(err, usb.ErrBusNotEmpty) {
+				return apierror.ErrConflict(
+					"native transport refuses ID-only removal of a non-empty bus",
+				)
+			}
 			return apierror.ErrNotFound(fmt.Sprintf("bus %d not found", busID))
 		}
 		out, err := json.Marshal(viipertypes.BusRemoveResponse{BusID: uint32(busID)})

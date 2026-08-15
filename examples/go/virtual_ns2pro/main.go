@@ -46,12 +46,12 @@ func main() {
 	fmt.Printf("Created and connected to Switch 2 Pro device %s on bus %d\n", addResp.DevID, addResp.BusID)
 
 	defer func() {
-		if _, err := api.DeviceRemoveCtx(ctx, stream.BusID, stream.DevID); err != nil {
+		if _, err := api.DeviceRemoveRegisteredCtx(ctx, addResp); err != nil {
 			fmt.Printf("DeviceRemove error: %v\n", err)
 		} else {
 			fmt.Printf("Removed device %d-%s\n", addResp.BusID, addResp.DevID)
 		}
-		if createdBus {
+		if createdBus && addResp.Transport != "native-ude" {
 			if _, err := api.BusRemoveCtx(ctx, busID); err != nil {
 				fmt.Printf("BusRemove error: %v\n", err)
 			} else {

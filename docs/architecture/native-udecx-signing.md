@@ -17,7 +17,7 @@ disposable-machine acknowledgement, elevation, the exact source revision and
 interactive-user SID, and a current boot entry reporting `TESTSIGNING Yes`.
 It imports only the artifact-bound certificate and then executes the normal
 package-to-service transaction through `viiper.exe native-package-install`;
-the helper is never invoked as a standalone mutation. Authenticated ABI 1.13,
+the helper is never invoked as a standalone mutation. Authenticated ABI 1.14,
 capability, package-version, and loaded-kernel identity health must succeed
 before the transaction commits.
 
@@ -81,7 +81,7 @@ mode. That mode rejects the attestation EKU and requires a release-eligible
   names only `ViiperUde.cat`.
 - The schema-2 submission manifest identifies the exact reviewed bits and the
   SHA-256 build identity derived from source revision, four-part DriverVer,
-  ABI 1.13, and the exact capability mask. That same identity is compiled into
+  ABI 1.14, and the exact capability mask. That same identity is compiled into
   the SYS that the signed catalog seals and is returned by the loaded kernel.
 - Returned packages contain only the canonical INF, SYS, PDB, and CAT in one
   directory. The unchanged INF/PDB must match the submission manifest, and

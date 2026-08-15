@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -24,6 +25,8 @@ const (
 	crSuccess                               = 0
 	crBufferSmall                           = 0x1a
 	cmGetDeviceInterfaceListPresent         = 0
+	digcfPresent                            = 0x00000002
+	digcfDeviceInterface                    = 0x00000010
 	fileDeviceUnknown                       = 0x22
 	methodBuffered                          = 0
 	methodInDirect                          = 1
@@ -53,6 +56,25 @@ const (
 	// the Windows I/O manager.
 	cancellationWatchdogInterval = 5 * time.Second
 )
+
+type spDeviceInterfaceData struct {
+	CbSize             uint32
+	InterfaceClassGUID windows.GUID
+	Flags              uint32
+	Reserved           uintptr
+}
+
+type spDeviceInfoData struct {
+	CbSize    uint32
+	ClassGUID windows.GUID
+	DevInst   uint32
+	Reserved  uintptr
+}
+
+type spDeviceInterfaceDetailData struct {
+	CbSize     uint32
+	DevicePath [1]uint16
+}
 
 // AcquisitionErrorKind identifies the only two controller-open failures that
 // can resolve without repairing or reconfiguring the installed driver. Keep
@@ -111,11 +133,17 @@ var (
 		Data3: 0x4baa,
 		Data4: [8]byte{0x97, 0x0f, 0x7f, 0x5d, 0xe6, 0xc4, 0x46, 0x87},
 	}
-	cfgmgr32                         = windows.NewLazySystemDLL("cfgmgr32.dll")
-	procCMGetDeviceInterfaceListSize = cfgmgr32.NewProc("CM_Get_Device_Interface_List_SizeW")
-	procCMGetDeviceInterfaceList     = cfgmgr32.NewProc("CM_Get_Device_Interface_ListW")
-	kernel32                         = windows.NewLazySystemDLL("kernel32.dll")
-	procSetFileCompletionModes       = kernel32.NewProc("SetFileCompletionNotificationModes")
+	cfgmgr32                             = windows.NewLazySystemDLL("cfgmgr32.dll")
+	procCMGetDeviceInterfaceListSize     = cfgmgr32.NewProc("CM_Get_Device_Interface_List_SizeW")
+	procCMGetDeviceInterfaceList         = cfgmgr32.NewProc("CM_Get_Device_Interface_ListW")
+	setupapi                             = windows.NewLazySystemDLL("setupapi.dll")
+	procSetupDiGetClassDevsW             = setupapi.NewProc("SetupDiGetClassDevsW")
+	procSetupDiEnumDeviceInterfaces      = setupapi.NewProc("SetupDiEnumDeviceInterfaces")
+	procSetupDiGetDeviceInterfaceDetailW = setupapi.NewProc("SetupDiGetDeviceInterfaceDetailW")
+	procSetupDiGetDeviceInstanceIdW      = setupapi.NewProc("SetupDiGetDeviceInstanceIdW")
+	procSetupDiDestroyDeviceInfoList     = setupapi.NewProc("SetupDiDestroyDeviceInfoList")
+	kernel32                             = windows.NewLazySystemDLL("kernel32.dll")
+	procSetFileCompletionModes           = kernel32.NewProc("SetFileCompletionNotificationModes")
 )
 
 type Client struct {
@@ -138,10 +166,11 @@ type Client struct {
 	// driverNonce is the nonzero negotiated tag for this exact exclusive file
 	// session. The Client and its Host are one-shot, so it cannot be inherited
 	// by a successor handle or reused by a later worker/publication graph.
-	driverNonce   uint64
-	buildIdentity [BuildIdentitySize]byte
-	capabilities  Capabilities
-	limits        NegotiateResponse
+	driverNonce          uint64
+	buildIdentity        [BuildIdentitySize]byte
+	controllerInstanceID string
+	capabilities         Capabilities
+	limits               NegotiateResponse
 	// pendingObserver is a package-private synchronization seam for the
 	// Windows IOCP stress harness. Production clients leave it nil. It runs
 	// only after the overlapped issuer has returned ERROR_IO_PENDING, so tests can
@@ -157,6 +186,10 @@ type Client struct {
 	cancelIssuer             func(windows.Handle, *windows.Overlapped) error
 	cancellationWatchdog     func() (<-chan time.Time, func())
 	slowCancellationObserver func(code uint32, elapsed time.Duration, count uint64)
+	// Deterministic seams for the committed-create rollback tests. Production
+	// leaves both nil and uses the exact driver plug-out plus owner-file close.
+	destroyForCreateRollback func(context.Context, DeviceIdentity) error
+	closeForCreateRollback   func() error
 }
 
 type ioCompletion struct {
@@ -180,17 +213,29 @@ type ioRequest struct {
 }
 
 func Open(ctx context.Context) (*Client, error) {
+	var selectedInterfacePath string
 	handle, err := acquireNativeController(ctx, nativeAcquisitionOps{
 		discover: discoverNativeInterfacePaths,
-		open:     openNativeController,
-		close:    windows.CloseHandle,
-		wait:     waitForNativeAcquisition,
+		open: func(openCtx context.Context, interfacePath string) (windows.Handle, error) {
+			handle, openErr := openNativeController(openCtx, interfacePath)
+			if openErr == nil && isUsableNativeHandle(handle) {
+				selectedInterfacePath = interfacePath
+			}
+			return handle, openErr
+		},
+		close: windows.CloseHandle,
+		wait:  waitForNativeAcquisition,
 	}, nativeAcquisitionPolicy{
 		attempts: nativeAcquisitionAttempts,
 		interval: nativeAcquisitionRetryInterval,
 	})
 	if err != nil {
 		return nil, err
+	}
+	controllerInstanceID, err := controllerInstanceIDForInterfacePath(selectedInterfacePath)
+	if err != nil {
+		_ = windows.CloseHandle(handle)
+		return nil, fmt.Errorf("resolve native UDE controller identity: %w", err)
 	}
 
 	completionPort, err := windows.CreateIoCompletionPort(handle, 0, 0, 0)
@@ -203,6 +248,7 @@ func Open(ctx context.Context) (*Client, error) {
 		completionPort:              completionPort,
 		pumpDone:                    make(chan struct{}),
 		skipCompletionPortOnSuccess: enableSkipCompletionPortOnSuccess(handle),
+		controllerInstanceID:        controllerInstanceID,
 	}
 	client.requestPool.New = func() any {
 		return &ioRequest{done: make(chan ioCompletion, 1)}
@@ -522,6 +568,18 @@ func (c *Client) BuildIdentity() [BuildIdentitySize]byte {
 	return c.buildIdentity
 }
 
+func (c *Client) ControllerInstanceID() string {
+	return c.controllerInstanceID
+}
+
+// ControllerSessionID is the nonzero kernel-authored nonce for this exact
+// exclusive controller file session. It is stable across API and stream
+// reconnects through the same broker, and changes whenever that controller
+// session is recreated.
+func (c *Client) ControllerSessionID() uint64 {
+	return c.driverNonce
+}
+
 func (c *Client) negotiate(ctx context.Context) error {
 	expectedBuildIdentity, err := ExpectedBuildIdentity()
 	if err != nil {
@@ -610,18 +668,83 @@ func validateNegotiation(negotiated NegotiateResponse, nonce uint64, expectedBui
 	return nil
 }
 
-func (c *Client) CreateDevice(ctx context.Context, device CreateDevice) error {
+func (c *Client) CreateDevice(ctx context.Context, device CreateDevice) (DeviceRegistration, error) {
 	limits := c.Limits()
 	if uint32(len(device.DescriptorData)) > limits.MaxDescriptorBytes ||
 		device.MaxPendingOperations > limits.MaxPendingOperations {
-		return ErrLimitExceeded
+		return DeviceRegistration{}, ErrLimitExceeded
 	}
 	request, err := device.MarshalBinary()
 	if err != nil {
-		return err
+		return DeviceRegistration{}, err
 	}
-	_, err = c.ioctl(ctx, ioctlCreateDevice, request, nil)
-	return err
+	response := make([]byte, CreateDeviceResultSize)
+	written, err := c.ioctl(ctx, ioctlCreateDevice, request, response)
+	if err != nil {
+		return DeviceRegistration{}, err
+	}
+	if written != CreateDeviceResultSize {
+		return DeviceRegistration{}, c.rollbackCommittedCreate(device,
+			fmt.Errorf("native UDE create receipt: %w", ErrInvalidSize))
+	}
+	result, err := ParseCreateDeviceResult(response)
+	if err != nil {
+		return DeviceRegistration{}, c.rollbackCommittedCreate(device,
+			fmt.Errorf("parse native UDE create receipt: %w", err))
+	}
+	if result.DeviceID != device.DeviceID || result.Generation != device.Generation ||
+		result.Speed != device.Speed {
+		return DeviceRegistration{}, c.rollbackCommittedCreate(device,
+			fmt.Errorf("%w: native UDE create receipt does not match request", ErrInvalidRange))
+	}
+	if c.controllerInstanceID == "" {
+		return DeviceRegistration{}, c.rollbackCommittedCreate(device,
+			errors.New("native UDE controller instance identity is unavailable"))
+	}
+	controllerSessionID := c.ControllerSessionID()
+	if controllerSessionID == 0 {
+		return DeviceRegistration{}, c.rollbackCommittedCreate(device,
+			errors.New("native UDE controller session identity is unavailable"))
+	}
+	return DeviceRegistration{
+		DeviceIdentity: DeviceIdentity{DeviceID: result.DeviceID, Generation: result.Generation},
+		Speed:          result.Speed, USB20PortNumber: result.USB20PortNumber,
+		USB30PortNumber:      result.USB30PortNumber,
+		ControllerSessionID:  controllerSessionID,
+		ControllerInstanceID: c.controllerInstanceID,
+	}, nil
+}
+
+func (c *Client) rollbackCommittedCreate(device CreateDevice, receiptErr error) error {
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), terminalCleanupTimeout)
+	defer cancel()
+	identity := DeviceIdentity{DeviceID: device.DeviceID, Generation: device.Generation}
+	var cleanupErr error
+	if c.destroyForCreateRollback != nil {
+		cleanupErr = c.destroyForCreateRollback(cleanupCtx, identity)
+	} else {
+		cleanupErr = c.DestroyDevice(cleanupCtx, identity)
+	}
+	if cleanupErr != nil {
+		// A malformed successful receipt is already a terminal session fault. If
+		// its exact plug-out is rejected, close the exclusive file immediately;
+		// the kernel's owner-cleanup join is the final authority that prevents an
+		// unrouteable child from surviving this failed registration.
+		var closeErr error
+		if c.closeForCreateRollback != nil {
+			closeErr = c.closeForCreateRollback()
+		} else {
+			closeErr = c.Close()
+		}
+		rollbackErr := fmt.Errorf(
+			"rollback native UDE device after invalid create receipt: %w", cleanupErr)
+		if closeErr != nil {
+			return errors.Join(receiptErr, rollbackErr,
+				fmt.Errorf("close native UDE owner session after uncertain create rollback: %w", closeErr))
+		}
+		return errors.Join(receiptErr, rollbackErr)
+	}
+	return receiptErr
 }
 
 func (c *Client) DestroyDevice(ctx context.Context, identity DeviceIdentity) error {
@@ -860,6 +983,81 @@ func discoverInterfacePaths(ctx context.Context) ([]string, error) {
 		return parseMultiSZ(buffer), nil
 	}
 	return nil, errors.New("native UDE interface list changed repeatedly during discovery")
+}
+
+func controllerInstanceIDForInterfacePath(interfacePath string) (string, error) {
+	if strings.TrimSpace(interfacePath) == "" {
+		return "", errors.New("native UDE interface path is empty")
+	}
+	setValue, _, setErr := procSetupDiGetClassDevsW.Call(
+		uintptr(unsafe.Pointer(&interfaceGUID)), 0, 0,
+		uintptr(digcfPresent|digcfDeviceInterface))
+	set := windows.Handle(setValue)
+	if set == windows.InvalidHandle {
+		if setErr != nil && !errors.Is(setErr, windows.ERROR_SUCCESS) {
+			return "", fmt.Errorf("SetupDiGetClassDevsW: %w", setErr)
+		}
+		return "", errors.New("SetupDiGetClassDevsW returned an invalid handle")
+	}
+	defer procSetupDiDestroyDeviceInfoList.Call(uintptr(set))
+
+	for index := uint32(0); ; index++ {
+		interfaceData := spDeviceInterfaceData{CbSize: uint32(unsafe.Sizeof(spDeviceInterfaceData{}))}
+		ok, _, enumErr := procSetupDiEnumDeviceInterfaces.Call(
+			uintptr(set), 0, uintptr(unsafe.Pointer(&interfaceGUID)), uintptr(index),
+			uintptr(unsafe.Pointer(&interfaceData)))
+		if ok == 0 {
+			if errors.Is(enumErr, windows.ERROR_NO_MORE_ITEMS) {
+				break
+			}
+			return "", fmt.Errorf("SetupDiEnumDeviceInterfaces(%d): %w", index, enumErr)
+		}
+
+		var required uint32
+		_, _, sizeErr := procSetupDiGetDeviceInterfaceDetailW.Call(
+			uintptr(set), uintptr(unsafe.Pointer(&interfaceData)), 0, 0,
+			uintptr(unsafe.Pointer(&required)), 0)
+		if required < uint32(unsafe.Sizeof(spDeviceInterfaceDetailData{})) ||
+			!errors.Is(sizeErr, windows.ERROR_INSUFFICIENT_BUFFER) {
+			return "", fmt.Errorf("SetupDiGetDeviceInterfaceDetailW size query: %w", sizeErr)
+		}
+		detailBytes := make([]byte, required)
+		detail := (*spDeviceInterfaceDetailData)(unsafe.Pointer(&detailBytes[0]))
+		detail.CbSize = uint32(unsafe.Sizeof(spDeviceInterfaceDetailData{}))
+		deviceInfo := spDeviceInfoData{CbSize: uint32(unsafe.Sizeof(spDeviceInfoData{}))}
+		ok, _, detailErr := procSetupDiGetDeviceInterfaceDetailW.Call(
+			uintptr(set), uintptr(unsafe.Pointer(&interfaceData)),
+			uintptr(unsafe.Pointer(detail)), uintptr(required), 0,
+			uintptr(unsafe.Pointer(&deviceInfo)))
+		if ok == 0 {
+			return "", fmt.Errorf("SetupDiGetDeviceInterfaceDetailW: %w", detailErr)
+		}
+		candidate := windows.UTF16PtrToString(&detail.DevicePath[0])
+		if !strings.EqualFold(candidate, interfacePath) {
+			continue
+		}
+
+		var instanceChars uint32
+		_, _, instanceSizeErr := procSetupDiGetDeviceInstanceIdW.Call(
+			uintptr(set), uintptr(unsafe.Pointer(&deviceInfo)), 0, 0,
+			uintptr(unsafe.Pointer(&instanceChars)))
+		if instanceChars < 2 || !errors.Is(instanceSizeErr, windows.ERROR_INSUFFICIENT_BUFFER) {
+			return "", fmt.Errorf("SetupDiGetDeviceInstanceIdW size query: %w", instanceSizeErr)
+		}
+		instanceBuffer := make([]uint16, instanceChars)
+		ok, _, instanceErr := procSetupDiGetDeviceInstanceIdW.Call(
+			uintptr(set), uintptr(unsafe.Pointer(&deviceInfo)),
+			uintptr(unsafe.Pointer(&instanceBuffer[0])), uintptr(instanceChars), 0)
+		if ok == 0 {
+			return "", fmt.Errorf("SetupDiGetDeviceInstanceIdW: %w", instanceErr)
+		}
+		instanceID := windows.UTF16ToString(instanceBuffer)
+		if !IsCanonicalControllerInstanceID(instanceID) {
+			return "", errors.New("native UDE controller returned an invalid instance identity")
+		}
+		return instanceID, nil
+	}
+	return "", errors.New("opened native UDE interface was not present in the verified SetupAPI set")
 }
 
 func parseMultiSZ(raw []uint16) []string {

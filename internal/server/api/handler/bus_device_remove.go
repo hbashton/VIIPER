@@ -32,6 +32,11 @@ func BusDeviceRemove(s *usb.Server) api.HandlerFunc {
 		if b == nil {
 			return apierror.ErrNotFound(fmt.Sprintf("bus %d not found", busID))
 		}
+		if s.NativeTransportEnabled() {
+			return apierror.ErrConflict(
+				"native transport requires bus/{id}/remove-native with the exact correlation receipt",
+			)
+		}
 		if err := s.RemoveDeviceByID(uint32(busID), deviceID); err != nil {
 			return apierror.ErrNotFound(fmt.Sprintf("device %s not found on bus %d", deviceID, busID))
 		}

@@ -15,14 +15,15 @@ import (
 )
 
 type fakeHostDriver struct {
-	operations  chan Operation
-	completions chan Completion
-	createErr   error
-	mu          sync.Mutex
-	created     []CreateDevice
-	destroyed   []DeviceIdentity
-	destroyErr  error
-	completeErr error
+	operations         chan Operation
+	completions        chan Completion
+	createErr          error
+	mutateRegistration func(*DeviceRegistration)
+	mu                 sync.Mutex
+	created            []CreateDevice
+	destroyed          []DeviceIdentity
+	destroyErr         error
+	completeErr        error
 }
 
 type fastInputDriver struct {
@@ -72,13 +73,13 @@ type independentlyBlockingCreateDriver struct {
 
 func (d *independentlyBlockingCreateDriver) CreateDevice(
 	ctx context.Context, device CreateDevice,
-) error {
+) (DeviceRegistration, error) {
 	if device.DeviceID == d.blockedDevice {
 		close(d.started)
 		select {
 		case <-d.release:
 		case <-ctx.Done():
-			return ctx.Err()
+			return DeviceRegistration{}, ctx.Err()
 		}
 	}
 	return d.fakeHostDriver.CreateDevice(ctx, device)
@@ -137,11 +138,28 @@ func newFakeHostDriver() *fakeHostDriver {
 		operations: make(chan Operation, 16), completions: make(chan Completion, 16),
 	}
 }
-func (d *fakeHostDriver) CreateDevice(_ context.Context, device CreateDevice) error {
+func (d *fakeHostDriver) CreateDevice(_ context.Context, device CreateDevice) (DeviceRegistration, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.created = append(d.created, device)
-	return d.createErr
+	if d.createErr != nil {
+		return DeviceRegistration{}, d.createErr
+	}
+	registration := DeviceRegistration{
+		DeviceIdentity: DeviceIdentity{DeviceID: device.DeviceID, Generation: device.Generation},
+		Speed:          device.Speed, ControllerSessionID: 17,
+		ControllerInstanceID: `ROOT\VIIPERUDE\0000`,
+	}
+	port := uint32((device.DeviceID-1)%MaxDevices + 1)
+	if device.Speed == DeviceSpeedSuper {
+		registration.USB30PortNumber = MaxDevices + port
+	} else {
+		registration.USB20PortNumber = port
+	}
+	if d.mutateRegistration != nil {
+		d.mutateRegistration(&registration)
+	}
+	return registration, nil
 }
 func (d *fakeHostDriver) DestroyDevice(_ context.Context, identity DeviceIdentity) error {
 	d.mu.Lock()
@@ -3320,6 +3338,82 @@ func TestHostRegisterFailureRollsBackButAdvancesGeneration(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("processor was not reset during unregister")
+	}
+}
+
+func TestHostRejectsAndRollsBackMalformedCorrelationReceipt(t *testing.T) {
+	for name, mutate := range map[string]func(*DeviceRegistration){
+		"zero session": func(r *DeviceRegistration) { r.ControllerSessionID = 0 },
+		"wrong controller": func(r *DeviceRegistration) {
+			r.ControllerInstanceID = `ROOT\VIIPERUDE\42`
+		},
+		"wrong device":     func(r *DeviceRegistration) { r.DeviceID++ },
+		"wrong generation": func(r *DeviceRegistration) { r.Generation++ },
+		"wrong speed":      func(r *DeviceRegistration) { r.Speed = DeviceSpeedSuper },
+		"two ports":        func(r *DeviceRegistration) { r.USB30PortNumber = MaxDevices + 1 },
+		"USB2 port above range": func(r *DeviceRegistration) {
+			r.USB20PortNumber = MaxDevices + 1
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			driver := newFakeHostDriver()
+			driver.mutateRegistration = mutate
+			processor := &recordingProcessor{
+				processed: make(chan uint64, 1), resets: make(chan DeviceIdentity, 1),
+			}
+			host, err := NewHost(driver, processor, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = host.RegisterWithCorrelation(context.Background(), 41, hostTestDevice()); err == nil {
+				t.Fatal("malformed driver receipt was accepted")
+			}
+			driver.mu.Lock()
+			destroyed := append([]DeviceIdentity(nil), driver.destroyed...)
+			driver.mu.Unlock()
+			if len(destroyed) != 1 || destroyed[0] != (DeviceIdentity{DeviceID: 41, Generation: 1}) {
+				t.Fatalf("rollback identities=%+v", destroyed)
+			}
+			driver.mutateRegistration = nil
+			registration, err := host.RegisterWithCorrelation(context.Background(), 41, hostTestDevice())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if registration.Generation != 2 || registration.ControllerSessionID != 17 {
+				t.Fatalf("replacement registration=%+v", registration)
+			}
+		})
+	}
+}
+
+func TestHostFencesControllerIdentityForItsLifetime(t *testing.T) {
+	driver := newFakeHostDriver()
+	processor := &recordingProcessor{
+		processed: make(chan uint64, 1), resets: make(chan DeviceIdentity, 2),
+	}
+	host, err := NewHost(driver, processor, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := host.RegisterWithCorrelation(context.Background(), 51, hostTestDevice())
+	if err != nil {
+		t.Fatal(err)
+	}
+	driver.mutateRegistration = func(registration *DeviceRegistration) {
+		registration.ControllerSessionID++
+	}
+	if _, err = host.RegisterWithCorrelation(context.Background(), 52, hostTestDevice()); err == nil {
+		t.Fatal("one Host accepted a device from a different controller session")
+	}
+	driver.mu.Lock()
+	destroyed := append([]DeviceIdentity(nil), driver.destroyed...)
+	driver.mu.Unlock()
+	if len(destroyed) != 1 || destroyed[0] != (DeviceIdentity{DeviceID: 52, Generation: 1}) {
+		t.Fatalf("mismatched-session rollback=%+v", destroyed)
+	}
+	driver.mutateRegistration = nil
+	if err = host.Unregister(context.Background(), first.DeviceIdentity); err != nil {
+		t.Fatal(err)
 	}
 }
 

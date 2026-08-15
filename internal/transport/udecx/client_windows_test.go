@@ -131,7 +131,7 @@ func TestNegotiationRejectsStaleLoadedKernelDespiteMatchingOnDiskPackageContract
 func TestClientRejectsRequestsOutsideNegotiatedLimitsBeforeKernelIO(t *testing.T) {
 	client := &Client{limits: validTestNegotiation()}
 	client.limits.MaxDescriptorBytes = 1
-	if err := client.CreateDevice(context.Background(), CreateDevice{
+	if _, err := client.CreateDevice(context.Background(), CreateDevice{
 		DescriptorData: []byte{1, 2},
 	}); !errors.Is(err, ErrLimitExceeded) {
 		t.Fatalf("CreateDevice error=%v want ErrLimitExceeded", err)
@@ -159,6 +159,42 @@ func TestCompletionPoolReusesBoundedMediaBuffer(t *testing.T) {
 		t.Fatalf("reused buffer len=%d cap=%d", len(second), cap(second))
 	}
 	client.releaseCompletionBuffer(second)
+}
+
+func TestCommittedCreateRollbackClosesUncertainOwnerSession(t *testing.T) {
+	receiptErr := errors.New("malformed create receipt")
+	destroyErr := errors.New("exact plug-out rejected")
+	closeErr := errors.New("owner close reported failure")
+	device := CreateDevice{DeviceID: 0x100000002, Generation: 7}
+
+	t.Run("exact destroy settles without closing", func(t *testing.T) {
+		closed := false
+		client := &Client{
+			destroyForCreateRollback: func(ctx context.Context, identity DeviceIdentity) error {
+				if _, ok := ctx.Deadline(); !ok || identity != (DeviceIdentity{DeviceID: device.DeviceID, Generation: device.Generation}) {
+					t.Fatalf("rollback context/identity=(%v, %+v)", ctx, identity)
+				}
+				return nil
+			},
+			closeForCreateRollback: func() error { closed = true; return nil },
+		}
+		err := client.rollbackCommittedCreate(device, receiptErr)
+		if !errors.Is(err, receiptErr) || closed {
+			t.Fatalf("rollback error=%v closed=%t", err, closed)
+		}
+	})
+
+	t.Run("failed destroy closes and joins every authority", func(t *testing.T) {
+		closeCalls := 0
+		client := &Client{
+			destroyForCreateRollback: func(context.Context, DeviceIdentity) error { return destroyErr },
+			closeForCreateRollback:   func() error { closeCalls++; return closeErr },
+		}
+		err := client.rollbackCommittedCreate(device, receiptErr)
+		if closeCalls != 1 || !errors.Is(err, receiptErr) || !errors.Is(err, destroyErr) || !errors.Is(err, closeErr) {
+			t.Fatalf("rollback error=%v closeCalls=%d", err, closeCalls)
+		}
+	})
 }
 
 func TestIOCTLCodesMatchPackedHeader(t *testing.T) {

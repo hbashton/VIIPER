@@ -68,11 +68,22 @@ func newNativePlayStationSoakDriver() *nativePlayStationSoakDriver {
 	}
 }
 
-func (d *nativePlayStationSoakDriver) CreateDevice(_ context.Context, device udecx.CreateDevice) error {
+func (d *nativePlayStationSoakDriver) CreateDevice(_ context.Context, device udecx.CreateDevice) (udecx.DeviceRegistration, error) {
 	d.mu.Lock()
 	d.created = append(d.created, device)
 	d.mu.Unlock()
-	return nil
+	registration := udecx.DeviceRegistration{
+		DeviceIdentity: udecx.DeviceIdentity{DeviceID: device.DeviceID, Generation: device.Generation},
+		Speed:          device.Speed, ControllerSessionID: 17,
+		ControllerInstanceID: `ROOT\VIIPERUDE\0000`,
+	}
+	port := uint32((device.DeviceID-1)%udecx.MaxDevices + 1)
+	if device.Speed == udecx.DeviceSpeedSuper {
+		registration.USB30PortNumber = udecx.MaxDevices + port
+	} else {
+		registration.USB20PortNumber = port
+	}
+	return registration, nil
 }
 
 func (d *nativePlayStationSoakDriver) DestroyDevice(_ context.Context, identity udecx.DeviceIdentity) error {

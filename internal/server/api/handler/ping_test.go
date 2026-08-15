@@ -40,6 +40,8 @@ func TestPingReportsNegotiatedNativeBackend(t *testing.T) {
 		ABIMajor: 1, ABIMinor: 10, Capabilities: 0x0d,
 		ExpectedDriverPackageVersion: "0.1.0.29",
 		LoadedDriverBuildIdentity:    strings.Repeat("a", 64),
+		ControllerSessionID:          "17",
+		ControllerInstanceID:         `ROOT\VIIPERUDE\0042`,
 		MaxDevices:                   32, MaxDescriptorBytes: 262144,
 		MaxTransferBytes: 1048576, MaxIsoPackets: 1024,
 		MaxPendingOperations: 4096,

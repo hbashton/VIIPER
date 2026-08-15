@@ -109,7 +109,8 @@ of the source-provenance evidence without becoming a user-machine dependency.
 6. The nested command accepts a true no-op only when the protected
    service/image/credential state is canonical, no legacy owner is live, the
    service PID is stable, and authenticated `ping` proves `Ready=true`, ABI
-   1.13, the exact capability mask, package version, and loaded-kernel build
+   1.14, the exact capability mask, package version, controller session and
+   instance identities, and loaded-kernel build
    identity. Otherwise it performs the journaled repair. Exact forward health
    ends at durable `nested-ready`; it does not delete rollback material or claim
    outer success. A broker failure restores SCM, credential, image, legacy

@@ -208,6 +208,95 @@ func TestInitialCleanupCannotRemoveActivelyClaimedDevice(t *testing.T) {
 	lease.abandon()
 }
 
+func TestRecreatedDeviceLifetimeCannotShareStreamOrCleanupOwnership(t *testing.T) {
+	var coordinator deviceStreamCoordinator
+	oldContext, cancelOld := context.WithCancel(context.Background())
+	newContext, cancelNew := context.WithCancel(context.Background())
+	defer cancelNew()
+	oldKey := newDeviceStreamKey(20, "7", oldContext)
+	newKey := newDeviceStreamKey(20, "7", newContext)
+
+	var successorCleanup atomic.Int32
+	coordinator.scheduleCleanup(newKey, 35*time.Millisecond, newContext, func() {
+		successorCleanup.Add(1)
+	})
+
+	// The stale lifetime may have passed an earlier topology check, but once its
+	// bus context is retired it cannot claim the recreated successor's key or
+	// cancel the successor's initial cleanup timer.
+	cancelOld()
+	staleServer, staleClient := net.Pipe()
+	defer staleServer.Close() //nolint:errcheck
+	defer staleClient.Close() //nolint:errcheck
+	require.Nil(t, coordinator.claim(oldKey, staleServer))
+	require.Eventually(t, func() bool {
+		return successorCleanup.Load() == 1
+	}, time.Second, time.Millisecond)
+
+	// A stale key also cannot displace or close an active successor stream.
+	successorServer, successorClient := net.Pipe()
+	defer successorServer.Close() //nolint:errcheck
+	defer successorClient.Close() //nolint:errcheck
+	successor := coordinator.claim(newKey, successorServer)
+	require.NotNil(t, successor)
+	require.True(t, successor.waitForTurn(newContext))
+
+	staleServer2, staleClient2 := net.Pipe()
+	defer staleServer2.Close() //nolint:errcheck
+	defer staleClient2.Close() //nolint:errcheck
+	require.Nil(t, coordinator.claim(oldKey, staleServer2))
+	require.NoError(t, successorClient.SetReadDeadline(time.Now().Add(25*time.Millisecond)))
+	var one [1]byte
+	_, err := successorClient.Read(one[:])
+	var netErr net.Error
+	require.ErrorAs(t, err, &netErr)
+	require.True(t, netErr.Timeout(), "stale lifetime closed successor stream: %v", err)
+	successor.abandon()
+}
+
+func TestDeviceLifetimeCancellationClosesOnlyItsActiveStreamAndRetiresState(t *testing.T) {
+	var coordinator deviceStreamCoordinator
+	oldContext, cancelOld := context.WithCancel(context.Background())
+	newContext, cancelNew := context.WithCancel(context.Background())
+	defer cancelNew()
+	oldKey := newDeviceStreamKey(27, "11", oldContext)
+	newKey := newDeviceStreamKey(27, "11", newContext)
+
+	oldServer, oldClient := net.Pipe()
+	defer oldClient.Close() //nolint:errcheck
+	oldLease := coordinator.claim(oldKey, oldServer)
+	require.NotNil(t, oldLease)
+	require.True(t, oldLease.waitForTurn(oldContext))
+
+	newServer, newClient := net.Pipe()
+	defer newServer.Close() //nolint:errcheck
+	defer newClient.Close() //nolint:errcheck
+	newLease := coordinator.claim(newKey, newServer)
+	require.NotNil(t, newLease)
+	require.True(t, newLease.waitForTurn(newContext))
+
+	require.NoError(t, oldClient.SetReadDeadline(time.Now().Add(time.Second)))
+	cancelOld()
+	var one [1]byte
+	_, err := oldClient.Read(one[:])
+	require.Error(t, err, "cancelled lifetime left its stream open")
+	require.Eventually(t, func() bool {
+		coordinator.mu.Lock()
+		defer coordinator.mu.Unlock()
+		_, oldPresent := coordinator.streams[oldKey]
+		return !oldPresent && coordinator.streams[newKey] != nil
+	}, time.Second, time.Millisecond)
+
+	require.NoError(t, newClient.SetReadDeadline(time.Now().Add(25*time.Millisecond)))
+	_, err = newClient.Read(one[:])
+	var netErr net.Error
+	require.ErrorAs(t, err, &netErr)
+	require.True(t, netErr.Timeout(), "old lifetime cancellation closed successor: %v", err)
+
+	oldLease.abandon()
+	newLease.abandon()
+}
+
 func TestDeviceStreamCloseFirstReconnectCancelsPendingFinalization(t *testing.T) {
 	var coordinator deviceStreamCoordinator
 	key := deviceStreamKey{busID: 23, devID: "5"}

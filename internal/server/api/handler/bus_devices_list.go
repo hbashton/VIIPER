@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"path/filepath"
@@ -26,14 +27,27 @@ func BusDevicesList(s *usb.Server) api.HandlerFunc {
 		if err != nil {
 			return apierror.ErrBadRequest(fmt.Sprintf("invalid busId: %v", err))
 		}
-		b := s.GetBus(uint32(busID))
-		if b == nil {
-			return apierror.ErrNotFound(fmt.Sprintf("bus %d not found", busID))
+		snapshots, err := s.SnapshotBusDevices(uint32(busID))
+		if err != nil {
+			switch {
+			case errors.Is(err, usb.ErrBusNotFound):
+				return apierror.ErrNotFound(fmt.Sprintf("bus %d not found", busID))
+			case errors.Is(err, usb.ErrNativeDeviceCorrelationMismatch):
+				return apierror.ErrConflict("native bus topology changed during list")
+			default:
+				return apierror.ErrInternal(fmt.Sprintf("snapshot bus %d: %v", busID, err))
+			}
 		}
-		metas := b.GetAllDeviceMetas()
-		out := make([]viipertypes.Device, 0, len(metas))
-		for _, m := range metas {
+		out := make([]viipertypes.Device, 0, len(snapshots))
+		for _, snapshot := range snapshots {
+			m := snapshot.DeviceMeta
 			dtype := inferDeviceType(m.Dev)
+			transport := "usbip"
+			var nativeInfo *viipertypes.NativeUDEDeviceInfo
+			if snapshot.NativeRegistration != nil {
+				transport = "native-ude"
+				nativeInfo = nativeUDEDeviceInfo(*snapshot.NativeRegistration)
+			}
 			out = append(out, viipertypes.Device{
 				BusID:          m.Meta.BusID,
 				DevID:          fmt.Sprintf("%d", m.Meta.DevID),
@@ -41,6 +55,8 @@ func BusDevicesList(s *usb.Server) api.HandlerFunc {
 				Pid:            fmt.Sprintf("0x%04x", m.Dev.GetDescriptor().Device.IDProduct),
 				Type:           dtype,
 				DeviceSpecific: m.Dev.GetDeviceSpecificArgs(),
+				Transport:      transport,
+				NativeUDE:      nativeInfo,
 			})
 		}
 		payload, err := json.Marshal(viipertypes.DevicesListResponse{Devices: out})

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -32,7 +33,7 @@ var errInputSequenceExhausted = errors.New("native UDE input report sequence is 
 // Windows UdeCx client. Keeping it as an interface makes ordering, teardown,
 // and stale-generation behavior testable without loading a kernel driver.
 type Driver interface {
-	CreateDevice(context.Context, CreateDevice) error
+	CreateDevice(context.Context, CreateDevice) (DeviceRegistration, error)
 	// DestroyDevice returns an error only if removal was rejected before the
 	// kernel transferred ownership to UdeCx. Once accepted, any terminal
 	// UdeCx removal fault is recovered by restarting the controller and the
@@ -157,22 +158,24 @@ type Host struct {
 	processor OperationProcessor
 	workers   int
 
-	lifecycleMu sync.Mutex
-	lifecycles  map[uint64]*deviceLifecycleGate
-	mu          sync.RWMutex
-	devices     map[uint64]*registeredDevice
-	generations map[uint64]uint32
-	lanes       map[laneKey]*operationLane
-	failedLanes map[laneKey]error
-	runCtx      context.Context
-	runCancel   context.CancelFunc
-	fatal       chan error
-	started     bool
-	running     bool
-	laneWG      sync.WaitGroup
-	operationMu sync.Mutex
-	operations  map[uint64]*operationState
-	completed   []uint64
+	lifecycleMu          sync.Mutex
+	lifecycles           map[uint64]*deviceLifecycleGate
+	mu                   sync.RWMutex
+	devices              map[uint64]*registeredDevice
+	generations          map[uint64]uint32
+	controllerSessionID  uint64
+	controllerInstanceID string
+	lanes                map[laneKey]*operationLane
+	failedLanes          map[laneKey]error
+	runCtx               context.Context
+	runCancel            context.CancelFunc
+	fatal                chan error
+	started              bool
+	running              bool
+	laneWG               sync.WaitGroup
+	operationMu          sync.Mutex
+	operations           map[uint64]*operationState
+	completed            []uint64
 
 	inputPublisherStarts          atomic.Uint64
 	legacyTransferFallbackStarts  atomic.Uint64
@@ -293,12 +296,20 @@ func fastInputEndpoints(dev usb.Device) map[uint8]fastInputEndpoint {
 	return result
 }
 
-// Register publishes a USB device using a fresh generation. The routing entry
-// is installed before the driver plugs in the child because Windows can submit
-// its first descriptor request before CreateDevice returns.
+// Register preserves the historical lifecycle API for callers that need only
+// the exact device/generation identity.
 func (h *Host) Register(ctx context.Context, deviceID uint64, dev usb.Device) (DeviceIdentity, error) {
+	registration, err := h.RegisterWithCorrelation(ctx, deviceID, dev)
+	return registration.DeviceIdentity, err
+}
+
+// RegisterWithCorrelation publishes a USB device using a fresh generation and
+// returns the kernel-authored PnP correlation receipt. The routing entry is
+// installed before the driver plugs in the child because Windows can submit
+// its first descriptor request before CreateDevice returns.
+func (h *Host) RegisterWithCorrelation(ctx context.Context, deviceID uint64, dev usb.Device) (DeviceRegistration, error) {
 	if deviceID == 0 || dev == nil {
-		return DeviceIdentity{}, ErrInvalidRange
+		return DeviceRegistration{}, ErrInvalidRange
 	}
 	unlockLifecycle := h.lockDeviceLifecycle(deviceID)
 	defer unlockLifecycle()
@@ -310,15 +321,15 @@ func (h *Host) Register(ctx context.Context, deviceID uint64, dev usb.Device) (D
 	// instead of publishing a child into a terminal owner session.
 	if h.started && (!h.running || h.runCtx == nil || h.runCtx.Err() != nil) {
 		h.mu.Unlock()
-		return DeviceIdentity{}, errors.New("native UDE host session has stopped; open a fresh driver session")
+		return DeviceRegistration{}, errors.New("native UDE host session has stopped; open a fresh driver session")
 	}
 	if _, exists := h.devices[deviceID]; exists {
 		h.mu.Unlock()
-		return DeviceIdentity{}, fmt.Errorf("native UDE device %d is already registered", deviceID)
+		return DeviceRegistration{}, fmt.Errorf("native UDE device %d is already registered", deviceID)
 	}
 	if h.generations[deviceID] == math.MaxUint32 {
 		h.mu.Unlock()
-		return DeviceIdentity{}, fmt.Errorf(
+		return DeviceRegistration{}, fmt.Errorf(
 			"native UDE device %d exhausted its generation space", deviceID)
 	}
 	generation := h.generations[deviceID] + 1
@@ -336,18 +347,45 @@ func (h *Host) Register(ctx context.Context, deviceID uint64, dev usb.Device) (D
 	h.generations[deviceID] = generation
 	h.mu.Unlock()
 
+	var registration DeviceRegistration
+	driverCommitted := false
 	snapshot, err := SnapshotDevice(deviceID, generation, dev)
 	if err == nil {
-		err = h.driver.CreateDevice(ctx, snapshot)
+		registration, err = h.driver.CreateDevice(ctx, snapshot)
+		if err == nil {
+			driverCommitted = true
+			if !deviceRegistrationMatchesCreate(registration, snapshot) {
+				err = errors.New("native UDE driver returned an invalid device-correlation receipt")
+			} else {
+				h.mu.Lock()
+				if h.controllerSessionID == 0 {
+					h.controllerSessionID = registration.ControllerSessionID
+					h.controllerInstanceID = registration.ControllerInstanceID
+				} else if h.controllerSessionID != registration.ControllerSessionID ||
+					!strings.EqualFold(h.controllerInstanceID, registration.ControllerInstanceID) {
+					err = errors.New("native UDE driver changed controller identity within one host session")
+				}
+				h.mu.Unlock()
+			}
+		}
 	}
 	if err != nil {
+		if driverCommitted {
+			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), terminalCleanupTimeout)
+			cleanupErr := h.driver.DestroyDevice(cleanupCtx, identity)
+			cleanupCancel()
+			if cleanupErr != nil {
+				err = errors.Join(err, fmt.Errorf(
+					"rollback native UDE device after invalid correlation receipt: %w", cleanupErr))
+			}
+		}
 		h.mu.Lock()
 		if h.devices[deviceID] == entry {
 			delete(h.devices, deviceID)
 		}
 		h.mu.Unlock()
 		cancel()
-		return DeviceIdentity{}, err
+		return DeviceRegistration{}, err
 	}
 
 	// CreateDevice is an overlapped PnP transaction and can outlive a fatal or
@@ -374,15 +412,31 @@ func (h *Host) Register(ctx context.Context, deviceID uint64, dev usb.Device) (D
 		cancel()
 		if cleanupErr == nil {
 			h.processor.Reset(dev, identity)
-			return DeviceIdentity{}, errors.New(
+			return DeviceRegistration{}, errors.New(
 				"native UDE host session stopped while controller registration was in flight")
 		}
-		return DeviceIdentity{}, errors.Join(
+		return DeviceRegistration{}, errors.Join(
 			errors.New("native UDE host session stopped while controller registration was in flight"),
 			fmt.Errorf("rollback native UDE device %d generation %d: %w",
 				identity.DeviceID, identity.Generation, cleanupErr))
 	}
-	return identity, nil
+	return registration, nil
+}
+
+func deviceRegistrationMatchesCreate(registration DeviceRegistration, requested CreateDevice) bool {
+	if registration.DeviceIdentity != (DeviceIdentity{
+		DeviceID: requested.DeviceID, Generation: requested.Generation,
+	}) || registration.Speed != requested.Speed || registration.ControllerSessionID == 0 ||
+		!IsCanonicalControllerInstanceID(registration.ControllerInstanceID) {
+		return false
+	}
+	if requested.Speed == DeviceSpeedSuper {
+		return registration.USB20PortNumber == 0 &&
+			registration.USB30PortNumber > MaxDevices &&
+			registration.USB30PortNumber <= 2*MaxDevices
+	}
+	return registration.USB30PortNumber == 0 && registration.USB20PortNumber != 0 &&
+		registration.USB20PortNumber <= MaxDevices
 }
 
 func (h *Host) Unregister(ctx context.Context, identity DeviceIdentity) error {

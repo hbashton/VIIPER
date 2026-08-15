@@ -89,6 +89,14 @@ The kernel driver owns only Windows USB presentation and transfer lifecycle.
     32-bit word remains explicitly reserved. Sizes never depend on compiler
     tail padding, and every field offset is guarded so a same-size reorder
     cannot silently desynchronize the C and Go layouts.
+13. ABI 1.14 returns a fixed 40-byte receipt only after the exact
+    `UdecxUsbDevicePlugIn` succeeds. The receipt echoes device identity and
+    speed and carries the authoritative USB 2 or USB 3 controller port. User
+    mode binds it to the exact controller instance obtained from the opened
+    SetupAPI interface and to that file session's nonzero negotiated driver
+    nonce. Authenticated add/list/ping responses expose these values as an
+    opaque ownership tuple; consumers must not infer ownership from VID/PID,
+    enumeration order, or stream generation.
 
 ## Kernel/user transport
 
