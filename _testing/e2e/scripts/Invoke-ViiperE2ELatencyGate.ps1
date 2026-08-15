@@ -23,9 +23,16 @@ param(
     [ValidateRange(256, 10000)]
     [int]$Samples = 256,
 
+    [ValidateSet('Normal', 'High')]
+    [string]$PriorityClass = 'Normal',
+
     [string]$RepositoryRoot,
 
-    [string]$GoExecutable = 'go.exe'
+    [Parameter(Mandatory = $true)]
+    [string]$GitExecutable,
+
+    [Parameter(Mandatory = $true)]
+    [string]$GoExecutable
 )
 
 Set-StrictMode -Version Latest
@@ -41,6 +48,23 @@ function Resolve-CanonicalPath {
     param([Parameter(Mandatory = $true)][string]$Path)
 
     return (Resolve-Path -LiteralPath $Path -ErrorAction Stop).Path
+}
+
+function Resolve-ExactExecutablePath {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+
+    if (-not [IO.Path]::IsPathFullyQualified($Path)) {
+        throw "$Label must be supplied as an absolute path; PATH lookup is forbidden."
+    }
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+        $item.Length -le 0) {
+        throw "$Label is not a non-empty regular executable: '$Path'."
+    }
+    return $item.FullName
 }
 
 function Resolve-NewEvidencePath {
@@ -91,7 +115,9 @@ if (-not (Test-IsAdministrator)) {
     throw 'The source-bound latency gate and WPR capture require an elevated PowerShell session.'
 }
 $repository = Resolve-CanonicalPath -Path $RepositoryRoot
-$git = Get-Command git.exe -ErrorAction Stop
+$gitPath = Resolve-ExactExecutablePath -Path $GitExecutable -Label 'Git executable'
+$git = [pscustomobject]@{ Source = $gitPath }
+$gitHash = (Get-FileHash -LiteralPath $gitPath -Algorithm SHA256).Hash.ToLowerInvariant()
 $headOutput = @(& $git.Source -C $repository rev-parse --verify HEAD 2>&1)
 if ($LASTEXITCODE -ne 0 -or $headOutput.Count -eq 0) {
     throw "The production latency harness is not an exact Git checkout.`n$($headOutput -join [Environment]::NewLine)"
@@ -181,8 +207,14 @@ if ([string]::Equals($output, $trace, [StringComparison]::OrdinalIgnoreCase) -or
     [string]::Equals($trace, $markers, [StringComparison]::OrdinalIgnoreCase)) {
     throw 'The latency JSON, WPR trace, and decoded marker evidence must use three different paths.'
 }
-$go = Get-Command $GoExecutable -ErrorAction Stop
-$wpr = Get-Command wpr.exe -ErrorAction Stop
+$goPath = Resolve-ExactExecutablePath -Path $GoExecutable -Label 'Go executable'
+$go = [pscustomobject]@{ Source = $goPath }
+$goHash = (Get-FileHash -LiteralPath $goPath -Algorithm SHA256).Hash.ToLowerInvariant()
+$wprPath = Resolve-ExactExecutablePath `
+    -Path (Join-Path ([Environment]::SystemDirectory) 'wpr.exe') `
+    -Label 'System WPR executable'
+$wpr = [pscustomobject]@{ Source = $wprPath }
+$wprHash = (Get-FileHash -LiteralPath $wprPath -Algorithm SHA256).Hash.ToLowerInvariant()
 $wprProfilePath = Resolve-CanonicalPath -Path (Join-Path $repository '_testing\e2e\latency\ViiperLatency.wprp')
 $wprProfileHash = (Get-FileHash -LiteralPath $wprProfilePath -Algorithm SHA256).Hash.ToLowerInvariant()
 $wprProfile = "$wprProfilePath!ViiperLatency"
@@ -212,7 +244,11 @@ $environmentNames = @(
     'VIIPER_E2E_EXPECTED_SOURCE_REVISION', 'VIIPER_E2E_SDL_SOURCE_REVISION',
     'VIIPER_E2E_SDL_DLL_PATH', 'VIIPER_E2E_SDL_DLL_SHA256',
     'VIIPER_E2E_PACKAGE_MANIFEST_SHA256', 'VIIPER_E2E_NATIVE_DRIVER_SHA256',
-    'VIIPER_E2E_TRACE_PROFILE_SHA256', 'VIIPER_E2E_NATIVE_DRIVER_BUILD_IDENTITY'
+    'VIIPER_E2E_TRACE_PROFILE_SHA256', 'VIIPER_E2E_NATIVE_DRIVER_BUILD_IDENTITY',
+    'VIIPER_E2E_EXPECTED_PRIORITY_CLASS',
+    'VIIPER_E2E_GIT_EXECUTABLE_PATH', 'VIIPER_E2E_GIT_EXECUTABLE_SHA256',
+    'VIIPER_E2E_GO_EXECUTABLE_PATH', 'VIIPER_E2E_GO_EXECUTABLE_SHA256',
+    'VIIPER_E2E_WPR_EXECUTABLE_PATH', 'VIIPER_E2E_WPR_EXECUTABLE_SHA256'
 )
 $savedEnvironment = @{}
 foreach ($name in $environmentNames) {
@@ -224,6 +260,8 @@ $nativeRevisionLDFlag = "-X github.com/Alia5/VIIPER/internal/transport/udecx.nat
 $wprStarted = $false
 $wprFailure = $null
 $testExitCode = -1
+$wrapperProcess = [Diagnostics.Process]::GetCurrentProcess()
+$originalPriorityClass = $wrapperProcess.PriorityClass
 try {
     $env:CGO_ENABLED = '1'
     $env:GOENV = 'off'
@@ -243,6 +281,13 @@ try {
     $env:VIIPER_E2E_NATIVE_DRIVER_SHA256 = $installedDriverHash
     $env:VIIPER_E2E_TRACE_PROFILE_SHA256 = $wprProfileHash
     $env:VIIPER_E2E_NATIVE_DRIVER_BUILD_IDENTITY = $driverBuildIdentity
+    $env:VIIPER_E2E_EXPECTED_PRIORITY_CLASS = $PriorityClass.ToLowerInvariant()
+    $env:VIIPER_E2E_GIT_EXECUTABLE_PATH = $gitPath
+    $env:VIIPER_E2E_GIT_EXECUTABLE_SHA256 = $gitHash
+    $env:VIIPER_E2E_GO_EXECUTABLE_PATH = $goPath
+    $env:VIIPER_E2E_GO_EXECUTABLE_SHA256 = $goHash
+    $env:VIIPER_E2E_WPR_EXECUTABLE_PATH = $wprPath
+    $env:VIIPER_E2E_WPR_EXECUTABLE_SHA256 = $wprHash
 
     $startOutput = @(& $wpr.Source -start $wprProfile -filemode -instancename $wprInstance 2>&1)
     if ($LASTEXITCODE -ne 0) {
@@ -250,11 +295,25 @@ try {
     }
     $wprStarted = $true
 
-    & $go.Source -C $repository test -mod=readonly -count=1 -timeout=20m -ldflags $nativeRevisionLDFlag `
+    $wrapperProcess.PriorityClass = [Diagnostics.ProcessPriorityClass]::$PriorityClass
+    & $go.Source -C $repository test -buildvcs=false -mod=readonly -count=1 -timeout=20m `
+        -ldflags $nativeRevisionLDFlag `
         -run '^TestLiveControllerToGameLatencyGate$' -v ./_testing/e2e
     $testExitCode = $LASTEXITCODE
 }
 finally {
+    try {
+        $wrapperProcess.PriorityClass = $originalPriorityClass
+    }
+    catch {
+        $priorityFailure = "Could not restore wrapper process priority to '$originalPriorityClass': $($_.Exception.Message)"
+        if ($null -eq $wprFailure) {
+            $wprFailure = $priorityFailure
+        }
+        else {
+            $wprFailure = "$wprFailure $priorityFailure"
+        }
+    }
     if ($wprStarted) {
         $statusOutput = @(& $wpr.Source -status collectors -details -instancename $wprInstance 2>&1)
         $statusExitCode = $LASTEXITCODE
@@ -314,13 +373,25 @@ if (-not (Test-Path -LiteralPath $output -PathType Leaf)) {
     throw "The latency gate exited successfully without the required JSON artifact '$output'."
 }
 $report = Get-Content -LiteralPath $output -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
-if ([string]$report.schema -cne 'viiper.controller-to-game.latency-suite/v1' -or
+if ([string]$report.schema -cne 'viiper.controller-to-game.latency-suite/v2' -or
     [string]$report.provenance.source_revision -cne $headRevision -or
     [string]$report.provenance.sdl_source_revision -cne $sdlRevision -or
     [string]$report.provenance.sdl_binary_sha256 -cne $actualSDLHash -or
     [string]$report.provenance.native_package_manifest_sha256 -cne $manifestHash -or
     [string]$report.provenance.native_driver_sha256 -cne $installedDriverHash -or
     [string]$report.provenance.native_driver_build_identity -cne $driverBuildIdentity -or
+    [string]$report.provenance.git_executable_path -cne $gitPath -or
+    [string]$report.provenance.git_executable_sha256 -cne $gitHash -or
+    [string]$report.provenance.go_executable_path -cne $goPath -or
+    [string]$report.provenance.go_executable_sha256 -cne $goHash -or
+    [string]$report.provenance.wpr_executable_path -cne $wprPath -or
+    [string]$report.provenance.wpr_executable_sha256 -cne $wprHash -or
+    [string]$report.provenance.machine.process_priority_class -cne $PriorityClass.ToLowerInvariant() -or
+    [string]::IsNullOrWhiteSpace([string]$report.provenance.machine.hostname) -or
+    [string]::IsNullOrWhiteSpace([string]$report.provenance.machine.os_version) -or
+    [string]::IsNullOrWhiteSpace([string]$report.provenance.machine.cpu_model) -or
+    [int]$report.provenance.machine.logical_processors -le 0 -or
+    -not [bool]$report.provenance.machine.process_elevated -or
     [string]$report.verdict -cne 'pass' -or
     @($report.cases).Count -ne 3) {
     throw "The latency JSON artifact is not a passing source-bound production-controller suite."
@@ -438,7 +509,8 @@ try {
     $env:GOFLAGS = ''
     $env:GOTOOLCHAIN = 'local'
     $env:GOWORK = 'off'
-    $verifyOutput = @(& $go.Source -C $repository run -mod=readonly ./_testing/e2e/cmd/verifylatency `
+    $verifyOutput = @(& $go.Source -C $repository run -buildvcs=false -mod=readonly `
+        ./_testing/e2e/cmd/verifylatency `
         -input $output `
         -markers $markers `
         -source $headRevision `

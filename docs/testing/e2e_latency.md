@@ -1,6 +1,6 @@
 # Controller-to-game latency
 
-VIIPER has two different latency tools. They answer different questions and
+VIIPER has several latency tools. They answer different questions and
 must not be presented as interchangeable evidence.
 
 - `_testing/e2e/scripts/lat_bench.go` formats Go benchmark averages. It is a
@@ -10,6 +10,10 @@ must not be presented as interchangeable evidence.
   production gate. It records every press and release observed through SDL,
   compares authenticated USB/IP and native UDE runs, and emits a strict JSON
   evidence artifact plus a source-controlled sequential-file WPR trace.
+- `_testing/e2e/scripts/Invoke-ViiperE2ELatencyMatrix.ps1` is the release
+  entry point. It runs the complete gate once at Normal and once at High
+  process priority, then binds both raw JSON/ETL/decoded-marker sets into one
+  hash manifest.
 
 No live latency result is checked into this document. A passing result exists
 only when the production command below succeeds on the stated machine and its
@@ -55,6 +59,12 @@ pairs in each block and aggregates 256 press plus 256 release samples per
 transport. ABBA makes both the first/last positions USB/IP and both middle
 positions native, reducing one-way warm-up and monotonic-drift bias without
 discarding per-block source identity.
+
+The v2 JSON retains every raw sample and publishes nearest-rank p50, p90, p95,
+p99, p99.9, and max values plus population jitter. Its provenance includes the
+host name, Windows product/display/build identity, CPU model, logical processor
+count, token elevation, and the measured process priority class. Reports from
+different machine identities cannot be combined into the priority matrix.
 
 All four blocks use the same API address, credential, bus/device position,
 input sequence, warm-up count, one-second event timeout, and deterministic
@@ -143,7 +153,8 @@ following are true:
   and (for USB/IP) exact auto-attached import port;
 - all baseline SDL gamepads remain present and exactly one stable new SDL ID is
   created; its path, GUID, real type, VID, and PID must match the API device;
-- the SDL HID interface resolves to an exact present Windows PnP ancestry. A
+- the SDL HID interface resolves to an exact present Windows PnP instance and
+  container identity plus a cardinality-consistent ancestor chain. A
   native run must terminate at service `ViiperUde`/hardware ID
   `ROOT\VIIPER\UDE`; USB/IP must terminate at service `usbip2_ude`/INF hardware
   ID `ROOT\USBIP_WIN2\UDE` (the OS-assigned devnode instance is commonly
@@ -209,23 +220,34 @@ cmake --build .\_testing\e2e\deps\SDL\build --config Debug
 $sdlHash = (Get-FileHash .\_testing\e2e\deps\SDL\build\Debug\SDL3.dll -Algorithm SHA256).Hash
 ```
 
-Choose new evidence paths outside the checkout. Existing files are never
-overwritten. `-Samples` is the total pair count per controller/transport and is
-bounded to 256–10,000 so the complete three-controller ABBA suite remains
-inside its 18-minute fail-closed deadline.
+Choose an existing evidence directory outside the checkout. Existing files are
+never overwritten. `-Samples` is the total pair count per
+controller/transport and is bounded to 256–10,000. The release matrix defaults
+to 10,000 and produces independent Normal/High JSON, ETL, and decoded-marker
+artifacts.
 
 ```powershell
 $revision = (git rev-parse HEAD).Trim()
+$gitExe = 'C:\Program Files\Git\cmd\git.exe'
+$goExe = 'C:\Go\bin\go.exe'
 
-.\_testing\e2e\scripts\Invoke-ViiperE2ELatencyGate.ps1 `
+.\_testing\e2e\scripts\Invoke-ViiperE2ELatencyMatrix.ps1 `
   -SignedPackageDirectory C:\ViiperUde\MicrosoftSigned `
   -SubmissionManifestPath C:\ViiperUde\ViiperUde.cab.sha256.json `
   -ExpectedSourceRevision $revision `
   -SDLBinarySHA256 $sdlHash `
-  -OutputPath C:\ViiperEvidence\controller-latency.json `
-  -WprTracePath C:\ViiperEvidence\controller-latency.etl `
-  -Samples 256
+  -EvidenceDirectory C:\ViiperEvidence `
+  -GitExecutable $gitExe `
+  -GoExecutable $goExe `
+  -Samples 10000
 ```
+
+For a single diagnostic run, call `Invoke-ViiperE2ELatencyGate.ps1` directly
+with `-PriorityClass Normal` or `-PriorityClass High` and new `-OutputPath` and
+`-WprTracePath` values. Both wrappers require absolute, non-reparse Git and Go
+executable paths; the system WPR image is pinned automatically. Their paths and
+SHA-256 values are retained in the v2 provenance. A single run is not the
+release priority matrix.
 
 The wrapper verifies and uses the checked-in `ViiperLatency.wprp` in sequential
 file mode, names the recording instance, rejects any reported event/buffer

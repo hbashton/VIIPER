@@ -27,8 +27,8 @@ var productionPhaseSweepOffsetsNS = [...]int64{
 }
 
 const (
-	SchemaV1                               = "viiper.controller-to-game.latency/v1"
-	SuiteSchemaV1                          = "viiper.controller-to-game.latency-suite/v1"
+	SchemaV2                               = "viiper.controller-to-game.latency/v2"
+	SuiteSchemaV2                          = "viiper.controller-to-game.latency-suite/v2"
 	TransportUSBIP                         = "usbip"
 	TransportNativeUDE                     = "native-ude"
 	AuthenticationMode                     = "password-authenticated-encrypted-stream"
@@ -143,8 +143,10 @@ func (c Counters) Total() int { return c.Press + c.Release }
 type Distribution struct {
 	Count    int     `json:"count"`
 	P50NS    int64   `json:"p50_ns"`
+	P90NS    int64   `json:"p90_ns"`
 	P95NS    int64   `json:"p95_ns"`
 	P99NS    int64   `json:"p99_ns"`
+	P999NS   int64   `json:"p99_9_ns"`
 	MaxNS    int64   `json:"max_ns"`
 	JitterNS float64 `json:"jitter_ns"`
 }
@@ -193,7 +195,9 @@ type ControllerProof struct {
 	VendorID                  uint16     `json:"vendor_id"`
 	ProductID                 uint16     `json:"product_id"`
 	PNPInstanceID             string     `json:"pnp_instance_id"`
+	PNPContainerID            string     `json:"pnp_container_id"`
 	PNPAncestorIDs            []string   `json:"pnp_ancestor_ids"`
+	PNPAncestorContainerIDs   []string   `json:"pnp_ancestor_container_ids"`
 	PNPAncestorServices       []string   `json:"pnp_ancestor_services"`
 	PNPAncestorHardwareIDs    [][]string `json:"pnp_ancestor_hardware_ids"`
 	PNPAncestorLocationInfo   []string   `json:"pnp_ancestor_location_info"`
@@ -237,23 +241,41 @@ type Workload struct {
 	Authentication         string  `json:"authentication"`
 }
 
+type MachineProvenance struct {
+	Hostname             string `json:"hostname"`
+	OSProductName        string `json:"os_product_name"`
+	OSDisplayVersion     string `json:"os_display_version"`
+	OSVersion            string `json:"os_version"`
+	CPUModel             string `json:"cpu_model"`
+	LogicalProcessors    int    `json:"logical_processors"`
+	ProcessPriorityClass string `json:"process_priority_class"`
+	ProcessElevated      bool   `json:"process_elevated"`
+}
+
 type Provenance struct {
-	SourceRevision              string `json:"source_revision"`
-	SDLSourceRevision           string `json:"sdl_source_revision"`
-	SDLBinaryPath               string `json:"sdl_binary_path"`
-	SDLBinarySHA256             string `json:"sdl_binary_sha256"`
-	NativePackageManifestSHA256 string `json:"native_package_manifest_sha256"`
-	NativeDriverSHA256          string `json:"native_driver_sha256"`
-	NativeDriverBuildIdentity   string `json:"native_driver_build_identity"`
-	QPCFrequency                int64  `json:"qpc_frequency"`
-	TraceProviderName           string `json:"trace_provider_name"`
-	TraceProviderGUID           string `json:"trace_provider_guid"`
-	TraceProfileSHA256          string `json:"trace_profile_sha256"`
-	USBIPBaselineMode           string `json:"usbip_baseline_mode"`
-	USBIPBaselineVersion        string `json:"usbip_baseline_version"`
-	GoVersion                   string `json:"go_version"`
-	GOOS                        string `json:"goos"`
-	GOARCH                      string `json:"goarch"`
+	SourceRevision              string            `json:"source_revision"`
+	SDLSourceRevision           string            `json:"sdl_source_revision"`
+	SDLBinaryPath               string            `json:"sdl_binary_path"`
+	SDLBinarySHA256             string            `json:"sdl_binary_sha256"`
+	NativePackageManifestSHA256 string            `json:"native_package_manifest_sha256"`
+	NativeDriverSHA256          string            `json:"native_driver_sha256"`
+	NativeDriverBuildIdentity   string            `json:"native_driver_build_identity"`
+	QPCFrequency                int64             `json:"qpc_frequency"`
+	TraceProviderName           string            `json:"trace_provider_name"`
+	TraceProviderGUID           string            `json:"trace_provider_guid"`
+	TraceProfileSHA256          string            `json:"trace_profile_sha256"`
+	USBIPBaselineMode           string            `json:"usbip_baseline_mode"`
+	USBIPBaselineVersion        string            `json:"usbip_baseline_version"`
+	GoVersion                   string            `json:"go_version"`
+	GOOS                        string            `json:"goos"`
+	GOARCH                      string            `json:"goarch"`
+	GitExecutablePath           string            `json:"git_executable_path"`
+	GitExecutableSHA256         string            `json:"git_executable_sha256"`
+	GoExecutablePath            string            `json:"go_executable_path"`
+	GoExecutableSHA256          string            `json:"go_executable_sha256"`
+	WPRExecutablePath           string            `json:"wpr_executable_path"`
+	WPRExecutableSHA256         string            `json:"wpr_executable_sha256"`
+	Machine                     MachineProvenance `json:"machine"`
 }
 
 // SampleMarkerID is the canonical cross-artifact identity shared by JSON and
@@ -308,8 +330,10 @@ type MetricComparison struct {
 
 type DistributionComparison struct {
 	P50    MetricComparison `json:"p50_ns"`
+	P90    MetricComparison `json:"p90_ns"`
 	P95    MetricComparison `json:"p95_ns"`
 	P99    MetricComparison `json:"p99_ns"`
+	P999   MetricComparison `json:"p99_9_ns"`
 	Max    MetricComparison `json:"max_ns"`
 	Jitter MetricComparison `json:"jitter_ns"`
 }
@@ -343,8 +367,10 @@ type SuiteReport struct {
 }
 
 var (
-	revisionPattern = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
-	hashPattern     = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	revisionPattern  = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
+	hashPattern      = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	containerPattern = regexp.MustCompile(
+		`(?i)^\{[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\}$`)
 )
 
 // Calculate returns nearest-rank percentiles and population standard deviation.
@@ -373,8 +399,10 @@ func Calculate(values []int64) (Distribution, error) {
 	return Distribution{
 		Count:    len(ordered),
 		P50NS:    nearestRank(ordered, 0.50),
+		P90NS:    nearestRank(ordered, 0.90),
 		P95NS:    nearestRank(ordered, 0.95),
 		P99NS:    nearestRank(ordered, 0.99),
+		P999NS:   nearestRank(ordered, 0.999),
 		MaxNS:    ordered[len(ordered)-1],
 		JitterNS: math.Sqrt(m2 / float64(len(ordered))),
 	}, nil
@@ -565,8 +593,10 @@ func compareSets(usbip, native DistributionSet) ComparisonSet {
 func compareDistribution(usbip, native Distribution) DistributionComparison {
 	return DistributionComparison{
 		P50:    compareMetric(float64(usbip.P50NS), float64(native.P50NS)),
+		P90:    compareMetric(float64(usbip.P90NS), float64(native.P90NS)),
 		P95:    compareMetric(float64(usbip.P95NS), float64(native.P95NS)),
 		P99:    compareMetric(float64(usbip.P99NS), float64(native.P99NS)),
+		P999:   compareMetric(float64(usbip.P999NS), float64(native.P999NS)),
 		Max:    compareMetric(float64(usbip.MaxNS), float64(native.MaxNS)),
 		Jitter: compareMetric(usbip.JitterNS, native.JitterNS),
 	}
@@ -586,7 +616,7 @@ func compareMetric(usbip, native float64) MetricComparison {
 }
 
 func validateBase(report *Report) error {
-	if report.Schema != SchemaV1 {
+	if report.Schema != SchemaV2 {
 		return fmt.Errorf("unsupported report schema %q", report.Schema)
 	}
 	if report.GeneratedAt.IsZero() {
@@ -620,6 +650,22 @@ func validateBase(report *Report) error {
 	if report.Provenance.GoVersion == "" || report.Provenance.GOOS != "windows" ||
 		report.Provenance.GOARCH == "" {
 		return errors.New("Windows Go toolchain provenance is incomplete")
+	}
+	if report.Provenance.GitExecutablePath == "" ||
+		!hashPattern.MatchString(report.Provenance.GitExecutableSHA256) ||
+		report.Provenance.GoExecutablePath == "" ||
+		!hashPattern.MatchString(report.Provenance.GoExecutableSHA256) ||
+		report.Provenance.WPRExecutablePath == "" ||
+		!hashPattern.MatchString(report.Provenance.WPRExecutableSHA256) {
+		return errors.New("Git, Go, and WPR executable provenance is incomplete")
+	}
+	machine := report.Provenance.Machine
+	if machine.Hostname == "" || machine.OSProductName == "" ||
+		machine.OSDisplayVersion == "" || machine.OSVersion == "" ||
+		machine.CPUModel == "" || machine.LogicalProcessors <= 0 ||
+		(machine.ProcessPriorityClass != "normal" &&
+			machine.ProcessPriorityClass != "high") || !machine.ProcessElevated {
+		return errors.New("machine, OS, CPU, elevation, and process-priority provenance are incomplete")
 	}
 	if report.Workload.APIAddress == "" || report.Workload.USBIPAddress == "" ||
 		report.Workload.Button != "south/A" ||
@@ -800,16 +846,23 @@ func validateRun(run *Run, workload Workload, provenance Provenance, block Block
 // ValidateTransportAncestry rejects VID/PID-only substitutions and requires
 // exactly one transport-specific root anchor in the SDL interface's PnP chain.
 func ValidateTransportAncestry(transport string, usbipPort int32, proof ControllerProof) error {
-	if proof.PNPInstanceID == "" || len(proof.PNPAncestorIDs) == 0 ||
+	if proof.PNPInstanceID == "" || !containerPattern.MatchString(proof.PNPContainerID) ||
+		len(proof.PNPAncestorIDs) == 0 ||
 		len(proof.PNPAncestorIDs) != len(proof.PNPAncestorServices) ||
+		len(proof.PNPAncestorIDs) != len(proof.PNPAncestorContainerIDs) ||
 		len(proof.PNPAncestorIDs) != len(proof.PNPAncestorHardwareIDs) ||
 		len(proof.PNPAncestorIDs) != len(proof.PNPAncestorLocationInfo) ||
 		len(proof.PNPAncestorIDs) != len(proof.PNPAncestorLocationPaths) ||
-		!strings.EqualFold(proof.PNPAncestorIDs[0], proof.PNPInstanceID) {
+		!strings.EqualFold(proof.PNPAncestorIDs[0], proof.PNPInstanceID) ||
+		!strings.EqualFold(proof.PNPAncestorContainerIDs[0], proof.PNPContainerID) {
 		return errors.New("SDL observer lacks an exact, internally consistent Windows PnP ancestry proof")
 	}
 	anchorCount := 0
 	for index, instanceID := range proof.PNPAncestorIDs {
+		containerID := proof.PNPAncestorContainerIDs[index]
+		if containerID != "" && !containerPattern.MatchString(containerID) {
+			return fmt.Errorf("PnP ancestor %q has malformed container identity %q", instanceID, containerID)
+		}
 		service := proof.PNPAncestorServices[index]
 		hardwareIDs := proof.PNPAncestorHardwareIDs[index]
 		isAnchor := false
@@ -964,7 +1017,7 @@ func FinalizeSuite(suite *SuiteReport) error {
 	if suite == nil {
 		return errors.New("nil latency suite")
 	}
-	if suite.Schema != SuiteSchemaV1 {
+	if suite.Schema != SuiteSchemaV2 {
 		return fmt.Errorf("unsupported latency suite schema %q", suite.Schema)
 	}
 	if suite.GeneratedAt.IsZero() {

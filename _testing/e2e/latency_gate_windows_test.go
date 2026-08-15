@@ -36,6 +36,7 @@ import (
 	"github.com/Alia5/VIIPER/viiperclient"
 	"github.com/Alia5/VIIPER/viipertypes"
 	"golang.org/x/sys/windows"
+	"golang.org/x/sys/windows/registry"
 )
 
 const (
@@ -51,6 +52,13 @@ const (
 	liveLatencyDriverSHA256      = "VIIPER_E2E_NATIVE_DRIVER_SHA256"
 	liveLatencyTraceProfileSHA   = "VIIPER_E2E_TRACE_PROFILE_SHA256"
 	liveLatencyDriverBuildID     = "VIIPER_E2E_NATIVE_DRIVER_BUILD_IDENTITY"
+	liveLatencyExpectedPriority  = "VIIPER_E2E_EXPECTED_PRIORITY_CLASS"
+	liveLatencyGitPath           = "VIIPER_E2E_GIT_EXECUTABLE_PATH"
+	liveLatencyGitSHA256         = "VIIPER_E2E_GIT_EXECUTABLE_SHA256"
+	liveLatencyGoPath            = "VIIPER_E2E_GO_EXECUTABLE_PATH"
+	liveLatencyGoSHA256          = "VIIPER_E2E_GO_EXECUTABLE_SHA256"
+	liveLatencyWPRPath           = "VIIPER_E2E_WPR_EXECUTABLE_PATH"
+	liveLatencyWPRSHA256         = "VIIPER_E2E_WPR_EXECUTABLE_SHA256"
 	liveLatencyAPIAddress        = "127.0.0.1:33245"
 	liveLatencyUSBIPAddress      = "127.0.0.1:33244"
 	liveLatencyPassword          = "testpassword1234"
@@ -72,6 +80,13 @@ type liveLatencyConfig struct {
 	driverSHA256        string
 	traceProfileSHA256  string
 	driverBuildIdentity string
+	expectedPriority    string
+	gitPath             string
+	gitSHA256           string
+	goPath              string
+	goSHA256            string
+	wprPath             string
+	wprSHA256           string
 }
 
 type liveControllerWorkload struct {
@@ -193,6 +208,10 @@ func TestLiveControllerToGameLatencyGate(t *testing.T) {
 		t.Fatalf("loaded SDL SHA-256 %s does not match source-bound SHA-256 %s",
 			loadedHash, config.sdlDLLSHA256)
 	}
+	machine, err := collectMachineProvenance(config.expectedPriority)
+	if err != nil {
+		t.Fatalf("collect exact machine and scheduler provenance: %v", err)
+	}
 
 	generatedAt := time.Now().UTC()
 	provenance := latency.Provenance{
@@ -212,9 +231,16 @@ func TestLiveControllerToGameLatencyGate(t *testing.T) {
 		GoVersion:                   runtime.Version(),
 		GOOS:                        runtime.GOOS,
 		GOARCH:                      runtime.GOARCH,
+		GitExecutablePath:           config.gitPath,
+		GitExecutableSHA256:         config.gitSHA256,
+		GoExecutablePath:            config.goPath,
+		GoExecutableSHA256:          config.goSHA256,
+		WPRExecutablePath:           config.wprPath,
+		WPRExecutableSHA256:         config.wprSHA256,
+		Machine:                     machine,
 	}
 	suite := &latency.SuiteReport{
-		Schema: latency.SuiteSchemaV1, GeneratedAt: generatedAt, Provenance: provenance,
+		Schema: latency.SuiteSchemaV2, GeneratedAt: generatedAt, Provenance: provenance,
 	}
 
 	gateCtx, cancelGate := context.WithTimeout(context.Background(), 18*time.Minute)
@@ -222,7 +248,7 @@ func TestLiveControllerToGameLatencyGate(t *testing.T) {
 	for _, controller := range liveControllerWorkloads() {
 		phaseSweepOffsets := latency.ProductionPhaseSweepOffsetsNS()
 		report := latency.Report{
-			Schema: latency.SchemaV1, GeneratedAt: generatedAt, Provenance: provenance,
+			Schema: latency.SchemaV2, GeneratedAt: generatedAt, Provenance: provenance,
 			Workload: latency.Workload{
 				APIAddress: liveLatencyAPIAddress, USBIPAddress: liveLatencyUSBIPAddress,
 				ControllerType:    controller.apiType,
@@ -265,19 +291,23 @@ func TestLiveControllerToGameLatencyGate(t *testing.T) {
 	}
 	for _, controllerReport := range suite.Cases {
 		for _, transport := range controllerReport.Transports {
-			t.Logf("%s/%s controller-to-SDL: press n=%d p50=%s p95=%s p99=%s max=%s jitter=%s; "+
-				"release n=%d p50=%s p95=%s p99=%s max=%s jitter=%s; misses=%d duplicates=%d",
+			t.Logf("%s/%s controller-to-SDL: press n=%d p50=%s p90=%s p95=%s p99=%s p99.9=%s max=%s jitter=%s; "+
+				"release n=%d p50=%s p90=%s p95=%s p99=%s p99.9=%s max=%s jitter=%s; misses=%d duplicates=%d",
 				controllerReport.Workload.ControllerType, transport.Transport,
 				transport.Statistics.Press.Count,
 				time.Duration(transport.Statistics.Press.P50NS),
+				time.Duration(transport.Statistics.Press.P90NS),
 				time.Duration(transport.Statistics.Press.P95NS),
 				time.Duration(transport.Statistics.Press.P99NS),
+				time.Duration(transport.Statistics.Press.P999NS),
 				time.Duration(transport.Statistics.Press.MaxNS),
 				time.Duration(transport.Statistics.Press.JitterNS),
 				transport.Statistics.Release.Count,
 				time.Duration(transport.Statistics.Release.P50NS),
+				time.Duration(transport.Statistics.Release.P90NS),
 				time.Duration(transport.Statistics.Release.P95NS),
 				time.Duration(transport.Statistics.Release.P99NS),
+				time.Duration(transport.Statistics.Release.P999NS),
 				time.Duration(transport.Statistics.Release.MaxNS),
 				time.Duration(transport.Statistics.Release.JitterNS),
 				transport.Misses.Total(), transport.Duplicates.Total())
@@ -304,11 +334,22 @@ func loadLiveLatencyConfig() (liveLatencyConfig, error) {
 		driverSHA256:        strings.ToLower(strings.TrimSpace(os.Getenv(liveLatencyDriverSHA256))),
 		traceProfileSHA256:  strings.ToLower(strings.TrimSpace(os.Getenv(liveLatencyTraceProfileSHA))),
 		driverBuildIdentity: strings.ToLower(strings.TrimSpace(os.Getenv(liveLatencyDriverBuildID))),
+		expectedPriority:    strings.ToLower(strings.TrimSpace(os.Getenv(liveLatencyExpectedPriority))),
+		gitPath:             strings.TrimSpace(os.Getenv(liveLatencyGitPath)),
+		gitSHA256:           strings.ToLower(strings.TrimSpace(os.Getenv(liveLatencyGitSHA256))),
+		goPath:              strings.TrimSpace(os.Getenv(liveLatencyGoPath)),
+		goSHA256:            strings.ToLower(strings.TrimSpace(os.Getenv(liveLatencyGoSHA256))),
+		wprPath:             strings.TrimSpace(os.Getenv(liveLatencyWPRPath)),
+		wprSHA256:           strings.ToLower(strings.TrimSpace(os.Getenv(liveLatencyWPRSHA256))),
 	}
 	if config.outputPath == "" || config.expectedRevision == "" || config.sdlRevision == "" ||
 		config.sdlDLLPath == "" || config.sdlDLLSHA256 == "" ||
 		config.packageManifestSHA == "" || config.driverSHA256 == "" ||
-		config.traceProfileSHA256 == "" || config.driverBuildIdentity == "" {
+		config.traceProfileSHA256 == "" || config.driverBuildIdentity == "" ||
+		(config.expectedPriority != "normal" && config.expectedPriority != "high") ||
+		config.gitPath == "" || config.gitSHA256 == "" ||
+		config.goPath == "" || config.goSHA256 == "" ||
+		config.wprPath == "" || config.wprSHA256 == "" {
 		return liveLatencyConfig{}, errors.New("production latency provenance environment is incomplete")
 	}
 	if !filepath.IsAbs(config.outputPath) || !filepath.IsAbs(config.sdlDLLPath) {
@@ -336,7 +377,134 @@ func loadLiveLatencyConfig() (liveLatencyConfig, error) {
 		return liveLatencyConfig{}, fmt.Errorf("resolve source-bound SDL DLL: %w", err)
 	}
 	config.sdlDLLPath = canonicalSDL
+	for _, executable := range []struct {
+		name, path, hash string
+	}{
+		{name: "Git", path: config.gitPath, hash: config.gitSHA256},
+		{name: "Go", path: config.goPath, hash: config.goSHA256},
+		{name: "WPR", path: config.wprPath, hash: config.wprSHA256},
+	} {
+		canonical, resolveErr := canonicalPath(executable.path)
+		if resolveErr != nil {
+			return liveLatencyConfig{}, fmt.Errorf("resolve %s executable: %w", executable.name, resolveErr)
+		}
+		actualHash, hashErr := fileSHA256(canonical)
+		if hashErr != nil || actualHash != executable.hash {
+			return liveLatencyConfig{}, fmt.Errorf(
+				"%s executable hash changed: path=%s actual=%s expected=%s error=%v",
+				executable.name, canonical, actualHash, executable.hash, hashErr)
+		}
+		switch executable.name {
+		case "Git":
+			config.gitPath = canonical
+		case "Go":
+			config.goPath = canonical
+		case "WPR":
+			config.wprPath = canonical
+		}
+	}
 	return config, nil
+}
+
+func collectMachineProvenance(expectedPriority string) (latency.MachineProvenance, error) {
+	hostname, err := os.Hostname()
+	if err != nil {
+		return latency.MachineProvenance{}, fmt.Errorf("resolve host name: %w", err)
+	}
+	if strings.TrimSpace(hostname) == "" {
+		return latency.MachineProvenance{}, errors.New("resolved host name is empty")
+	}
+	version := windows.RtlGetVersion()
+	if version == nil || version.BuildNumber == 0 {
+		return latency.MachineProvenance{}, errors.New("RtlGetVersion returned an invalid OS version")
+	}
+
+	osKey, err := registry.OpenKey(registry.LOCAL_MACHINE,
+		`SOFTWARE\Microsoft\Windows NT\CurrentVersion`, registry.QUERY_VALUE)
+	if err != nil {
+		return latency.MachineProvenance{}, fmt.Errorf("open Windows version registry key: %w", err)
+	}
+	defer osKey.Close()
+	productName, err := requiredRegistryString(osKey, "ProductName")
+	if err != nil {
+		return latency.MachineProvenance{}, err
+	}
+	displayVersion, err := firstRequiredRegistryString(osKey, "DisplayVersion", "ReleaseId")
+	if err != nil {
+		return latency.MachineProvenance{}, err
+	}
+	ubr, _, err := osKey.GetIntegerValue("UBR")
+	if err != nil {
+		return latency.MachineProvenance{}, fmt.Errorf("read Windows UBR: %w", err)
+	}
+
+	cpuKey, err := registry.OpenKey(registry.LOCAL_MACHINE,
+		`HARDWARE\DESCRIPTION\System\CentralProcessor\0`, registry.QUERY_VALUE)
+	if err != nil {
+		return latency.MachineProvenance{}, fmt.Errorf("open CPU registry key: %w", err)
+	}
+	defer cpuKey.Close()
+	cpuModel, err := requiredRegistryString(cpuKey, "ProcessorNameString")
+	if err != nil {
+		return latency.MachineProvenance{}, err
+	}
+
+	priority, err := windows.GetPriorityClass(windows.CurrentProcess())
+	if err != nil {
+		return latency.MachineProvenance{}, fmt.Errorf("query process priority class: %w", err)
+	}
+	priorityName := ""
+	switch priority {
+	case windows.NORMAL_PRIORITY_CLASS:
+		priorityName = "normal"
+	case windows.HIGH_PRIORITY_CLASS:
+		priorityName = "high"
+	default:
+		return latency.MachineProvenance{}, fmt.Errorf(
+			"unsupported process priority class %#x; expected normal or high", priority)
+	}
+	if priorityName != expectedPriority {
+		return latency.MachineProvenance{}, fmt.Errorf(
+			"process priority class is %s, wrapper required %s", priorityName, expectedPriority)
+	}
+	if !windows.GetCurrentProcessToken().IsElevated() {
+		return latency.MachineProvenance{}, errors.New("latency process token is not elevated")
+	}
+
+	return latency.MachineProvenance{
+		Hostname:             strings.TrimSpace(hostname),
+		OSProductName:        productName,
+		OSDisplayVersion:     displayVersion,
+		OSVersion:            fmt.Sprintf("%d.%d.%d.%d", version.MajorVersion, version.MinorVersion, version.BuildNumber, ubr),
+		CPUModel:             cpuModel,
+		LogicalProcessors:    runtime.NumCPU(),
+		ProcessPriorityClass: priorityName,
+		ProcessElevated:      true,
+	}, nil
+}
+
+func requiredRegistryString(key registry.Key, name string) (string, error) {
+	value, _, err := key.GetStringValue(name)
+	if err != nil {
+		return "", fmt.Errorf("read non-empty registry value %s: %w", name, err)
+	}
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", fmt.Errorf("registry value %s is empty", name)
+	}
+	return value, nil
+}
+
+func firstRequiredRegistryString(key registry.Key, names ...string) (string, error) {
+	var lastErr error
+	for _, name := range names {
+		value, err := requiredRegistryString(key, name)
+		if err == nil {
+			return value, nil
+		}
+		lastErr = err
+	}
+	return "", lastErr
 }
 
 func validateLiveLatencySource(config liveLatencyConfig) error {
@@ -344,7 +512,7 @@ func validateLiveLatencySource(config liveLatencyConfig) error {
 	if err != nil {
 		return err
 	}
-	repositoryRoot, err := runGit(workingDirectory, "rev-parse", "--show-toplevel")
+	repositoryRoot, err := runGit(config.gitPath, workingDirectory, "rev-parse", "--show-toplevel")
 	if err != nil {
 		return fmt.Errorf("latency harness is not an exact Git checkout: %w", err)
 	}
@@ -352,21 +520,21 @@ func validateLiveLatencySource(config liveLatencyConfig) error {
 	if err != nil {
 		return err
 	}
-	head, err := runGit(repositoryRoot, "rev-parse", "--verify", "HEAD")
+	head, err := runGit(config.gitPath, repositoryRoot, "rev-parse", "--verify", "HEAD")
 	if err != nil {
 		return err
 	}
 	if strings.ToLower(strings.TrimSpace(head)) != config.expectedRevision {
 		return fmt.Errorf("latency harness source is %s, expected %s", strings.TrimSpace(head), config.expectedRevision)
 	}
-	status, err := runGit(repositoryRoot, "status", "--porcelain=v1", "--untracked-files=all")
+	status, err := runGit(config.gitPath, repositoryRoot, "status", "--porcelain=v1", "--untracked-files=all")
 	if err != nil {
 		return err
 	}
 	if strings.TrimSpace(status) != "" {
 		return fmt.Errorf("latency source tree is not clean; refusing unreviewed code or data:\n%s", status)
 	}
-	submodules, err := runGit(repositoryRoot, "submodule", "status", "--recursive")
+	submodules, err := runGit(config.gitPath, repositoryRoot, "submodule", "status", "--recursive")
 	if err != nil {
 		return err
 	}
@@ -376,7 +544,7 @@ func validateLiveLatencySource(config liveLatencyConfig) error {
 		}
 	}
 	sdlRoot := filepath.Join(repositoryRoot, "_testing", "e2e", "deps", "SDL")
-	sdlRevision, err := runGit(sdlRoot, "rev-parse", "--verify", "HEAD")
+	sdlRevision, err := runGit(config.gitPath, sdlRoot, "rev-parse", "--verify", "HEAD")
 	if err != nil {
 		return err
 	}
@@ -1215,8 +1383,8 @@ func appendLatencyFailure(run *latency.Run, format string, arguments ...any) {
 	}
 }
 
-func runGit(directory string, arguments ...string) (string, error) {
-	command := exec.Command("git", append([]string{"-C", directory}, arguments...)...)
+func runGit(executable, directory string, arguments ...string) (string, error) {
+	command := exec.Command(executable, append([]string{"-C", directory}, arguments...)...)
 	output, err := command.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("git %s: %w: %s", strings.Join(arguments, " "), err,

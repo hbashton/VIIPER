@@ -22,6 +22,7 @@ var devPropKeyDeviceParent = windows.DEVPROPKEY{
 type presentDeviceNode struct {
 	instanceID    string
 	parentID      string
+	containerID   string
 	service       string
 	hardwareIDs   []string
 	locationInfo  string
@@ -78,6 +79,21 @@ func bindControllerPnP(proof *latency.ControllerProof, transport string, usbipPo
 		if value, propertyErr := windows.SetupDiGetDeviceRegistryProperty(deviceSet, info, windows.SPDRP_SERVICE); propertyErr == nil {
 			node.service, _ = value.(string)
 		}
+		if value, propertyErr := windows.SetupDiGetDeviceRegistryProperty(
+			deviceSet, info, windows.SPDRP_BASE_CONTAINERID); propertyErr == nil {
+			containerID, valid := value.(string)
+			if !valid {
+				return fmt.Errorf("PnP container property for %q is not a string", node.instanceID)
+			}
+			containerGUID, guidErr := windows.GUIDFromString(containerID)
+			if guidErr != nil {
+				return fmt.Errorf("PnP container property for %q is malformed: %w", node.instanceID, guidErr)
+			}
+			node.containerID = containerGUID.String()
+		} else if !errors.Is(propertyErr, windows.ERROR_INVALID_DATA) &&
+			!errors.Is(propertyErr, windows.ERROR_NOT_FOUND) {
+			return fmt.Errorf("read PnP container property for %q: %w", node.instanceID, propertyErr)
+		}
 		if value, propertyErr := windows.SetupDiGetDeviceRegistryProperty(deviceSet, info, windows.SPDRP_HARDWAREID); propertyErr == nil {
 			switch typed := value.(type) {
 			case []string:
@@ -99,11 +115,16 @@ func bindControllerPnP(proof *latency.ControllerProof, transport string, usbipPo
 		}
 		nodes[node.instanceID] = node
 	}
-	if _, present := nodes[instanceID]; !present {
+	controllerNode, present := nodes[instanceID]
+	if !present {
 		return fmt.Errorf("SDL interface instance %q is not a present Windows PnP devnode", instanceID)
+	}
+	if controllerNode.containerID == "" {
+		return fmt.Errorf("SDL interface instance %q has no exact PnP container identity", instanceID)
 	}
 
 	proof.PNPInstanceID = instanceID
+	proof.PNPContainerID = controllerNode.containerID
 	if err := appendPnPAncestry(nodes, instanceID, transport, proof); err != nil {
 		return err
 	}
@@ -128,6 +149,7 @@ func appendPnPAncestry(nodes map[string]presentDeviceNode, startID, transport st
 			return fmt.Errorf("PnP ancestor %q is absent from the present-device snapshot", current)
 		}
 		proof.PNPAncestorIDs = append(proof.PNPAncestorIDs, node.instanceID)
+		proof.PNPAncestorContainerIDs = append(proof.PNPAncestorContainerIDs, node.containerID)
 		proof.PNPAncestorServices = append(proof.PNPAncestorServices, node.service)
 		proof.PNPAncestorHardwareIDs = append(proof.PNPAncestorHardwareIDs,
 			append([]string(nil), node.hardwareIDs...))

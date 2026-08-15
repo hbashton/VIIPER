@@ -41,6 +41,9 @@ func TestProductionTraceAndWrapperFailClosedContract(t *testing.T) {
 		"Win32_PnPEntity", "@($_.HardwareID) -contains 'ROOT\\VIIPER\\UDE'",
 		"$ownedRootDevices[0].PNPDeviceID",
 		"Dropped\\s+Event", "Buffers?\\s+Lost",
+		"Resolve-ExactExecutablePath", "[Environment]::SystemDirectory",
+		"VIIPER_E2E_EXPECTED_PRIORITY_CLASS", "git_executable_sha256",
+		"-buildvcs=false",
 	} {
 		if !strings.Contains(wrapperText, want) {
 			t.Fatalf("production wrapper is missing fail-closed contract %q", want)
@@ -58,6 +61,31 @@ func TestProductionTraceAndWrapperFailClosedContract(t *testing.T) {
 	}
 	if !strings.Contains(string(liveHarness), "sdl.EnableWindowsRawInput()") {
 		t.Fatal("production harness no longer enables the SDL backend that supplies exact Xbox PnP paths")
+	}
+	for _, want := range []string{
+		"P90NS", "P999NS", "collectMachineProvenance", "GetPriorityClass",
+		"ProcessorNameString", "RtlGetVersion", "ProcessElevated",
+		"exec.Command(executable", "runGit(config.gitPath",
+	} {
+		if !strings.Contains(string(liveHarness), want) {
+			t.Fatalf("production harness is missing latency provenance contract %q", want)
+		}
+	}
+	if strings.Contains(string(liveHarness), `exec.Command("git"`) {
+		t.Fatal("production harness regressed to PATH-resolved Git after verifying a pinned image")
+	}
+	matrix, err := os.ReadFile("../scripts/Invoke-ViiperE2ELatencyMatrix.ps1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	matrixText := string(matrix)
+	for _, want := range []string{
+		"priority = 'Normal'", "priority = 'High'", "Get-ExactEvidenceFile",
+		"latency-priority-matrix/v1", "process_priority_class", "Flush($true)",
+	} {
+		if !strings.Contains(matrixText, want) {
+			t.Fatalf("priority-matrix wrapper is missing fail-closed contract %q", want)
+		}
 	}
 	verifier, err := os.ReadFile("../cmd/verifylatency/main.go")
 	if err != nil {

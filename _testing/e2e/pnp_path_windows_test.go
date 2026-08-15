@@ -44,18 +44,19 @@ func TestPinnedSDLXboxPathRequiresRawInputForPnPIdentity(t *testing.T) {
 
 func TestAppendPnPAncestryRequiresCompleteUnambiguousRootChain(t *testing.T) {
 	const (
-		hidID    = `HID\VID_045E&PID_028E\1`
-		usbID    = `USB\VID_045E&PID_028E\1`
-		anchorID = `ROOT\USB\0002`
-		rootID   = `HTREE\ROOT\0`
+		hidID       = `HID\VID_045E&PID_028E\1`
+		usbID       = `USB\VID_045E&PID_028E\1`
+		anchorID    = `ROOT\USB\0002`
+		rootID      = `HTREE\ROOT\0`
+		containerID = `{11111111-2222-3333-4444-555555555555}`
 	)
 	valid := map[string]presentDeviceNode{
-		hidID:    {instanceID: hidID, parentID: usbID, service: "HidUsb"},
-		usbID:    {instanceID: usbID, parentID: anchorID, service: "usbccgp", locationPaths: []string{`USBROOT(0)#USB(7)`}},
+		hidID:    {instanceID: hidID, parentID: usbID, service: "HidUsb", containerID: containerID},
+		usbID:    {instanceID: usbID, parentID: anchorID, service: "usbccgp", containerID: containerID, locationPaths: []string{`USBROOT(0)#USB(7)`}},
 		anchorID: {instanceID: anchorID, parentID: rootID, service: "usbip2_ude", hardwareIDs: []string{`ROOT\USBIP_WIN2\UDE`}},
 		rootID:   {instanceID: rootID},
 	}
-	proof := latency.ControllerProof{PNPInstanceID: hidID}
+	proof := latency.ControllerProof{PNPInstanceID: hidID, PNPContainerID: containerID}
 	if err := appendPnPAncestry(valid, hidID, latency.TransportUSBIP, &proof); err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +98,7 @@ func TestAppendPnPAncestryRequiresCompleteUnambiguousRootChain(t *testing.T) {
 			instanceID: spoofID, parentID: anchorID, service: "usbip2_ude",
 			hardwareIDs: []string{`ROOT\USBIP_WIN2\UDE`},
 		}
-		candidate := latency.ControllerProof{PNPInstanceID: hidID}
+		candidate := latency.ControllerProof{PNPInstanceID: hidID, PNPContainerID: containerID}
 		if err := appendPnPAncestry(nodes, hidID, latency.TransportUSBIP, &candidate); err != nil {
 			t.Fatal(err)
 		}

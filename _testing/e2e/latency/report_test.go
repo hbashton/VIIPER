@@ -25,8 +25,9 @@ func TestCalculateNearestRankDistributionAndJitter(t *testing.T) {
 	if !reflect.DeepEqual(values, original) {
 		t.Fatal("Calculate reordered the caller's individual samples")
 	}
-	if got.Count != 100 || got.P50NS != 50 || got.P95NS != 95 ||
-		got.P99NS != 99 || got.MaxNS != 100 {
+	if got.Count != 100 || got.P50NS != 50 || got.P90NS != 90 ||
+		got.P95NS != 95 || got.P99NS != 99 || got.P999NS != 100 ||
+		got.MaxNS != 100 {
 		t.Fatalf("unexpected distribution: %+v", got)
 	}
 	wantJitter := math.Sqrt(833.25)
@@ -67,13 +68,65 @@ func TestCalculateRejectsMissingAndNonPositiveSamples(t *testing.T) {
 	}
 }
 
+func TestFinalizeRequiresExactMachineAndPriorityProvenance(t *testing.T) {
+	high := validReport(t)
+	high.Provenance.Machine.ProcessPriorityClass = "high"
+	if err := Finalize(high); err != nil {
+		t.Fatalf("high-priority production run was rejected: %v", err)
+	}
+
+	for _, test := range []struct {
+		name   string
+		mutate func(*MachineProvenance)
+	}{
+		{name: "missing host", mutate: func(machine *MachineProvenance) { machine.Hostname = "" }},
+		{name: "missing OS", mutate: func(machine *MachineProvenance) { machine.OSVersion = "" }},
+		{name: "missing CPU", mutate: func(machine *MachineProvenance) { machine.CPUModel = "" }},
+		{name: "zero logical processors", mutate: func(machine *MachineProvenance) { machine.LogicalProcessors = 0 }},
+		{name: "unsupported priority", mutate: func(machine *MachineProvenance) { machine.ProcessPriorityClass = "realtime" }},
+		{name: "unelevated", mutate: func(machine *MachineProvenance) { machine.ProcessElevated = false }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			report := validReport(t)
+			test.mutate(&report.Provenance.Machine)
+			if err := Finalize(report); err == nil {
+				t.Fatal("incomplete or unsupported machine provenance was accepted")
+			}
+		})
+	}
+}
+
+func TestFinalizeRequiresExactToolExecutableProvenance(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate func(*Provenance)
+	}{
+		{name: "missing Git path", mutate: func(p *Provenance) { p.GitExecutablePath = "" }},
+		{name: "invalid Git hash", mutate: func(p *Provenance) { p.GitExecutableSHA256 = "bad" }},
+		{name: "missing Go path", mutate: func(p *Provenance) { p.GoExecutablePath = "" }},
+		{name: "invalid Go hash", mutate: func(p *Provenance) { p.GoExecutableSHA256 = "bad" }},
+		{name: "missing WPR path", mutate: func(p *Provenance) { p.WPRExecutablePath = "" }},
+		{name: "invalid WPR hash", mutate: func(p *Provenance) { p.WPRExecutableSHA256 = "bad" }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			report := validReport(t)
+			test.mutate(&report.Provenance)
+			if err := Finalize(report); err == nil {
+				t.Fatal("incomplete tool executable provenance was accepted")
+			}
+		})
+	}
+}
+
 func TestUSBIPAnchorUsesINFHardwareIDAndOSAssignedInstance(t *testing.T) {
 	// usbip-win2's INF binds ROOT\USBIP_WIN2\UDE to usbip2_ude, while live
 	// SetupAPI/pnputil evidence exposes the present OS-assigned instance as
 	// ROOT\USB\####. Preserve all three identities; none substitutes for another.
 	proof := ControllerProof{
 		PNPInstanceID:             `HID\VID_045E&PID_028E\1`,
+		PNPContainerID:            `{11111111-2222-3333-4444-555555555555}`,
 		PNPAncestorIDs:            []string{`HID\VID_045E&PID_028E\1`, `USB\VID_045E&PID_028E\1`, `ROOT\USB\0002`},
+		PNPAncestorContainerIDs:   []string{`{11111111-2222-3333-4444-555555555555}`, `{11111111-2222-3333-4444-555555555555}`, ""},
 		PNPAncestorServices:       []string{"HidUsb", "usbccgp", "usbip2_ude"},
 		PNPAncestorHardwareIDs:    [][]string{{`HID_DEVICE_SYSTEM_GAME`}, {`USB\VID_045E&PID_028E`}, {`ROOT\USBIP_WIN2\UDE`}},
 		PNPAncestorLocationInfo:   []string{"", "Port_#0007.Hub_#0001", ""},
@@ -385,6 +438,23 @@ func TestFinalizeRejectsWeakenedPolicyAndOutOfOrderSamples(t *testing.T) {
 		}
 	})
 
+	t.Run("missing controller container", func(t *testing.T) {
+		report := validReport(t)
+		report.Runs[1].Controller.PNPContainerID = ""
+		if err := Finalize(report); err == nil || !strings.Contains(err.Error(), "ancestry proof") {
+			t.Fatalf("missing controller container error=%v", err)
+		}
+	})
+
+	t.Run("mismatched controller container", func(t *testing.T) {
+		report := validReport(t)
+		report.Runs[1].Controller.PNPAncestorContainerIDs[0] =
+			`{99999999-8888-7777-6666-555555555555}`
+		if err := Finalize(report); err == nil || !strings.Contains(err.Error(), "ancestry proof") {
+			t.Fatalf("mismatched controller container error=%v", err)
+		}
+	})
+
 	t.Run("wrong loaded native build", func(t *testing.T) {
 		report := validReport(t)
 		report.Runs[1].Server.NativeUDE.LoadedDriverBuildIdentity = strings.Repeat("2", 64)
@@ -397,6 +467,7 @@ func TestFinalizeRejectsWeakenedPolicyAndOutOfOrderSamples(t *testing.T) {
 		report := validReport(t)
 		run := &report.Runs[0]
 		run.Controller.PNPAncestorIDs = append(run.Controller.PNPAncestorIDs, `ROOT\USB\0003`)
+		run.Controller.PNPAncestorContainerIDs = append(run.Controller.PNPAncestorContainerIDs, "")
 		run.Controller.PNPAncestorServices = append(run.Controller.PNPAncestorServices, "usbip2_ude")
 		run.Controller.PNPAncestorHardwareIDs = append(run.Controller.PNPAncestorHardwareIDs, []string{`ROOT\USBIP_WIN2\UDE`})
 		run.Controller.PNPAncestorLocationInfo = append(run.Controller.PNPAncestorLocationInfo, "")
@@ -466,7 +537,7 @@ func TestFinalizeRejectsSameMachineNativeTailRegression(t *testing.T) {
 func validReport(t *testing.T) *Report {
 	t.Helper()
 	report := &Report{
-		Schema:      SchemaV1,
+		Schema:      SchemaV2,
 		GeneratedAt: time.Date(2026, 8, 11, 12, 0, 0, 0, time.UTC),
 		Provenance: Provenance{
 			SourceRevision:              strings.Repeat("a", 40),
@@ -485,6 +556,18 @@ func validReport(t *testing.T) *Report {
 			GoVersion:                   "go1.26.2",
 			GOOS:                        "windows",
 			GOARCH:                      "amd64",
+			GitExecutablePath:           `C:\Program Files\Git\cmd\git.exe`,
+			GitExecutableSHA256:         strings.Repeat("2", 64),
+			GoExecutablePath:            `C:\Go\bin\go.exe`,
+			GoExecutableSHA256:          strings.Repeat("3", 64),
+			WPRExecutablePath:           `C:\Windows\System32\wpr.exe`,
+			WPRExecutableSHA256:         strings.Repeat("4", 64),
+			Machine: MachineProvenance{
+				Hostname: "bench-host", OSProductName: "Windows 11 Pro",
+				OSDisplayVersion: "24H2", OSVersion: "10.0.26100.9999",
+				CPUModel: "Test CPU", LogicalProcessors: 16,
+				ProcessPriorityClass: "normal", ProcessElevated: true,
+			},
 		},
 		Workload: Workload{
 			APIAddress:             "127.0.0.1:33245",
@@ -546,7 +629,9 @@ func validReport(t *testing.T) *Report {
 		if block.Transport == TransportUSBIP {
 			run.Device.USBIPPort = 1
 			run.Controller.PNPInstanceID = `HID\VID_045E&PID_028E\1`
+			run.Controller.PNPContainerID = `{11111111-2222-3333-4444-555555555555}`
 			run.Controller.PNPAncestorIDs = []string{run.Controller.PNPInstanceID, `USB\VID_045E&PID_028E\1`, `ROOT\USB\0002`}
+			run.Controller.PNPAncestorContainerIDs = []string{run.Controller.PNPContainerID, run.Controller.PNPContainerID, ""}
 			run.Controller.PNPAncestorServices = []string{"HidUsb", "usbccgp", "usbip2_ude"}
 			run.Controller.PNPAncestorHardwareIDs = [][]string{{`HID_DEVICE_SYSTEM_GAME`}, {`USB\VID_045E&PID_028E`}, {`ROOT\USBIP_WIN2\UDE`}}
 			run.Controller.PNPAncestorLocationInfo = []string{"", "Port_#0001.Hub_#0001", ""}
@@ -560,7 +645,9 @@ func validReport(t *testing.T) *Report {
 				LoadedDriverBuildIdentity:    report.Provenance.NativeDriverBuildIdentity,
 			}
 			run.Controller.PNPInstanceID = `HID\VID_045E&PID_028E\2`
+			run.Controller.PNPContainerID = `{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}`
 			run.Controller.PNPAncestorIDs = []string{run.Controller.PNPInstanceID, `USB\VID_045E&PID_028E\2`, `ROOT\VIIPERUDE\0000`}
+			run.Controller.PNPAncestorContainerIDs = []string{run.Controller.PNPContainerID, run.Controller.PNPContainerID, ""}
 			run.Controller.PNPAncestorServices = []string{"HidUsb", "WUDFRd", "ViiperUde"}
 			run.Controller.PNPAncestorHardwareIDs = [][]string{{`HID_DEVICE_SYSTEM_GAME`}, {`USB\VID_045E&PID_028E`}, {`ROOT\VIIPER\UDE`}}
 			run.Controller.PNPAncestorLocationInfo = []string{"", "", ""}
@@ -615,7 +702,7 @@ func validSuite(t *testing.T) *SuiteReport {
 	t.Helper()
 	xbox := validReport(t)
 	suite := &SuiteReport{
-		Schema: SuiteSchemaV1, GeneratedAt: xbox.GeneratedAt, Provenance: xbox.Provenance,
+		Schema: SuiteSchemaV2, GeneratedAt: xbox.GeneratedAt, Provenance: xbox.Provenance,
 	}
 	identities := []struct {
 		controller string
