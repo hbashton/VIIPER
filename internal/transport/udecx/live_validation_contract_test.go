@@ -174,9 +174,14 @@ func TestNativeWorkflowPublishesSourceBoundLiveProbes(t *testing.T) {
 		"'ViiperUdeInputProbe.exe' = (Get-FileHash",
 		"ViiperUdeLiveProbes.manifest.json",
 		"ViiperUdeLiveProbes-windows-amd64-${{ github.sha }}",
+		"$nmLines = @($nmMatches | ForEach-Object { $_.Line })",
+		"@($nmPatterns | Where-Object { @($nmLines -match $_).Count -eq 0 }).Count",
 	} {
 		if !strings.Contains(contract, required) {
 			t.Fatalf("native workflow source-bound probes omitted %q", required)
 		}
+	}
+	if strings.Contains(contract, "$nmText = $nmMatches -join") {
+		t.Fatal("native workflow joins distinct symbol lines before applying end-anchored checks")
 	}
 }

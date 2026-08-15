@@ -328,9 +328,9 @@ jobs:
           )
           $nmMatches = @(& go tool nm $output 2>&1 | Select-String -Pattern $nmPatterns)
           $nmExitCode = $LASTEXITCODE
-          $nmText = $nmMatches -join [Environment]::NewLine
+          $nmLines = @($nmMatches | ForEach-Object { $_.Line })
           if ($nmExitCode -ne 0 -or
-              @($nmPatterns | Where-Object { $nmText -notmatch $_ }).Count -ne 0) {
+              @($nmPatterns | Where-Object { @($nmLines -match $_).Count -eq 0 }).Count -ne 0) {
             throw 'Source-bound native broker is missing required Go/DWARF hot-path symbols.'
           }
           $brokerAscii = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($output))
