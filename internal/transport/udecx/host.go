@@ -497,7 +497,7 @@ func lifecycleTraceEventName(event uint16) string {
 		"plug-in-begin", "plug-in-returned", "remove-claimed",
 		"management-abort-begin", "management-abort-end", "plug-out-begin",
 		"plug-out-returned", "endpoint-purge-begin", "endpoint-operations-purged",
-		"endpoint-queue-purge-requested", "endpoint-queue-purged",
+		"endpoint-queue-purge-requested", "endpoint-driver-quiescent",
 		"endpoint-drain-begin", "endpoint-drain-end",
 		"endpoint-purge-complete-begin", "endpoint-purge-complete-end",
 		"endpoint-cleanup-begin", "endpoint-cleanup-end", "device-cleanup-begin",

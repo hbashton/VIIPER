@@ -88,10 +88,11 @@ constexpr wchar_t kServiceName[] = L"ViiperUde";
 constexpr wchar_t kProviderName[] = L"VIIPER Project";
 constexpr wchar_t kCatalogName[] = L"ViiperUde.cat";
 constexpr wchar_t kDriverFileName[] = L"ViiperUde.sys";
-constexpr VIIPER_UDE_UINT16 kPreviousAbiMinor = 10;
+constexpr VIIPER_UDE_UINT16 kPreviousAbiMinor = 11;
 constexpr VIIPER_UDE_UINT32 kPreviousAbiCapabilities =
     VIIPER_UDE_CAP_ISOCHRONOUS | VIIPER_UDE_CAP_DEVICE_LIFECYCLE |
-    VIIPER_UDE_CAP_INPUT_REPORTS;
+    VIIPER_UDE_CAP_INPUT_REPORTS | VIIPER_UDE_CAP_LIFECYCLE_TRACE;
+constexpr DWORD kPreviousAbiStatsSize = 144;
 constexpr wchar_t kModelSection[] = L"Standard.NTamd64.10.0...17763";
 constexpr wchar_t kInstallSection[] = L"ViiperUde_Install";
 constexpr wchar_t kTransactionNamespace[] = L"VIIPER_UDE_DRIVER_TRANSACTION_NAMESPACE_V1";
@@ -2532,7 +2533,8 @@ bool IsPreviousAbiRetryEligible(
     const std::string* expectedBuildIdentity,
     const Error& error) {
     return requirePristineRuntime && expectedBuildIdentity == nullptr &&
-        error.code == ERROR_INVALID_PARAMETER &&
+        (error.code == ERROR_REVISION_MISMATCH ||
+            error.code == ERROR_INVALID_PARAMETER) &&
         (error.phase == L"abi-negotiate" ||
             error.phase == L"abi-negotiate-result");
 }
@@ -2640,6 +2642,8 @@ bool VerifyAbiHealth(
     }
     if (requirePristineRuntime) {
         VIIPER_UDE_STATS stats{};
+        const DWORD expectedStatsSize = negotiatedMinor == VIIPER_UDE_ABI_MINOR
+            ? static_cast<DWORD>(sizeof(stats)) : kPreviousAbiStatsSize;
         DWORD statsReturned = 0;
         WinHandle statsEvent(CreateEventW(nullptr, TRUE, FALSE, nullptr));
         if (!statsEvent) {
@@ -2711,10 +2715,12 @@ bool VerifyAbiHealth(
                 return SetLastErrorDetail(error, L"upgrade-pristine-stats-result");
             }
         }
-        if (statsReturned != sizeof(stats) || stats.Header.Magic != VIIPER_UDE_MAGIC ||
+        if (statsReturned != expectedStatsSize || stats.Header.Magic != VIIPER_UDE_MAGIC ||
             stats.Header.Major != VIIPER_UDE_ABI_MAJOR ||
             stats.Header.Minor != negotiatedMinor ||
-            stats.Header.Size != sizeof(stats) || stats.Header.Flags != 0) {
+            stats.Header.Size != expectedStatsSize || stats.Header.Flags != 0 ||
+            (negotiatedMinor == VIIPER_UDE_ABI_MINOR &&
+                (stats.ReservedPorts > VIIPER_UDE_MAX_DEVICES || stats.Reserved != 0))) {
             return SetError(error, L"upgrade-pristine-stats", ERROR_REVISION_MISMATCH,
                 L"loaded driver returned an invalid pristine-runtime statistics record");
         }
@@ -2726,7 +2732,8 @@ bool VerifyAbiHealth(
             stats.NotificationEvents != 0 || stats.NotificationEventOverflows != 0 ||
             stats.ActiveDevices != 0 || stats.PendingOperations != 0 ||
             stats.WaitingDequeues != 0 || stats.CleanupRetries != 0 ||
-            stats.InputReportsSubmitted != 0 || stats.InputReportsCompleted != 0) {
+            stats.InputReportsSubmitted != 0 || stats.InputReportsCompleted != 0 ||
+            (negotiatedMinor == VIIPER_UDE_ABI_MINOR && stats.ReservedPorts != 0)) {
             return SetError(error, L"upgrade-runtime-reboot-boundary",
                 ERROR_SUCCESS_REBOOT_REQUIRED,
                 L"the loaded native bus has serviced virtual-device work since boot; restart Windows and rerun the identical package command before creating another virtual device");
@@ -5344,14 +5351,14 @@ Outcome SelfTest() {
             "0123456789abcdef0123456789abcdef01234567",
             &buildIdentity, &outcome.error) ||
         buildIdentity !=
-            "7d769fa2edc36556a5d7f5c63d855625ada9bbc6236ea8cf73892b4b41499293") {
+            "a0185735dc6d1397e40744fcb0055ded753f30fe4b991d027065707eacecec18") {
         if (outcome.error.code == ERROR_SUCCESS) {
             SetError(&outcome.error, L"self-test-build-identity", ERROR_INVALID_DATA);
         }
         return outcome;
     }
     Error previousAbiError;
-    previousAbiError.code = ERROR_INVALID_PARAMETER;
+    previousAbiError.code = ERROR_REVISION_MISMATCH;
     previousAbiError.phase = L"abi-negotiate-result";
     if (!IsPreviousAbiRetryEligible(true, nullptr, previousAbiError) ||
         IsPreviousAbiRetryEligible(false, nullptr, previousAbiError) ||
@@ -5360,6 +5367,19 @@ Outcome SelfTest() {
             L"previous-ABI retry escaped the pristine upgrade-only boundary");
         return outcome;
     }
+    previousAbiError.code = ERROR_INVALID_PARAMETER;
+    if (!IsPreviousAbiRetryEligible(true, nullptr, previousAbiError)) {
+        SetError(&outcome.error, L"self-test-previous-abi-retry", ERROR_INVALID_DATA,
+            L"legacy previous-ABI mismatch was not accepted at the pristine boundary");
+        return outcome;
+    }
+    previousAbiError.code = ERROR_ACCESS_DENIED;
+    if (IsPreviousAbiRetryEligible(true, nullptr, previousAbiError)) {
+        SetError(&outcome.error, L"self-test-previous-abi-retry", ERROR_INVALID_DATA,
+            L"previous-ABI retry accepted an unrelated negotiation failure");
+        return outcome;
+    }
+    previousAbiError.code = ERROR_REVISION_MISMATCH;
     previousAbiError.phase = L"abi-negotiate-timeout";
     if (IsPreviousAbiRetryEligible(true, nullptr, previousAbiError)) {
         SetError(&outcome.error, L"self-test-previous-abi-retry", ERROR_INVALID_DATA,

@@ -54,7 +54,6 @@ func TestNativeEndpointQuiescenceUsesReadOnlyUdeCxQueueState(t *testing.T) {
 		"WdfIoQueueGetState( endpointContext->Queue, &queuedRequests, &driverRequests);",
 		"endpointContext->PurgeOutstanding",
 		"endpointContext->Purging",
-		"!WDF_IO_QUEUE_READY(queueState)",
 		"WdfIoQueueDriverNoRequests",
 		"driverRequests == 0",
 		"endpointContext->ActiveOperations",
@@ -63,6 +62,8 @@ func TestNativeEndpointQuiescenceUsesReadOnlyUdeCxQueueState(t *testing.T) {
 		"return;",
 		"KeDelayExecutionThread(")
 	for _, forbidden := range []string{
+		"WDF_IO_QUEUE_READY",
+		"WdfIoQueueNoRequests",
 		"WDF_IO_QUEUE_IDLE",
 		"WDF_IO_QUEUE_PURGED",
 		"queuedRequests == 0",
@@ -234,8 +235,8 @@ func TestNativeEndpointPurgeWorkerCountsRepeatedAndReentrantCallbacks(t *testing
 
 	beginPurge := func(state *purgeState) {
 		state.purging = true
-		// The class extension closes dispatch before invoking the callback.
-		state.queueReady = false
+		// The callback closes upstream delivery. The associated WDF queue may
+		// retain READY bookkeeping until PurgeComplete acknowledges it.
 		state.callbacks++
 		state.outstanding++
 		if !state.workerActive {
@@ -256,7 +257,7 @@ func TestNativeEndpointPurgeWorkerCountsRepeatedAndReentrantCallbacks(t *testing
 	quiescent := func(state *purgeState) bool {
 		// queuedHostPolls is intentionally excluded: those requests remain owned
 		// by UdeCx while delivery is stopped.
-		return state.outstanding > 0 && state.purging && !state.queueReady &&
+		return state.outstanding > 0 && state.purging &&
 			state.driverNoRequest && state.driverRequests == 0 &&
 			state.activeOperations == 0
 	}
@@ -276,7 +277,7 @@ func TestNativeEndpointPurgeWorkerCountsRepeatedAndReentrantCallbacks(t *testing
 		return true
 	}
 
-	state := purgeState{driverNoRequest: true, queuedHostPolls: 7}
+	state := purgeState{queueReady: true, driverNoRequest: true, queuedHostPolls: 7}
 	beginPurge(&state)
 	beginPurge(&state)
 	if state.outstanding != 2 || state.enqueues != 1 || !state.workerActive {
@@ -326,10 +327,11 @@ func TestNativeEndpointPurgeWorkerCountsRepeatedAndReentrantCallbacks(t *testing
 		state purgeState
 		want  bool
 	}{
-		{name: "stopped with queued host polls", state: purgeState{
+		{name: "ready with queued class-owned host polls", state: purgeState{
+			purging: true, queueReady: true, driverNoRequest: true,
+			outstanding: 1, queuedHostPolls: 99}, want: true},
+		{name: "non-ready queue is also observational", state: purgeState{
 			purging: true, driverNoRequest: true, outstanding: 1, queuedHostPolls: 99}, want: true},
-		{name: "ready queue", state: purgeState{
-			purging: true, queueReady: true, driverNoRequest: true, outstanding: 1}},
 		{name: "framework callback delivered", state: purgeState{
 			purging: true, driverNoRequest: false, outstanding: 1}},
 		{name: "driver request held", state: purgeState{
@@ -752,6 +754,7 @@ func TestNativeDeviceDestroyAbortsPinnedManagementBeforeConsumingUdeHandle(t *te
 func TestNativeDeliveredBeforeRundownInterleavings(t *testing.T) {
 	type endpoint struct {
 		open             bool
+		purgeCallback    bool
 		queueAccepting   bool
 		queueDispatching bool
 		queued           int
@@ -764,7 +767,8 @@ func TestNativeDeliveredBeforeRundownInterleavings(t *testing.T) {
 	deliverByWDF := func(state *endpoint) bool {
 		// The asynchronous reset request is the class-extension fence: UdeCx
 		// cannot deliver a successor transfer until the client completes it.
-		if state.resetOutstanding || !state.queueDispatching || state.queued == 0 {
+		if state.purgeCallback || state.resetOutstanding ||
+			!state.queueDispatching || state.queued == 0 {
 			return false
 		}
 		state.queued--
@@ -792,14 +796,13 @@ func TestNativeDeliveredBeforeRundownInterleavings(t *testing.T) {
 	}
 	udeCxBeginPurge := func(state *endpoint) {
 		state.open = false
-		// UdeCx owns this transition. A stopped+idle queue may still accept
-		// and retain host requests (0x0d), while dispatch remains closed until
-		// START. VIIPER must not consume or wait on those queued requests.
-		state.queueDispatching = false
+		state.purgeCallback = true
+		// UdeCx owns this transition. The visible queue may retain READY state
+		// (0x0f) until PurgeComplete, but the callback is the upstream boundary:
+		// no successor transfer may be delivered through this purge instance.
 	}
 	queuePurgeComplete := func(state *endpoint) bool {
-		queueReady := state.queueAccepting && state.queueDispatching
-		return !queueReady && state.driverNoRequests &&
+		return state.purgeCallback && state.driverNoRequests &&
 			state.driverOwned == 0 && state.active == 0 && !state.open
 	}
 	closeForShutdown := func(state *endpoint) {
@@ -842,7 +845,7 @@ func TestNativeDeliveredBeforeRundownInterleavings(t *testing.T) {
 	}
 	runTerminalDPC(&purge)
 	if !queuePurgeComplete(&purge) || purge.terminalDPCs != 1 ||
-		!purge.queueAccepting || purge.queueDispatching || purge.queued != 1 {
+		!purge.queueAccepting || !purge.queueDispatching || purge.queued != 1 {
 		t.Fatalf("purge consumed queued host polls or failed driver-rundown proof: %+v", purge)
 	}
 

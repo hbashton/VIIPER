@@ -166,6 +166,8 @@ ViiperHandleQueryStats(
         (ULONGLONG)ViiperReadCounter(&context->InputReportsSubmitted);
     output->InputReportsCompleted =
         (ULONGLONG)ViiperReadCounter(&context->InputReportsCompleted);
+    output->ReservedPorts =
+        (ULONG)InterlockedCompareExchange(&context->ReservedPorts, 0, 0);
     WdfRequestSetInformation(Request, sizeof(*output));
     return STATUS_SUCCESS;
 }

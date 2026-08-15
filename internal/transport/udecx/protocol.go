@@ -16,12 +16,12 @@ import (
 const (
 	Magic    uint32 = 0x45445556
 	ABIMajor uint16 = 1
-	ABIMinor uint16 = 11
+	ABIMinor uint16 = 12
 	// DriverPackageVersion is the native driver package version built and
 	// shipped with this service. Runtime negotiation proves the loaded driver
 	// carries this version in its source-bound build identity; package
 	// installation additionally verifies DriverVer and the signed catalog.
-	DriverPackageVersion = "0.1.0.34"
+	DriverPackageVersion = "0.1.0.35"
 	BuildIdentitySize    = sha256.Size
 
 	HeaderSize               = 16
@@ -34,7 +34,7 @@ const (
 	OperationSize            = 104
 	CompletionSize           = 72
 	InputReportSize          = 48
-	StatsSize                = 144
+	StatsSize                = 152
 	LifecycleTraceRecordSize = 80
 	LifecycleTraceSize       = 41008
 	LifecycleTraceCapacity   = 512
@@ -107,7 +107,7 @@ const (
 	TraceEndpointPurgeBegin
 	TraceEndpointOperationsPurged
 	TraceEndpointQueuePurgeRequested
-	TraceEndpointQueuePurged
+	TraceEndpointDriverQuiescent
 	TraceEndpointDrainBegin
 	TraceEndpointDrainEnd
 	TraceEndpointPurgeCompleteBegin
@@ -600,6 +600,7 @@ type Stats struct {
 	CleanupRetries             uint32
 	InputReportsSubmitted      uint64
 	InputReportsCompleted      uint64
+	ReservedPorts              uint32
 }
 
 func ParseStats(src []byte) (Stats, error) {
@@ -609,6 +610,10 @@ func ParseStats(src []byte) (Stats, error) {
 	}
 	if h.Size != StatsSize {
 		return Stats{}, ErrInvalidSize
+	}
+	reservedPorts := binary.LittleEndian.Uint32(src[144:148])
+	if reservedPorts > MaxDevices || binary.LittleEndian.Uint32(src[148:152]) != 0 {
+		return Stats{}, ErrInvalidRange
 	}
 	return Stats{
 		OperationsDequeued:         binary.LittleEndian.Uint64(src[16:24]),
@@ -629,6 +634,7 @@ func ParseStats(src []byte) (Stats, error) {
 		CleanupRetries:             binary.LittleEndian.Uint32(src[124:128]),
 		InputReportsSubmitted:      binary.LittleEndian.Uint64(src[128:136]),
 		InputReportsCompleted:      binary.LittleEndian.Uint64(src[136:144]),
+		ReservedPorts:              reservedPorts,
 	}, nil
 }
 

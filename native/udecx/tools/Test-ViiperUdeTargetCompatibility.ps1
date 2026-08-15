@@ -468,13 +468,12 @@ if (-not $purgeQuiescenceMatch.Success -or
             'WdfIoQueueGetState\s*\(\s*endpointContext->Queue' -or
 		$purgeSampleMatch.Groups['sample'].Value -notmatch 'endpointContext->PurgeOutstanding' -or
 		$purgeSampleMatch.Groups['sample'].Value -notmatch 'endpointContext->Purging' -or
-        $purgeSampleMatch.Groups['sample'].Value -notmatch '!\s*WDF_IO_QUEUE_READY' -or
 		$purgeSampleMatch.Groups['sample'].Value -notmatch 'WdfIoQueueDriverNoRequests' -or
 		$purgeSampleMatch.Groups['sample'].Value -notmatch 'driverRequests\s*==\s*0' -or
         $purgeSampleMatch.Groups['sample'].Value -notmatch 'endpointContext->ActiveOperations' -or
 		$purgeQuiescenceMatch.Groups['body'].Value -match
-			'WDF_IO_QUEUE_(?:IDLE|PURGED)|queuedRequests\s*==\s*0') {
-	throw 'Endpoint PURGE must prove stopped driver-owned quiescence without waiting on UdeCx-owned queued requests.'
+			'WDF_IO_QUEUE_(?:READY|IDLE|PURGED)|WdfIoQueueNoRequests|queuedRequests\s*==\s*0') {
+	throw 'Endpoint PURGE must prove driver-owned quiescence without waiting on class-owned queue readiness or queued requests.'
 }
 $purgeWorkItemMatch = [regex]::Match(
     $deviceSource,

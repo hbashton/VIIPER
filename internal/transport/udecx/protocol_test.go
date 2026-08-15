@@ -13,7 +13,7 @@ func TestBuildIdentityCanonicalVectorAndValidation(t *testing.T) {
 	t.Parallel()
 
 	const revision = "0123456789abcdef0123456789abcdef01234567"
-	const wantHex = "7d769fa2edc36556a5d7f5c63d855625ada9bbc6236ea8cf73892b4b41499293"
+	const wantHex = "a0185735dc6d1397e40744fcb0055ded753f30fe4b991d027065707eacecec18"
 	identity, err := DeriveBuildIdentity(revision, DriverPackageVersion,
 		ABIMajor, ABIMinor, AdvertisedCapabilities)
 	if err != nil {
@@ -514,14 +514,24 @@ func TestIdentityAndStatsLayout(t *testing.T) {
 	binary.LittleEndian.PutUint32(raw[120:124], 7)
 	binary.LittleEndian.PutUint64(raw[128:136], 37)
 	binary.LittleEndian.PutUint64(raw[136:144], 41)
+	binary.LittleEndian.PutUint32(raw[144:148], 9)
 	stats, err := ParseStats(raw)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if stats.OperationsDequeued != 11 || stats.BytesFromDevice != 29 || stats.NotificationEvents != 31 ||
 		stats.ActiveDevices != 3 || stats.PendingOperations != 5 || stats.WaitingDequeues != 7 ||
-		stats.InputReportsSubmitted != 37 || stats.InputReportsCompleted != 41 {
+		stats.InputReportsSubmitted != 37 || stats.InputReportsCompleted != 41 || stats.ReservedPorts != 9 {
 		t.Fatalf("unexpected stats: %+v", stats)
+	}
+	binary.LittleEndian.PutUint32(raw[148:152], 1)
+	if _, err := ParseStats(raw); !errors.Is(err, ErrInvalidRange) {
+		t.Fatalf("nonzero reserved stats word error=%v want ErrInvalidRange", err)
+	}
+	binary.LittleEndian.PutUint32(raw[148:152], 0)
+	binary.LittleEndian.PutUint32(raw[144:148], MaxDevices+1)
+	if _, err := ParseStats(raw); !errors.Is(err, ErrInvalidRange) {
+		t.Fatalf("out-of-range reserved-port count error=%v want ErrInvalidRange", err)
 	}
 }
 

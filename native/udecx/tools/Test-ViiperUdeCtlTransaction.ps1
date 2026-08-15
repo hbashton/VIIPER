@@ -39,12 +39,17 @@ $requiredContracts = [ordered]@{
         'CandidateDisposition::InstallRequired &&\s*!prior\.devices\.empty\(\) && prior\.devices\[0\]\.started &&'
     'loaded-kernel build identity negotiation' = 'response\.BuildIdentity'
     'exact negotiated capability identity' = 'response\.Capabilities != negotiatedCapabilities'
-    'known previous ABI negotiation' = 'kPreviousAbiMinor = 10'
+    'known previous ABI negotiation' = 'kPreviousAbiMinor = 11'
     'known previous ABI capabilities' = 'kPreviousAbiCapabilities'
     'previous ABI pristine-upgrade boundary' = 'IsPreviousAbiRetryEligible\('
-    'previous ABI invalid-parameter retry only' =
-        'error\.code == ERROR_INVALID_PARAMETER[\s\S]{0,180}abi-negotiate-result'
+    'previous ABI version-mismatch retry errors' =
+        'error\.code == ERROR_REVISION_MISMATCH[\s\S]{0,120}error\.code == ERROR_INVALID_PARAMETER[\s\S]{0,180}abi-negotiate-result'
     'previous ABI stats header validation' = 'stats\.Header\.Minor != negotiatedMinor'
+    'previous ABI stats wire size' = 'kPreviousAbiStatsSize = 144'
+    'reserved-port wire-range validation' = 'stats\.ReservedPorts > VIIPER_UDE_MAX_DEVICES'
+    'stats reserved-word validation' = 'stats\.Reserved != 0'
+    'reserved-port pristine-runtime gate' =
+        'negotiatedMinor == VIIPER_UDE_ABI_MINOR && stats\.ReservedPorts != 0'
     'source-bound manifest identity' = 'driverBuildIdentity'
     'same-ABI stale-kernel rejection' = 'expectedBuildIdentity'
     'install rollback' = 'RollbackInstall\('

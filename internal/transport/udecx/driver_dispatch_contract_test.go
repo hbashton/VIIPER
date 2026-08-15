@@ -412,9 +412,11 @@ func TestNativeFastInputQueuesTransitionsButCoalescesIdleCadence(t *testing.T) {
 	requireContractOrder(t, submit,
 		"if ((input->Flags & VIIPER_UDE_INPUT_REPORT_TRANSITION) != 0 &&",
 		"return STATUS_DEVICE_BUSY;",
-		"InterlockedExchange64(&endpointContext->LastInputSequence",
 		"RtlCopyMemory(endpointContext->InputReport",
 		"if ((input->Flags & VIIPER_UDE_INPUT_REPORT_TRANSITION) != 0) {",
+		"endpointContext->InputTransitionSequences[tail] = input->Sequence;",
+		"InterlockedExchange64(&endpointContext->LastInputSequence",
+		"InterlockedExchange(&endpointContext->InputReportValid, TRUE);",
 		"InterlockedIncrement(&endpointContext->InputTransitionCount);",
 		"WdfIoQueueRetrieveNextRequest(endpointContext->Queue")
 	ready := normalizedContract(nativeCFunction(t, device, "ViiperEvtFastInputQueueReady"))
@@ -432,6 +434,23 @@ func TestNativeFastInputQueuesTransitionsButCoalescesIdleCadence(t *testing.T) {
 		"if (!NT_SUCCESS(status))",
 		"UdecxUrbSetBytesCompleted(Request, reportLength);",
 		"InterlockedDecrement(&endpointContext->InputTransitionCount)")
+}
+
+func TestNativeCompletionValidatesImmutableIdentityBeforeClaim(t *testing.T) {
+	broker := nativeContractSource(t, "native", "udecx", "driver", "Broker.c")
+	complete := normalizedContract(nativeCFunction(t, broker, "ViiperCompleteOperation"))
+	requireContractOrder(t, complete,
+		"controllerContext->PendingSlots[slot].Token == completion->Token",
+		"controllerContext->PendingSlots[slot].State == ViiperUdePendingInFlight",
+		"controllerContext->PendingSlots[slot].DeviceId == completion->DeviceId",
+		"controllerContext->PendingSlots[slot].DeviceGeneration == completion->Generation",
+		"controllerContext->PendingSlots[slot].State = ViiperUdePendingCompleting;",
+		"WdfObjectReference(urbRequest);",
+		"identityMismatch = TRUE;",
+		"WdfSpinLockRelease(controllerContext->BrokerLock);",
+		"if (identityMismatch)",
+		"return STATUS_INVALID_PARAMETER;",
+		"WdfRequestUnmarkCancelable(urbRequest);")
 }
 
 func TestNativeBrokerFaultFencesAdmissionAndPublication(t *testing.T) {
@@ -661,9 +680,10 @@ func TestNativeFastInputUsesSharedIndexedLifetimeAdmission(t *testing.T) {
 		"WdfWaitLockRelease(endpointContext->InputLock);",
 		"ViiperCompleteRetrievedInputUrb( endpoint, urbRequest, status, directInputBytes, directInputSequence);")
 	requireContractOrder(t, submit,
-		"endpointContext->LastInputSequence",
 		"RtlCopyMemory(endpointContext->InputReport, payload, input->PayloadLength);",
 		"endpointContext->InputReportLength = input->PayloadLength;",
+		"endpointContext->InputTransitionSequences[tail] = input->Sequence;",
+		"InterlockedExchange64(&endpointContext->LastInputSequence",
 		"InterlockedExchange(&endpointContext->InputReportValid, TRUE);",
 		"InterlockedIncrement64(&controllerContext->InputReportsSubmitted);",
 		"WdfIoQueueRetrieveNextRequest(endpointContext->Queue, &urbRequest);",
@@ -806,11 +826,13 @@ func TestNativeEndpointRundownPrecedesCleanupAndDPCMayRunImmediately(t *testing.
 		"WdfIoQueueGetState( endpointContext->Queue, &queuedRequests, &driverRequests);",
 		"endpointContext->PurgeOutstanding",
 		"endpointContext->Purging",
-		"!WDF_IO_QUEUE_READY(queueState)",
 		"WdfIoQueueDriverNoRequests",
 		"driverRequests == 0",
 		"endpointContext->ActiveOperations")
-	for _, forbidden := range []string{"WDF_IO_QUEUE_IDLE", "queuedRequests == 0"} {
+	for _, forbidden := range []string{
+		"WDF_IO_QUEUE_READY", "WdfIoQueueNoRequests", "WDF_IO_QUEUE_IDLE",
+		"WDF_IO_QUEUE_PURGED", "queuedRequests == 0",
+	} {
 		if strings.Contains(purgeQuiescence, forbidden) {
 			t.Fatalf("endpoint PURGE incorrectly waits on UdeCx-owned queue state %q", forbidden)
 		}

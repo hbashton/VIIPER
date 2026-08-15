@@ -81,7 +81,7 @@ if ($versionNodes.Count -ne 1) {
 }
 $driverPackageVersion = $versionNodes[0].InnerText.Trim()
 $driverABIMajor = 1
-$driverABIMinor = 11
+$driverABIMinor = 12
 $driverCapabilities = [uint32]29
 $driverBuildIdentity = & (Join-Path $PSScriptRoot 'Get-ViiperUdeBuildIdentity.ps1') `
     -SourceRevision $SourceRevision `

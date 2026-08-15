@@ -1945,10 +1945,8 @@ ViiperSubmitInputReport(
     // queued controller state is also appended to the bounded transition FIFO;
     // deadline-generated idle samples therefore cannot crowd out press/release
     // edges while Windows has no interrupt poll parked.
-    InterlockedExchange64(&endpointContext->LastInputSequence, (LONG64)input->Sequence);
     RtlCopyMemory(endpointContext->InputReport, payload, input->PayloadLength);
     endpointContext->InputReportLength = input->PayloadLength;
-    InterlockedExchange(&endpointContext->InputReportValid, TRUE);
     if ((input->Flags & VIIPER_UDE_INPUT_REPORT_TRANSITION) != 0) {
         ULONG count = (ULONG)InterlockedCompareExchange(
             &endpointContext->InputTransitionCount, 0, 0);
@@ -1962,6 +1960,15 @@ ViiperSubmitInputReport(
             input->PayloadLength);
         endpointContext->InputTransitionLengths[tail] = (USHORT)input->PayloadLength;
         endpointContext->InputTransitionSequences[tail] = input->Sequence;
+    }
+    // The interlocked sequence publication is the release boundary for both
+    // the latest snapshot and optional transition payload. Consumers take the
+    // same endpoint lock, while the explicit payload-before-sequence order
+    // keeps the cache contract correct if that synchronization is later
+    // narrowed for latency.
+    InterlockedExchange64(&endpointContext->LastInputSequence, (LONG64)input->Sequence);
+    InterlockedExchange(&endpointContext->InputReportValid, TRUE);
+    if ((input->Flags & VIIPER_UDE_INPUT_REPORT_TRANSITION) != 0) {
         InterlockedIncrement(&endpointContext->InputTransitionCount);
         InterlockedExchange(&endpointContext->InputSnapshotPending, FALSE);
     } else {
@@ -2090,12 +2097,12 @@ ViiperWaitForEndpointPurgeQuiescence(
             NULL);
 
         // UdeCx exclusively owns the associated queue's START/PURGE state.
-        // Its PURGE callback can leave UdeCx-owned host polls queued while
-        // stopping delivery to this driver. Reject READY and require the
-        // framework's DriverNoRequests proof, then combine it with VIIPER's
-        // rundown in one BrokerLock sample. This also closes a callback
-        // delivered just before it could enter ActiveOperations without
-        // waiting for queued requests which the class extension itself owns.
+        // The PURGE callback is the upstream stop/cancel boundary even when
+        // the associated queue retains its READY bookkeeping until the client
+        // acknowledges the transition. DriverNoRequests joins callbacks
+        // already delivered across that boundary; VIIPER's rundown joins
+        // their forwarded and terminal-DPC ownership. Sample both under the
+        // BrokerLock without waiting for UdeCx-owned queued host polls.
         WdfSpinLockAcquire(controllerContext->BrokerLock);
         queueState = WdfIoQueueGetState(
             endpointContext->Queue, &queuedRequests, &driverRequests);
@@ -2103,7 +2110,6 @@ ViiperWaitForEndpointPurgeQuiescence(
                 &endpointContext->PurgeOutstanding, 0, 0) > 0 &&
             InterlockedCompareExchange(
                 &endpointContext->Purging, 0, 0) != 0 &&
-            !WDF_IO_QUEUE_READY(queueState) &&
             (queueState & WdfIoQueueDriverNoRequests) != 0 &&
             driverRequests == 0 &&
             InterlockedCompareExchange(
@@ -2435,7 +2441,7 @@ ViiperEvtEndpointPurgeWorkItem(
             endpoint, &queueState, &queuedRequests, &driverRequests);
         VIIPER_TRACE_LIFECYCLE(
             deviceContext->Controller, VIIPER_UDE_TRACE_SOURCE_DEVICE,
-            VIIPER_UDE_TRACE_ENDPOINT_QUEUE_PURGED, deviceContext->DeviceId,
+            VIIPER_UDE_TRACE_ENDPOINT_DRIVER_QUIESCENT, deviceContext->DeviceId,
             deviceContext->Generation, endpointContext->Device, endpoint,
             endpointContext->Descriptor.bEndpointAddress, STATUS_SUCCESS,
             endpointContext->ActiveOperations, (ULONG)queueState);

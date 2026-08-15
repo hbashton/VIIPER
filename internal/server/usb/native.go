@@ -218,8 +218,8 @@ func (p *NativeProcessor) Lifecycle(ctx context.Context, dev usbdevice.Device, o
 		p.invalidateInterruptInput(dev, 0)
 		p.clearDeviceLanes(identity)
 	case udecx.OperationSetInterface:
-		// UdeCx is documented by usbip-win2 0.9.7.8 to return incorrect
-		// interface/alternate values for some composite devices. Treat this as
+		// Some UdeCx stacks return incorrect interface/alternate values for
+		// composite devices. Treat this callback data as
 		// a hint only. Interfaces with endpoint-bearing alternate settings are
 		// driven by the exact endpoint descriptors carried by start/purge and
 		// transfer operations instead.

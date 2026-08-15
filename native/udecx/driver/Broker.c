@@ -2411,6 +2411,7 @@ ViiperCompleteOperation(
     ULONG isoErrorCount = 0;
     NTSTATUS status;
     BOOLEAN expectedLateAbort = FALSE;
+    BOOLEAN identityMismatch = FALSE;
     BOOLEAN queued;
 
     status = ViiperValidateBrokerOwner(controller, CompletionRequest);
@@ -2486,14 +2487,26 @@ ViiperCompleteOperation(
     WdfSpinLockAcquire(controllerContext->BrokerLock);
     if (controllerContext->PendingSlots[slot].Token == completion->Token &&
         controllerContext->PendingSlots[slot].State == ViiperUdePendingInFlight) {
-        urbRequest = controllerContext->PendingSlots[slot].Request;
-        controllerContext->PendingSlots[slot].State = ViiperUdePendingCompleting;
-        WdfObjectReference(urbRequest);
+        if (controllerContext->PendingSlots[slot].DeviceId == completion->DeviceId &&
+            controllerContext->PendingSlots[slot].DeviceGeneration == completion->Generation) {
+            urbRequest = controllerContext->PendingSlots[slot].Request;
+            controllerContext->PendingSlots[slot].State = ViiperUdePendingCompleting;
+            WdfObjectReference(urbRequest);
+        } else {
+            // A correct token with conflicting immutable identity must not
+            // claim the request. The owner will fault on this reply and file
+            // cleanup remains the authoritative retirement path.
+            identityMismatch = TRUE;
+        }
     } else {
         expectedLateAbort = ViiperExpectedLateAbortLocked(
             &controllerContext->PendingSlots[slot], completion->Token);
     }
     WdfSpinLockRelease(controllerContext->BrokerLock);
+    if (identityMismatch) {
+        InterlockedIncrement64(&controllerContext->InvalidMessages);
+        return STATUS_INVALID_PARAMETER;
+    }
     if (urbRequest == WDF_NO_HANDLE) {
         InterlockedIncrement64(&controllerContext->LateCompletions);
         return expectedLateAbort ? STATUS_SUCCESS : STATUS_NOT_FOUND;

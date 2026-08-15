@@ -11,8 +11,8 @@ const defaultDevicePendingOperations = 512
 
 // EndpointDescriptorForNativeUdeCx translates the scheduling fields which
 // USBHUB3 interprets using high-speed rules even when UdeCx is told that the
-// emulated device is full speed.  usbip-win2 applies the same translation in
-// its UDE transport: without it, Windows rejects full-speed audio ISO
+// emulated device is full speed. Without this presentation translation,
+// Windows rejects full-speed audio ISO
 // bInterval=1 before an URB ever reaches the client driver.
 //
 // This is a UdeCx presentation adapter only.  The controller's logical USB

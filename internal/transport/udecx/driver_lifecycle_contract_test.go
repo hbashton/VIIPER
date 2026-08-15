@@ -129,6 +129,7 @@ func TestKernelOwnerCleanupJoinsFiniteMutationRundown(t *testing.T) {
 func TestKernelDelayedCleanupReservesPhysicalPortAndCannotRevokeSuccessor(t *testing.T) {
 	device := nativeContractSource(t, "native", "udecx", "driver", "Device.c")
 	header := nativeContractSource(t, "native", "udecx", "driver", "ViiperUde.h")
+	ioctl := nativeContractSource(t, "native", "udecx", "driver", "Ioctl.c")
 	for _, required := range []string{
 		"ULONGLONG PortReservationEpochs[VIIPER_UDE_MAX_DEVICES];",
 		"BOOLEAN PortReserved[VIIPER_UDE_MAX_DEVICES];",
@@ -167,6 +168,12 @@ func TestKernelDelayedCleanupReservesPhysicalPortAndCannotRevokeSuccessor(t *tes
 		"context->InputDeviceCount == 0",
 		"for (index = 0; index < VIIPER_UDE_MAX_DEVICES; ++index)",
 		"NT_ASSERT(!context->PortReserved[index]);")
+	queryStats := normalizedContract(nativeCFunction(t, ioctl, "ViiperHandleQueryStats"))
+	requireContractOrder(t, queryStats,
+		"RtlZeroMemory(output, sizeof(*output));",
+		"output->ReservedPorts =",
+		"InterlockedCompareExchange(&context->ReservedPorts, 0, 0);",
+		"WdfRequestSetInformation(Request, sizeof(*output));")
 
 	remove := normalizedContract(nativeCFunction(t, device, "ViiperBeginRemoveDevice"))
 	requireContractOrder(t, remove,

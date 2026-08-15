@@ -1402,7 +1402,8 @@ func (s *Server) buildIsoInResponse(
 	// USB/IP removes the padding between ISO packets on the wire. The client
 	// restores each packet at its descriptor offset after receiving the compact
 	// payload. Sending the original offset gaps here makes actual_length differ
-	// from the sum of packet actual lengths, so usbip-win2 discards capture data.
+	// from the sum of packet actual lengths, so the receiving stack rejects the
+	// capture data.
 	respData := make([]byte, 0, maximumLen)
 	nextServiceSlot := serviceStart
 	for i, packet := range submitted {

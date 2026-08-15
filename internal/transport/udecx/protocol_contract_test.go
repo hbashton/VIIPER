@@ -156,6 +156,8 @@ type contractStats struct {
 	CleanupRetries             uint32
 	InputReportsSubmitted      uint64
 	InputReportsCompleted      uint64
+	ReservedPorts              uint32
+	Reserved                   uint32
 }
 
 type contractLifecycleTraceRecord struct {

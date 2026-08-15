@@ -771,7 +771,7 @@ func (c *Client) ioctl(ctx context.Context, code uint32, input, output []byte) (
 	if err == nil && c.skipCompletionPortOnSuccess {
 		// FILE_SKIP_COMPLETION_PORT_ON_SUCCESS guarantees that no completion
 		// packet exists for this exact immediate-success operation. Returning
-		// inline mirrors ViGEmBus's report submission path and avoids waking the
+		// inline preserves the direct report-submission path and avoids waking the
 		// completion pump merely to hand the same result back to this goroutine.
 		return immediate, nil
 	}
