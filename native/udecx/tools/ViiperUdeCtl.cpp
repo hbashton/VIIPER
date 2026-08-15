@@ -35,6 +35,7 @@
 #include <cerrno>
 #include <cctype>
 #include <cstdio>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <cwchar>
@@ -88,11 +89,47 @@ constexpr wchar_t kServiceName[] = L"ViiperUde";
 constexpr wchar_t kProviderName[] = L"VIIPER Project";
 constexpr wchar_t kCatalogName[] = L"ViiperUde.cat";
 constexpr wchar_t kDriverFileName[] = L"ViiperUde.sys";
-constexpr VIIPER_UDE_UINT16 kPreviousAbiMinor = 11;
-constexpr VIIPER_UDE_UINT32 kPreviousAbiCapabilities =
-    VIIPER_UDE_CAP_ISOCHRONOUS | VIIPER_UDE_CAP_DEVICE_LIFECYCLE |
-    VIIPER_UDE_CAP_INPUT_REPORTS | VIIPER_UDE_CAP_LIFECYCLE_TRACE;
-constexpr DWORD kPreviousAbiStatsSize = 144;
+
+struct AbiCompatibilityProfile {
+    VIIPER_UDE_UINT16 minor;
+    VIIPER_UDE_UINT32 capabilities;
+    DWORD statsSize;
+    bool hasReservedPortFields;
+};
+
+constexpr std::array<AbiCompatibilityProfile, 3> kAbiCompatibilityProfiles{{
+    {12, 29, 152, true},
+    {11, 29, 144, false},
+    {10, 13, 144, false},
+}};
+
+constexpr bool AbiCompatibilityProfilesAreValid() noexcept {
+    return kAbiCompatibilityProfiles[0].minor == VIIPER_UDE_ABI_MINOR &&
+        kAbiCompatibilityProfiles[0].capabilities == VIIPER_UDE_ADVERTISED_CAPABILITIES &&
+        kAbiCompatibilityProfiles[0].statsSize == sizeof(VIIPER_UDE_STATS) &&
+        kAbiCompatibilityProfiles[0].hasReservedPortFields &&
+        kAbiCompatibilityProfiles[1].minor == 11 &&
+        kAbiCompatibilityProfiles[1].capabilities == 29 &&
+        kAbiCompatibilityProfiles[1].statsSize == 144 &&
+        !kAbiCompatibilityProfiles[1].hasReservedPortFields &&
+        kAbiCompatibilityProfiles[2].minor == 10 &&
+        kAbiCompatibilityProfiles[2].capabilities == 13 &&
+        kAbiCompatibilityProfiles[2].statsSize == 144 &&
+        !kAbiCompatibilityProfiles[2].hasReservedPortFields &&
+        kAbiCompatibilityProfiles[0].minor == kAbiCompatibilityProfiles[1].minor + 1 &&
+        kAbiCompatibilityProfiles[1].minor == kAbiCompatibilityProfiles[2].minor + 1;
+}
+
+static_assert(VIIPER_UDE_ABI_MAJOR == 1, "ABI compatibility table major drift");
+static_assert(VIIPER_UDE_ABI_MINOR == 12, "ABI compatibility table current minor drift");
+static_assert(VIIPER_UDE_ADVERTISED_CAPABILITIES == 29,
+    "ABI compatibility table current capabilities drift");
+static_assert(sizeof(VIIPER_UDE_STATS) == 152,
+    "ABI compatibility table current statistics size drift");
+static_assert(offsetof(VIIPER_UDE_STATS, ReservedPorts) == 144,
+    "ABI 1.10/1.11 statistics boundary drift");
+static_assert(AbiCompatibilityProfilesAreValid(),
+    "ABI compatibility profiles must be exact and strictly descending");
 constexpr wchar_t kModelSection[] = L"Standard.NTamd64.10.0...17763";
 constexpr wchar_t kInstallSection[] = L"ViiperUde_Install";
 constexpr wchar_t kTransactionNamespace[] = L"VIIPER_UDE_DRIVER_TRANSACTION_NAMESPACE_V1";
@@ -1988,6 +2025,22 @@ enum class CandidateDisposition {
     Exact,
 };
 
+bool RequiresDriverMutation(
+    CandidateDisposition disposition,
+    bool exactBindingHealthy) noexcept {
+    return disposition == CandidateDisposition::InstallRequired ||
+        (disposition == CandidateDisposition::Exact && !exactBindingHealthy);
+}
+
+bool RequiresPristineRuntimeProof(
+    CandidateDisposition disposition,
+    bool exactBindingHealthy,
+    bool rootPresent,
+    bool rootStarted) noexcept {
+    return RequiresDriverMutation(disposition, exactBindingHealthy) &&
+        rootPresent && rootStarted;
+}
+
 bool ClassifyCandidatePackage(
     const PackageInfo& candidate,
     const std::vector<PackageInfo>& installedPackages,
@@ -2092,6 +2145,224 @@ bool CaptureSnapshot(Snapshot* snapshot, Error* error) {
         device.package = std::move(package);
         snapshot->devices.push_back(std::move(device));
     }
+    return true;
+}
+
+bool SameRootBinding(const DeviceState& left, const DeviceState& right) noexcept {
+    return _wcsicmp(left.instanceId.c_str(), right.instanceId.c_str()) == 0 &&
+        left.present == right.present &&
+        _wcsicmp(left.service.c_str(), right.service.c_str()) == 0 &&
+        _wcsicmp(left.publishedInf.c_str(), right.publishedInf.c_str()) == 0 &&
+        left.version == right.version && SamePackageBytes(left.package, right.package);
+}
+
+bool SameEnumeratedRootState(
+    const DeviceState& left,
+    const DeviceState& right) noexcept {
+    return _wcsicmp(left.instanceId.c_str(), right.instanceId.c_str()) == 0 &&
+        left.present == right.present && left.started == right.started &&
+        left.problem == right.problem &&
+        _wcsicmp(left.service.c_str(), right.service.c_str()) == 0 &&
+        _wcsicmp(left.publishedInf.c_str(), right.publishedInf.c_str()) == 0 &&
+        left.version == right.version;
+}
+
+bool SameCapturedRootState(
+    const Snapshot& left,
+    const Snapshot& right) noexcept {
+    return left.devices.size() == right.devices.size() &&
+        (left.devices.empty() ||
+            (SameRootBinding(left.devices[0], right.devices[0]) &&
+                left.devices[0].started == right.devices[0].started &&
+                left.devices[0].problem == right.devices[0].problem));
+}
+
+bool RollbackLifecycleStateMatches(
+    const DeviceState& captured,
+    const DeviceState& restored) noexcept {
+    if (captured.started) {
+        return restored.started && restored.problem == 0;
+    }
+    return !restored.started && restored.problem == captured.problem;
+}
+
+bool CaptureAndVerifyRootUnchanged(
+    const Snapshot& expected,
+    const wchar_t* phase,
+    Snapshot* observed,
+    Error* error) {
+    Snapshot current;
+    if (!CaptureSnapshot(&current, error)) {
+        return false;
+    }
+    if (!SameCapturedRootState(expected, current)) {
+        return SetError(error, phase,
+            ERROR_REVISION_MISMATCH,
+            L"the captured root identity or lifecycle state changed before exact binding");
+    }
+    if (observed != nullptr) {
+        *observed = std::move(current);
+    }
+    return true;
+}
+
+bool CaptureAndVerifyPreparedRootUnchanged(
+    const DeviceState& expected,
+    HDEVINFO set,
+    DEVINST expectedDevInst,
+    const wchar_t* phase,
+    Error* error) {
+    std::vector<std::pair<SP_DEVINFO_DATA, DeviceState>> matches;
+    if (!FindExactDevices(set, &matches, error)) {
+        return false;
+    }
+    if (matches.size() != 1 || matches[0].first.DevInst != expectedDevInst) {
+        return SetError(error, phase, ERROR_REVISION_MISMATCH,
+            L"the selected compatible-driver list no longer belongs to the captured root devnode");
+    }
+
+    DeviceState& observed = matches[0].second;
+    std::filesystem::path infDirectory;
+    if (!GetSystemInfDirectory(&infDirectory, error)) {
+        return false;
+    }
+    bool owned = false;
+    PackageInfo package;
+    if (!IsOwnedGeneratedRootInstanceId(observed.instanceId) ||
+        _wcsicmp(observed.service.c_str(), kServiceName) != 0 ||
+        !IsSafePublishedInfName(observed.publishedInf) ||
+        !LoadOwnedPackage(infDirectory / observed.publishedInf,
+            true, false, &package, &owned, error)) {
+        if (error->code == ERROR_SUCCESS) {
+            SetError(error, phase, ERROR_ACCESS_DENIED,
+                L"the selected root no longer has an exact owned package identity");
+        }
+        return false;
+    }
+    package.publishedName = observed.publishedInf;
+    observed.package = std::move(package);
+    if (!owned || !(observed.version == observed.package.version) ||
+        !SameRootBinding(expected, observed) ||
+        expected.started != observed.started || expected.problem != observed.problem) {
+        return SetError(error, phase, ERROR_REVISION_MISMATCH,
+            L"the selected root identity, lifecycle state, or package bytes changed before binding");
+    }
+    return true;
+}
+
+bool StageCandidatePackage(
+    const PackageInfo& candidate,
+    bool production,
+    uint64_t transactionDeadlineUnixMs,
+    bool* mutationStarted,
+    bool* stagedHere,
+    PackageInfo* published,
+    Error* error) {
+    *stagedHere = false;
+    *published = PackageInfo{};
+    const std::wstring sourcePath = candidate.infPath.native();
+    if (sourcePath.empty() || sourcePath.size() >= MAX_PATH) {
+        return SetError(error, L"stage-driver-package-path", ERROR_FILENAME_EXCED_RANGE,
+            L"SetupCopyOEMInf requires a canonical source INF path shorter than MAX_PATH");
+    }
+    if (!CheckTransactionDeadline(transactionDeadlineUnixMs,
+            L"transaction-deadline-before-driver-stage", error)) {
+        return false;
+    }
+    std::filesystem::path systemInf;
+    if (!GetSystemInfDirectory(&systemInf, error)) {
+        return false;
+    }
+    std::error_code systemInfError;
+    const std::filesystem::path canonicalSystemInf =
+        std::filesystem::canonical(systemInf, systemInfError);
+    if (systemInfError) {
+        return SetError(error, L"stage-system-inf-directory",
+            static_cast<DWORD>(systemInfError.value()),
+            L"the canonical system INF directory could not be captured before staging");
+    }
+
+    std::array<wchar_t, MAX_PATH> destination{};
+    DWORD required = 0;
+    // SetupCopyOEMInf can publish bytes before returning or before subsequent
+    // receipt validation. Mark the protected transaction as potentially
+    // mutated before the API boundary; stagedHere remains success-only so
+    // rollback never claims ownership of a preexisting or uncertain package.
+    MarkTransactionMutationStarted();
+    const BOOL copied = SetupCopyOEMInfW(
+        sourcePath.c_str(), nullptr, SPOST_PATH, SP_COPY_NOOVERWRITE,
+        destination.data(), static_cast<DWORD>(destination.size()),
+        &required, nullptr);
+    const DWORD copyError = copied ? ERROR_SUCCESS : GetLastError();
+    if (copied) {
+        if (mutationStarted != nullptr) {
+            *mutationStarted = true;
+        }
+        *stagedHere = true;
+    } else if (copyError != ERROR_FILE_EXISTS) {
+        if (mutationStarted != nullptr) {
+            *mutationStarted = true;
+        }
+    }
+    if (!copied && copyError != ERROR_FILE_EXISTS) {
+        // An unexpected API failure is not proof of package ownership. Leave
+        // stagedHere false; common rollback will prove the prior inventory and
+        // fail closed if SetupAPI nevertheless changed it.
+        return SetError(error, L"stage-driver-package", copyError,
+            L"add-only candidate import into the Driver Store failed");
+    }
+
+    const size_t destinationLength =
+        wcsnlen_s(destination.data(), destination.size());
+    bool receiptValid = destinationLength != 0 &&
+        destinationLength < destination.size() &&
+        required == destinationLength + 1;
+    std::filesystem::path destinationPath;
+    if (receiptValid) {
+        destinationPath = destination.data();
+        std::error_code parentError;
+        const std::filesystem::path canonicalParent =
+            std::filesystem::canonical(destinationPath.parent_path(), parentError);
+        receiptValid = !parentError &&
+            IsSafePublishedInfName(destinationPath.filename().wstring()) &&
+            _wcsicmp(canonicalParent.c_str(), canonicalSystemInf.c_str()) == 0;
+    }
+    if (receiptValid) {
+        // Preserve the API's exact, safe published-name receipt immediately.
+        // Full bytes/catalog/signer verification below may still fail, but
+        // rollback can then identify and verify only this package.
+        *published = candidate;
+        published->infPath = destinationPath;
+        published->publishedName = destinationPath.filename().wstring();
+    } else {
+        PackageInfo recoveredReceipt;
+        Error ignoredReceiptError;
+        if (FindPublishedCandidate(
+                candidate, &recoveredReceipt, &ignoredReceiptError)) {
+            *published = std::move(recoveredReceipt);
+        }
+        return SetError(error, L"stage-published-inf", ERROR_INVALID_DATA,
+            L"SetupCopyOEMInf returned a malformed published INF identity");
+    }
+    std::filesystem::path resolvedPublishedPath;
+    PackageInfo verifiedPublished;
+    if (!GetPublishedInfPath(candidate.infPath, &resolvedPublishedPath, error) ||
+        _wcsicmp(resolvedPublishedPath.c_str(), destinationPath.c_str()) != 0 ||
+        !FindPublishedCandidate(candidate, &verifiedPublished, error) ||
+        _wcsicmp(verifiedPublished.infPath.c_str(), resolvedPublishedPath.c_str()) != 0 ||
+        _wcsicmp(verifiedPublished.publishedName.c_str(),
+            resolvedPublishedPath.filename().c_str()) != 0) {
+        if (error->code == ERROR_SUCCESS) {
+            SetError(error, L"stage-published-inf", ERROR_REVISION_MISMATCH,
+                L"add-only staging did not resolve to the unique exact candidate package");
+        }
+        return false;
+    }
+    if (production &&
+        !VerifyMicrosoftHardwareInfSigner(verifiedPublished.infPath, error)) {
+        return false;
+    }
+    *published = std::move(verifiedPublished);
     return true;
 }
 
@@ -2239,20 +2510,51 @@ bool DriverInfoUsesPublishedPackage(
         _wcsicmp(publishedPath.filename().c_str(), expectedPublishedName.c_str()) == 0;
 }
 
-bool InstallPreinstalledDriverOnDevice(
+struct PreparedDriverBinding {
+    HDEVINFO set = INVALID_HANDLE_VALUE;
+    SP_DEVINFO_DATA* device = nullptr;
+    SP_DRVINFO_DATA_W selected{};
+    bool active = false;
+
+    PreparedDriverBinding() = default;
+    PreparedDriverBinding(const PreparedDriverBinding&) = delete;
+    PreparedDriverBinding& operator=(const PreparedDriverBinding&) = delete;
+
+    ~PreparedDriverBinding() {
+        Reset();
+    }
+
+    bool Reset() noexcept {
+        if (!active) {
+            return true;
+        }
+        const BOOL destroyed = SetupDiDestroyDriverInfoList(
+            set, device, SPDIT_COMPATDRIVER);
+        active = false;
+        set = INVALID_HANDLE_VALUE;
+        device = nullptr;
+        selected = SP_DRVINFO_DATA_W{};
+        return destroyed != FALSE;
+    }
+};
+
+bool PreparePreinstalledDriverOnDevice(
     HDEVINFO set,
     SP_DEVINFO_DATA* device,
     const PackageInfo& publishedPackage,
-    uint64_t transactionDeadlineUnixMs,
-    bool* mutationStarted,
-    bool* rebootRequired,
+    PreparedDriverBinding* prepared,
     Error* error) {
+    if (prepared == nullptr || prepared->active ||
+        set == INVALID_HANDLE_VALUE || device == nullptr) {
+        return SetError(error, L"repair-prepare-driver-binding",
+            ERROR_INVALID_PARAMETER);
+    }
     if (!SetupDiBuildDriverInfoList(set, device, SPDIT_COMPATDRIVER)) {
         return SetLastErrorDetail(error, L"repair-build-compatible-driver-list");
     }
-    const auto destroyList = [&]() {
-        return SetupDiDestroyDriverInfoList(set, device, SPDIT_COMPATDRIVER) != FALSE;
-    };
+    prepared->set = set;
+    prepared->device = device;
+    prepared->active = true;
 
     SP_DRVINFO_DATA_W selected{};
     size_t exactMatches = 0;
@@ -2262,7 +2564,7 @@ bool InstallPreinstalledDriverOnDevice(
         if (!SetupDiEnumDriverInfoW(set, device, SPDIT_COMPATDRIVER, index, &driver)) {
             if (GetLastError() != ERROR_NO_MORE_ITEMS) {
                 const DWORD code = GetLastError();
-                destroyList();
+                prepared->Reset();
                 return SetError(error, L"repair-enumerate-compatible-driver", code);
             }
             break;
@@ -2274,7 +2576,7 @@ bool InstallPreinstalledDriverOnDevice(
                 set, device, &driver, &probe, sizeof(probe), &required) &&
             GetLastError() != ERROR_INSUFFICIENT_BUFFER) {
             const DWORD code = GetLastError();
-            destroyList();
+            prepared->Reset();
             return SetError(error, L"repair-compatible-driver-detail", code);
         }
         const DWORD detailBytes = std::max<DWORD>(
@@ -2285,7 +2587,7 @@ bool InstallPreinstalledDriverOnDevice(
         if (!SetupDiGetDriverInfoDetailW(
                 set, device, &driver, detail, detailBytes, nullptr)) {
             const DWORD code = GetLastError();
-            destroyList();
+            prepared->Reset();
             return SetError(error, L"repair-compatible-driver-detail", code);
         }
         if (DriverInfoUsesPublishedPackage(
@@ -2295,43 +2597,70 @@ bool InstallPreinstalledDriverOnDevice(
         }
     }
     if (exactMatches != 1) {
-        destroyList();
+        prepared->Reset();
         return SetError(error, L"repair-exact-driver-selection",
             exactMatches == 0 ? ERROR_NOT_FOUND : ERROR_DUPLICATE_SERVICE_NAME,
             L"compatible driver list must contain exactly one node for the exact preinstalled package");
     }
+    prepared->selected = selected;
+    return true;
+}
+
+bool CommitPreparedDriverBinding(
+    PreparedDriverBinding* prepared,
+    uint64_t transactionDeadlineUnixMs,
+    bool* mutationStarted,
+    bool* rebootRequired,
+    Error* error) {
+    if (prepared == nullptr || !prepared->active ||
+        prepared->set == INVALID_HANDLE_VALUE || prepared->device == nullptr ||
+        prepared->selected.cbSize != sizeof(SP_DRVINFO_DATA_W)) {
+        return SetError(error, L"repair-commit-driver-binding",
+            ERROR_INVALID_PARAMETER);
+    }
     if (transactionDeadlineUnixMs != 0 &&
         !CheckTransactionDeadline(transactionDeadlineUnixMs,
-            L"transaction-deadline-before-driver-selection", error)) {
-        destroyList();
+            L"transaction-deadline-before-selected-device-binding", error)) {
         return false;
     }
     MarkTransactionMutationStarted();
     if (mutationStarted != nullptr) {
         *mutationStarted = true;
     }
-    if (!SetupDiSetSelectedDriverW(set, device, &selected)) {
+    if (!SetupDiSetSelectedDriverW(
+            prepared->set, prepared->device, &prepared->selected)) {
         const DWORD code = GetLastError();
-        destroyList();
+        prepared->Reset();
         return SetError(error, L"repair-select-exact-driver", code);
     }
-    if (transactionDeadlineUnixMs != 0 &&
-        !CheckTransactionDeadline(transactionDeadlineUnixMs,
-            L"transaction-deadline-before-device-binding", error)) {
-        destroyList();
-        return false;
-    }
     BOOL reboot = FALSE;
-    if (!DiInstallDevice(nullptr, set, device, &selected, 0, &reboot)) {
+    if (!DiInstallDevice(nullptr, prepared->set, prepared->device,
+            &prepared->selected, 0, &reboot)) {
         const DWORD code = GetLastError();
-        destroyList();
+        prepared->Reset();
         return SetError(error, L"repair-install-preinstalled-driver", code);
     }
-    if (!destroyList()) {
+    if (!prepared->Reset()) {
         return SetLastErrorDetail(error, L"repair-destroy-compatible-driver-list");
     }
     *rebootRequired = *rebootRequired || reboot != FALSE;
     return true;
+}
+
+bool InstallPreinstalledDriverOnDevice(
+    HDEVINFO set,
+    SP_DEVINFO_DATA* device,
+    const PackageInfo& publishedPackage,
+    uint64_t transactionDeadlineUnixMs,
+    bool* mutationStarted,
+    bool* rebootRequired,
+    Error* error) {
+    PreparedDriverBinding prepared;
+    return PreparePreinstalledDriverOnDevice(
+               set, device, publishedPackage, &prepared, error) &&
+        CommitPreparedDriverBinding(
+            &prepared, transactionDeadlineUnixMs, mutationStarted,
+            rebootRequired, error);
 }
 
 bool IsGeneratedRootInstanceIdForDeviceName(
@@ -2355,16 +2684,10 @@ bool IsOwnedGeneratedRootInstanceId(const std::wstring& instanceId) {
         IsGeneratedRootInstanceIdForDeviceName(instanceId, kLegacyRootDeviceName);
 }
 
-enum class ExactRootRegistrationMode {
-    Upgrade,
-    Rollback,
-};
-
 bool RegisterRootDeviceExact(
     const GUID& classGuid,
     const std::wstring& instanceId,
     uint64_t transactionDeadlineUnixMs,
-    ExactRootRegistrationMode mode,
     bool* mutationStarted,
     bool* registrationSucceeded,
     DeviceInfoSet* set,
@@ -2373,34 +2696,29 @@ bool RegisterRootDeviceExact(
     if (registrationSucceeded != nullptr) {
         *registrationSucceeded = false;
     }
-    const bool rollback = mode == ExactRootRegistrationMode::Rollback;
     if (!IsOwnedGeneratedRootInstanceId(instanceId)) {
-        return SetError(error, rollback ? L"rollback-instance-id" : L"upgrade-instance-id",
+        return SetError(error, L"rollback-instance-id",
             ERROR_INVALID_DATA,
             L"captured root devnode identity is outside the VIIPER or legacy generated root namespace");
     }
     *set = DeviceInfoSet(SetupDiCreateDeviceInfoList(&classGuid, nullptr));
     if (!*set) {
-        return SetLastErrorDetail(error, rollback
-            ? L"rollback-create-device-info-list" : L"upgrade-create-device-info-list");
+        return SetLastErrorDetail(error, L"rollback-create-device-info-list");
     }
     *data = SP_DEVINFO_DATA{};
     data->cbSize = sizeof(*data);
     // With DICD_GENERATE_ID absent, SetupAPI treats DeviceName as the complete
-    // device instance ID. Upgrade and rollback must never substitute a fresh
-    // ROOT instance.
+    // device instance ID. Rollback must never substitute a fresh ROOT instance.
     if (!SetupDiCreateDeviceInfoW(set->get(), instanceId.c_str(), &classGuid,
             nullptr, nullptr, 0, data)) {
-        return SetLastErrorDetail(error, rollback
-            ? L"rollback-create-exact-root-devnode" : L"upgrade-create-exact-root-devnode");
+        return SetLastErrorDetail(error, L"rollback-create-exact-root-devnode");
     }
     const size_t idCharacters = std::size(kHardwareId) + 1;
     std::vector<wchar_t> identifiers(idCharacters, L'\0');
     std::copy(std::begin(kHardwareId), std::end(kHardwareId), identifiers.begin());
     if (transactionDeadlineUnixMs != 0 &&
         !CheckTransactionDeadline(transactionDeadlineUnixMs,
-            rollback ? L"rollback-deadline-before-root-properties"
-                     : L"upgrade-deadline-before-root-properties", error)) {
+            L"rollback-deadline-before-root-properties", error)) {
         return false;
     }
     MarkTransactionMutationStarted();
@@ -2410,13 +2728,11 @@ bool RegisterRootDeviceExact(
     if (!SetupDiSetDeviceRegistryPropertyW(set->get(), data, SPDRP_HARDWAREID,
             reinterpret_cast<const BYTE*>(identifiers.data()),
             static_cast<DWORD>(identifiers.size() * sizeof(wchar_t)))) {
-        return SetLastErrorDetail(error, rollback
-            ? L"rollback-set-root-hardware-id" : L"upgrade-set-root-hardware-id");
+        return SetLastErrorDetail(error, L"rollback-set-root-hardware-id");
     }
     if (transactionDeadlineUnixMs != 0 &&
         !CheckTransactionDeadline(transactionDeadlineUnixMs,
-            rollback ? L"rollback-deadline-before-root-registration"
-                     : L"upgrade-deadline-before-root-registration", error)) {
+            L"rollback-deadline-before-root-registration", error)) {
         return false;
     }
     MarkTransactionMutationStarted();
@@ -2424,8 +2740,7 @@ bool RegisterRootDeviceExact(
         *mutationStarted = true;
     }
     if (!SetupDiCallClassInstaller(DIF_REGISTERDEVICE, set->get(), data)) {
-        return SetLastErrorDetail(error, rollback
-            ? L"rollback-register-exact-root-devnode" : L"upgrade-register-exact-root-devnode");
+        return SetLastErrorDetail(error, L"rollback-register-exact-root-devnode");
     }
     if (registrationSucceeded != nullptr) {
         *registrationSucceeded = true;
@@ -2528,22 +2843,89 @@ bool IssueAbiNegotiation(
     return true;
 }
 
-bool IsPreviousAbiRetryEligible(
-    bool requirePristineRuntime,
+enum class AbiHealthPurpose {
+    ExactCandidate,
+    PristineUpgrade,
+    PristineRecheck,
+    RollbackHealth,
+};
+
+bool IsAbiRetryEligible(
+    AbiHealthPurpose purpose,
     const std::string* expectedBuildIdentity,
     const Error& error) {
-    return requirePristineRuntime && expectedBuildIdentity == nullptr &&
+    return purpose == AbiHealthPurpose::PristineUpgrade &&
+        expectedBuildIdentity == nullptr &&
         (error.code == ERROR_REVISION_MISMATCH ||
             error.code == ERROR_INVALID_PARAMETER) &&
         (error.phase == L"abi-negotiate" ||
             error.phase == L"abi-negotiate-result");
 }
 
+bool RuntimeStatsArePristine(
+    const VIIPER_UDE_STATS& stats,
+    const AbiCompatibilityProfile& profile) noexcept {
+    return stats.OperationsDequeued == 0 && stats.OperationsCompleted == 0 &&
+        stats.OperationsCancelled == 0 && stats.OperationsPurged == 0 &&
+        stats.LateCompletions == 0 && stats.InvalidMessages == 0 &&
+        stats.QueueExhaustions == 0 && stats.IsoPackets == 0 &&
+        stats.BytesToDevice == 0 && stats.BytesFromDevice == 0 &&
+        stats.NotificationEvents == 0 && stats.NotificationEventOverflows == 0 &&
+        stats.ActiveDevices == 0 && stats.PendingOperations == 0 &&
+        stats.WaitingDequeues == 0 && stats.CleanupRetries == 0 &&
+        stats.InputReportsSubmitted == 0 && stats.InputReportsCompleted == 0 &&
+        (!profile.hasReservedPortFields || stats.ReservedPorts == 0);
+}
+
+bool AbiNegotiationResponseMatchesProfile(
+    const VIIPER_UDE_NEGOTIATE_RESPONSE& response,
+    DWORD returned,
+    VIIPER_UDE_UINT64 clientNonce,
+    const AbiCompatibilityProfile& profile) noexcept {
+    return returned == sizeof(response) &&
+        response.Header.Magic == VIIPER_UDE_MAGIC &&
+        response.Header.Major == VIIPER_UDE_ABI_MAJOR &&
+        response.Header.Minor == profile.minor &&
+        response.Header.Size == sizeof(response) && response.Header.Flags == 0 &&
+        response.ClientNonce == clientNonce && response.DriverNonce != 0 &&
+        response.Capabilities == profile.capabilities &&
+        response.MaxDevices == VIIPER_UDE_MAX_DEVICES &&
+        response.MaxDescriptorBytes == VIIPER_UDE_MAX_DESCRIPTOR_BYTES &&
+        response.MaxTransferBytes == VIIPER_UDE_MAX_TRANSFER_BYTES &&
+        response.MaxIsoPackets == VIIPER_UDE_MAX_ISO_PACKETS &&
+        response.MaxPendingOperations == VIIPER_UDE_MAX_PENDING_OPERATIONS;
+}
+
+bool StatsRecordMatchesProfile(
+    const VIIPER_UDE_STATS& stats,
+    DWORD returned,
+    const AbiCompatibilityProfile& profile) noexcept {
+    return returned == profile.statsSize &&
+        stats.Header.Magic == VIIPER_UDE_MAGIC &&
+        stats.Header.Major == VIIPER_UDE_ABI_MAJOR &&
+        stats.Header.Minor == profile.minor &&
+        stats.Header.Size == profile.statsSize && stats.Header.Flags == 0 &&
+        (!profile.hasReservedPortFields ||
+            (stats.ReservedPorts <= VIIPER_UDE_MAX_DEVICES && stats.Reserved == 0));
+}
+
 bool VerifyAbiHealth(
     uint64_t deadlineUnixMs,
     const std::string* expectedBuildIdentity,
     Error* error,
-    bool requirePristineRuntime = false) {
+    AbiHealthPurpose purpose = AbiHealthPurpose::ExactCandidate,
+    const AbiCompatibilityProfile* requiredProfile = nullptr,
+    AbiCompatibilityProfile* negotiatedProfile = nullptr) {
+    const bool requiresKnownProfile =
+        purpose == AbiHealthPurpose::PristineRecheck ||
+        purpose == AbiHealthPurpose::RollbackHealth;
+    if ((requiresKnownProfile && requiredProfile == nullptr) ||
+        (!requiresKnownProfile && requiredProfile != nullptr) ||
+        (purpose != AbiHealthPurpose::ExactCandidate &&
+            expectedBuildIdentity != nullptr)) {
+        return SetError(error, L"abi-health-purpose", ERROR_INVALID_PARAMETER,
+            L"ABI health purpose and compatibility profile are inconsistent");
+    }
     DeviceInfoSet set(SetupDiGetClassDevsW(
         &kViiperInterfaceGuid, nullptr, nullptr, DIGCF_PRESENT | DIGCF_DEVICEINTERFACE));
     if (!set) {
@@ -2598,25 +2980,54 @@ bool VerifyAbiHealth(
         return SetLastErrorDetail(error, L"abi-interface-open",
             L"native broker interface is unavailable or still owned by another process");
     }
-    VIIPER_UDE_UINT16 negotiatedMinor = VIIPER_UDE_ABI_MINOR;
-    VIIPER_UDE_UINT32 negotiatedCapabilities = VIIPER_UDE_ADVERTISED_CAPABILITIES;
+    const AbiCompatibilityProfile* profiles = nullptr;
+    size_t profileCount = 0;
+    bool requirePristineRuntime = false;
+    switch (purpose) {
+    case AbiHealthPurpose::ExactCandidate:
+        profiles = &kAbiCompatibilityProfiles[0];
+        profileCount = 1;
+        break;
+    case AbiHealthPurpose::PristineUpgrade:
+        profiles = kAbiCompatibilityProfiles.data();
+        profileCount = kAbiCompatibilityProfiles.size();
+        requirePristineRuntime = true;
+        break;
+    case AbiHealthPurpose::PristineRecheck:
+        profiles = requiredProfile;
+        profileCount = 1;
+        requirePristineRuntime = true;
+        break;
+    case AbiHealthPurpose::RollbackHealth:
+        profiles = requiredProfile;
+        profileCount = 1;
+        break;
+    }
+
     VIIPER_UDE_NEGOTIATE_RESPONSE response{};
     VIIPER_UDE_UINT64 clientNonce = 0;
     DWORD returned = 0;
-    if (!IssueAbiNegotiation(device.get(), deadlineUnixMs, negotiatedMinor,
-            negotiatedCapabilities, &response, &clientNonce, &returned, error)) {
-        if (!IsPreviousAbiRetryEligible(
-                requirePristineRuntime, expectedBuildIdentity, *error)) {
+    const AbiCompatibilityProfile* selectedProfile = nullptr;
+    for (size_t index = 0; index < profileCount; ++index) {
+        response = VIIPER_UDE_NEGOTIATE_RESPONSE{};
+        clientNonce = 0;
+        returned = 0;
+        if (IssueAbiNegotiation(device.get(), deadlineUnixMs, profiles[index].minor,
+                profiles[index].capabilities, &response, &clientNonce, &returned, error)) {
+            selectedProfile = &profiles[index];
+            break;
+        }
+        if (index + 1 == profileCount ||
+            !IsAbiRetryEligible(purpose, expectedBuildIdentity, *error)) {
             return false;
         }
         *error = Error{};
-        negotiatedMinor = kPreviousAbiMinor;
-        negotiatedCapabilities = kPreviousAbiCapabilities;
-        if (!IssueAbiNegotiation(device.get(), deadlineUnixMs, negotiatedMinor,
-                negotiatedCapabilities, &response, &clientNonce, &returned, error)) {
-            return false;
-        }
     }
+    if (selectedProfile == nullptr) {
+        return SetError(error, L"abi-negotiate", ERROR_REVISION_MISMATCH,
+            L"no compatible native driver ABI profile was negotiated");
+    }
+
     std::string loadedBuildIdentity;
     loadedBuildIdentity.reserve(VIIPER_UDE_BUILD_IDENTITY_BYTES * 2);
     static constexpr char digits[] = "0123456789abcdef";
@@ -2624,17 +3035,8 @@ bool VerifyAbiHealth(
         loadedBuildIdentity.push_back(digits[byte >> 4U]);
         loadedBuildIdentity.push_back(digits[byte & 0x0fU]);
     }
-    if (returned != sizeof(response) || response.Header.Magic != VIIPER_UDE_MAGIC ||
-        response.Header.Major != VIIPER_UDE_ABI_MAJOR ||
-        response.Header.Minor != negotiatedMinor ||
-        response.Header.Size != sizeof(response) || response.Header.Flags != 0 ||
-        response.ClientNonce != clientNonce || response.DriverNonce == 0 ||
-        response.Capabilities != negotiatedCapabilities ||
-        response.MaxDevices != VIIPER_UDE_MAX_DEVICES ||
-        response.MaxDescriptorBytes != VIIPER_UDE_MAX_DESCRIPTOR_BYTES ||
-        response.MaxTransferBytes != VIIPER_UDE_MAX_TRANSFER_BYTES ||
-        response.MaxIsoPackets != VIIPER_UDE_MAX_ISO_PACKETS ||
-        response.MaxPendingOperations != VIIPER_UDE_MAX_PENDING_OPERATIONS ||
+    if (!AbiNegotiationResponseMatchesProfile(
+            response, returned, clientNonce, *selectedProfile) ||
         (expectedBuildIdentity != nullptr &&
             loadedBuildIdentity != *expectedBuildIdentity)) {
         return SetError(error, L"abi-negotiate", ERROR_REVISION_MISMATCH,
@@ -2642,8 +3044,6 @@ bool VerifyAbiHealth(
     }
     if (requirePristineRuntime) {
         VIIPER_UDE_STATS stats{};
-        const DWORD expectedStatsSize = negotiatedMinor == VIIPER_UDE_ABI_MINOR
-            ? static_cast<DWORD>(sizeof(stats)) : kPreviousAbiStatsSize;
         DWORD statsReturned = 0;
         WinHandle statsEvent(CreateEventW(nullptr, TRUE, FALSE, nullptr));
         if (!statsEvent) {
@@ -2715,29 +3115,18 @@ bool VerifyAbiHealth(
                 return SetLastErrorDetail(error, L"upgrade-pristine-stats-result");
             }
         }
-        if (statsReturned != expectedStatsSize || stats.Header.Magic != VIIPER_UDE_MAGIC ||
-            stats.Header.Major != VIIPER_UDE_ABI_MAJOR ||
-            stats.Header.Minor != negotiatedMinor ||
-            stats.Header.Size != expectedStatsSize || stats.Header.Flags != 0 ||
-            (negotiatedMinor == VIIPER_UDE_ABI_MINOR &&
-                (stats.ReservedPorts > VIIPER_UDE_MAX_DEVICES || stats.Reserved != 0))) {
+        if (!StatsRecordMatchesProfile(stats, statsReturned, *selectedProfile)) {
             return SetError(error, L"upgrade-pristine-stats", ERROR_REVISION_MISMATCH,
                 L"loaded driver returned an invalid pristine-runtime statistics record");
         }
-        if (stats.OperationsDequeued != 0 || stats.OperationsCompleted != 0 ||
-            stats.OperationsCancelled != 0 || stats.OperationsPurged != 0 ||
-            stats.LateCompletions != 0 || stats.InvalidMessages != 0 ||
-            stats.QueueExhaustions != 0 || stats.IsoPackets != 0 ||
-            stats.BytesToDevice != 0 || stats.BytesFromDevice != 0 ||
-            stats.NotificationEvents != 0 || stats.NotificationEventOverflows != 0 ||
-            stats.ActiveDevices != 0 || stats.PendingOperations != 0 ||
-            stats.WaitingDequeues != 0 || stats.CleanupRetries != 0 ||
-            stats.InputReportsSubmitted != 0 || stats.InputReportsCompleted != 0 ||
-            (negotiatedMinor == VIIPER_UDE_ABI_MINOR && stats.ReservedPorts != 0)) {
+        if (!RuntimeStatsArePristine(stats, *selectedProfile)) {
             return SetError(error, L"upgrade-runtime-reboot-boundary",
                 ERROR_SUCCESS_REBOOT_REQUIRED,
                 L"the loaded native bus has serviced virtual-device work since boot; restart Windows and rerun the identical package command before creating another virtual device");
         }
+    }
+    if (negotiatedProfile != nullptr) {
+        *negotiatedProfile = *selectedProfile;
     }
     return true;
 }
@@ -2787,33 +3176,101 @@ bool UninstallPackage(const PackageInfo& package, bool* rebootRequired, Error* e
     return true;
 }
 
-std::set<std::wstring> PublishedNames(const std::vector<PackageInfo>& packages) {
-    std::set<std::wstring> names;
-    for (const PackageInfo& package : packages) {
-        std::wstring lower = package.publishedName;
-        std::transform(lower.begin(), lower.end(), lower.begin(), [](wchar_t character) {
-            return static_cast<wchar_t>(towlower(character));
-        });
-        names.insert(std::move(lower));
+bool SamePackageInventory(
+    const std::vector<PackageInfo>& left,
+    const std::vector<PackageInfo>& right) noexcept {
+    if (left.size() != right.size()) {
+        return false;
     }
-    return names;
-}
-
-std::vector<size_t> NewPackageIndices(
-    const std::vector<PackageInfo>& prior,
-    const std::vector<PackageInfo>& current) {
-    const std::set<std::wstring> priorNames = PublishedNames(prior);
-    std::vector<size_t> indices;
-    for (size_t index = 0; index < current.size(); ++index) {
-        std::wstring lower = current[index].publishedName;
-        std::transform(lower.begin(), lower.end(), lower.begin(), [](wchar_t character) {
-            return static_cast<wchar_t>(towlower(character));
-        });
-        if (!priorNames.contains(lower)) {
-            indices.push_back(index);
+    for (size_t index = 0; index < left.size(); ++index) {
+        if (_wcsicmp(left[index].publishedName.c_str(),
+                right[index].publishedName.c_str()) != 0 ||
+            !(left[index].version == right[index].version) ||
+            !SamePackageBytes(left[index], right[index])) {
+            return false;
         }
     }
-    return indices;
+    return true;
+}
+
+bool ContainsExactPackage(
+    const std::vector<PackageInfo>& packages,
+    const PackageInfo& candidate) noexcept {
+    return std::any_of(packages.begin(), packages.end(),
+        [&](const PackageInfo& package) {
+            return package.version == candidate.version &&
+                SamePackageBytes(package, candidate);
+        });
+}
+
+bool VerifyPackageInventory(
+    const std::vector<PackageInfo>& expected,
+    const wchar_t* phase,
+    Error* error) {
+    std::vector<PackageInfo> observed;
+    if (!EnumerateOwnedPackages(&observed, error)) {
+        return false;
+    }
+    if (!SamePackageInventory(expected, observed)) {
+        return SetError(error, phase, ERROR_REVISION_MISMATCH,
+            L"the exact captured Driver Store inventory changed during the protected transaction");
+    }
+    return true;
+}
+
+bool RemoveStagedCandidateExact(
+    const PackageInfo& stagedCandidate,
+    uint64_t rollbackDeadlineUnixMs,
+    Error* error) {
+    if (!IsSafePublishedInfName(stagedCandidate.publishedName)) {
+        return SetError(error, L"rollback-staged-package-identity", ERROR_INVALID_NAME,
+            L"the staged-here candidate lacks a safe exact published INF identity");
+    }
+    std::vector<PackageInfo> current;
+    if (!EnumerateOwnedPackages(&current, error)) {
+        return false;
+    }
+    size_t matches = 0;
+    for (const PackageInfo& package : current) {
+        if (_wcsicmp(package.publishedName.c_str(),
+                stagedCandidate.publishedName.c_str()) == 0) {
+            if (!(package.version == stagedCandidate.version) ||
+                !SamePackageBytes(package, stagedCandidate)) {
+                return SetError(error, L"rollback-staged-package-identity",
+                    ERROR_REVISION_MISMATCH,
+                    L"the staged-here published INF no longer matches the exact candidate");
+            }
+            ++matches;
+        }
+    }
+    if (matches != 1) {
+        return SetError(error, L"rollback-staged-package-identity",
+            matches == 0 ? ERROR_NOT_FOUND : ERROR_DUPLICATE_SERVICE_NAME,
+            L"rollback requires exactly one matching staged-here published INF");
+    }
+    Snapshot topology;
+    if (!CaptureSnapshot(&topology, error)) {
+        return false;
+    }
+    for (const DeviceState& device : topology.devices) {
+        if (_wcsicmp(device.publishedInf.c_str(),
+                stagedCandidate.publishedName.c_str()) == 0) {
+            return SetError(error, L"rollback-staged-package-in-use",
+                ERROR_DEVICE_IN_USE,
+                L"rollback refuses to remove a staged-here package still bound to a root device");
+        }
+    }
+    if (!CheckTransactionDeadline(rollbackDeadlineUnixMs,
+            L"install-rollback-deadline-staged-package", error)) {
+        return false;
+    }
+    MarkTransactionMutationStarted();
+    if (!SetupUninstallOEMInfW(
+            stagedCandidate.publishedName.c_str(), 0, nullptr)) {
+        return SetLastErrorDetail(error, L"rollback-staged-package-remove",
+            L"the exact unbound staged-here candidate could not be removed");
+    }
+    return true;
 }
 
 bool RestorePriorBinding(
@@ -2885,8 +3342,7 @@ bool RestorePriorBinding(
             return SetLastErrorDetail(error, L"rollback-inf-class");
         }
         if (!RegisterRootDeviceExact(classGuid, expected.instanceId,
-                transactionDeadlineUnixMs, ExactRootRegistrationMode::Rollback,
-                nullptr, nullptr,
+                transactionDeadlineUnixMs, nullptr, nullptr,
                 &target, &targetData, error)) {
             return false;
         }
@@ -2924,24 +3380,73 @@ bool RestorePriorBinding(
     return true;
 }
 
-bool RollbackInstall(const Snapshot& prior, bool* rebootRequired, Error* error) {
-    if (!RestorePriorBinding(prior, 0, rebootRequired, error)) {
+bool RollbackInstall(
+    const Snapshot& prior,
+    const PackageInfo* stagedHereCandidate,
+    bool bindingMutationStarted,
+    const AbiCompatibilityProfile* priorAbiProfile,
+    uint64_t rollbackDeadlineUnixMs,
+    bool* rebootRequired,
+    Error* error) {
+    if (!CheckTransactionDeadline(rollbackDeadlineUnixMs,
+            L"install-rollback-deadline-root", error)) {
         return false;
     }
-    std::vector<PackageInfo> current;
-    if (!EnumerateOwnedPackages(&current, error)) {
-        return false;
-    }
-    for (size_t index : NewPackageIndices(prior.packages, current)) {
-        if (!UninstallPackage(current[index], rebootRequired, error)) {
+    if (bindingMutationStarted) {
+        if (!RestorePriorBinding(
+                prior, rollbackDeadlineUnixMs, rebootRequired, error)) {
             return false;
         }
+    } else if (!CaptureAndVerifyRootUnchanged(
+                   prior, L"rollback-stage-root-invariance", nullptr, error)) {
+        return false;
     }
-    if (!prior.devices.empty() && !*rebootRequired) {
-        // Driver rollback can prove exact instance/package binding, but the
-        // prior transient started/problem state is not a restorable identity.
-        return VerifyInstalledBinding(
-            prior.devices[0].package, prior.devices[0].publishedInf, true, error);
+    if (stagedHereCandidate != nullptr &&
+        !RemoveStagedCandidateExact(
+            *stagedHereCandidate, rollbackDeadlineUnixMs, error)) {
+        return false;
+    }
+    if (!CheckTransactionDeadline(rollbackDeadlineUnixMs,
+            L"install-rollback-deadline-inventory", error)) {
+        return false;
+    }
+    if (!VerifyPackageInventory(
+            prior.packages, L"rollback-package-inventory", error)) {
+        return false;
+    }
+    if (bindingMutationStarted && !prior.devices.empty() && !*rebootRequired) {
+        Snapshot restored;
+        if (!CaptureSnapshot(&restored, error) || restored.devices.size() != 1 ||
+            !SameRootBinding(prior.devices[0], restored.devices[0])) {
+            if (error->code == ERROR_SUCCESS) {
+                SetError(error, L"rollback-runtime-binding-verification",
+                    ERROR_REVISION_MISMATCH,
+                    L"rollback did not preserve the exact captured root and package identity");
+            }
+            return false;
+        }
+        if (prior.devices[0].started) {
+            if (!RollbackLifecycleStateMatches(
+                    prior.devices[0], restored.devices[0])) {
+                return SetError(error, L"rollback-runtime-start-verification",
+                    ERROR_DEVICE_NOT_AVAILABLE,
+                    L"rollback did not restore the formerly-running root to started/problem-zero state");
+            }
+            if (priorAbiProfile == nullptr) {
+                return SetError(error, L"rollback-runtime-abi-profile",
+                    ERROR_REVISION_MISMATCH,
+                    L"rollback lacks the exact known-compatible ABI profile captured before binding");
+            }
+            return VerifyAbiHealth(
+                rollbackDeadlineUnixMs, nullptr, error,
+                AbiHealthPurpose::RollbackHealth, priorAbiProfile, nullptr);
+        }
+        if (!RollbackLifecycleStateMatches(
+                prior.devices[0], restored.devices[0])) {
+            return SetError(error, L"rollback-stopped-state-verification",
+                ERROR_DEVICE_NOT_AVAILABLE,
+                L"rollback changed the captured stopped/problem lifecycle state");
+        }
     }
     return true;
 }
@@ -3067,6 +3572,10 @@ bool RequestBrokerQuiescence(const InstallOptions& options, Error* error) {
         options.brokerQuiesceAbort == nullptr) {
         return SetError(error, L"broker-quiescence-handles", ERROR_INVALID_HANDLE,
             L"driver mutation requires the inherited broker quiescence handshake");
+    }
+    if (!CheckTransactionDeadline(
+            options, L"transaction-deadline-before-broker-quiescence", error)) {
+        return false;
     }
     if (!SetEvent(options.brokerQuiesceRequest)) {
         return SetLastErrorDetail(error, L"broker-quiescence-request");
@@ -3721,6 +4230,7 @@ Outcome Install(const InstallOptions& options) {
         return outcome;
     }
     PackageInfo publishedCandidate;
+    std::vector<PackageInfo> expectedTransactionInventory = prior.packages;
     bool exactBindingHealthy = false;
     if (disposition == CandidateDisposition::Exact) {
         if (!FindPublishedCandidate(candidate, &publishedCandidate, &outcome.error) ||
@@ -3740,14 +4250,14 @@ Outcome Install(const InstallOptions& options) {
     // Same-version bytes are immutable. An exact package with a missing,
     // stopped, or stale binding may repair only the ROOT topology from the
     // already-published exact INF. It selects that preinstalled package for the
-    // specific devnode and calls DiInstallDevice; it never calls
-    // DiInstallDriverW or UpdateDriverForPlugAndPlayDevicesW and therefore
-    // cannot replace same-version DriverStore content.
-    const bool topologyRepair =
-        disposition == CandidateDisposition::Exact && !exactBindingHealthy;
+    // specific devnode and calls DiInstallDevice, so it cannot replace
+    // same-version Driver Store content or auto-bind any other device.
     const bool driverMutation =
-        disposition == CandidateDisposition::InstallRequired || topologyRepair;
+        RequiresDriverMutation(disposition, exactBindingHealthy);
     bool driverMutationStarted = false;
+    bool packageStagedHere = false;
+    bool bindingMutationStarted = false;
+    std::optional<AbiCompatibilityProfile> priorAbiProfile;
     DeviceInfoSet created;
     SP_DEVINFO_DATA createdData{};
     createdData.cbSize = sizeof(createdData);
@@ -3755,9 +4265,7 @@ Outcome Install(const InstallOptions& options) {
     bool registrationSucceeded = false;
     GUID candidateClassGuid{};
     wchar_t candidateClassName[MAX_CLASS_NAME_LEN]{};
-    const bool needsRootRegistration =
-        disposition == CandidateDisposition::InstallRequired ||
-        (topologyRepair && prior.devices.empty());
+    const bool needsRootRegistration = driverMutation && prior.devices.empty();
     if (needsRootRegistration &&
         !SetupDiGetINFClassW(candidate.infPath.c_str(), &candidateClassGuid,
             candidateClassName, MAX_CLASS_NAME_LEN, nullptr)) {
@@ -3766,157 +4274,178 @@ Outcome Install(const InstallOptions& options) {
         return outcome;
     }
 
-    // The service mutex remains owned by the outer package transaction. Ask it
-    // to stop only a trusted running broker after classification proves a
-    // driver mutation is necessary, then keep that mutex held across exact
-    // root replacement and binding verification. This prevents the broker from
-    // retaining a UdeCx handle that turns synchronous removal into a reboot.
-    if (driverMutation && !options.brokerExecutable.empty() &&
-        !RequestBrokerQuiescence(options, &outcome.error)) {
-        outcome.exitCode = ExitCode::PreflightRejected;
-        return outcome;
-    }
-
-    // UdeCx child deletion is asynchronous. Older installed images could
-    // release their logical device slot before framework teardown settled,
-    // leaving DiUninstallDevice blocked indefinitely even though the broker
-    // reported an empty bus. Once the trusted broker is stopped, require a
-    // zero-lifetime-work runtime before replacing a running root. A PnP-stopped
-    // exact owned root has no live UdeCx stack or ABI endpoint; its captured
-    // devnode/package identity is already the quiescence proof. Do not start an
-    // old driver solely to upgrade it. Removal, absence, and rollback checks
-    // below still guard the stopped-root transaction. For a running root, a
-    // restart resets these counters and guarantees that no pre-upgrade child
-    // object can survive into root removal.
-    if (disposition == CandidateDisposition::InstallRequired &&
-        !prior.devices.empty() && prior.devices[0].started &&
-        outcome.error.code == ERROR_SUCCESS &&
-        !VerifyAbiHealth(
-            options.transactionDeadlineUnixMs, nullptr, &outcome.error, true)) {
-        if (outcome.error.code == ERROR_SUCCESS_REBOOT_REQUIRED) {
-            outcome.rebootRequired = true;
-        }
-    }
-
-    if (outcome.error.code == ERROR_SUCCESS &&
-        disposition == CandidateDisposition::InstallRequired) {
-        // Updating a running root bus in place makes DiInstallDriverW report a
-        // reboot even though this helper immediately restores the old package.
-        // Remove only the exact captured VIIPER-owned devnode first, prove its
-        // topology is gone, then stage and bind the candidate to the same root
-        // identity. Snapshot rollback recreates the old exact identity/package
-        // if any later step fails.
-        if (!prior.devices.empty()) {
-            DeviceInfoSet replaced = OpenRootDevices();
-            std::vector<std::pair<SP_DEVINFO_DATA, DeviceState>> replacements;
-            if (!replaced) {
-                SetLastErrorDetail(&outcome.error, L"upgrade-open-root-devices");
-            } else if (!FindExactDevices(replaced.get(), &replacements, &outcome.error)) {
-                // Exact enumeration recorded the failure.
-            } else if (replacements.size() != 1 ||
-                _wcsicmp(replacements[0].second.instanceId.c_str(),
-                    prior.devices[0].instanceId.c_str()) != 0 ||
-                _wcsicmp(replacements[0].second.publishedInf.c_str(),
-                    prior.devices[0].publishedInf.c_str()) != 0 ||
-                !(replacements[0].second.version == prior.devices[0].version)) {
-                SetError(&outcome.error, L"upgrade-root-identity", ERROR_REVISION_MISMATCH,
-                    L"captured root devnode identity or package binding changed before replacement");
-            } else {
-                bool removalReboot = false;
-                if (RemoveDevice(replaced.get(), replacements[0].first,
-                        options.transactionDeadlineUnixMs,
-                        L"upgrade-deadline-before-device-removal",
-                        &driverMutationStarted, &removalReboot, &outcome.error)) {
-                    outcome.rebootRequired = removalReboot;
-                    if (removalReboot) {
-                        SetError(&outcome.error, L"upgrade-device-removal-reboot-boundary",
-                            ERROR_SUCCESS_REBOOT_REQUIRED,
-                            L"the exact prior root bus could not be removed synchronously; the captured binding will be restored before restart");
-                    } else {
-                        Snapshot afterRemoval;
-                        if (!CaptureSnapshot(&afterRemoval, &outcome.error)) {
-                            // Exact inventory recorded the failure.
-                        } else if (!afterRemoval.devices.empty()) {
-                            SetError(&outcome.error, L"upgrade-device-removal-verification",
-                                ERROR_DEVICE_IN_USE,
-                                L"the exact prior root bus remained present after synchronous removal");
-                        }
-                    }
-                }
-                outcome.changed = outcome.changed || driverMutationStarted;
-            }
-        }
-
-        if (outcome.error.code == ERROR_SUCCESS &&
-            CheckTransactionDeadline(options,
-                L"transaction-deadline-before-driver-install", &outcome.error)) {
-            BOOL installReboot = FALSE;
-            const DWORD installFlags = downgrade ? DIIRFLAG_FORCE_INF : 0;
-            MarkTransactionMutationStarted();
-            driverMutationStarted = true;
-            outcome.changed = true;
-            if (!DiInstallDriverW(nullptr, candidate.infPath.c_str(), installFlags, &installReboot)) {
-                SetLastErrorDetail(&outcome.error, L"install-driver-package");
-            } else {
-                outcome.rebootRequired = outcome.rebootRequired || installReboot != FALSE;
-                if (installReboot) {
-                    SetError(&outcome.error, L"driver-package-reboot-boundary",
-                        ERROR_SUCCESS_REBOOT_REQUIRED,
-                        L"Windows could not stage the candidate driver package without a restart; the captured binding will be restored first");
-                } else if (!FindPublishedCandidate(candidate, &publishedCandidate, &outcome.error)) {
-                    // Exact Driver Store inventory recorded the failure.
-                } else if (options.production && !VerifyMicrosoftHardwareInfSigner(
-                               publishedCandidate.infPath, &outcome.error)) {
-                    // The staged package must retain its exact production HLK/WHCP policy.
-                }
-            }
-        }
-    }
-
-    if (outcome.error.code == ERROR_SUCCESS && driverMutation &&
-        (prior.devices.empty() || disposition == CandidateDisposition::InstallRequired)) {
-        bool registeredAndVerified = false;
-        if (prior.devices.empty()) {
-            registeredAndVerified = RegisterRootDevice(
-                candidateClassGuid, options.transactionDeadlineUnixMs,
-                &driverMutationStarted, &registrationSucceeded,
-                &created, &createdData, &outcome.error);
+    // Import a new candidate with the add-only Driver Store API while the
+    // captured root remains fully intact. Prove the unique published bytes,
+    // catalog/signer, and unchanged root binding before asking the broker to
+    // quiesce. Every failure after a successful import falls through to the
+    // snapshot rollback path, which removes the new package and preserves the
+    // prior binding.
+    if (disposition == CandidateDisposition::InstallRequired) {
+        if (!StageCandidatePackage(
+                candidate, options.production, options.transactionDeadlineUnixMs,
+                &driverMutationStarted, &packageStagedHere,
+                &publishedCandidate, &outcome.error)) {
+            // Exact staging proof recorded the failure.
         } else {
-            registeredAndVerified = RegisterRootDeviceExact(
-                candidateClassGuid, prior.devices[0].instanceId,
-                options.transactionDeadlineUnixMs, ExactRootRegistrationMode::Upgrade,
-                &driverMutationStarted, &registrationSucceeded,
-                &created, &createdData, &outcome.error);
-        }
-        createdHere = registrationSucceeded;
-        if (registeredAndVerified) {
-            InstallPreinstalledDriverOnDevice(
-                created.get(), &createdData, publishedCandidate,
-                options.transactionDeadlineUnixMs, &driverMutationStarted,
-                &outcome.rebootRequired, &outcome.error);
+            if (!packageStagedHere &&
+                !ContainsExactPackage(prior.packages, candidate)) {
+                SetError(&outcome.error, L"stage-concurrent-publication", ERROR_RETRY,
+                    L"an exact candidate appeared after the Driver Store snapshot; rerun the identical transaction");
+            }
+            if (outcome.error.code == ERROR_SUCCESS && packageStagedHere) {
+                expectedTransactionInventory.push_back(publishedCandidate);
+                std::sort(expectedTransactionInventory.begin(),
+                    expectedTransactionInventory.end(),
+                    [](const PackageInfo& left, const PackageInfo& right) {
+                        return _wcsicmp(left.publishedName.c_str(),
+                            right.publishedName.c_str()) < 0;
+                    });
+            }
+            if (outcome.error.code == ERROR_SUCCESS &&
+                !VerifyPackageInventory(expectedTransactionInventory,
+                    L"stage-package-inventory-verification", &outcome.error)) {
+                // Any concurrent package publication fails closed.
+            } else if (outcome.error.code == ERROR_SUCCESS &&
+                !CaptureAndVerifyRootUnchanged(
+                    prior, L"stage-root-binding-verification",
+                    nullptr, &outcome.error)) {
+                // The candidate remained staged so common rollback can remove it.
+            }
         }
         outcome.changed = outcome.changed || driverMutationStarted;
     }
 
-    if (outcome.error.code == ERROR_SUCCESS && topologyRepair && !prior.devices.empty()) {
-        DeviceInfoSet repairSet = OpenRootDevices();
-        std::vector<std::pair<SP_DEVINFO_DATA, DeviceState>> repairDevices;
-        if (!repairSet) {
-            SetLastErrorDetail(&outcome.error, L"repair-open-root-devices");
-        } else if (!FindExactDevices(repairSet.get(), &repairDevices, &outcome.error)) {
-            // Exact enumeration recorded the failure.
-        } else if (repairDevices.size() != 1 ||
-            _wcsicmp(repairDevices[0].second.instanceId.c_str(),
-                prior.devices[0].instanceId.c_str()) != 0) {
-            SetError(&outcome.error, L"repair-root-identity", ERROR_REVISION_MISMATCH,
-                L"root devnode identity changed before exact topology repair");
+    // The service mutex remains owned by the outer package transaction. Ask it
+    // to stop only a trusted running broker after exact candidate publication
+    // and root-invariance proof, then keep that mutex held across exact
+    // selected-device binding and verification. This prevents the broker from
+    // retaining a UdeCx handle across the package switch.
+    if (outcome.error.code == ERROR_SUCCESS && driverMutation &&
+        !options.brokerExecutable.empty() &&
+        !RequestBrokerQuiescence(options, &outcome.error)) {
+        // A newly staged package is a completed mutation and must take the
+        // common rollback path even when broker quiescence fails.
+    }
+
+    if (outcome.error.code == ERROR_SUCCESS && driverMutation &&
+        !VerifyPackageInventory(expectedTransactionInventory,
+            L"post-quiescence-package-inventory-verification", &outcome.error)) {
+        // Quiescence never authorizes concurrent Driver Store changes.
+    }
+
+    Snapshot preBinding;
+    if (outcome.error.code == ERROR_SUCCESS && driverMutation &&
+        !CaptureAndVerifyRootUnchanged(
+            prior, L"post-quiescence-root-verification",
+            &preBinding, &outcome.error)) {
+        // Full identity and lifecycle state must still match immediately before
+        // runtime admission and exact device binding.
+    }
+
+    // UdeCx child deletion is asynchronous. Older installed images could
+    // release their logical device slot before framework teardown settled.
+    // Once the trusted broker is stopped, require a zero-lifetime-work runtime
+    // before any in-place package binding mutation of a running root.
+    // A PnP-stopped exact owned root has no live UdeCx stack or ABI endpoint;
+    // its captured devnode/package identity is already the quiescence proof.
+    // Do not start an old driver solely to replace it. Exact binding and
+    // rollback checks below still guard the stopped-root transaction. For a
+    // running root, a restart resets these counters and guarantees that no
+    // pre-replacement child object can survive into rebinding.
+    const bool currentRootPresent = preBinding.devices.size() == 1 &&
+        preBinding.devices[0].present;
+    const bool requiresPristineRuntimeProof =
+        outcome.error.code == ERROR_SUCCESS &&
+        RequiresPristineRuntimeProof(
+            disposition, exactBindingHealthy, currentRootPresent,
+            currentRootPresent && preBinding.devices[0].started);
+    if (outcome.error.code == ERROR_SUCCESS && requiresPristineRuntimeProof) {
+        AbiCompatibilityProfile negotiatedProfile{};
+        if (!VerifyAbiHealth(
+                options.transactionDeadlineUnixMs, nullptr, &outcome.error,
+                AbiHealthPurpose::PristineUpgrade, nullptr,
+                &negotiatedProfile)) {
+            if (outcome.error.code == ERROR_SUCCESS_REBOOT_REQUIRED) {
+                outcome.rebootRequired = true;
+            }
         } else {
-            InstallPreinstalledDriverOnDevice(
-                repairSet.get(), &repairDevices[0].first, publishedCandidate,
-                options.transactionDeadlineUnixMs, &driverMutationStarted,
-                &outcome.rebootRequired, &outcome.error);
-            outcome.changed = outcome.changed || driverMutationStarted;
+            priorAbiProfile = negotiatedProfile;
         }
+    }
+
+    if (outcome.error.code == ERROR_SUCCESS && driverMutation) {
+        if (prior.devices.empty()) {
+            const bool inventoryVerified = VerifyPackageInventory(
+                expectedTransactionInventory,
+                L"final-pre-bind-package-inventory-verification", &outcome.error);
+            const bool registeredAndVerified = inventoryVerified && RegisterRootDevice(
+                    candidateClassGuid, options.transactionDeadlineUnixMs,
+                    &bindingMutationStarted, &registrationSucceeded,
+                    &created, &createdData, &outcome.error);
+            createdHere = registrationSucceeded;
+            if (registeredAndVerified) {
+                InstallPreinstalledDriverOnDevice(
+                    created.get(), &createdData, publishedCandidate,
+                    options.transactionDeadlineUnixMs, &bindingMutationStarted,
+                    &outcome.rebootRequired, &outcome.error);
+            }
+        } else {
+            DeviceInfoSet bindingSet = OpenRootDevices();
+            std::vector<std::pair<SP_DEVINFO_DATA, DeviceState>> bindingDevices;
+            PreparedDriverBinding prepared;
+            if (!bindingSet) {
+                SetLastErrorDetail(&outcome.error, L"binding-open-root-devices");
+            } else if (!FindExactDevices(
+                           bindingSet.get(), &bindingDevices, &outcome.error)) {
+                // Exact enumeration recorded the failure.
+            } else if (bindingDevices.size() != 1 ||
+                !SameEnumeratedRootState(
+                    bindingDevices[0].second, prior.devices[0])) {
+                SetError(&outcome.error, L"binding-root-invariance",
+                    ERROR_REVISION_MISMATCH,
+                    L"the captured root identity or lifecycle state changed before compatible-driver preparation");
+            } else if (!PreparePreinstalledDriverOnDevice(
+                           bindingSet.get(), &bindingDevices[0].first,
+                           publishedCandidate, &prepared, &outcome.error)) {
+                // Exact compatible-driver selection recorded the failure.
+            } else if (!CaptureAndVerifyRootUnchanged(
+                           prior,
+                           L"final-pre-bind-root-topology-verification",
+                           nullptr, &outcome.error)) {
+                // A fresh global set catches roots absent from the prepared set.
+            } else if (!VerifyPackageInventory(expectedTransactionInventory,
+                           L"final-pre-bind-package-inventory-verification",
+                           &outcome.error)) {
+                // No concurrent package can enter the selected-driver window.
+            } else if (!CaptureAndVerifyPreparedRootUnchanged(
+                           prior.devices[0], bindingSet.get(),
+                           bindingDevices[0].first.DevInst,
+                           L"final-pre-bind-root-verification", &outcome.error)) {
+                // The final same-devnode proof includes exact package bytes.
+            } else if (requiresPristineRuntimeProof &&
+                (!priorAbiProfile.has_value() ||
+                    !VerifyAbiHealth(
+                        options.transactionDeadlineUnixMs, nullptr,
+                        &outcome.error, AbiHealthPurpose::PristineRecheck,
+                        priorAbiProfile.has_value()
+                            ? &priorAbiProfile.value() : nullptr,
+                        nullptr))) {
+                if (outcome.error.code == ERROR_SUCCESS) {
+                    SetError(&outcome.error, L"final-pre-bind-abi-profile",
+                        ERROR_REVISION_MISMATCH,
+                        L"the exact pre-quiescence ABI profile is unavailable for final pristine proof");
+                } else if (outcome.error.code == ERROR_SUCCESS_REBOOT_REQUIRED) {
+                    outcome.rebootRequired = true;
+                }
+            } else {
+                CommitPreparedDriverBinding(
+                    &prepared, options.transactionDeadlineUnixMs,
+                    &bindingMutationStarted, &outcome.rebootRequired,
+                    &outcome.error);
+            }
+        }
+        driverMutationStarted = driverMutationStarted || bindingMutationStarted;
+        outcome.changed = outcome.changed || bindingMutationStarted;
     }
 
     if (outcome.error.code == ERROR_SUCCESS) {
@@ -3931,13 +4460,22 @@ Outcome Install(const InstallOptions& options) {
                 outcome.rebootRequired, &outcome.error))) {
         // Verification recorded the exact failure.
     }
+    if (outcome.error.code == ERROR_SUCCESS && driverMutation &&
+        !VerifyPackageInventory(expectedTransactionInventory,
+            L"post-bind-package-inventory-verification", &outcome.error)) {
+        // A concurrent package mutation invalidates the transaction outcome.
+    }
     if (outcome.error.code != ERROR_SUCCESS && driverMutationStarted) {
         const Error installError = outcome.error;
         Error rollbackError;
         bool rollbackReboot = outcome.rebootRequired;
+        const uint64_t rollbackDeadline =
+            CurrentUnixMilliseconds() + kDriverRollbackCeilingMs;
         if (createdHere) {
             Error cleanupError;
-            if (!RemoveDevice(created.get(), createdData, 0, nullptr, nullptr,
+            if (!RemoveDevice(created.get(), createdData, rollbackDeadline,
+                    L"install-rollback-deadline-created-device",
+                    nullptr,
                     &rollbackReboot, &cleanupError)) {
                 outcome.rollback = L"failed";
                 outcome.rebootRequired = rollbackReboot;
@@ -3946,7 +4484,12 @@ Outcome Install(const InstallOptions& options) {
                 return outcome;
             }
         }
-        if (RollbackInstall(prior, &rollbackReboot, &rollbackError)) {
+        const PackageInfo* stagedHereCandidate =
+            packageStagedHere ? &publishedCandidate : nullptr;
+        if (RollbackInstall(
+                prior, stagedHereCandidate, bindingMutationStarted,
+                priorAbiProfile.has_value() ? &priorAbiProfile.value() : nullptr,
+                rollbackDeadline, &rollbackReboot, &rollbackError)) {
             outcome.rollback = L"succeeded";
             outcome.rebootRequired = rollbackReboot;
             outcome.error = installError;
@@ -4000,9 +4543,13 @@ Outcome Install(const InstallOptions& options) {
             }
             Error rollbackError;
             bool rollbackReboot = outcome.rebootRequired;
+            const uint64_t rollbackDeadline =
+                CurrentUnixMilliseconds() + kDriverRollbackCeilingMs;
             if (createdHere) {
                 Error cleanupError;
-                if (!RemoveDevice(created.get(), createdData, 0, nullptr, nullptr,
+                if (!RemoveDevice(created.get(), createdData, rollbackDeadline,
+                        L"install-rollback-deadline-created-device",
+                        nullptr,
                         &rollbackReboot, &cleanupError)) {
                     outcome.rollback = L"failed";
                     outcome.rebootRequired = rollbackReboot;
@@ -4011,7 +4558,12 @@ Outcome Install(const InstallOptions& options) {
                     return outcome;
                 }
             }
-            if (RollbackInstall(prior, &rollbackReboot, &rollbackError)) {
+            const PackageInfo* stagedHereCandidate =
+                packageStagedHere ? &publishedCandidate : nullptr;
+            if (RollbackInstall(
+                    prior, stagedHereCandidate, bindingMutationStarted,
+                    priorAbiProfile.has_value() ? &priorAbiProfile.value() : nullptr,
+                    rollbackDeadline, &rollbackReboot, &rollbackError)) {
                 outcome.rollback = L"succeeded";
                 outcome.rebootRequired = rollbackReboot;
                 outcome.error = std::move(brokerError);
@@ -5282,6 +5834,23 @@ Outcome SelfTest() {
             L"an exact same-version candidate was not classified as repair-only");
         return outcome;
     }
+    if (!RequiresDriverMutation(CandidateDisposition::InstallRequired, false) ||
+        !RequiresDriverMutation(CandidateDisposition::Exact, false) ||
+        RequiresDriverMutation(CandidateDisposition::Exact, true) ||
+        !RequiresPristineRuntimeProof(
+            CandidateDisposition::InstallRequired, false, true, true) ||
+        !RequiresPristineRuntimeProof(
+            CandidateDisposition::Exact, false, true, true) ||
+        RequiresPristineRuntimeProof(
+            CandidateDisposition::Exact, true, true, true) ||
+        RequiresPristineRuntimeProof(
+            CandidateDisposition::InstallRequired, false, false, false) ||
+        RequiresPristineRuntimeProof(
+            CandidateDisposition::Exact, false, true, false)) {
+        SetError(&outcome.error, L"self-test-pristine-runtime-decision", ERROR_INVALID_DATA,
+            L"pristine-runtime admission does not cover exactly the running-root mutation boundary");
+        return outcome;
+    }
     PackageInfo conflict = candidate;
     conflict.infSha256 = "different-inf";
     classificationError = {};
@@ -5351,39 +5920,172 @@ Outcome SelfTest() {
             "0123456789abcdef0123456789abcdef01234567",
             &buildIdentity, &outcome.error) ||
         buildIdentity !=
-            "a0185735dc6d1397e40744fcb0055ded753f30fe4b991d027065707eacecec18") {
+            "6796b0cf22a80984b283662a50a3b364c46218e37766a2e1880b38851b65d9ad") {
         if (outcome.error.code == ERROR_SUCCESS) {
             SetError(&outcome.error, L"self-test-build-identity", ERROR_INVALID_DATA);
         }
         return outcome;
     }
-    Error previousAbiError;
-    previousAbiError.code = ERROR_REVISION_MISMATCH;
-    previousAbiError.phase = L"abi-negotiate-result";
-    if (!IsPreviousAbiRetryEligible(true, nullptr, previousAbiError) ||
-        IsPreviousAbiRetryEligible(false, nullptr, previousAbiError) ||
-        IsPreviousAbiRetryEligible(true, &buildIdentity, previousAbiError)) {
-        SetError(&outcome.error, L"self-test-previous-abi-retry", ERROR_INVALID_DATA,
-            L"previous-ABI retry escaped the pristine upgrade-only boundary");
+    const std::array<AbiHealthPurpose, 4> abiPurposes{
+        AbiHealthPurpose::ExactCandidate,
+        AbiHealthPurpose::PristineUpgrade,
+        AbiHealthPurpose::PristineRecheck,
+        AbiHealthPurpose::RollbackHealth,
+    };
+    const std::array<DWORD, 2> retryCodes{
+        ERROR_REVISION_MISMATCH, ERROR_INVALID_PARAMETER,
+    };
+    const std::array<std::wstring, 2> retryPhases{
+        L"abi-negotiate", L"abi-negotiate-result",
+    };
+    for (const AbiHealthPurpose purpose : abiPurposes) {
+        for (const DWORD code : retryCodes) {
+            for (const std::wstring& phase : retryPhases) {
+                Error retryError;
+                retryError.code = code;
+                retryError.phase = phase;
+                const bool expected = purpose == AbiHealthPurpose::PristineUpgrade;
+                if (IsAbiRetryEligible(purpose, nullptr, retryError) != expected ||
+                    IsAbiRetryEligible(purpose, &buildIdentity, retryError)) {
+                    SetError(&outcome.error, L"self-test-abi-retry", ERROR_INVALID_DATA,
+                        L"ABI retry escaped the strict pristine-upgrade mismatch boundary");
+                    return outcome;
+                }
+            }
+        }
+    }
+    Error unrelatedRetryError;
+    unrelatedRetryError.code = ERROR_ACCESS_DENIED;
+    unrelatedRetryError.phase = L"abi-negotiate";
+    Error wrongPhaseRetryError;
+    wrongPhaseRetryError.code = ERROR_REVISION_MISMATCH;
+    wrongPhaseRetryError.phase = L"abi-negotiate-timeout";
+    if (IsAbiRetryEligible(
+            AbiHealthPurpose::PristineUpgrade, nullptr, unrelatedRetryError) ||
+        IsAbiRetryEligible(
+            AbiHealthPurpose::PristineUpgrade, nullptr, wrongPhaseRetryError)) {
+        SetError(&outcome.error, L"self-test-abi-retry", ERROR_INVALID_DATA,
+            L"ABI retry accepted a non-version negotiation failure");
         return outcome;
     }
-    previousAbiError.code = ERROR_INVALID_PARAMETER;
-    if (!IsPreviousAbiRetryEligible(true, nullptr, previousAbiError)) {
-        SetError(&outcome.error, L"self-test-previous-abi-retry", ERROR_INVALID_DATA,
-            L"legacy previous-ABI mismatch was not accepted at the pristine boundary");
+
+    const auto makeNegotiationResponse = [](const AbiCompatibilityProfile& profile) {
+        VIIPER_UDE_NEGOTIATE_RESPONSE response{};
+        response.Header.Magic = VIIPER_UDE_MAGIC;
+        response.Header.Major = VIIPER_UDE_ABI_MAJOR;
+        response.Header.Minor = profile.minor;
+        response.Header.Size = sizeof(response);
+        response.ClientNonce = 0x123456789abcdef0ULL;
+        response.DriverNonce = 1;
+        response.Capabilities = profile.capabilities;
+        response.MaxDevices = VIIPER_UDE_MAX_DEVICES;
+        response.MaxDescriptorBytes = VIIPER_UDE_MAX_DESCRIPTOR_BYTES;
+        response.MaxTransferBytes = VIIPER_UDE_MAX_TRANSFER_BYTES;
+        response.MaxIsoPackets = VIIPER_UDE_MAX_ISO_PACKETS;
+        response.MaxPendingOperations = VIIPER_UDE_MAX_PENDING_OPERATIONS;
+        return response;
+    };
+    const auto negotiationValidationIsExhaustive =
+        [&](const AbiCompatibilityProfile& profile) {
+            const VIIPER_UDE_NEGOTIATE_RESPONSE response =
+                makeNegotiationResponse(profile);
+            const auto rejects = [&](auto mutate) {
+                VIIPER_UDE_NEGOTIATE_RESPONSE changed = response;
+                mutate(changed);
+                return !AbiNegotiationResponseMatchesProfile(
+                    changed, sizeof(changed), response.ClientNonce, profile);
+            };
+            return AbiNegotiationResponseMatchesProfile(
+                       response, sizeof(response), response.ClientNonce, profile) &&
+                !AbiNegotiationResponseMatchesProfile(
+                    response, sizeof(response) - 1, response.ClientNonce, profile) &&
+                rejects([](auto& value) { value.Header.Magic ^= 1; }) &&
+                rejects([](auto& value) { ++value.Header.Major; }) &&
+                rejects([](auto& value) { ++value.Header.Minor; }) &&
+                rejects([](auto& value) { ++value.Header.Size; }) &&
+                rejects([](auto& value) { value.Header.Flags = 1; }) &&
+                rejects([](auto& value) { ++value.ClientNonce; }) &&
+                rejects([](auto& value) { value.DriverNonce = 0; }) &&
+                rejects([](auto& value) { ++value.Capabilities; }) &&
+                rejects([](auto& value) { ++value.MaxDevices; }) &&
+                rejects([](auto& value) { ++value.MaxDescriptorBytes; }) &&
+                rejects([](auto& value) { ++value.MaxTransferBytes; }) &&
+                rejects([](auto& value) { ++value.MaxIsoPackets; }) &&
+                rejects([](auto& value) { ++value.MaxPendingOperations; });
+        };
+    const auto statsValidationIsExhaustive =
+        [](const AbiCompatibilityProfile& profile) {
+            VIIPER_UDE_STATS stats{};
+            stats.Header.Magic = VIIPER_UDE_MAGIC;
+            stats.Header.Major = VIIPER_UDE_ABI_MAJOR;
+            stats.Header.Minor = profile.minor;
+            stats.Header.Size = profile.statsSize;
+            const auto rejects = [&](auto mutate) {
+                VIIPER_UDE_STATS changed = stats;
+                mutate(changed);
+                return !StatsRecordMatchesProfile(
+                    changed, profile.statsSize, profile);
+            };
+            const bool commonFieldsExact = StatsRecordMatchesProfile(
+                    stats, profile.statsSize, profile) &&
+                !StatsRecordMatchesProfile(stats, profile.statsSize - 1, profile) &&
+                rejects([](auto& value) { value.Header.Magic ^= 1; }) &&
+                rejects([](auto& value) { ++value.Header.Major; }) &&
+                rejects([](auto& value) { ++value.Header.Minor; }) &&
+                rejects([](auto& value) { ++value.Header.Size; }) &&
+                rejects([](auto& value) { value.Header.Flags = 1; });
+            stats.ReservedPorts = VIIPER_UDE_MAX_DEVICES + 1;
+            stats.Reserved = 1;
+            const bool reservedRangeExact = profile.hasReservedPortFields
+                ? !StatsRecordMatchesProfile(stats, profile.statsSize, profile)
+                : StatsRecordMatchesProfile(stats, profile.statsSize, profile);
+            return commonFieldsExact && reservedRangeExact;
+        };
+    for (const AbiCompatibilityProfile& profile : kAbiCompatibilityProfiles) {
+        if (!negotiationValidationIsExhaustive(profile) ||
+            !statsValidationIsExhaustive(profile)) {
+            SetError(&outcome.error, L"self-test-abi-profile-validation",
+                ERROR_INVALID_DATA,
+                L"an ABI profile response or statistics field escaped exact validation");
+            return outcome;
+        }
+    }
+
+    VIIPER_UDE_STATS pristineStats{};
+    const auto rejectsNonzeroRuntimeCounter = [](auto member) {
+        VIIPER_UDE_STATS stats{};
+        stats.*member = 1;
+        return !RuntimeStatsArePristine(stats, kAbiCompatibilityProfiles[0]);
+    };
+    if (!RuntimeStatsArePristine(pristineStats, kAbiCompatibilityProfiles[0]) ||
+        !rejectsNonzeroRuntimeCounter(&VIIPER_UDE_STATS::OperationsDequeued) ||
+        !rejectsNonzeroRuntimeCounter(&VIIPER_UDE_STATS::OperationsCompleted) ||
+        !rejectsNonzeroRuntimeCounter(&VIIPER_UDE_STATS::OperationsCancelled) ||
+        !rejectsNonzeroRuntimeCounter(&VIIPER_UDE_STATS::OperationsPurged) ||
+        !rejectsNonzeroRuntimeCounter(&VIIPER_UDE_STATS::LateCompletions) ||
+        !rejectsNonzeroRuntimeCounter(&VIIPER_UDE_STATS::InvalidMessages) ||
+        !rejectsNonzeroRuntimeCounter(&VIIPER_UDE_STATS::QueueExhaustions) ||
+        !rejectsNonzeroRuntimeCounter(&VIIPER_UDE_STATS::IsoPackets) ||
+        !rejectsNonzeroRuntimeCounter(&VIIPER_UDE_STATS::BytesToDevice) ||
+        !rejectsNonzeroRuntimeCounter(&VIIPER_UDE_STATS::BytesFromDevice) ||
+        !rejectsNonzeroRuntimeCounter(&VIIPER_UDE_STATS::NotificationEvents) ||
+        !rejectsNonzeroRuntimeCounter(&VIIPER_UDE_STATS::NotificationEventOverflows) ||
+        !rejectsNonzeroRuntimeCounter(&VIIPER_UDE_STATS::ActiveDevices) ||
+        !rejectsNonzeroRuntimeCounter(&VIIPER_UDE_STATS::PendingOperations) ||
+        !rejectsNonzeroRuntimeCounter(&VIIPER_UDE_STATS::WaitingDequeues) ||
+        !rejectsNonzeroRuntimeCounter(&VIIPER_UDE_STATS::CleanupRetries) ||
+        !rejectsNonzeroRuntimeCounter(&VIIPER_UDE_STATS::InputReportsSubmitted) ||
+        !rejectsNonzeroRuntimeCounter(&VIIPER_UDE_STATS::InputReportsCompleted) ||
+        !rejectsNonzeroRuntimeCounter(&VIIPER_UDE_STATS::ReservedPorts)) {
+        SetError(&outcome.error, L"self-test-pristine-runtime-stats", ERROR_INVALID_DATA,
+            L"a nonzero runtime counter escaped the pre-mutation reboot boundary");
         return outcome;
     }
-    previousAbiError.code = ERROR_ACCESS_DENIED;
-    if (IsPreviousAbiRetryEligible(true, nullptr, previousAbiError)) {
-        SetError(&outcome.error, L"self-test-previous-abi-retry", ERROR_INVALID_DATA,
-            L"previous-ABI retry accepted an unrelated negotiation failure");
-        return outcome;
-    }
-    previousAbiError.code = ERROR_REVISION_MISMATCH;
-    previousAbiError.phase = L"abi-negotiate-timeout";
-    if (IsPreviousAbiRetryEligible(true, nullptr, previousAbiError)) {
-        SetError(&outcome.error, L"self-test-previous-abi-retry", ERROR_INVALID_DATA,
-            L"previous-ABI retry accepted a non-version negotiation failure");
+    pristineStats.ReservedPorts = 1;
+    if (!RuntimeStatsArePristine(pristineStats, kAbiCompatibilityProfiles[1]) ||
+        !RuntimeStatsArePristine(pristineStats, kAbiCompatibilityProfiles[2])) {
+        SetError(&outcome.error, L"self-test-pristine-runtime-stats", ERROR_INVALID_DATA,
+            L"a legacy ABI inspected a counter outside its returned statistics record");
         return outcome;
     }
     JsonValue value;
@@ -5410,10 +6112,89 @@ Outcome SelfTest() {
     preservedPackage.publishedName = L"oem7.inf";
     PackageInfo newPackage;
     newPackage.publishedName = L"oem9.inf";
-    const std::vector<size_t> cleanup = NewPackageIndices(
-        {priorPackage}, {preservedPackage, newPackage});
-    if (cleanup != std::vector<size_t>{1}) {
-        SetError(&outcome.error, L"self-test-rollback-cleanup", ERROR_INVALID_DATA);
+    newPackage.sysSha256 = "new-sys";
+    PackageInfo changedPackage = preservedPackage;
+    changedPackage.sysSha256 = "changed";
+    if (!SamePackageInventory({priorPackage}, {preservedPackage}) ||
+        SamePackageInventory({priorPackage}, {preservedPackage, newPackage}) ||
+        SamePackageInventory({priorPackage}, {changedPackage}) ||
+        !ContainsExactPackage({priorPackage}, preservedPackage) ||
+        ContainsExactPackage({priorPackage}, newPackage)) {
+        SetError(&outcome.error, L"self-test-rollback-inventory", ERROR_INVALID_DATA,
+            L"rollback package inventory comparison is not exact and name-bound");
+        return outcome;
+    }
+    DeviceState capturedRoot;
+    capturedRoot.instanceId = L"ROOT\\VIIPERUDE\\0000";
+    capturedRoot.present = true;
+    capturedRoot.started = true;
+    capturedRoot.service = kServiceName;
+    capturedRoot.publishedInf = L"oem7.inf";
+    capturedRoot.version = one;
+    capturedRoot.package = priorPackage;
+    capturedRoot.package.infSha256 = "prior-inf";
+    capturedRoot.package.sysSha256 = "prior-sys";
+    capturedRoot.package.catSha256 = "prior-cat";
+    Snapshot capturedRootSnapshot;
+    capturedRootSnapshot.devices.push_back(capturedRoot);
+    Snapshot observedRootSnapshot = capturedRootSnapshot;
+    observedRootSnapshot.packages.push_back(newPackage);
+    if (!SameCapturedRootState(capturedRootSnapshot, observedRootSnapshot)) {
+        SetError(&outcome.error, L"self-test-stage-root-invariance", ERROR_INVALID_DATA,
+            L"add-only package publication changed the captured root comparison");
+        return outcome;
+    }
+    observedRootSnapshot = capturedRootSnapshot;
+    DeviceState concurrentRoot = capturedRoot;
+    concurrentRoot.instanceId = L"ROOT\\VIIPERUDE\\0001";
+    observedRootSnapshot.devices.push_back(std::move(concurrentRoot));
+    if (SameCapturedRootState(capturedRootSnapshot, observedRootSnapshot)) {
+        SetError(&outcome.error, L"self-test-stage-root-invariance", ERROR_INVALID_DATA,
+            L"a concurrently registered second root escaped global topology verification");
+        return outcome;
+    }
+    observedRootSnapshot = capturedRootSnapshot;
+    observedRootSnapshot.devices[0].started = false;
+    if (SameCapturedRootState(capturedRootSnapshot, observedRootSnapshot)) {
+        SetError(&outcome.error, L"self-test-stage-root-invariance", ERROR_INVALID_DATA,
+            L"a root lifecycle change escaped post-stage verification");
+        return outcome;
+    }
+    observedRootSnapshot = capturedRootSnapshot;
+    observedRootSnapshot.devices[0].publishedInf = L"oem9.inf";
+    if (SameCapturedRootState(capturedRootSnapshot, observedRootSnapshot)) {
+        SetError(&outcome.error, L"self-test-stage-root-invariance", ERROR_INVALID_DATA,
+            L"a root package rebind escaped post-stage verification");
+        return outcome;
+    }
+    if (!SameCapturedRootState(Snapshot{}, Snapshot{}) ||
+        SameCapturedRootState(Snapshot{}, capturedRootSnapshot)) {
+        SetError(&outcome.error, L"self-test-stage-root-invariance", ERROR_INVALID_DATA,
+            L"absent-root post-stage verification is not exact");
+        return outcome;
+    }
+    DeviceState stoppedRoot = capturedRoot;
+    stoppedRoot.started = false;
+    stoppedRoot.problem = CM_PROB_DISABLED;
+    DeviceState restoredStoppedRoot = stoppedRoot;
+    if (!RollbackLifecycleStateMatches(stoppedRoot, restoredStoppedRoot)) {
+        SetError(&outcome.error, L"self-test-rollback-lifecycle", ERROR_INVALID_DATA,
+            L"an exact stopped/problem rollback state was rejected");
+        return outcome;
+    }
+    restoredStoppedRoot.started = true;
+    restoredStoppedRoot.problem = 0;
+    if (RollbackLifecycleStateMatches(stoppedRoot, restoredStoppedRoot)) {
+        SetError(&outcome.error, L"self-test-rollback-lifecycle", ERROR_INVALID_DATA,
+            L"rollback accepted a captured stopped root that was unexpectedly started");
+        return outcome;
+    }
+    restoredStoppedRoot = stoppedRoot;
+    ++restoredStoppedRoot.problem;
+    if (RollbackLifecycleStateMatches(stoppedRoot, restoredStoppedRoot) ||
+        !RollbackLifecycleStateMatches(capturedRoot, capturedRoot)) {
+        SetError(&outcome.error, L"self-test-rollback-lifecycle", ERROR_INVALID_DATA,
+            L"rollback lifecycle comparison is not exact for stopped or running roots");
         return outcome;
     }
     const std::filesystem::path recoveryRoot =

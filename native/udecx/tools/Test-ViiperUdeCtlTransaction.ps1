@@ -30,29 +30,68 @@ $requiredContracts = [ordered]@{
     'driver-store source capture' = 'SetupGetInfDriverStoreLocationW\('
     'installed INF ownership' = 'DEVPKEY_Device_DriverInfPath'
     'installed version ownership' = 'DEVPKEY_Device_DriverVersion'
-    'documented package install' = 'DiInstallDriverW\('
+    'documented add-only package staging' = 'SetupCopyOEMInfW\('
+    'non-overwriting package staging' = 'SP_COPY_NOOVERWRITE'
+    'documented idempotent package staging result' = 'copyError != ERROR_FILE_EXISTS'
     'documented package removal' = 'DiUninstallDriverW\('
     'ABI health negotiation' = 'IOCTL_VIIPER_UDE_NEGOTIATE'
     'pristine upgrade statistics' = 'IOCTL_VIIPER_UDE_QUERY_STATS'
     'pristine upgrade reboot boundary' = 'upgrade-runtime-reboot-boundary'
-    'stopped owned upgrade skips unavailable live ABI proof' =
-        'CandidateDisposition::InstallRequired &&\s*!prior\.devices\.empty\(\) && prior\.devices\[0\]\.started &&'
+    'all running-root driver mutations require pristine proof' =
+        'const bool requiresPristineRuntimeProof =[\s\S]{0,180}RequiresPristineRuntimeProof\('
+    'already-staged exact binding is classified as a driver mutation' =
+        'RequiresDriverMutation\(disposition, exactBindingHealthy\)'
+    'stopped and absent roots skip unavailable live ABI proof' =
+        'self-test-pristine-runtime-decision'
+    'every nonzero runtime counter is rejected' =
+        'self-test-pristine-runtime-stats'
     'loaded-kernel build identity negotiation' = 'response\.BuildIdentity'
-    'exact negotiated capability identity' = 'response\.Capabilities != negotiatedCapabilities'
-    'known previous ABI negotiation' = 'kPreviousAbiMinor = 11'
-    'known previous ABI capabilities' = 'kPreviousAbiCapabilities'
-    'previous ABI pristine-upgrade boundary' = 'IsPreviousAbiRetryEligible\('
+    'exact negotiated capability identity' = 'response\.Capabilities == profile\.capabilities'
+    'explicit ABI 1.12 profile' = '\{12, 29, 152, true\}'
+    'explicit ABI 1.11 profile' = '\{11, 29, 144, false\}'
+    'explicit ABI 1.10 profile' = '\{10, 13, 144, false\}'
+    'strict ABI profile order' = 'AbiCompatibilityProfilesAreValid\(\)'
+    'legacy statistics boundary assertion' = 'offsetof\(VIIPER_UDE_STATS, ReservedPorts\) == 144'
+    'previous ABI pristine-upgrade boundary' = 'IsAbiRetryEligible\('
     'previous ABI version-mismatch retry errors' =
         'error\.code == ERROR_REVISION_MISMATCH[\s\S]{0,120}error\.code == ERROR_INVALID_PARAMETER[\s\S]{0,180}abi-negotiate-result'
-    'previous ABI stats header validation' = 'stats\.Header\.Minor != negotiatedMinor'
-    'previous ABI stats wire size' = 'kPreviousAbiStatsSize = 144'
-    'reserved-port wire-range validation' = 'stats\.ReservedPorts > VIIPER_UDE_MAX_DEVICES'
-    'stats reserved-word validation' = 'stats\.Reserved != 0'
+    'exact ABI negotiation response validation' = 'AbiNegotiationResponseMatchesProfile\('
+    'exact ABI statistics response validation' = 'StatsRecordMatchesProfile\('
+    'previous ABI stats header validation' = 'stats\.Header\.Minor == profile\.minor'
+    'previous ABI stats wire size' = 'stats\.Header\.Size == profile\.statsSize'
+    'reserved-port wire-range validation' = 'stats\.ReservedPorts <= VIIPER_UDE_MAX_DEVICES'
+    'stats reserved-word validation' = 'stats\.Reserved == 0'
     'reserved-port pristine-runtime gate' =
-        'negotiatedMinor == VIIPER_UDE_ABI_MINOR && stats\.ReservedPorts != 0'
+        '!profile\.hasReservedPortFields \|\| stats\.ReservedPorts == 0'
     'source-bound manifest identity' = 'driverBuildIdentity'
     'same-ABI stale-kernel rejection' = 'expectedBuildIdentity'
     'install rollback' = 'RollbackInstall\('
+    'exact staged-here rollback removal' = 'SetupUninstallOEMInfW\('
+    'non-forced staged-here rollback removal' =
+        'SetupUninstallOEMInfW\([\s\S]{0,120}stagedCandidate\.publishedName\.c_str\(\), 0, nullptr'
+    'exact rollback package inventory proof' = 'VerifyPackageInventory\('
+    'formerly-running rollback start proof' = 'rollback-runtime-start-verification'
+    'formerly-running rollback ABI proof' = 'AbiHealthPurpose::RollbackHealth'
+    'captured stopped rollback state proof' = 'rollback-stopped-state-verification'
+    'exact rollback lifecycle comparator' = 'RollbackLifecycleStateMatches\('
+    'stage mutation marked before SetupCopy' =
+        'MarkTransactionMutationStarted\(\);[\s\S]{0,180}SetupCopyOEMInfW\('
+    'successful stage retains cleanup ownership' = '\*stagedHere = true'
+    'malformed stage receipt recovery' =
+        'FindPublishedCandidate\([\s\S]{0,160}recoveredReceipt'
+    'post-stage exact inventory proof' = 'stage-package-inventory-verification'
+    'post-quiescence exact inventory proof' = 'post-quiescence-package-inventory-verification'
+    'final pre-bind exact inventory proof' = 'final-pre-bind-package-inventory-verification'
+    'post-bind exact inventory proof' = 'post-bind-package-inventory-verification'
+    'post-stage full root invariance proof' = 'stage-root-binding-verification'
+    'post-quiescence full root invariance proof' = 'post-quiescence-root-verification'
+    'prepared-driver final root invariance proof' = 'final-pre-bind-root-verification'
+    'fresh global pre-bind topology proof' = 'final-pre-bind-root-topology-verification'
+    'read-only compatible-driver preparation' = 'PreparePreinstalledDriverOnDevice\('
+    'immediate selected-device binding commit' = 'CommitPreparedDriverBinding\('
+    'exact final pristine ABI recheck' = 'AbiHealthPurpose::PristineRecheck'
+    'broker deadline before quiescence signal' =
+        'transaction-deadline-before-broker-quiescence[\s\S]{0,180}SetEvent\(options\.brokerQuiesceRequest\)'
     'broker health transaction' = 'RunBrokerInstall\('
     'canonical broker proof parser' = 'ParseBrokerCommitProof\('
     'bounded broker proof channel' = 'kMaximumBrokerProofBytes'
@@ -136,9 +175,10 @@ $requiredContracts = [ordered]@{
     'nested rollback budget composition' = '3ULL \* 60ULL \* 1000ULL'
     'forward root mutation deadline' = 'transaction-deadline-before-root-registration'
     'forward root property deadline' = 'transaction-deadline-before-root-properties'
-    'device binding mutation deadline' = 'transaction-deadline-before-device-binding'
-    'driver package mutation deadline' = 'transaction-deadline-before-driver-install'
-    'selected driver mutation deadline' = 'transaction-deadline-before-driver-selection'
+    'device binding mutation deadline' = 'transaction-deadline-before-selected-device-binding'
+    'driver package mutation deadline' = 'transaction-deadline-before-driver-stage'
+    'finite install rollback deadline' = 'install-rollback-deadline-staged-package'
+    'selected driver mutation deadline' = 'transaction-deadline-before-selected-device-binding'
     'owned generated root namespace' = 'kRootDeviceName\[\] = L"VIIPERUDE"'
     'legacy generated root rollback namespace' = 'kLegacyRootDeviceName\[\] = L"USB"'
     'exact generated root identity validation' = 'IsOwnedGeneratedRootInstanceId\('
@@ -151,9 +191,7 @@ $requiredContracts = [ordered]@{
     'rollback root registration deadline' = 'rollback-deadline-before-root-registration'
     'exact rollback devnode identity' = 'RegisterRootDeviceExact\('
     'rollback identity verification' = 'rollback-identity-verification'
-    'upgrade devnode removal boundary' = 'upgrade-deadline-before-device-removal'
-    'upgrade devnode absence verification' = 'upgrade-device-removal-verification'
-    'exact upgrade devnode identity' = 'ExactRootRegistrationMode::Upgrade'
+    'in-place existing-root binding' = 'SameEnumeratedRootState\('
     'structured reboot exit' = 'ERROR_SUCCESS_REBOOT_REQUIRED'
     'guarded downgrade' = '--allow-controlled-downgrade'
 }
@@ -165,32 +203,40 @@ foreach ($entry in $requiredContracts.GetEnumerator()) {
 }
 
 $orderedMutationContracts = [ordered]@{
-    'driver package deadline immediately precedes mutation' =
-        'CheckTransactionDeadline\(options,[\s\S]{0,180}transaction-deadline-before-driver-install[\s\S]{0,800}DiInstallDriverW\('
+    'driver package staging deadline immediately precedes add-only mutation' =
+        'transaction-deadline-before-driver-stage[\s\S]{0,1800}MarkTransactionMutationStarted\(\);[\s\S]{0,180}SetupCopyOEMInfW\('
     'root property deadline immediately precedes mutation' =
         'transaction-deadline-before-root-properties[\s\S]{0,240}mutationStarted[\s\S]{0,180}SetupDiSetDeviceRegistryPropertyW\('
     'root registration deadline immediately precedes mutation' =
         'transaction-deadline-before-root-registration[\s\S]{0,240}SetupDiCallClassInstaller\(DIF_REGISTERDEVICE'
-    'device binding deadline immediately precedes mutation' =
-        'transaction-deadline-before-device-binding[\s\S]{0,500}DiInstallDevice\('
     'selected driver deadline immediately precedes mutation' =
-        'transaction-deadline-before-driver-selection[\s\S]{0,300}mutationStarted[\s\S]{0,180}SetupDiSetSelectedDriverW\('
+        'transaction-deadline-before-selected-device-binding[\s\S]{0,300}mutationStarted[\s\S]{0,220}SetupDiSetSelectedDriverW\([\s\S]{0,500}DiInstallDevice\('
+    'broker deadline immediately precedes quiescence signal' =
+        'transaction-deadline-before-broker-quiescence[\s\S]{0,180}SetEvent\(options\.brokerQuiesceRequest\)'
     'remove deadline immediately precedes device mutation' =
         'CheckTransactionDeadline\(transactionDeadlineUnixMs, deadlinePhase, error\)[\s\S]{0,300}mutationStarted[\s\S]{0,180}DiUninstallDevice\('
     'first-time root creation uses the owned device name' =
         'SetupDiCreateDeviceInfoW\([\s\S]{0,120}kRootDeviceName[\s\S]{0,120}DICD_GENERATE_ID'
     'registered devnode cleanup state survives post-registration validation' =
-        'bool registeredAndVerified = false;[\s\S]{0,1200}createdHere = registrationSucceeded;[\s\S]{0,160}if \(registeredAndVerified\)'
-    'upgrade removes and proves the captured devnode absent before staging' =
-        'upgrade-deadline-before-device-removal[\s\S]{0,800}CaptureSnapshot\(&afterRemoval[\s\S]{0,1800}DiInstallDriverW\('
-    'upgrade restores exact identity before exact package binding' =
-        'DiInstallDriverW\([\s\S]{0,2200}prior\.devices\[0\]\.instanceId[\s\S]{0,300}ExactRootRegistrationMode::Upgrade[\s\S]{0,700}InstallPreinstalledDriverOnDevice\('
-    'broker quiescence precedes all classified driver mutation' =
-        'if \(driverMutation && !options\.brokerExecutable\.empty\(\)[\s\S]{0,180}RequestBrokerQuiescence\([\s\S]{0,1200}CandidateDisposition::InstallRequired'
-    'broker quiescence and pristine proof precede upgrade root removal' =
-        'RequestBrokerQuiescence\([\s\S]{0,5000}&outcome\.error, true[\s\S]{0,5000}upgrade-deadline-before-device-removal'
+        'const bool registeredAndVerified = inventoryVerified && RegisterRootDevice\([\s\S]{0,500}createdHere = registrationSucceeded;[\s\S]{0,160}if \(registeredAndVerified\)'
+    'add-only stage inventory and exact root proof precede broker quiescence' =
+        '!StageCandidatePackage\([\s\S]{0,2600}stage-package-inventory-verification[\s\S]{0,800}stage-root-binding-verification[\s\S]{0,1800}RequestBrokerQuiescence\('
+    'broker quiescence inventory and fresh root proof precede pristine admission' =
+        'RequestBrokerQuiescence\([\s\S]{0,1200}post-quiescence-package-inventory-verification[\s\S]{0,1000}post-quiescence-root-verification[\s\S]{0,1800}AbiHealthPurpose::PristineUpgrade'
+    'driver preparation and final proofs precede immediate in-place binding' =
+        'PreparePreinstalledDriverOnDevice\([\s\S]{0,800}final-pre-bind-root-topology-verification[\s\S]{0,800}final-pre-bind-package-inventory-verification[\s\S]{0,900}final-pre-bind-root-verification[\s\S]{0,1000}AbiHealthPurpose::PristineRecheck[\s\S]{0,900}CommitPreparedDriverBinding\('
+    'new root registration is confined to an absent captured root' =
+        'if \(prior\.devices\.empty\(\)\) \{[\s\S]{0,300}RegisterRootDevice\('
+    'post-stage failure reaches exact common rollback' =
+        '!StageCandidatePackage\([\s\S]{0,14000}if \(outcome\.error\.code != ERROR_SUCCESS && driverMutationStarted\)[\s\S]{0,1800}packageStagedHere \? &publishedCandidate : nullptr[\s\S]{0,300}RollbackInstall\('
+    'binding restore precedes exact staged cleanup and inventory proof' =
+        'if \(bindingMutationStarted\)[\s\S]{0,300}RestorePriorBinding\([\s\S]{0,700}RemoveStagedCandidateExact\([\s\S]{0,500}VerifyPackageInventory\('
+    'formerly-running rollback requires exact start and ABI health' =
+        'if \(prior\.devices\[0\]\.started\)[\s\S]{0,500}rollback-runtime-start-verification[\s\S]{0,800}AbiHealthPurpose::RollbackHealth'
+    'captured-stopped rollback requires exact stopped problem state' =
+        'AbiHealthPurpose::RollbackHealth[\s\S]{0,400}RollbackLifecycleStateMatches\([\s\S]{0,300}rollback-stopped-state-verification'
     'broker handoff follows exact binding verification and precedes nested commit' =
-        'VerifyInstalledBinding\([\s\S]{0,3000}SignalBrokerHandoff\([\s\S]{0,180}RunBrokerInstall\('
+        'VerifyInstalledBinding\([\s\S]{0,5000}SignalBrokerHandoff\([\s\S]{0,180}RunBrokerInstall\('
     'recovery journal is published and preservation armed before mutation' =
         'BuildRemoveRecoveryRecord\([\s\S]{0,300}WriteProtectedRecoveryRecord\([\s\S]{0,240}ArmPreservation\([\s\S]{0,700}RemoveAllExactDevices\('
     'failed remove rollback preserves published evidence before return' =
@@ -209,6 +255,20 @@ foreach ($entry in $orderedMutationContracts.GetEnumerator()) {
     if ($source -notmatch $entry.Value) {
         throw "ViiperUdeCtl violates its $($entry.Key) ordering contract."
     }
+}
+
+$forwardInstallStart = $source.IndexOf('Outcome Install(const InstallOptions& options)')
+$forwardInstallEnd = $source.IndexOf('struct PackageBackup {', $forwardInstallStart)
+if ($forwardInstallStart -lt 0 -or $forwardInstallEnd -le $forwardInstallStart) {
+    throw 'ViiperUdeCtl forward install transaction is missing or malformed.'
+}
+$forwardInstallSource = $source.Substring(
+    $forwardInstallStart, $forwardInstallEnd - $forwardInstallStart)
+if ($forwardInstallSource -match '\b(?:DiInstallDriverW|UpdateDriverForPlugAndPlayDevicesW)\s*\(') {
+    throw 'Forward install must use add-only staging plus exact selected-device binding, never a device-auto-binding package API.'
+}
+if ($forwardInstallSource -match 'upgrade-deadline-before-device-removal|ExactRootRegistrationMode|RegisterRootDeviceExact\(') {
+    throw 'Forward install must never remove and recreate an existing root before exact in-place binding.'
 }
 
 if ($source -match 'SUOI_FORCEDELETE') {
@@ -266,9 +326,8 @@ if ([regex]::Matches($source, 'VerifyDriverCatalogMember\(catalogPath').Count -n
 }
 
 $forceInfUses = [regex]::Matches($source, '\bDIIRFLAG_FORCE_INF\b').Count
-if ($forceInfUses -ne 1 -or
-    $source -notmatch 'const DWORD installFlags = downgrade \? DIIRFLAG_FORCE_INF : 0;') {
-    throw 'Forced package selection must exist only behind the validated downgrade decision.'
+if ($forceInfUses -ne 0) {
+    throw 'Add-only staging and exact selected-device binding must not force global INF selection.'
 }
 
 $forceBindUses = [regex]::Matches($source, '\bINSTALLFLAG_FORCE\b').Count

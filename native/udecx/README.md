@@ -83,7 +83,7 @@ never accepted by a Release recipe or production workflow.
 - ABI, lifecycle, descriptor, cancellation, and fault tests live beside the Go
   broker packages and in the native-driver CI gates.
 
-The interrupt-IN path follows ViGEmBus's useful pending-read principle without
+The interrupt-IN path follows a proven pending-read principle without
 copying its target-specific implementation. Each endpoint owns a preallocated,
 sequence-checked latest-state cache. A report arriving before a Windows poll is
 retained and completed after KMDF's manual-queue ready notification crosses a

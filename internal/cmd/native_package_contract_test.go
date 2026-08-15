@@ -177,8 +177,9 @@ func TestNativePackageProductionSourceContract(t *testing.T) {
 		"--expected-broker-sha-256",
 		"ParseBrokerCommitProof", "driverRollbackAuthorized", "CreatePipe(",
 		"PROC_THREAD_ATTRIBUTE_HANDLE_LIST", "kMaximumBrokerProofBytes",
-		"RollbackInstall(prior", "broker-reboot-boundary",
+		"RollbackInstall(", "broker-reboot-boundary",
 		"--transaction-deadline-unix-ms", "kBrokerRollbackCeilingMs",
+		"kDriverRollbackCeilingMs",
 		"CreatePrivateNamespaceW", "WAIT_ABANDONED", "ReleaseMutex",
 		"FILE_FLAG_OVERLAPPED", "CancelIoEx", "kCancelledIoDrainMs",
 		"RegisterRootDeviceExact", "rollback-identity-verification",
@@ -189,8 +190,31 @@ func TestNativePackageProductionSourceContract(t *testing.T) {
 		"LoadLibraryExW", "LOAD_LIBRARY_SEARCH_SYSTEM32", "GetProcAddress",
 		"ValidateExactPackageDirectory", "Sha256Handle(manifest.get()",
 		"RequestBrokerQuiescence", "SignalBrokerHandoff",
-		"requirePristineRuntime", "IOCTL_VIIPER_UDE_QUERY_STATS",
+		"SetupCopyOEMInfW(", "SP_COPY_NOOVERWRITE", "ERROR_FILE_EXISTS",
+		"SetupUninstallOEMInfW(", "RemoveStagedCandidateExact(",
+		"VerifyPackageInventory(", "packageStagedHere", "bindingMutationStarted",
+		"stage-package-inventory-verification", "stage-root-binding-verification",
+		"stage-concurrent-publication", "post-quiescence-package-inventory-verification",
+		"post-quiescence-root-verification", "final-pre-bind-root-topology-verification",
+		"final-pre-bind-package-inventory-verification",
+		"final-pre-bind-root-verification", "post-bind-package-inventory-verification",
+		"PreparePreinstalledDriverOnDevice(", "CommitPreparedDriverBinding(",
+		"requirePristineRuntime", "RequiresDriverMutation(",
+		"RequiresPristineRuntimeProof(", "RuntimeStatsArePristine(",
+		"AbiCompatibilityProfile", "{12, 29, 152, true}",
+		"{11, 29, 144, false}", "{10, 13, 144, false}",
+		"AbiCompatibilityProfilesAreValid()", "IsAbiRetryEligible(",
+		"AbiHealthPurpose::PristineUpgrade", "AbiHealthPurpose::PristineRecheck",
+		"AbiHealthPurpose::RollbackHealth", "AbiNegotiationResponseMatchesProfile(",
+		"StatsRecordMatchesProfile(", "offsetof(VIIPER_UDE_STATS, ReservedPorts) == 144",
+		"rollback-runtime-start-verification", "rollback-runtime-abi-profile",
+		"rollback-stopped-state-verification", "RollbackLifecycleStateMatches(",
+		"self-test-rollback-lifecycle",
+		"transaction-deadline-before-broker-quiescence",
+		"MarkTransactionMutationStarted();", "recoveredReceipt",
+		"IOCTL_VIIPER_UDE_QUERY_STATS",
 		"upgrade-runtime-reboot-boundary",
+		"self-test-pristine-runtime-decision", "self-test-pristine-runtime-stats",
 		"--broker-quiesce-request-handle", "--broker-quiesce-ready-handle",
 		"--broker-quiesce-abort-handle", "--broker-handoff-handle",
 	}
@@ -206,35 +230,204 @@ func TestNativePackageProductionSourceContract(t *testing.T) {
 			t.Errorf("driver helper retained obsolete nested broker option %q", obsolete)
 		}
 	}
-	if strings.Contains(helperSource, "UpdateDriverForPlugAndPlayDevicesW(") {
-		t.Error("driver helper must bind only an exact selected preinstalled package with DiInstallDevice")
-	}
 	if !strings.Contains(helperSource, "InstallPreinstalledDriverOnDevice(") ||
 		!strings.Contains(helperSource, "DiInstallDevice(") {
 		t.Error("driver helper lost exact preinstalled-driver selection and DiInstallDevice binding")
 	}
-	upgradeRemove := strings.Index(helperSource, `L"upgrade-deadline-before-device-removal"`)
-	upgradeQuiesce := strings.Index(helperSource, "RequestBrokerQuiescence(options")
-	upgradeStartedGate := strings.Index(helperSource,
-		"!prior.devices.empty() && prior.devices[0].started &&")
-	upgradePristine := strings.Index(helperSource,
-		"options.transactionDeadlineUnixMs, nullptr, &outcome.error, true")
-	upgradeAbsent := strings.Index(helperSource, "CaptureSnapshot(&afterRemoval")
-	upgradeStage := strings.Index(helperSource, "DiInstallDriverW(nullptr, candidate.infPath.c_str()")
-	upgradeIdentity := strings.Index(helperSource, "ExactRootRegistrationMode::Upgrade")
-	upgradeBind := -1
-	if upgradeIdentity >= 0 {
-		if relative := strings.Index(helperSource[upgradeIdentity:],
-			"InstallPreinstalledDriverOnDevice("); relative >= 0 {
-			upgradeBind = upgradeIdentity + relative
+	installStart := strings.Index(helperSource, "Outcome Install(const InstallOptions& options)")
+	installEnd := strings.Index(helperSource, "struct PackageBackup {")
+	if installStart < 0 || installEnd <= installStart {
+		t.Fatal("driver helper forward install transaction is missing or malformed")
+	}
+	forwardInstall := helperSource[installStart:installEnd]
+	for _, forbidden := range []string{
+		"DiInstallDriverW(", "UpdateDriverForPlugAndPlayDevicesW(",
+		`L"upgrade-deadline-before-device-removal"`,
+		"ExactRootRegistrationMode", "RegisterRootDeviceExact(",
+	} {
+		if strings.Contains(forwardInstall, forbidden) {
+			t.Errorf("forward install retained remove/recreate or device-auto-binding operation %q", forbidden)
 		}
 	}
-	if upgradeQuiesce < 0 || upgradeStartedGate <= upgradeQuiesce ||
-		upgradePristine <= upgradeStartedGate ||
-		upgradeRemove <= upgradePristine || upgradeAbsent <= upgradeRemove ||
-		upgradeStage <= upgradeAbsent || upgradeIdentity <= upgradeStage ||
-		upgradeBind <= upgradeIdentity {
-		t.Error("driver upgrade no longer treats a stopped exact root as quiesced while requiring pristine runtime proof for a running root before removal, absence proof, staging, exact-identity recreation, and binding")
+	quiescenceStart := strings.Index(helperSource,
+		"bool RequestBrokerQuiescence(const InstallOptions& options")
+	quiescenceEnd := strings.Index(helperSource,
+		"bool SignalBrokerHandoff(")
+	if quiescenceStart < 0 || quiescenceEnd <= quiescenceStart {
+		t.Fatal("broker quiescence implementation is missing or malformed")
+	}
+	quiescenceSource := helperSource[quiescenceStart:quiescenceEnd]
+	quiescenceDeadline := strings.Index(quiescenceSource,
+		`L"transaction-deadline-before-broker-quiescence"`)
+	quiescenceSignal := strings.Index(quiescenceSource,
+		"SetEvent(options.brokerQuiesceRequest)")
+	if quiescenceDeadline < 0 || quiescenceSignal <= quiescenceDeadline {
+		t.Error("broker quiescence can signal a healthy broker after the package deadline")
+	}
+	helperStageStart := strings.Index(helperSource, "bool StageCandidatePackage(")
+	helperStageEnd := strings.Index(helperSource, "bool RemoveDevice(")
+	if helperStageStart < 0 || helperStageEnd <= helperStageStart {
+		t.Fatal("add-only package staging implementation is missing or malformed")
+	}
+	stageSource := helperSource[helperStageStart:helperStageEnd]
+	stageMutationMark := strings.Index(stageSource, "MarkTransactionMutationStarted();")
+	setupCopy := strings.Index(stageSource, "SetupCopyOEMInfW(")
+	stageOwnership := strings.Index(stageSource, "*stagedHere = true;")
+	receiptValidation := strings.Index(stageSource, "const size_t destinationLength")
+	receiptRecovery := strings.Index(stageSource, "recoveredReceipt")
+	if stageMutationMark < 0 || setupCopy <= stageMutationMark ||
+		stageOwnership <= setupCopy || receiptValidation <= stageOwnership ||
+		receiptRecovery <= receiptValidation {
+		t.Error("SetupCopy fault interleavings no longer preserve mutation classification, success-only ownership, and exact receipt recovery")
+	}
+	commitStart := strings.Index(helperSource, "bool CommitPreparedDriverBinding(")
+	commitEnd := strings.Index(helperSource, "bool InstallPreinstalledDriverOnDevice(")
+	if commitStart < 0 || commitEnd <= commitStart {
+		t.Fatal("prepared selected-device binding commit is missing or malformed")
+	}
+	commitSource := helperSource[commitStart:commitEnd]
+	commitDeadline := strings.Index(commitSource,
+		`L"transaction-deadline-before-selected-device-binding"`)
+	commitMutation := strings.Index(commitSource, "MarkTransactionMutationStarted();")
+	commitSelection := strings.Index(commitSource, "SetupDiSetSelectedDriverW(")
+	commitInstall := strings.Index(commitSource, "DiInstallDevice(")
+	if commitDeadline < 0 || commitMutation <= commitDeadline ||
+		commitSelection <= commitMutation || commitInstall <= commitSelection ||
+		strings.Contains(commitSource[commitSelection:commitInstall],
+			"CheckTransactionDeadline(") {
+		t.Error("prepared binding commit no longer performs one deadline check followed immediately by selected-driver and DiInstallDevice mutation")
+	}
+	abiHealthStart := strings.Index(helperSource, "bool VerifyAbiHealth(")
+	abiHealthEnd := strings.Index(helperSource, "bool VerifyInstalledBinding(")
+	if abiHealthStart < 0 || abiHealthEnd <= abiHealthStart {
+		t.Fatal("ABI health implementation is missing or malformed")
+	}
+	abiHealthSource := helperSource[abiHealthStart:abiHealthEnd]
+	for _, fragment := range []string{
+		"profiles = kAbiCompatibilityProfiles.data();",
+		"profileCount = kAbiCompatibilityProfiles.size();",
+		"IssueAbiNegotiation(device.get(), deadlineUnixMs, profiles[index].minor",
+		"IsAbiRetryEligible(purpose, expectedBuildIdentity, *error)",
+		"AbiNegotiationResponseMatchesProfile(",
+		"StatsRecordMatchesProfile(",
+	} {
+		if !strings.Contains(abiHealthSource, fragment) {
+			t.Errorf("bounded ABI negotiation lost %q", fragment)
+		}
+	}
+	mutationDecision := strings.Index(forwardInstall,
+		"const bool driverMutation =")
+	stageCall := strings.Index(forwardInstall, "if (!StageCandidatePackage(")
+	stageInventory := strings.Index(forwardInstall,
+		`L"stage-package-inventory-verification"`)
+	stageRootProof := strings.Index(forwardInstall, `L"stage-root-binding-verification"`)
+	quiesce := strings.Index(forwardInstall, "RequestBrokerQuiescence(options")
+	postQuiesceInventory := strings.Index(forwardInstall,
+		`L"post-quiescence-package-inventory-verification"`)
+	postQuiesceRootProof := strings.Index(forwardInstall,
+		`L"post-quiescence-root-verification"`)
+	pristineDecision := strings.Index(forwardInstall,
+		"const bool requiresPristineRuntimeProof =")
+	pristineProof := -1
+	if pristineDecision >= 0 {
+		if relative := strings.Index(forwardInstall[pristineDecision:],
+			"AbiHealthPurpose::PristineUpgrade"); relative >= 0 {
+			pristineProof = pristineDecision + relative
+		}
+	}
+	prepareBinding := strings.Index(forwardInstall,
+		"PreparePreinstalledDriverOnDevice(")
+	finalTopology := -1
+	finalInventory := -1
+	finalRootProof := -1
+	finalPristineProof := -1
+	commitBinding := -1
+	if prepareBinding >= 0 {
+		if relative := strings.Index(forwardInstall[prepareBinding:],
+			`L"final-pre-bind-root-topology-verification"`); relative >= 0 {
+			finalTopology = prepareBinding + relative
+		}
+		if relative := strings.Index(forwardInstall[prepareBinding:],
+			`L"final-pre-bind-package-inventory-verification"`); relative >= 0 {
+			finalInventory = prepareBinding + relative
+		}
+		if relative := strings.Index(forwardInstall[prepareBinding:],
+			`L"final-pre-bind-root-verification"`); relative >= 0 {
+			finalRootProof = prepareBinding + relative
+		}
+		if relative := strings.Index(forwardInstall[prepareBinding:],
+			"AbiHealthPurpose::PristineRecheck"); relative >= 0 {
+			finalPristineProof = prepareBinding + relative
+		}
+		if relative := strings.Index(forwardInstall[prepareBinding:],
+			"CommitPreparedDriverBinding("); relative >= 0 {
+			commitBinding = prepareBinding + relative
+		}
+	}
+	postBindInventory := strings.Index(forwardInstall,
+		`L"post-bind-package-inventory-verification"`)
+	if mutationDecision < 0 || stageCall <= mutationDecision ||
+		stageInventory <= stageCall || stageRootProof <= stageInventory ||
+		quiesce <= stageRootProof || postQuiesceInventory <= quiesce ||
+		postQuiesceRootProof <= postQuiesceInventory ||
+		pristineDecision <= postQuiesceRootProof || pristineProof <= pristineDecision ||
+		prepareBinding <= pristineProof || finalTopology <= prepareBinding ||
+		finalInventory <= finalTopology ||
+		finalRootProof <= finalInventory || finalPristineProof <= finalRootProof ||
+		commitBinding <= finalPristineProof || postBindInventory <= commitBinding {
+		t.Error("driver replacement no longer orders add-only stage, exact inventory/root proof, broker quiescence, pristine admission, read-only driver preparation, final inventory/root/pristine proof, immediate in-place binding, and post-bind inventory proof")
+	}
+	if finalPristineProof >= 0 && commitBinding > finalPristineProof {
+		finalProofToCommit := forwardInstall[finalPristineProof:commitBinding]
+		for _, forbidden := range []string{
+			"CaptureSnapshot(", "CaptureAndVerify", "FindExactDevices(",
+			"PreparePreinstalledDriverOnDevice(", "VerifyPackageInventory(",
+			"SetupDiBuildDriverInfoList(",
+		} {
+			if strings.Contains(finalProofToCommit, forbidden) {
+				t.Errorf("fallible operation %q reopened the final pristine-proof to bind window", forbidden)
+			}
+		}
+	}
+	rollbackStart := strings.Index(helperSource, "bool RollbackInstall(")
+	rollbackEnd := strings.Index(helperSource, "bool LockPackageFiles(")
+	if rollbackStart < 0 || rollbackEnd <= rollbackStart {
+		t.Fatal("driver helper install rollback is missing or malformed")
+	}
+	installRollback := helperSource[rollbackStart:rollbackEnd]
+	restoreBinding := strings.Index(installRollback, "RestorePriorBinding(")
+	removeStaged := strings.Index(installRollback, "RemoveStagedCandidateExact(")
+	verifyInventory := strings.Index(installRollback, "VerifyPackageInventory(")
+	if restoreBinding < 0 || removeStaged <= restoreBinding ||
+		verifyInventory <= removeStaged {
+		t.Error("install rollback no longer restores a mutated binding before exact staged-here cleanup and prior-inventory proof")
+	}
+	rollbackStarted := strings.Index(installRollback,
+		"if (prior.devices[0].started)")
+	rollbackStartedProof := strings.Index(installRollback,
+		`L"rollback-runtime-start-verification"`)
+	rollbackProfileProof := strings.Index(installRollback,
+		`L"rollback-runtime-abi-profile"`)
+	rollbackHealth := strings.Index(installRollback,
+		"AbiHealthPurpose::RollbackHealth")
+	rollbackStoppedComparator := strings.LastIndex(installRollback,
+		"RollbackLifecycleStateMatches(")
+	rollbackStoppedProof := strings.Index(installRollback,
+		`L"rollback-stopped-state-verification"`)
+	if rollbackStarted <= verifyInventory || rollbackStartedProof <= rollbackStarted ||
+		rollbackProfileProof <= rollbackStartedProof || rollbackHealth <= rollbackProfileProof ||
+		rollbackStoppedComparator <= rollbackHealth ||
+		rollbackStoppedProof <= rollbackStoppedComparator {
+		t.Error("rollback no longer proves started/problem-zero plus ABI health for a formerly-running root and exact stopped/problem state for a captured stopped root")
+	}
+	for _, decision := range []string{
+		"CandidateDisposition::Exact, true, true, true",
+		"CandidateDisposition::InstallRequired, false, false, false",
+		"CandidateDisposition::Exact, false, true, false",
+	} {
+		if !strings.Contains(helperSource, decision) {
+			t.Errorf("driver helper lost pristine-runtime decision case %q", decision)
+		}
 	}
 	if strings.Contains(windowsSource, `strings.Contains(text, "result=success operation=install")`) {
 		t.Error("native package install must parse one exact helper outcome instead of accepting a success substring")

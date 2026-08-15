@@ -21,7 +21,7 @@ const (
 	// shipped with this service. Runtime negotiation proves the loaded driver
 	// carries this version in its source-bound build identity; package
 	// installation additionally verifies DriverVer and the signed catalog.
-	DriverPackageVersion = "0.1.0.35"
+	DriverPackageVersion = "0.1.0.36"
 	BuildIdentitySize    = sha256.Size
 
 	HeaderSize               = 16
@@ -527,7 +527,7 @@ type Completion struct {
 	Payload        []byte
 }
 
-// InputReport is the ViGEm-style fast path for interrupt-IN endpoints. The
+// InputReport is the low-overhead fast path for interrupt-IN endpoints. The
 // host parks the Windows polling request in the kernel and user mode submits
 // only a fresh, already encoded report. Audio, control, output, and lifecycle
 // traffic deliberately remain on the ordered operation broker.
