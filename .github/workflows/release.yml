@@ -6,11 +6,374 @@ on:
             - "v*.*.*"
 
 permissions:
-    contents: write
-    id-token: write
+    actions: read
+    contents: read
 
 jobs:
+    release-policy:
+        name: Validate release source and workflow policy
+        runs-on: ubuntu-24.04
+        permissions:
+            contents: read
+        steps:
+            - name: Checkout exact release source
+              uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+              with:
+                  fetch-depth: 0
+
+            - name: Require an exact SemVer tag on reviewed main history
+              shell: bash
+              env:
+                  TAG_NAME: ${{ github.ref_name }}
+              run: |
+                  set -euo pipefail
+                  if [[ ! "$TAG_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                    echo "::error::Release tag must be exact vMAJOR.MINOR.PATCH SemVer."
+                    exit 1
+                  fi
+                  test "$(git rev-parse "refs/tags/${TAG_NAME}^{commit}")" = "$GITHUB_SHA"
+                  git fetch --no-tags origin main
+                  if [[ "$(git rev-parse origin/main)" != "$GITHUB_SHA" ]]; then
+                    echo "::error::Release tags must point to the current origin/main tip."
+                    exit 1
+                  fi
+
+            - name: Enforce immutable workflow dependency policy
+              shell: pwsh
+              run: ./.github/scripts/Test-WorkflowSecurity.ps1
+
+            - name: Require native DriverVer monotonicity from the previous release
+              shell: pwsh
+              run: |
+                  $tags = @(git tag --merged "$env:GITHUB_SHA^" --list 'v*.*.*' |
+                      Where-Object { $_ -match '^v\d+\.\d+\.\d+$' } |
+                      Sort-Object { [Version]$_.Substring(1) } -Descending)
+                  $baseline = if ($tags.Count -gt 0) { $tags[0] } else { '' }
+                  ./native/udecx/tools/Test-ViiperUdeVersionMonotonicity.ps1 `
+                      -BaseRevision $baseline `
+                      -HeadRevision $env:GITHUB_SHA
+
+    native-validation:
+        name: Native UdeCx release gate
+        needs: release-policy
+        permissions:
+            contents: read
+            security-events: write
+        uses: ./.github/workflows/native-ude.yml
+        with:
+            upload_artifacts: false
+            upload_release_helper: true
+
+    native-package-transaction:
+        name: Native package transaction release gate
+        needs: release-policy
+        permissions:
+            contents: read
+        uses: ./.github/workflows/native-package-transaction.yml
+
+    native-production-provenance:
+        name: Require accepted Microsoft HLK/WHCP package
+        needs: release-policy
+        runs-on: ubuntu-24.04
+        permissions:
+            actions: read
+            contents: read
+        outputs:
+            artifact_digest: ${{ steps.locate.outputs.artifact_digest }}
+            artifact_id: ${{ steps.locate.outputs.artifact_id }}
+            run_id: ${{ steps.locate.outputs.run_id }}
+        steps:
+            - name: Locate the exact trusted production-package acceptance
+              id: locate
+              shell: bash
+              env:
+                  GH_TOKEN: ${{ github.token }}
+              run: |
+                  set -euo pipefail
+                  artifact_name="ViiperUde-x64-production-microsoft-signed-${GITHUB_SHA}"
+                  response="$(gh api --paginate --slurp \
+                    "/repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=100&name=${artifact_name}")"
+                  mapfile -t candidates < <(jq -r --arg name "$artifact_name" '
+                    [.[].artifacts[] |
+                      select(.name == $name and (.expired | not))] |
+                    sort_by(.id) | reverse | .[] | @base64' <<<"$response")
+
+                  selected=''
+                  for encoded in "${candidates[@]}"; do
+                    artifact="$(base64 --decode <<<"$encoded")"
+                    run_id="$(jq -r '.workflow_run.id' <<<"$artifact")"
+                    run="$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}")"
+                    if jq -e \
+                      --arg repo "$GITHUB_REPOSITORY" \
+                      --arg sha "$GITHUB_SHA" '
+                        .path == ".github/workflows/native-production-package.yml" and
+                        .event == "workflow_dispatch" and
+                        .status == "completed" and
+                        .conclusion == "success" and
+                        .head_branch == "main" and
+                        .head_sha == $sha and
+                        .repository.full_name == $repo' <<<"$run" >/dev/null; then
+                      selected="$artifact"
+                      break
+                    fi
+                  done
+                  if [[ -z "$selected" ]]; then
+                    echo "::error::No successful main-branch Microsoft HLK/WHCP acceptance artifact exists for ${GITHUB_SHA}."
+                    exit 1
+                  fi
+
+                  artifact_id="$(jq -r '.id' <<<"$selected")"
+                  run_id="$(jq -r '.workflow_run.id' <<<"$selected")"
+                  digest="$(jq -r '.digest' <<<"$selected")"
+                  if [[ ! "$artifact_id" =~ ^[0-9]+$ || ! "$run_id" =~ ^[0-9]+$ ||
+                        ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+                    echo "::error::Accepted production artifact metadata is malformed."
+                    exit 1
+                  fi
+                  echo "artifact_id=${artifact_id}" >> "$GITHUB_OUTPUT"
+                  echo "run_id=${run_id}" >> "$GITHUB_OUTPUT"
+                  echo "artifact_digest=${digest#sha256:}" >> "$GITHUB_OUTPUT"
+                  {
+                    echo '### Required Microsoft production package'
+                    echo
+                    echo "- Source: \`${GITHUB_SHA}\`"
+                    echo "- Acceptance run: \`${run_id}\`"
+                    echo "- Artifact ID: \`${artifact_id}\`"
+                    echo "- Artifact digest: \`${digest}\`"
+                  } >> "$GITHUB_STEP_SUMMARY"
+
+    native-user-mode-signing:
+        name: Sign and validate native runtime package
+        needs: [release-policy, native-validation, native-production-provenance, build]
+        runs-on: windows-2025-vs2026
+        permissions:
+            actions: read
+            contents: read
+        steps:
+            - name: Checkout exact release source
+              uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+              with:
+                  fetch-depth: 0
+                  persist-credentials: false
+
+            - name: Download unsigned x64 broker input
+              uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+              with:
+                  name: VIIPER-windows-amd64-Release
+                  path: unsigned-broker-amd64
+
+            - name: Download unsigned ARM64 broker input
+              uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+              with:
+                  name: VIIPER-windows-arm64-Release
+                  path: unsigned-broker-arm64
+
+            - name: Download source-built native helper input
+              uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+              with:
+                  name: ViiperUdeCtl-windows-amd64-${{ github.sha }}
+                  path: unsigned-helper
+
+            - name: Download accepted Microsoft production package
+              uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+              with:
+                  artifact-ids: ${{ needs.native-production-provenance.outputs.artifact_id }}
+                  run-id: ${{ needs.native-production-provenance.outputs.run_id }}
+                  github-token: ${{ github.token }}
+                  path: accepted-production
+
+            - uses: NuGet/setup-nuget@d105a947828025cd7a980103c35ba2bfae586d0f # v2
+              with:
+                  nuget-version: "6.11.1"
+
+            - name: Restore exact source-bound WDK signing tools
+              run: >-
+                  nuget restore native/udecx/ViiperUde.sln
+                  -PackagesDirectory native/udecx/packages
+                  -NonInteractive
+
+            - name: Select exact restored SignTool and InfVerif
+              id: wdk_tools
+              shell: pwsh
+              run: |
+                  $tools = @(Get-ChildItem native/udecx/packages -Recurse -File -Filter *.exe)
+                  foreach ($required in @('signtool.exe', 'infverif.exe')) {
+                      if (-not ($tools | Where-Object Name -ieq $required | Select-Object -First 1)) {
+                          throw "Restored WDK packages did not contain $required."
+                      }
+                  }
+                  $signTools = @($tools | Where-Object {
+                      $_.Name -ieq 'signtool.exe' -and $_.FullName -match '[\\/]x64[\\/]signtool\.exe$'
+                  })
+                  if ($signTools.Count -eq 0) {
+                      throw 'Restored WDK packages did not contain an x64 SignTool.'
+                  }
+                  $hashes = @($signTools | ForEach-Object {
+                      (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash
+                  } | Sort-Object -Unique)
+                  if ($hashes.Count -ne 1) {
+                      throw 'Restored WDK packages contained non-identical x64 SignTool binaries.'
+                  }
+                  $signTool = ($signTools | Sort-Object FullName | Select-Object -First 1).FullName
+                  "sign_tool=$signTool" | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
+                  $tools.DirectoryName | Sort-Object -Unique |
+                      Out-File $env:GITHUB_PATH -Append -Encoding utf8
+
+            - name: Extract and allowlist unsigned release inputs
+              shell: pwsh
+              run: |
+                  New-Item -ItemType Directory -Force signed/amd64, signed/arm64, signed/helper | Out-Null
+                  Expand-Archive -LiteralPath unsigned-broker-amd64/viiper-windows-amd64.zip -DestinationPath signed/amd64
+                  Expand-Archive -LiteralPath unsigned-broker-arm64/viiper-windows-arm64.zip -DestinationPath signed/arm64
+                  foreach ($architecture in @('amd64', 'arm64')) {
+                      $root = (Resolve-Path "signed/$architecture").Path
+                      $relative = @(Get-ChildItem $root -Recurse -File | ForEach-Object {
+                          [IO.Path]::GetRelativePath($root, $_.FullName).Replace('\', '/')
+                      } | Sort-Object)
+                      if ($relative.Count -ne 2 -or
+                          $relative[0] -cne 'licenses.txt' -or $relative[1] -cne 'viiper.exe') {
+                          throw "The $architecture broker archive is not the exact viiper.exe/licenses.txt input."
+                      }
+                  }
+                  $helpers = @(Get-ChildItem unsigned-helper -Recurse -File)
+                  if ($helpers.Count -ne 1 -or $helpers[0].Name -cne 'ViiperUdeCtl.exe') {
+                      throw 'The helper artifact is not exactly one case-correct ViiperUdeCtl.exe.'
+                  }
+                  Copy-Item -LiteralPath $helpers[0].FullName -Destination signed/helper/ViiperUdeCtl.exe
+
+            - name: Authenticode-sign and verify broker/helper release binaries
+              shell: pwsh
+              env:
+                  CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_SIGNING_PFX_PASSWORD }}
+                  CERTIFICATE_SHA256: ${{ secrets.WINDOWS_SIGNING_CERTIFICATE_SHA256 }}
+                  PFX_BASE64: ${{ secrets.WINDOWS_SIGNING_PFX_BASE64 }}
+                  SIGN_TOOL: ${{ steps.wdk_tools.outputs.sign_tool }}
+              run: |
+                  foreach ($required in @(
+                      $env:PFX_BASE64, $env:CERTIFICATE_PASSWORD, $env:CERTIFICATE_SHA256, $env:SIGN_TOOL)) {
+                      if ([string]::IsNullOrWhiteSpace($required)) {
+                          throw 'Production release signing secrets and the exact SignTool are required.'
+                      }
+                  }
+                  ./native/udecx/tools/Protect-ViiperWindowsReleaseBinaries.ps1 `
+                      -Paths @(
+                          'signed/amd64/viiper.exe',
+                          'signed/arm64/viiper.exe',
+                          'signed/helper/ViiperUdeCtl.exe') `
+                      -CertificateBase64 $env:PFX_BASE64 `
+                      -CertificatePassword $env:CERTIFICATE_PASSWORD `
+                      -ExpectedCertificateSHA256 $env:CERTIFICATE_SHA256 `
+                      -SignToolPath $env:SIGN_TOOL
+
+            - name: Revalidate Microsoft driver and compose exact runtime bundle
+              shell: pwsh
+              env:
+                  CERTIFICATE_SHA256: ${{ secrets.WINDOWS_SIGNING_CERTIFICATE_SHA256 }}
+              run: |
+                  $acceptedArchives = @(Get-ChildItem accepted-production -Recurse -File)
+                  $expectedArchive = "ViiperUde-x64-production-$env:GITHUB_SHA.zip"
+                  if ($acceptedArchives.Count -ne 1 -or $acceptedArchives[0].Name -cne $expectedArchive) {
+                      throw "Accepted production artifact must contain only $expectedArchive."
+                  }
+                  Expand-Archive -LiteralPath $acceptedArchives[0].FullName -DestinationPath signed/production
+                  $expectedProduction = @(
+                      'submission-manifest.json',
+                      'ViiperUde/ViiperUde.cat',
+                      'ViiperUde/ViiperUde.inf',
+                      'ViiperUde/ViiperUde.pdb',
+                      'ViiperUde/ViiperUde.sys')
+                  $productionRoot = (Resolve-Path signed/production).Path
+                  $actualProduction = @(Get-ChildItem $productionRoot -Recurse -File | ForEach-Object {
+                      [IO.Path]::GetRelativePath($productionRoot, $_.FullName).Replace('\', '/')
+                  } | Sort-Object)
+                  if (Compare-Object ($expectedProduction | Sort-Object) $actualProduction) {
+                      throw 'Accepted Microsoft production artifact has missing or unexpected files.'
+                  }
+                  ./native/udecx/tools/Test-ViiperUdeSignedPackage.ps1 `
+                      -PackageDirectory signed/production/ViiperUde `
+                      -SubmissionManifestPath signed/production/submission-manifest.json `
+                      -ExpectedSourceRevision $env:GITHUB_SHA `
+                      -ValidationMode Production
+                  ./native/udecx/tools/Test-ViiperUdeTargetCompatibility.ps1 `
+                      -ProjectPath native/udecx/driver/ViiperUde.vcxproj `
+                      -InfPath signed/production/ViiperUde/ViiperUde.inf `
+                      -RequireStampedInf
+                  $manifestHash = (Get-FileHash `
+                      -LiteralPath signed/production/submission-manifest.json `
+                      -Algorithm SHA256).Hash.ToLowerInvariant()
+                  $deadline = [DateTimeOffset]::UtcNow.AddMinutes(5).ToUnixTimeMilliseconds()
+                  & signed/helper/ViiperUdeCtl.exe verify `
+                      signed/production/ViiperUde/ViiperUde.inf `
+                      --manifest signed/production/submission-manifest.json `
+                      --manifest-sha256 $manifestHash `
+                      --source-revision $env:GITHUB_SHA `
+                      --validation-mode production `
+                      --transaction-deadline-unix-ms $deadline
+                  if ($LASTEXITCODE -ne 0) {
+                      throw "The signed package helper rejected the production driver package (exit $LASTEXITCODE)."
+                  }
+
+                  New-Item -ItemType Directory -Force signed/runtime | Out-Null
+                  Copy-Item signed/amd64/viiper.exe signed/runtime/viiper.exe
+                  Copy-Item signed/helper/ViiperUdeCtl.exe signed/runtime/ViiperUdeCtl.exe
+                  Copy-Item signed/production/ViiperUde/ViiperUde.inf signed/runtime/ViiperUde.inf
+                  Copy-Item signed/production/ViiperUde/ViiperUde.sys signed/runtime/ViiperUde.sys
+                  Copy-Item signed/production/ViiperUde/ViiperUde.cat signed/runtime/ViiperUde.cat
+                  Copy-Item signed/production/submission-manifest.json signed/runtime/submission-manifest.json
+                  ./native/udecx/tools/Test-ViiperUdeReleaseBundle.ps1 `
+                      -BundleDirectory signed/runtime `
+                      -ExpectedSourceRevision $env:GITHUB_SHA `
+                      -ProjectPath native/udecx/driver/ViiperUde.vcxproj `
+                      -RequireAuthenticode `
+                      -ExpectedSignerCertificateSHA256 $env:CERTIFICATE_SHA256
+
+            - name: Archive signed release outputs
+              shell: pwsh
+              env:
+                  CERTIFICATE_SHA256: ${{ secrets.WINDOWS_SIGNING_CERTIFICATE_SHA256 }}
+              run: |
+                  New-Item -ItemType Directory -Force signed/output | Out-Null
+                  Compress-Archive -LiteralPath signed/amd64/viiper.exe, signed/amd64/licenses.txt `
+                      -DestinationPath signed/output/viiper-windows-amd64.zip -CompressionLevel Optimal
+                  Compress-Archive -LiteralPath signed/arm64/viiper.exe, signed/arm64/licenses.txt `
+                      -DestinationPath signed/output/viiper-windows-arm64.zip -CompressionLevel Optimal
+                  Compress-Archive -Path signed/runtime/* `
+                      -DestinationPath signed/output/viiper-native-udecx-windows-amd64.zip -CompressionLevel Optimal
+                  Expand-Archive -LiteralPath signed/output/viiper-native-udecx-windows-amd64.zip `
+                      -DestinationPath signed/runtime-roundtrip
+                  ./native/udecx/tools/Test-ViiperUdeReleaseBundle.ps1 `
+                      -BundleDirectory signed/runtime-roundtrip `
+                      -ExpectedSourceRevision $env:GITHUB_SHA `
+                      -ProjectPath native/udecx/driver/ViiperUde.vcxproj `
+                      -RequireAuthenticode `
+                      -ExpectedSignerCertificateSHA256 $env:CERTIFICATE_SHA256
+
+            - name: Upload signed x64 broker release input
+              uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+              with:
+                  name: VIIPER-windows-amd64-authenticode-${{ github.sha }}
+                  path: signed/output/viiper-windows-amd64.zip
+                  if-no-files-found: error
+                  retention-days: 30
+
+            - name: Upload signed ARM64 broker release input
+              uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+              with:
+                  name: VIIPER-windows-arm64-authenticode-${{ github.sha }}
+                  path: signed/output/viiper-windows-arm64.zip
+                  if-no-files-found: error
+                  retention-days: 30
+
+            - name: Upload validated signed native runtime bundle
+              uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+              with:
+                  name: VIIPER-native-udecx-authenticode-${{ github.sha }}
+                  path: signed/output/viiper-native-udecx-windows-amd64.zip
+                  if-no-files-found: error
+                  retention-days: 30
+
     build:
+        needs: release-policy
         uses: ./.github/workflows/build_base.yml
         secrets: inherit
         with:
@@ -27,6 +390,7 @@ jobs:
 
     client-libraries:
         name: Client library smoke builds and pack
+        needs: release-policy
         uses: ./.github/workflows/clients_ci.yml
         with:
             artifact_suffix: "-Release"
@@ -35,18 +399,42 @@ jobs:
 
     create-release:
         name: Create Release
-        needs: [build, generate-changelog, client-libraries]
-        runs-on: ubuntu-latest
+        needs: [release-policy, native-validation, native-package-transaction, native-production-provenance, native-user-mode-signing, build, generate-changelog, client-libraries]
+        permissions:
+            actions: read
+            attestations: write
+            contents: write
+            id-token: write
+        runs-on: ubuntu-24.04
         steps:
             - name: Checkout code
-              uses: actions/checkout@v6
+              uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
               with:
                   fetch-depth: 0
 
-            - name: Download all artifacts
-              uses: actions/download-artifact@v8
+            - name: Download release build artifacts
+              uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
               with:
                   path: artifacts
+                  pattern: "*-Release"
+
+            - name: Download Authenticode-signed x64 broker release input
+              uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+              with:
+                  name: VIIPER-windows-amd64-authenticode-${{ github.sha }}
+                  path: signed-windows-amd64
+
+            - name: Download Authenticode-signed ARM64 broker release input
+              uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+              with:
+                  name: VIIPER-windows-arm64-authenticode-${{ github.sha }}
+                  path: signed-windows-arm64
+
+            - name: Download validated Authenticode native runtime bundle
+              uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+              with:
+                  name: VIIPER-native-udecx-authenticode-${{ github.sha }}
+                  path: signed-native-runtime
 
             - name: Organize and rename artifacts
               shell: bash
@@ -56,6 +444,10 @@ jobs:
                   for dir in artifacts/*; do
                     if [ -d "$dir" ]; then
                       base="$(basename "$dir")"
+                      if [[ "$base" == 'VIIPER-windows-amd64-Release' ||
+                            "$base" == 'VIIPER-windows-arm64-Release' ]]; then
+                        continue
+                      fi
                       # Strip optional suffix from artifact name for filenames
                       name_no_suffix="${base%-Release}"
                       for file in "$dir"/*; do
@@ -77,7 +469,57 @@ jobs:
                       done
                     fi
                   done
+                  require_exact_artifact() {
+                    local root="$1"
+                    local filename="$2"
+                    local destination="$3"
+                    mapfile -t actual < <(find "$root" -type f -printf '%P\n' | sort)
+                    if [[ "${#actual[@]}" -ne 1 || "${actual[0]}" != "$filename" ]]; then
+                      echo "::error::${root} must contain exactly ${filename}."
+                      exit 1
+                    fi
+                    cp "$root/$filename" "release_files/$destination"
+                  }
+                  require_exact_artifact \
+                    signed-windows-amd64 viiper-windows-amd64.zip viiper-windows-amd64.zip
+                  require_exact_artifact \
+                    signed-windows-arm64 viiper-windows-arm64.zip viiper-windows-arm64.zip
+                  require_exact_artifact \
+                    signed-native-runtime viiper-native-udecx-windows-amd64.zip \
+                    viiper-native-udecx-windows-amd64.zip
                   ls -la release_files/
+
+            - name: Recheck signed archive allowlists before publication
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  expected_broker=(licenses.txt viiper.exe)
+                  for architecture in amd64 arm64; do
+                    archive="release_files/viiper-windows-${architecture}.zip"
+                    mapfile -t actual < <(unzip -Z1 "$archive" | sort)
+                    if ! diff -u \
+                      <(printf '%s\n' "${expected_broker[@]}") \
+                      <(printf '%s\n' "${actual[@]}"); then
+                      echo "::error::The signed ${architecture} broker archive has unexpected files."
+                      exit 1
+                    fi
+                  done
+                  expected_runtime=(
+                    ViiperUde.cat
+                    ViiperUde.inf
+                    ViiperUde.sys
+                    ViiperUdeCtl.exe
+                    submission-manifest.json
+                    viiper.exe
+                  )
+                  mapfile -t archived < <(
+                    unzip -Z1 release_files/viiper-native-udecx-windows-amd64.zip | sort)
+                  if ! diff -u \
+                    <(printf '%s\n' "${expected_runtime[@]}") \
+                    <(printf '%s\n' "${archived[@]}"); then
+                    echo '::error::The validated native runtime archive has unexpected files.'
+                    exit 1
+                  fi
 
             - name: Extract build info
               id: build_info
@@ -88,17 +530,48 @@ jobs:
                   echo "sha=$(echo ${GITHUB_SHA} | cut -c1-7)" >> $GITHUB_OUTPUT
                   TAG_NAME=${GITHUB_REF#refs/tags/}
                   echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
-                  GIT_VERSION=$(git describe --tags --match "v[0-9]*.[0-9]*.[0-9]*" --always || echo "")
-                  if [[ ! $GIT_VERSION =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
-                    COMMIT_COUNT=$(git rev-list --count HEAD)
-                    GIT_VERSION="v0.0.0-${COMMIT_COUNT}-${GITHUB_SHA:0:7}"
-                  fi
+                  GIT_VERSION="$TAG_NAME"
                   echo "version=$GIT_VERSION" >> $GITHUB_OUTPUT
                   echo "Version from git: $GIT_VERSION"
 
+            - name: Create deterministic release checksums
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  expected=(
+                    viiper-cpp-client-library-headers.zip
+                    viiper-csharp-client-library-nupkg.nupkg
+                    viiper-libVIIPER-linux-amd64.zip
+                    viiper-libVIIPER-windows-amd64.zip
+                    viiper-linux-amd64.tar.gz
+                    viiper-linux-arm64.tar.gz
+                    viiper-native-udecx-windows-amd64.zip
+                    viiper-rust-client-library.crate
+                    viiper-typescript-client-library.tgz
+                    viiper-windows-amd64.zip
+                    viiper-windows-arm64.zip
+                  )
+                  mapfile -t actual < <(find release_files -maxdepth 1 -type f -printf '%f\n' | sort)
+                  if ! diff -u <(printf '%s\n' "${expected[@]}") <(printf '%s\n' "${actual[@]}"); then
+                    echo "::error::Release staging contained a missing or unexpected artifact."
+                    exit 1
+                  fi
+                  (
+                    cd release_files
+                    find . -maxdepth 1 -type f ! -name SHA256SUMS -print0 |
+                      sort -z |
+                      xargs -0 sha256sum |
+                      sed 's#  \./#  #'
+                  ) > release_files/SHA256SUMS
+
+            - name: Attest release artifact provenance
+              uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+              with:
+                  subject-path: release_files/*
+
             - name: Create Release
               id: create_release
-              uses: softprops/action-gh-release@v3
+              uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3
               with:
                   tag_name: ${{ steps.build_info.outputs.tag_name }}
                   name: "VIIPER ${{ steps.build_info.outputs.version }}"
@@ -135,16 +608,18 @@ jobs:
     publish-client-registries:
         name: Publish client libraries (best effort)
         needs: create-release
-        runs-on: ubuntu-latest
+        runs-on: ubuntu-24.04
         continue-on-error: true
         permissions:
+            actions: read
             contents: read
             id-token: write
         steps:
             - name: Download all artifacts
-              uses: actions/download-artifact@v8
+              uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
               with:
                   path: artifacts
+                  pattern: "*-Release"
 
             - name: Organize client library artifacts
               shell: bash
@@ -178,9 +653,9 @@ jobs:
             - name: Set up Node.js (for npm publish)
               id: setup_node
               continue-on-error: true
-              uses: actions/setup-node@v6
+              uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
               with:
-                  node-version: "24"
+                  node-version: "24.11.1"
                   registry-url: "https://registry.npmjs.org/"
 
             - name: Publish TypeScript client library to npm
@@ -231,15 +706,15 @@ jobs:
               id: setup_dotnet
               if: ${{ steps.nuget_config.outputs.enabled == 'true' }}
               continue-on-error: true
-              uses: actions/setup-dotnet@v5
+              uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
               with:
-                  dotnet-version: "8.0.x"
+                  dotnet-version: "8.0.419"
 
             - name: NuGet login (OIDC to temporary API key)
               id: nuget_login
               if: ${{ steps.nuget_config.outputs.enabled == 'true' && steps.setup_dotnet.outcome == 'success' }}
               continue-on-error: true
-              uses: NuGet/login@v1.2.0
+              uses: NuGet/login@8d196754b4036150537f80ac539e15c2f1028841 # v1.2.0
               with:
                   user: ${{ secrets.NUGET_USER }}
 
@@ -261,13 +736,15 @@ jobs:
             - name: Set up Rust (for crates.io publish)
               id: setup_rust
               continue-on-error: true
-              uses: dtolnay/rust-toolchain@stable
+              uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+              with:
+                  toolchain: "1.97.1"
 
             - name: Authenticate with crates.io (OIDC)
               id: crates_io_auth
               if: ${{ steps.setup_rust.outcome == 'success' }}
               continue-on-error: true
-              uses: rust-lang/crates-io-auth-action@v1.0.4
+              uses: rust-lang/crates-io-auth-action@bbd81622f20ce9e2dd9622e3218b975523e45bbe # v1.0.4
 
             - name: Publish Rust client library to crates.io
               id: publish_crates

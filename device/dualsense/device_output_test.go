@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/hex"
+	"io"
 	"testing"
 
 	"github.com/Alia5/VIIPER/usbip"
@@ -105,6 +106,35 @@ func TestMicrophoneInUsesUSBIPEndpointNumber(t *testing.T) {
 	}
 	if !bytes.Equal(packet, frame[:USBMicrophonePacketSize]) {
 		t.Fatal("USB/IP endpoint 2 did not return queued microphone PCM")
+	}
+}
+
+func TestNativeMicrophoneInWritesCallerBuffer(t *testing.T) {
+	dev, err := New(nil)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	dev.SetInterfaceAltSetting(InterfaceMicrophone, 1)
+	frame := make([]byte, USBMicrophoneClientFrameSize)
+	for index := range frame {
+		frame[index] = byte(index*17 + 5)
+	}
+	for range microphoneTargetClientFrames {
+		dev.QueueMicrophonePCMFrame(frame)
+	}
+
+	packet := make([]byte, USBMicrophonePacketSize)
+	actual, err := dev.ReadIsochronousInput(
+		context.Background(), uint32(EndpointMicrophoneIn), packet)
+	if err != nil || actual != len(packet) {
+		t.Fatalf("native microphone read len=%d err=%v", actual, err)
+	}
+	if !bytes.Equal(packet, frame[:len(packet)]) {
+		t.Fatal("native microphone read changed caller-buffer PCM")
+	}
+	if _, err = dev.ReadIsochronousInput(context.Background(),
+		uint32(EndpointMicrophoneIn), packet[:len(packet)-1]); err != io.ErrShortBuffer {
+		t.Fatalf("short native microphone buffer error=%v", err)
 	}
 }
 
@@ -591,6 +621,43 @@ func TestDualSenseOutputSnapshotKeepsIndependentGameFieldsAtomic(t *testing.T) {
 		snapshot[47] != 0 {
 		t.Fatalf("explicit game LED release did not relinquish visual ownership: % x",
 			snapshot)
+	}
+}
+
+func TestDualSenseLateOutputConsumerReceivesFinalExplicitState(t *testing.T) {
+	device, err := New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report := make([]byte, OutputReportSize)
+	report[0] = ReportIDOutput
+	report[1] = outputFlag0RumbleMask
+	report[3] = 0
+	report[4] = 0
+	report[2] = outputFlag1Lightbar | outputFlag1PlayerLeds
+	report[outputPlayerLedsOffset] = 0x04
+	report[outputLightbarOffset] = 0x12
+	report[outputLightbarOffset+1] = 0x34
+	report[outputLightbarOffset+2] = 0x56
+	if !device.handleOutputReport(report) {
+		t.Fatal("final output report was rejected")
+	}
+
+	var replayed []OutputState
+	device.SetOutputCallback(func(state OutputState) {
+		replayed = append(replayed, state)
+	})
+	if len(replayed) != 1 {
+		t.Fatalf("late consumer replay count=%d want=1", len(replayed))
+	}
+	state := replayed[0]
+	if state.RumbleSmall != 0 || state.RumbleLarge != 0 ||
+		state.PlayerLeds != 0x04 || state.LedRed != 0x12 ||
+		state.LedGreen != 0x34 || state.LedBlue != 0x56 {
+		t.Fatalf("late consumer received wrong final state: %+v", state)
+	}
+	if !bytes.Equal(state.RawOutputReport[:], report) {
+		t.Fatal("late consumer did not receive the exact final report")
 	}
 }
 

@@ -44,7 +44,7 @@ func TestBusDeviceAdd(t *testing.T) {
 			},
 			pathParams:       map[string]string{"id": "80001"},
 			payload:          `{"type": "xbox360"}`,
-			expectedResponse: `{"busId":80001, "devId": "1", "deviceSpecific": {"subType": 1}, "vid":"0x045e", "pid":"0x028e", "type":"xbox360"}`,
+			expectedResponse: `{"busId":80001, "devId": "1", "deviceSpecific": {"subType": 1}, "vid":"0x045e", "pid":"0x028e", "type":"xbox360", "transport":"usbip"}`,
 		},
 		{
 			name: "add device to existing bus with device specific args",
@@ -59,7 +59,7 @@ func TestBusDeviceAdd(t *testing.T) {
 			},
 			pathParams:       map[string]string{"id": "80001"},
 			payload:          `{"type": "xbox360", "deviceSpecific":{"subType": 7}}`,
-			expectedResponse: `{"busId":80001, "devId": "1", "deviceSpecific": {"subType": 7}, "vid":"0x045e", "pid":"0x028e", "type":"xbox360"}`,
+			expectedResponse: `{"busId":80001, "devId": "1", "deviceSpecific": {"subType": 7}, "vid":"0x045e", "pid":"0x028e", "type":"xbox360", "transport":"usbip"}`,
 		},
 		{
 			name: "invalid device specific args",
@@ -143,7 +143,7 @@ func TestBusDeviceAdd(t *testing.T) {
 			},
 			pathParams:       map[string]string{"id": "80005"},
 			payload:          `{"type": "xbox360"}`,
-			expectedResponse: `{"busId":80005, "devId": "1", "deviceSpecific": {"subType":1}, "vid":"0x045e", "pid":"0x028e", "type":"xbox360"}`,
+			expectedResponse: `{"busId":80005, "devId": "1", "deviceSpecific": {"subType":1}, "vid":"0x045e", "pid":"0x028e", "type":"xbox360", "transport":"usbip"}`,
 		},
 		{
 			name: "autoattach fails returns error",

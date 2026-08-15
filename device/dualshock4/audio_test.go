@@ -118,6 +118,29 @@ func TestAudioInterfacesTrackAlternateSettings(t *testing.T) {
 	assert.Equal(t, make([]byte, USBMicrophonePacketSize), microphone)
 }
 
+func TestNativeMicrophoneInWritesCallerBuffer(t *testing.T) {
+	dev, err := New(nil)
+	require.NoError(t, err)
+	dev.SetInterfaceAltSetting(InterfaceMicrophone, 1)
+	frame := make([]byte, USBMicrophoneClientFrameSize)
+	for index := range frame {
+		frame[index] = byte(index*13 + 3)
+	}
+	for range microphoneTargetClientFrames {
+		dev.QueueMicrophonePCMFrame(frame)
+	}
+
+	packet := make([]byte, USBMicrophonePacketSize)
+	actual, err := dev.ReadIsochronousInput(
+		context.Background(), uint32(EndpointMicrophoneIn), packet)
+	require.NoError(t, err)
+	require.Equal(t, len(packet), actual)
+	assert.Equal(t, frame[:len(packet)], packet)
+	_, err = dev.ReadIsochronousInput(context.Background(),
+		uint32(EndpointMicrophoneIn), packet[:len(packet)-1])
+	assert.ErrorIs(t, err, io.ErrShortBuffer)
+}
+
 func TestSpeakerTransferIsForwardedWithoutLoopbackCapture(t *testing.T) {
 	dev, err := New(nil)
 	require.NoError(t, err)
@@ -165,7 +188,7 @@ func TestDuplexWriterFramesSpeakerPCM(t *testing.T) {
 	assert.Equal(t, pcm, payload)
 
 	require.NoError(t, client.Close())
-	writer.Stop()
+	require.NoError(t, writer.Stop())
 }
 
 func TestAudioInterfaceTransitionsDropPreviousGeneration(t *testing.T) {
@@ -213,7 +236,7 @@ func TestAudioInterfaceTransitionsDropPreviousGeneration(t *testing.T) {
 	dev.SetSpeakerCallback(nil)
 	dev.SetSpeakerResetCallback(nil)
 	require.NoError(t, client.Close())
-	writer.Stop()
+	require.NoError(t, writer.Stop())
 }
 
 func TestEndpointResetDropsSpeakerAndMicrophoneWithoutChangingAlt(t *testing.T) {
@@ -260,7 +283,94 @@ func TestEndpointResetDropsSpeakerAndMicrophoneWithoutChangingAlt(t *testing.T) 
 	dev.SetSpeakerCallback(nil)
 	dev.SetSpeakerResetCallback(nil)
 	require.NoError(t, client.Close())
-	writer.Stop()
+	require.NoError(t, writer.Stop())
+}
+
+func TestSpeakerRejectsPublicationFromPreResetRevision(t *testing.T) {
+	device, err := New(nil)
+	require.NoError(t, err)
+	device.SetInterfaceAltSetting(InterfaceSpeaker, 1)
+	published := 0
+	device.SetSpeakerCallback(func([]byte) { published++ })
+
+	device.mtx.Lock()
+	revision := device.speakerRevision
+	device.mtx.Unlock()
+	device.ResetEndpoint(EndpointAudioOut)
+	assert.False(t, device.publishSpeakerPCM(revision, []byte{1, 2, 3, 4}))
+	assert.Equal(t, 0, published)
+}
+
+func TestSpeakerResetWaitsForInFlightDevicePublication(t *testing.T) {
+	device, err := New(nil)
+	require.NoError(t, err)
+	device.SetInterfaceAltSetting(InterfaceSpeaker, 1)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	device.SetSpeakerCallback(func([]byte) {
+		close(entered)
+		<-release
+	})
+	resetCalls := 0
+	device.SetSpeakerResetCallback(func() { resetCalls++ })
+
+	transferDone := make(chan struct{})
+	go func() {
+		device.HandleTransfer(context.Background(), EndpointAudioOut,
+			usbip.DirOut, []byte{1, 2, 3, 4})
+		close(transferDone)
+	}()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("speaker callback did not start")
+	}
+	resetDone := make(chan struct{})
+	go func() {
+		device.ResetEndpoint(EndpointAudioOut)
+		close(resetDone)
+	}()
+	select {
+	case <-resetDone:
+		t.Fatal("endpoint reset crossed an in-flight speaker publication")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case <-resetDone:
+	case <-time.After(time.Second):
+		t.Fatal("endpoint reset did not finish after speaker publication")
+	}
+	<-transferDone
+	assert.Equal(t, 1, resetCalls)
+}
+
+func TestDualShock4WriterFaultsOnOrderedSaturationWithoutEviction(t *testing.T) {
+	server, client := net.Pipe()
+	writer := newDualShock4OutputWriter(server, StreamFrameVersionV3)
+	for marker := 0; marker < cap(writer.control); marker++ {
+		writer.EnqueueControl(StreamFrameOutputState, []byte{byte(marker)})
+	}
+	writer.EnqueueControl(StreamFrameOutputState, []byte{0xFF})
+	depth := cap(writer.control)
+	require.Len(t, writer.control, depth)
+	for index := 0; index < depth; index++ {
+		frame := <-writer.control
+		decrementDualShock4Uint64(&writer.telemetry.orderedQueueDepth)
+		require.Equal(t, []byte{byte(index)}, frame.payload)
+	}
+	state := writer.telemetry.snapshot()
+	assert.Equal(t, uint64(depth+1), state.OrderedReceived)
+	assert.Equal(t, uint64(depth), state.OrderedEnqueued)
+	assert.Equal(t, uint64(1), state.OrderedRejected)
+	assert.Equal(t, uint64(1), state.OrderedSaturations)
+	assert.False(t, state.Active)
+	assert.False(t, writer.accepting.Load())
+	buffer := make([]byte, 1)
+	count, err := client.Read(buffer)
+	assert.Zero(t, count)
+	assert.Error(t, err, "saturation must close the owning stream")
+	require.NoError(t, client.Close())
 }
 
 type dualShock4WriteGateConn struct {
@@ -309,7 +419,7 @@ func TestSpeakerResetWaitsForInFlightWrite(t *testing.T) {
 	}
 
 	require.NoError(t, client.Close())
-	writer.Stop()
+	require.NoError(t, writer.Stop())
 }
 
 type dualShock4DeadlineBlockConn struct {
@@ -367,14 +477,14 @@ func TestSpeakerResetBoundsBlockedWriteAndDropsQueuedGeneration(t *testing.T) {
 		Conn: server, started: make(chan struct{}), unblock: make(chan struct{}),
 	}
 	writer := newDualShock4OutputWriter(conn, StreamFrameVersionV3)
-	writer.EnqueueAudio(StreamFrameSpeakerPCM, []byte{0x11})
+	writer.EnqueueAudio(StreamFrameSpeakerPCM, []byte{0x11, 0x11, 0x11, 0x11})
 	go writer.Run()
 	select {
 	case <-conn.started:
 	case <-time.After(time.Second):
 		t.Fatal("speaker writer did not enter the blocked write")
 	}
-	writer.EnqueueAudio(StreamFrameSpeakerPCM, []byte{0x22})
+	writer.EnqueueAudio(StreamFrameSpeakerPCM, []byte{0x22, 0x22, 0x22, 0x22})
 
 	resetStarted := time.Now()
 	resetDone := make(chan struct{})
@@ -409,7 +519,9 @@ func TestSpeakerResetBoundsBlockedWriteAndDropsQueuedGeneration(t *testing.T) {
 	assert.GreaterOrEqual(t, closeCount, 1,
 		"timed-out stream was not closed for reconnect")
 	assert.Empty(t, writer.audio)
-	writer.EnqueueAudio(StreamFrameSpeakerPCM, []byte{0x33})
+	assert.Equal(t, uint64(1),
+		writer.telemetry.snapshot().MediaWriteFailures)
+	writer.EnqueueAudio(StreamFrameSpeakerPCM, []byte{0x33, 0x33, 0x33, 0x33})
 	assert.Empty(t, writer.audio,
 		"failed writer accepted audio instead of waiting for reconnect")
 

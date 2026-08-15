@@ -7,12 +7,34 @@ import (
 	"time"
 )
 
-// deviceStreamKey identifies the lifetime of one virtual device. Bus and
-// device identifiers can eventually be reused, so the monotonically increasing
-// generation in deviceStreamOwnership remains authoritative across reconnects.
+// deviceStreamKey identifies one exact virtual-device lifetime. Bus and device
+// identifiers can be reused, so the bus-owned cancellation channel fences a
+// recreated successor from stale stream claims and cleanup timers. The local
+// generation remains authoritative only for reconnects within that lifetime.
 type deviceStreamKey struct {
-	busID uint32
-	devID string
+	busID    uint32
+	devID    string
+	lifetime <-chan struct{}
+}
+
+func newDeviceStreamKey(busID uint32, devID string, deviceContext context.Context) deviceStreamKey {
+	var lifetime <-chan struct{}
+	if deviceContext != nil {
+		lifetime = deviceContext.Done()
+	}
+	return deviceStreamKey{busID: busID, devID: devID, lifetime: lifetime}
+}
+
+func deviceStreamLifetimeEnded(key deviceStreamKey) bool {
+	if key.lifetime == nil {
+		return false
+	}
+	select {
+	case <-key.lifetime:
+		return true
+	default:
+		return false
+	}
 }
 
 // deviceStreamCoordinator gives each virtual device exactly one current API
@@ -48,17 +70,57 @@ type deviceStreamLease struct {
 	finishOnce   sync.Once
 }
 
-func (c *deviceStreamCoordinator) claim(key deviceStreamKey,
-	conn net.Conn) *deviceStreamLease {
-	c.mu.Lock()
+func (c *deviceStreamCoordinator) stateForKeyLocked(
+	key deviceStreamKey,
+) *deviceStreamOwnership {
 	if c.streams == nil {
 		c.streams = make(map[deviceStreamKey]*deviceStreamOwnership)
 	}
 	state := c.streams[key]
-	if state == nil {
-		state = &deviceStreamOwnership{}
-		c.streams[key] = state
+	if state != nil {
+		return state
 	}
+
+	state = &deviceStreamOwnership{}
+	c.streams[key] = state
+	if key.lifetime != nil {
+		go c.watchLifetime(key, state)
+	}
+	return state
+}
+
+// watchLifetime makes device removal authoritative even when a handler is
+// blocked in a transport read. It removes only the state object created for
+// this exact lifetime, then closes its current connection outside the
+// coordinator lock so the handler can return and release its lease.
+func (c *deviceStreamCoordinator) watchLifetime(
+	key deviceStreamKey, expected *deviceStreamOwnership,
+) {
+	<-key.lifetime
+
+	c.mu.Lock()
+	state := c.streams[key]
+	if state != expected {
+		c.mu.Unlock()
+		return
+	}
+	conn := state.conn
+	c.retireLocked(key, state)
+	c.mu.Unlock()
+
+	if conn != nil {
+		_ = conn.Close()
+	}
+}
+
+func (c *deviceStreamCoordinator) claim(key deviceStreamKey,
+	conn net.Conn) *deviceStreamLease {
+	c.mu.Lock()
+	if deviceStreamLifetimeEnded(key) {
+		c.mu.Unlock()
+		return nil
+	}
+	state := c.stateForKeyLocked(key)
 
 	if state.cleanupTimer != nil {
 		state.cleanupTimer.Stop()
@@ -92,6 +154,20 @@ func (c *deviceStreamCoordinator) claim(key deviceStreamKey,
 	}
 
 	return lease
+}
+
+func (c *deviceStreamCoordinator) retireLocked(
+	key deviceStreamKey, state *deviceStreamOwnership,
+) {
+	if state.finalizeTimer != nil {
+		state.finalizeTimer.Stop()
+		state.finalizeTimer = nil
+	}
+	if state.cleanupTimer != nil {
+		state.cleanupTimer.Stop()
+		state.cleanupTimer = nil
+	}
+	delete(c.streams, key)
 }
 
 // waitForTurn waits until the displaced handler has returned. It reports false
@@ -143,12 +219,21 @@ func (l *deviceStreamLease) finish(reconnectGrace, cleanupDelay time.Duration,
 		state.done = nil
 		generation := state.generation
 		close(l.done)
+		if deviceStreamLifetimeEnded(l.key) {
+			c.retireLocked(l.key, state)
+			c.mu.Unlock()
+			return
+		}
 		state.finalizeTimer = time.AfterFunc(reconnectGrace, func() {
 			c.mu.Lock()
 			defer c.mu.Unlock()
 			currentState := c.streams[l.key]
 			if currentState == nil || currentState.active ||
 				currentState.generation != generation || currentState.finalized {
+				return
+			}
+			if deviceStreamLifetimeEnded(l.key) {
+				c.retireLocked(l.key, currentState)
 				return
 			}
 			currentState.finalizeTimer = nil
@@ -173,6 +258,10 @@ func (l *deviceStreamLease) finish(reconnectGrace, cleanupDelay time.Duration,
 				return
 			}
 			currentState.cleanupTimer = nil
+			if deviceStreamLifetimeEnded(l.key) {
+				c.retireLocked(l.key, currentState)
+				return
+			}
 			if !currentState.finalized {
 				if currentState.finalizeTimer != nil {
 					currentState.finalizeTimer.Stop()
@@ -192,6 +281,9 @@ func (l *deviceStreamLease) finish(reconnectGrace, cleanupDelay time.Duration,
 			}
 			if cleanup != nil {
 				cleanup()
+			}
+			if deviceStreamLifetimeEnded(l.key) {
+				c.retireLocked(l.key, currentState)
 			}
 		})
 		c.mu.Unlock()
@@ -213,6 +305,9 @@ func (l *deviceStreamLease) abandon() {
 			state.active = false
 			state.conn = nil
 			state.done = nil
+			if deviceStreamLifetimeEnded(l.key) {
+				c.retireLocked(l.key, state)
+			}
 		}
 		c.mu.Unlock()
 	})
@@ -223,14 +318,11 @@ func (l *deviceStreamLease) abandon() {
 func (c *deviceStreamCoordinator) scheduleCleanup(key deviceStreamKey,
 	delay time.Duration, deviceContext context.Context, cleanup func()) {
 	c.mu.Lock()
-	if c.streams == nil {
-		c.streams = make(map[deviceStreamKey]*deviceStreamOwnership)
+	if deviceStreamLifetimeEnded(key) {
+		c.mu.Unlock()
+		return
 	}
-	state := c.streams[key]
-	if state == nil {
-		state = &deviceStreamOwnership{}
-		c.streams[key] = state
-	}
+	state := c.stateForKeyLocked(key)
 	if state.active {
 		c.mu.Unlock()
 		return
@@ -248,6 +340,10 @@ func (c *deviceStreamCoordinator) scheduleCleanup(key deviceStreamKey,
 			return
 		}
 		current.cleanupTimer = nil
+		if deviceStreamLifetimeEnded(key) {
+			c.retireLocked(key, current)
+			return
+		}
 		if deviceContext != nil {
 			select {
 			case <-deviceContext.Done():
@@ -257,6 +353,9 @@ func (c *deviceStreamCoordinator) scheduleCleanup(key deviceStreamKey,
 		}
 		if cleanup != nil {
 			cleanup()
+		}
+		if deviceStreamLifetimeEnded(key) {
+			c.retireLocked(key, current)
 		}
 	})
 	c.mu.Unlock()

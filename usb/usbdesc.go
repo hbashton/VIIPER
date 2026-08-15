@@ -253,6 +253,69 @@ func (d Descriptor) Bytes() []byte {
 	return b.Bytes()
 }
 
+// ConfigurationBytes builds the complete active USB configuration descriptor,
+// including IADs, alternate interfaces, HID/class descriptors, and endpoints.
+// USB/IP emits these logical bytes directly. The native UdeCx host also uses
+// this encoder after applying only the endpoint scheduling projection required
+// by USBHUB3 for full-speed devices; interface topology and class data remain
+// identical.
+func (d Descriptor) ConfigurationBytes() ([]byte, error) {
+	var b bytes.Buffer
+	configValue := d.Configuration.BConfigurationValue
+	if configValue == 0 {
+		configValue = 1
+	}
+	attrs := d.Configuration.BMAttributes
+	if attrs == 0 {
+		attrs = 0x80 // Bus powered.
+	}
+	maxPower := d.Configuration.BMaxPower
+	if maxPower == 0 {
+		maxPower = 50 // 100 mA, expressed in 2 mA units.
+	}
+	h := ConfigHeader{
+		BNumInterfaces:      d.NumInterfaces(),
+		BConfigurationValue: configValue,
+		IConfiguration:      d.Configuration.IConfiguration,
+		BMAttributes:        attrs,
+		BMaxPower:           maxPower,
+	}
+	h.Write(&b)
+	for _, iface := range d.Interfaces {
+		for _, iad := range d.Associations {
+			if iad.BFirstInterface == iface.Descriptor.BInterfaceNumber &&
+				iface.Descriptor.BAlternateSetting == 0 {
+				iad.Write(&b)
+			}
+		}
+		iface.Descriptor.Write(&b)
+		if iface.HID != nil {
+			hidDescriptor, err := iface.HID.DescriptorBytes()
+			if err != nil {
+				return nil, fmt.Errorf("build HID descriptor for interface %d: %w",
+					iface.Descriptor.BInterfaceNumber, err)
+			}
+			b.Write([]byte(hidDescriptor))
+		}
+		for _, classDescriptor := range iface.ClassDescriptors {
+			b.Write([]byte(classDescriptor.Bytes()))
+		}
+		for _, endpoint := range iface.Endpoints {
+			endpoint.Write(&b)
+			for _, classDescriptor := range endpoint.ClassDescriptors {
+				b.Write([]byte(classDescriptor.Bytes()))
+			}
+		}
+	}
+
+	data := b.Bytes()
+	if len(data) > 0xffff {
+		return nil, fmt.Errorf("USB configuration descriptor exceeds 65535 bytes: %d", len(data))
+	}
+	binary.LittleEndian.PutUint16(data[2:4], uint16(len(data)))
+	return append([]byte(nil), data...), nil
+}
+
 // ConfigHeader represents the USB configuration descriptor header (9 bytes).
 type ConfigHeader struct {
 	WTotalLength        uint16 // LE, to be patched after building

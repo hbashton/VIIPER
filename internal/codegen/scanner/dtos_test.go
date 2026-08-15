@@ -20,13 +20,14 @@ func TestScanDTOs(t *testing.T) {
 
 	// Expected DTOs
 	expectedDTOs := map[string]bool{
-		"APIError":             true,
-		"BusListResponse":      true,
-		"BusCreateResponse":    true,
-		"BusRemoveResponse":    true,
-		"Device":               true,
-		"DevicesListResponse":  true,
-		"DeviceRemoveResponse": true,
+		"APIError":                     true,
+		"BusListResponse":              true,
+		"BusCreateResponse":            true,
+		"BusRemoveResponse":            true,
+		"Device":                       true,
+		"DevicesListResponse":          true,
+		"DeviceRemoveResponse":         true,
+		"NativeUDEDeviceRemoveRequest": true,
 	}
 
 	foundDTOs := make(map[string]bool)

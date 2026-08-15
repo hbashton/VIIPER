@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -27,6 +28,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+var streamOperationBusID atomic.Uint32
 
 func TestOpenStream_NotSupportedWithMockTransport(t *testing.T) {
 	c := testClient(map[string]string{}, nil)
@@ -105,13 +108,11 @@ func TestDeviceStream_Operations(t *testing.T) {
 
 	tests := []struct {
 		name               string
-		busID              uint32
 		customRegistration bool
 		op                 operation
 	}{
 		{
-			name:  "read deadline timeout",
-			busID: 201,
+			name: "read deadline timeout",
 			op: func(t *testing.T, stream *viiperclient.DeviceStream) {
 				// Force immediate timeout by setting deadline in the past.
 				require.NoError(t, stream.SetReadDeadline(time.Now().Add(-10*time.Millisecond)))
@@ -128,7 +129,6 @@ func TestDeviceStream_Operations(t *testing.T) {
 		},
 		{
 			name:               "closed stream read/write errors",
-			busID:              202,
 			customRegistration: true,
 			op: func(t *testing.T, stream *viiperclient.DeviceStream) {
 				require.NoError(t, stream.Close())
@@ -145,6 +145,10 @@ func TestDeviceStream_Operations(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// The server deliberately keeps a disconnected device alive for its
+			// reconnection grace period. A fresh ID makes -count repetitions
+			// independent without weakening that production lifecycle behavior.
+			busID := 200_000 + streamOperationBusID.Add(1)
 			usbSrv := usb.New(usb.ServerConfig{Addr: "127.0.0.1:0"}, slog.Default(), log.NewRaw(nil))
 			ln, err := net.Listen("tcp", "127.0.0.1:0")
 			require.NoError(t, err)
@@ -168,12 +172,12 @@ func TestDeviceStream_Operations(t *testing.T) {
 			require.NoError(t, apiSrv.Start())
 			defer apiSrv.Close() //nolint:errcheck
 
-			b, err := virtualbus.NewWithBusID(tt.busID)
+			b, err := virtualbus.NewWithBusID(busID)
 			require.NoError(t, err)
 			require.NoError(t, usbSrv.AddBus(b))
 
 			c := viiperclient.New(addr)
-			stream, devResp, err := c.AddDeviceAndConnect(context.Background(), tt.busID, "xbox360", nil)
+			stream, devResp, err := c.AddDeviceAndConnect(context.Background(), busID, "xbox360", nil)
 			require.NoError(t, err)
 			require.NotNil(t, devResp)
 			require.NotNil(t, stream)
@@ -215,10 +219,10 @@ func TestEncryptedStream(t *testing.T) {
 		}
 
 		sessionKey := auth.DeriveSessionKey(key, serverNonce, clientNonce)
-		secureConn, err := auth.WrapConn(conn, sessionKey)
+		conn, err = auth.WrapServerConn(conn, sessionKey)
 		assert.NoError(t, err)
 
-		rr := bufio.NewReader(secureConn)
+		rr := bufio.NewReader(conn)
 		line, err := rr.ReadString('\x00')
 		if err != nil {
 			return

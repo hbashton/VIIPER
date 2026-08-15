@@ -68,12 +68,12 @@ func main() {
 
 	// Cleanup on exit
 	defer func() {
-		if _, err := api.DeviceRemoveCtx(ctx, stream.BusID, stream.DevID); err != nil {
+		if _, err := api.DeviceRemoveRegisteredCtx(ctx, addResp); err != nil {
 			fmt.Printf("DeviceRemove error: %v\n", err)
 		} else {
 			fmt.Printf("Removed device %d-%s\n", addResp.BusID, addResp.DevID)
 		}
-		if createdBus {
+		if createdBus && addResp.Transport != "native-ude" {
 			if _, err := api.BusRemoveCtx(ctx, busID); err != nil {
 				fmt.Printf("BusRemove error: %v\n", err)
 			} else {

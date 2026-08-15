@@ -12,11 +12,13 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Alia5/VIIPER/internal/server/api/auth"
 	apierror "github.com/Alia5/VIIPER/internal/server/api/error"
 	"github.com/Alia5/VIIPER/internal/server/usb"
+	"github.com/Alia5/VIIPER/internal/transport/udecx"
 	pusb "github.com/Alia5/VIIPER/usb"
 	"github.com/Alia5/VIIPER/viipertypes"
 )
@@ -31,6 +33,11 @@ type Server struct {
 	config        *ServerConfig
 	deviceStreams deviceStreamCoordinator
 }
+
+// DefaultListenAddress deliberately names one loopback interface. An empty
+// host (for example, ":3242") asks the operating system to listen on every
+// interface and must only be selected explicitly by an administrator.
+const DefaultListenAddress = "127.0.0.1:3242"
 
 // microphonePCMResetter is implemented by audio-capable virtual controllers.
 // Its reset is coordinated with stream ownership instead of individual device
@@ -48,6 +55,11 @@ const deviceStreamReconnectGrace = 250 * time.Millisecond
 // New creates a new ApiServer bound to a server.Server instance.
 func New(s *usb.Server, addr string, config ServerConfig, logger *slog.Logger) *Server {
 	cfg := config
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		addr = DefaultListenAddress
+	}
+	cfg.Addr = addr
 	a := &Server{
 		usbs:   s,
 		addr:   addr,
@@ -71,11 +83,12 @@ func (s *Server) Config() *ServerConfig { return s.config }
 // generation owner used for reconnects. A stream that claims the device before
 // the timeout atomically cancels this cleanup.
 func (s *Server) ScheduleDeviceCleanup(busID uint32, devID string,
-	deviceContext context.Context) {
-	key := deviceStreamKey{busID: busID, devID: devID}
+	deviceContext context.Context, nativeRegistration *udecx.DeviceRegistration) {
+	expected := cloneNativeRegistration(nativeRegistration)
+	key := newDeviceStreamKey(busID, devID, deviceContext)
 	s.deviceStreams.scheduleCleanup(key,
 		s.config.DeviceHandlerConnectTimeout, deviceContext, func() {
-			if err := s.usbs.RemoveDeviceByID(busID, devID); err != nil {
+			if err := s.removeRegisteredDevice(busID, devID, expected); err != nil {
 				s.logger.Error("timeout: failed to remove device",
 					"busID", busID, "deviceID", devID, "error", err)
 			} else {
@@ -83,6 +96,29 @@ func (s *Server) ScheduleDeviceCleanup(busID uint32, devID string,
 					"busID", busID, "deviceID", devID)
 			}
 		})
+}
+
+func cloneNativeRegistration(
+	registration *udecx.DeviceRegistration,
+) *udecx.DeviceRegistration {
+	if registration == nil {
+		return nil
+	}
+	copy := *registration
+	return &copy
+}
+
+func (s *Server) removeRegisteredDevice(
+	busID uint32, devID string, nativeRegistration *udecx.DeviceRegistration,
+) error {
+	if nativeRegistration != nil {
+		return s.usbs.RemoveNativeDeviceExact(busID, devID, *nativeRegistration)
+	}
+	if s.usbs.NativeTransportEnabled() {
+		return fmt.Errorf("%w: cleanup has no exact native registration for bus %d device %s",
+			usb.ErrNativeDeviceCorrelationMismatch, busID, devID)
+	}
+	return s.usbs.RemoveDeviceByID(busID, devID)
 }
 
 // Addr returns the actual address the server is listening on.
@@ -96,6 +132,9 @@ func (s *Server) Addr() string {
 
 // Start listens on the configured address and serves incoming API commands.
 func (s *Server) Start() error {
+	if err := validateSecurityConfiguration(s.addr, *s.config); err != nil {
+		return err
+	}
 	ln, err := net.Listen("tcp", s.addr)
 	if err != nil {
 		return err
@@ -107,6 +146,33 @@ func (s *Server) Start() error {
 	s.logger.Info("API listening", "addr", s.addr)
 	go s.serve()
 	return nil
+}
+
+func validateSecurityConfiguration(addr string, config ServerConfig) error {
+	passwordPresent := strings.TrimSpace(config.Password) != ""
+	if config.RequireLocalHostAuth && !passwordPresent {
+		return errors.New("API authentication is required for localhost, but no API credential is configured")
+	}
+	if !isLoopbackListenAddress(addr) && !passwordPresent {
+		return fmt.Errorf("API address %q may accept remote connections, but no API credential is configured", addr)
+	}
+	return nil
+}
+
+func isLoopbackListenAddress(addr string) bool {
+	host, _, err := net.SplitHostPort(strings.TrimSpace(addr))
+	if err != nil {
+		return false
+	}
+	host = strings.Trim(strings.TrimSpace(host), "[]")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	if zone := strings.LastIndexByte(host, '%'); zone >= 0 {
+		host = host[:zone]
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // Close stops the API server.
@@ -160,7 +226,7 @@ func (s *Server) writeOK(w io.Writer, rest string) {
 }
 
 func (s *Server) handleConn(conn net.Conn) {
-	defer conn.Close() //nolint:errcheck
+	defer func() { _ = conn.Close() }()
 
 	connCtx, connCancel := context.WithCancel(context.Background())
 	defer connCancel()
@@ -201,7 +267,7 @@ func (s *Server) handleConn(conn net.Conn) {
 		}
 
 		sessionKey := auth.DeriveSessionKey(key, serverNonce, clientNonce)
-		secConn, err := auth.WrapConn(conn, sessionKey)
+		secConn, err := auth.WrapServerConn(conn, sessionKey)
 		if err != nil {
 			connLogger.Error("wrap secure conn failed", "error", err)
 			return
@@ -273,7 +339,8 @@ func (s *Server) handleConn(conn net.Conn) {
 		// path. Keep that reader in front of the connection for the device
 		// handler; otherwise the first input/microphone frame of a reconnect can
 		// disappear in the handshake reader and stall framing indefinitely.
-		streamConn := &bufferedReadConn{Conn: conn, reader: r}
+		streamConn := newStreamLifetimeConn(
+			&bufferedReadConn{Conn: conn, reader: r})
 		busIDStr, ok := params["busId"]
 		if !ok {
 			s.writeError(w, apierror.ErrBadRequest("missing busId parameter"))
@@ -297,11 +364,13 @@ func (s *Server) handleConn(conn net.Conn) {
 		}
 		var dev pusb.Device
 		var devCtx context.Context
+		var devID uint32
 		metas := bus.GetAllDeviceMetas()
 		for _, meta := range metas {
 			if fmt.Sprintf("%d", meta.Meta.DevID) == devIDStr {
 				dev = meta.Dev
 				devCtx = bus.GetDeviceContext(dev)
+				devID = meta.Meta.DevID
 				break
 			}
 		}
@@ -309,9 +378,23 @@ func (s *Server) handleConn(conn net.Conn) {
 			s.writeError(w, apierror.ErrNotFound(fmt.Sprintf("device %s not found on bus %d", devIDStr, busID)))
 			return
 		}
+		var nativeRegistration *udecx.DeviceRegistration
+		if s.usbs.NativeTransportEnabled() {
+			registration, found := s.usbs.NativeDeviceRegistrationForDevice(
+				uint32(busID), devID, dev, devCtx)
+			if !found {
+				s.writeError(w, apierror.ErrConflict(
+					"native device lifetime changed before stream admission"))
+				return
+			}
+			nativeRegistration = cloneNativeRegistration(&registration)
+		}
 
-		streamKey := deviceStreamKey{busID: uint32(busID), devID: devIDStr}
+		streamKey := newDeviceStreamKey(uint32(busID), devIDStr, devCtx)
 		lease := s.deviceStreams.claim(streamKey, streamConn)
+		if lease == nil {
+			return
+		}
 		handlerStarted := false
 		defer func() {
 			if !handlerStarted {
@@ -324,7 +407,8 @@ func (s *Server) handleConn(conn net.Conn) {
 						resetter.ResetMicrophonePCM()
 					}
 				}, func() {
-					if err := bus.RemoveDeviceByID(devIDStr); err != nil {
+					if err := s.removeRegisteredDevice(
+						uint32(busID), devIDStr, nativeRegistration); err != nil {
 						connLogger.Error("disconnect timeout: failed to remove device",
 							"busID", busID, "deviceID", devIDStr, "error", err)
 					} else {
@@ -359,6 +443,45 @@ func (s *Server) handleConn(conn net.Conn) {
 type bufferedReadConn struct {
 	net.Conn
 	reader *bufio.Reader
+}
+
+type streamLifetimeConn struct {
+	net.Conn
+	done chan struct{}
+	once sync.Once
+}
+
+func newStreamLifetimeConn(conn net.Conn) *streamLifetimeConn {
+	return &streamLifetimeConn{Conn: conn, done: make(chan struct{})}
+}
+
+func (c *streamLifetimeConn) StreamDone() <-chan struct{} {
+	return c.done
+}
+
+func (c *streamLifetimeConn) Read(buffer []byte) (int, error) {
+	n, err := c.Conn.Read(buffer)
+	if err != nil {
+		c.signalClosed()
+	}
+	return n, err
+}
+
+func (c *streamLifetimeConn) Write(buffer []byte) (int, error) {
+	n, err := c.Conn.Write(buffer)
+	if err != nil {
+		c.signalClosed()
+	}
+	return n, err
+}
+
+func (c *streamLifetimeConn) Close() error {
+	c.signalClosed()
+	return c.Conn.Close()
+}
+
+func (c *streamLifetimeConn) signalClosed() {
+	c.once.Do(func() { close(c.done) })
 }
 
 func (c *bufferedReadConn) Read(buffer []byte) (int, error) {

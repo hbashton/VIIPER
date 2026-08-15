@@ -102,10 +102,10 @@ func main() {
 	fmt.Printf("Connected to %s device %s on bus %d\n", deviceType, addResp.DevID, addResp.BusID)
 
 	defer func() {
-		if _, err := api.DeviceRemoveCtx(ctx, stream.BusID, stream.DevID); err != nil {
+		if _, err := api.DeviceRemoveRegisteredCtx(ctx, addResp); err != nil {
 			fmt.Printf("DeviceRemove error: %v\n", err)
 		}
-		if createdBus {
+		if createdBus && addResp.Transport != "native-ude" {
 			_, _ = api.BusRemoveCtx(ctx, busID)
 		}
 	}()

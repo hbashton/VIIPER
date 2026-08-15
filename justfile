@@ -13,6 +13,10 @@ rm_f := if os_family() == "windows" { "Remove-Item -Force -ErrorAction 0" } else
 
 version := env_var_or_default("VERSION", `git describe --tags --match "v[0-9]*.[0-9]*.[0-9]*" --always`)
 commit := `git rev-parse --short HEAD`
+native_source_revision_explicit := env_var_or_default("VIIPER_NATIVE_SOURCE_REVISION", "")
+# Debug/developer builds may bind the current checkout explicitly. Release
+# recipes reject the absence of VIIPER_NATIVE_SOURCE_REVISION before compiling.
+native_source_revision := if native_source_revision_explicit != "" { native_source_revision_explicit } else { `git rev-parse HEAD` }
 build_time := if os_family() == "windows" {
     `Get-Date -Format 'yyyy-MM-ddTHH:mm:ssZ'`
 } else {
@@ -29,7 +33,7 @@ licenses_dir := join(dist_dir, "libVIIPER")
 licenses_out := join(dist_dir, "licenses.txt")
 lib_licenses_out := join(licenses_dir, "licenses.txt")
 
-ldflags_common := "-X main.Version=" + version + " -X main.Commit=" + commit + " -X main.Date=" + build_time + " -X github.com/Alia5/VIIPER/internal/codegen/common.Version=" + version
+ldflags_common := "-X main.Version=" + version + " -X main.Commit=" + commit + " -X main.Date=" + build_time + " -X github.com/Alia5/VIIPER/internal/codegen/common.Version=" + version + " -X github.com/Alia5/VIIPER/internal/transport/udecx.nativeSourceRevision=" + native_source_revision
 ldflags_release := "-s -w " + ldflags_common
 
 default:
@@ -49,7 +53,7 @@ test-coverage:
 
 [windows]
 generate-versioninfo:
-	go install github.com/josephspurrier/goversioninfo/cmd/goversioninfo@latest
+	go install github.com/josephspurrier/goversioninfo/cmd/goversioninfo@v1.7.0
 	pwsh -NoProfile -NonInteractive -File scripts/inject-version.ps1 "{{ version }}" "versioninfo.json" "versioninfo.tmp.json"
 	{{
 		if target_goarch == "amd64" {
@@ -74,6 +78,7 @@ clean-versioninfo:
 [arg("type", pattern="Debug|Release")]
 [windows]
 build type=build_type: generate-versioninfo
+	if ("{{ type }}" -eq "Release" -and [string]::IsNullOrWhiteSpace($env:VIIPER_NATIVE_SOURCE_REVISION)) { throw "Release builds require explicit VIIPER_NATIVE_SOURCE_REVISION." }
 	{{ mkdir_p }} {{ dist_dir }}
 	$env:CGO_ENABLED='0'; go build {{ if type == "Release" { "-tags release" } else { "" } }} -trimpath -ldflags "{{ if type == "Release" { ldflags_release } else { ldflags_common } }}" -o {{ build_path }} {{ main_pkg }}
 	just licenses
@@ -81,6 +86,7 @@ build type=build_type: generate-versioninfo
 [arg("type", pattern="Debug|Release")]
 [unix]
 build type=build_type:
+	if [ "{{ type }}" = "Release" ] && [ -z "${VIIPER_NATIVE_SOURCE_REVISION:-}" ]; then echo "Release builds require explicit VIIPER_NATIVE_SOURCE_REVISION." >&2; exit 1; fi
 	{{ mkdir_p }} {{ dist_dir }}
 	CGO_ENABLED=0 go build {{ if type == "Release" { "-tags release" } else { "" } }} -trimpath -ldflags "{{ if type == "Release" { ldflags_release } else { ldflags_common } }}" -o {{ build_path }} {{ main_pkg }}
 	just licenses
@@ -89,7 +95,7 @@ build type=build_type:
 [windows]
 build-libVIIPER type=build_type:
 	{{ mkdir_p }} dist/libVIIPER
-	go install github.com/josephspurrier/goversioninfo/cmd/goversioninfo@latest
+	go install github.com/josephspurrier/goversioninfo/cmd/goversioninfo@v1.7.0
 	pwsh -NoProfile -NonInteractive -File scripts/inject-version.ps1 "{{ version }}" "lib/viiper/versioninfo.json" "libviiper.versioninfo.tmp.json"
 	goversioninfo -64 -o lib/viiper/resource.syso libviiper.versioninfo.tmp.json
 	$env:CGO_ENABLED='1'; go build -buildmode=c-shared -trimpath {{ if type == "Release" { "-ldflags \"-s -w\"" } else { "" } }} -o dist/libVIIPER/libVIIPER.dll ./lib/viiper
@@ -120,22 +126,22 @@ lint:
 
 [windows]
 licenses:
-	go install github.com/google/go-licenses/v2@latest  
+	go install github.com/google/go-licenses/v2@v2.0.1
 	{{ mkdir_p }} {{ dist_dir }}; $template = (Get-Content {{ licenses_template }} -Raw).Replace('VERSION_PLACEHOLDER', '{{ version }}'); [System.IO.File]::WriteAllText("{{ licenses_template_work }}", $template, [System.Text.UTF8Encoding]::new($false)); $env:GOOS = ''; $env:GOARCH = ''; {{ go_licenses_cmd }} report {{ main_pkg }} --ignore {{ licenses_ignore }} --template {{ licenses_template_work }} | Set-Content -Encoding utf8 {{ licenses_out }}; Remove-Item -Force {{ licenses_template_work }} -ErrorAction SilentlyContinue
 
 [windows]
 licenses-libVIIPER:
-	go install github.com/google/go-licenses/v2@latest  
+	go install github.com/google/go-licenses/v2@v2.0.1
 	{{ mkdir_p }} {{ licenses_dir }}; $template = (Get-Content {{ licenses_template }} -Raw).Replace('VERSION_PLACEHOLDER', '{{ version }}'); [System.IO.File]::WriteAllText("{{ licenses_template_work }}", $template, [System.Text.UTF8Encoding]::new($false)); $env:GOOS = ''; $env:GOARCH = ''; {{ go_licenses_cmd }} report ./lib/viiper --ignore {{ licenses_ignore }} --template {{ licenses_template_work }} | Set-Content -Encoding utf8 {{ lib_licenses_out }}; Remove-Item -Force {{ licenses_template_work }} -ErrorAction SilentlyContinue
 
 [unix]
 licenses:
-	go install github.com/google/go-licenses/v2@latest  
+	go install github.com/google/go-licenses/v2@v2.0.1
 	{{ mkdir_p }} {{ dist_dir }} && sed "s/VERSION_PLACEHOLDER/{{ version }}/g" {{ licenses_template }} > {{ licenses_template_work }} && GOOS= GOARCH= {{ go_licenses_cmd }} report {{ main_pkg }} --ignore {{ licenses_ignore }} --template {{ licenses_template_work }} > {{ licenses_out }} && rm -f {{ licenses_template_work }}
 
 [unix]
 licenses-libVIIPER:
-	go install github.com/google/go-licenses/v2@latest  
+	go install github.com/google/go-licenses/v2@v2.0.1
 	{{ mkdir_p }} {{ licenses_dir }} && sed "s/VERSION_PLACEHOLDER/{{ version }}/g" {{ licenses_template }} > {{ licenses_template_work }} && GOOS= GOARCH= {{ go_licenses_cmd }} report ./lib/viiper --ignore {{ licenses_ignore }} --template {{ licenses_template_work }} > {{ lib_licenses_out }} && rm -f {{ licenses_template_work }}
 
 run *args: build

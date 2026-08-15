@@ -40,6 +40,12 @@ func (c *Client) OpenStream(ctx context.Context, busID uint32, devID string) (*D
 	if err != nil {
 		return nil, fmt.Errorf("dial: %w", err)
 	}
+	keepConn := false
+	defer func() {
+		if !keepConn {
+			_ = conn.Close()
+		}
+	}()
 
 	if tcpConn, ok := conn.(*net.TCPConn); ok {
 		if err := tcpConn.SetNoDelay(true); err != nil {
@@ -58,16 +64,15 @@ func (c *Client) OpenStream(ctx context.Context, busID uint32, devID string) (*D
 			return nil, err
 		}
 		sessionKey := auth.DeriveSessionKey(key, serverNonce, clientNonce)
-		conn, err = auth.WrapConn(conn, sessionKey)
+		secureConn, err := auth.WrapClientConn(conn, sessionKey)
 		if err != nil {
-			conn.Close() // nolint
 			return nil, err
 		}
+		conn = secureConn
 	}
 
 	streamPath := fmt.Sprintf("bus/%d/%s\x00", busID, devID)
 	if _, err := conn.Write([]byte(streamPath)); err != nil {
-		conn.Close() // nolint
 		return nil, fmt.Errorf("write stream path: %w", err)
 	}
 
@@ -76,6 +81,7 @@ func (c *Client) OpenStream(ctx context.Context, busID uint32, devID string) (*D
 		BusID: busID,
 		DevID: devID,
 	}
+	keepConn = true
 	return ds, nil
 }
 

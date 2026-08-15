@@ -49,10 +49,21 @@ func (ls *LEDState) UnmarshalBinary(data []byte) error {
 //	Bytes 2-33: Key bitmap (256 bits, 32 bytes)
 func (kb *InputState) BuildReport() []byte {
 	b := make([]byte, 34)
+	_, _ = kb.BuildReportInto(b)
+	return b
+}
+
+// BuildReportInto encodes the HID report into caller-owned storage.
+func (kb *InputState) BuildReportInto(dst []byte) (int, error) {
+	if len(dst) < 34 {
+		return 0, io.ErrShortBuffer
+	}
+	b := dst[:34]
+	clear(b)
 	b[0] = kb.Modifiers
 	b[1] = 0x00 // Reserved
 	copy(b[2:34], kb.KeyBitmap[:])
-	return b
+	return 34, nil
 }
 
 // MarshalBinary encodes InputState to variable-length wire format.

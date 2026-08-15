@@ -1,0 +1,221 @@
+name: Validate production native package
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_revision:
+        description: Full reviewed source commit represented by the Microsoft-signed package.
+        required: true
+        type: string
+      artifact_run_id:
+        description: Workflow run containing the immutable Microsoft-returned artifact.
+        required: true
+        type: string
+      artifact_id:
+        description: Immutable GitHub artifact ID; names and broad downloads are not accepted.
+        required: true
+        type: string
+      artifact_digest:
+        description: GitHub artifact SHA-256 digest, without the sha256 prefix.
+        required: true
+        type: string
+      package_directory:
+        description: Relative path to the four-file driver package inside the artifact.
+        required: true
+        type: string
+      submission_manifest_path:
+        description: Relative path to the source-bound submission manifest inside the artifact.
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  attestations: write
+  contents: read
+  id-token: write
+
+jobs:
+  validate-production-package:
+    name: Accept Microsoft HLK/WHCP-signed native package
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 20
+    steps:
+      - name: Checkout trusted validation policy
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          path: gate-policy
+          persist-credentials: false
+
+      - name: Validate explicit artifact provenance
+        shell: pwsh
+        env:
+          ARTIFACT_DIGEST: ${{ inputs.artifact_digest }}
+          ARTIFACT_ID: ${{ inputs.artifact_id }}
+          ARTIFACT_RUN_ID: ${{ inputs.artifact_run_id }}
+          POLICY_REF: ${{ github.ref }}
+          POLICY_REVISION: ${{ github.sha }}
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ($env:SOURCE_REVISION -cnotmatch '^[0-9a-f]{40}$') {
+            throw 'source_revision must be a lowercase, full 40-character Git commit.'
+          }
+          if ($env:ARTIFACT_ID -notmatch '^\d+$' -or $env:ARTIFACT_RUN_ID -notmatch '^\d+$') {
+            throw 'artifact_id and artifact_run_id must be numeric GitHub identifiers.'
+          }
+          if ($env:ARTIFACT_DIGEST -cnotmatch '^[0-9a-f]{64}$') {
+            throw 'artifact_digest must be a lowercase SHA-256 digest.'
+          }
+          if ($env:POLICY_REF -cne 'refs/heads/main' -or
+              $env:POLICY_REVISION -cne $env:SOURCE_REVISION) {
+            throw 'Production acceptance must run from main at the exact reviewed source revision.'
+          }
+          $metadata = gh api "/repos/$env:GITHUB_REPOSITORY/actions/artifacts/$env:ARTIFACT_ID" | ConvertFrom-Json
+          if ([long]$metadata.id -ne [long]$env:ARTIFACT_ID -or [bool]$metadata.expired) {
+            throw 'The selected artifact is missing, expired, or does not match artifact_id.'
+          }
+          if ([long]$metadata.workflow_run.id -ne [long]$env:ARTIFACT_RUN_ID -or
+              [string]$metadata.workflow_run.head_sha -cne $env:SOURCE_REVISION) {
+            throw 'The selected artifact run is not bound to source_revision.'
+          }
+          if ([string]$metadata.digest -cne "sha256:$env:ARTIFACT_DIGEST") {
+            throw 'The selected artifact digest does not match the explicit SHA-256 input.'
+          }
+
+      - name: Checkout exact reviewed source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.source_revision }}
+          fetch-depth: 0
+          path: reviewed-source
+          persist-credentials: false
+
+      - name: Require the exact current reviewed main source
+        shell: pwsh
+        env:
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+        working-directory: reviewed-source
+        run: |
+          git fetch --no-tags origin main
+          $mainRevision = (git rev-parse origin/main).Trim()
+          $checkedOutRevision = (git rev-parse HEAD).Trim()
+          if ($mainRevision -cne $env:SOURCE_REVISION -or
+              $checkedOutRevision -cne $env:SOURCE_REVISION) {
+            throw 'Production native packages must represent the exact current origin/main tip.'
+          }
+
+      - name: Download only the explicit immutable artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          artifact-ids: ${{ inputs.artifact_id }}
+          run-id: ${{ inputs.artifact_run_id }}
+          github-token: ${{ github.token }}
+          path: signed-input
+
+      - uses: NuGet/setup-nuget@d105a947828025cd7a980103c35ba2bfae586d0f # v2
+        with:
+          nuget-version: "6.11.1"
+      - name: Restore exact source-bound WDK tools
+        run: >-
+          nuget restore reviewed-source/native/udecx/ViiperUde.sln
+          -PackagesDirectory reviewed-source/native/udecx/packages
+          -NonInteractive
+      - name: Expose source-bound WDK validation tools
+        shell: pwsh
+        run: |
+          $tools = Get-ChildItem reviewed-source/native/udecx/packages -Recurse -File -Filter *.exe
+          foreach ($required in @('signtool.exe', 'infverif.exe')) {
+            if (-not ($tools | Where-Object Name -ieq $required | Select-Object -First 1)) {
+              throw "Restored WDK packages did not contain $required."
+            }
+          }
+          $tools.DirectoryName | Sort-Object -Unique | Out-File $env:GITHUB_PATH -Append -Encoding utf8
+
+      - name: Validate Microsoft-signed production package
+        id: validate
+        shell: pwsh
+        env:
+          PACKAGE_DIRECTORY: ${{ inputs.package_directory }}
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+          SUBMISSION_MANIFEST: ${{ inputs.submission_manifest_path }}
+        run: |
+          $artifactRoot = (Resolve-Path -LiteralPath signed-input).Path
+          function Resolve-ContainedPath([string]$relativePath, [bool]$requireDirectory) {
+            if ([string]::IsNullOrWhiteSpace($relativePath) -or [IO.Path]::IsPathRooted($relativePath)) {
+              throw 'Production package inputs must be non-empty relative paths.'
+            }
+            $resolved = (Resolve-Path -LiteralPath (Join-Path $artifactRoot $relativePath)).Path
+            $prefix = $artifactRoot.TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
+            if (-not $resolved.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
+              throw "Input path '$relativePath' escapes the downloaded artifact."
+            }
+            if ((Get-Item -LiteralPath $resolved).PSIsContainer -ne $requireDirectory) {
+              throw "Input path '$relativePath' has the wrong file type."
+            }
+            return $resolved
+          }
+          $packagePath = Resolve-ContainedPath $env:PACKAGE_DIRECTORY $true
+          $manifestPath = Resolve-ContainedPath $env:SUBMISSION_MANIFEST $false
+          # Production is literal: the validator requires releaseEligible=true,
+          # signingRoute=HLK/WHCP, Microsoft kernel policy, and rejects attestation EKU.
+          & ./gate-policy/native/udecx/tools/Test-ViiperUdeSignedPackage.ps1 `
+            -PackageDirectory $packagePath `
+            -SubmissionManifestPath $manifestPath `
+            -ExpectedSourceRevision $env:SOURCE_REVISION `
+            -ValidationMode Production
+          "package_path=$packagePath" | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "manifest_path=$manifestPath" | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Validate the actual Microsoft-returned stamped INF contract
+        shell: pwsh
+        env:
+          PACKAGE_PATH: ${{ steps.validate.outputs.package_path }}
+        run: |
+          & ./reviewed-source/native/udecx/tools/Test-ViiperUdeTargetCompatibility.ps1 `
+            -ProjectPath ./reviewed-source/native/udecx/driver/ViiperUde.vcxproj `
+            -InfPath (Join-Path $env:PACKAGE_PATH 'ViiperUde.inf') `
+            -RequireStampedInf
+
+      - name: Package only validated production bytes
+        id: package
+        shell: pwsh
+        env:
+          PACKAGE_PATH: ${{ steps.validate.outputs.package_path }}
+          MANIFEST_PATH: ${{ steps.validate.outputs.manifest_path }}
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+        run: |
+          $staging = Join-Path $env:RUNNER_TEMP 'viiper-production-package'
+          Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Path $staging | Out-Null
+          Copy-Item -LiteralPath $env:PACKAGE_PATH -Destination (Join-Path $staging 'ViiperUde') -Recurse
+          Copy-Item -LiteralPath $env:MANIFEST_PATH -Destination (Join-Path $staging 'submission-manifest.json')
+          $archive = Join-Path $env:RUNNER_TEMP "ViiperUde-x64-production-$env:SOURCE_REVISION.zip"
+          Compress-Archive -Path (Join-Path $staging '*') -DestinationPath $archive -CompressionLevel Optimal
+          "archive=$archive" | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Attest validated production package provenance
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: ${{ steps.package.outputs.archive }}
+
+      - name: Upload validated production package
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ViiperUde-x64-production-microsoft-signed-${{ inputs.source_revision }}
+          path: ${{ steps.package.outputs.archive }}
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Record accepted artifact identity
+        shell: pwsh
+        run: |
+          @"
+          ### Microsoft-signed native production package accepted
+
+          - Source: `${{ inputs.source_revision }}`
+          - Artifact ID: `${{ steps.upload.outputs.artifact-id }}`
+          - Artifact SHA-256: `${{ steps.upload.outputs.artifact-digest }}`
+          - Validation: literal `Production` (HLK/WHCP; attestation rejected)
+          "@ | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8

@@ -1,17 +1,99 @@
 package usb
 
-import "context"
+import (
+	"context"
+	"time"
+)
+
+// Transfer directions belong to the USB device contract, not to any concrete
+// transport. Keep these values aligned with the USB host convention used by
+// both the legacy USB/IP adapter and the native UdeCx broker.
+const (
+	DirectionOut uint32 = 0
+	DirectionIn  uint32 = 1
+)
 
 // Device is the minimal interface a device must implement.
 // It only handles non-EP0 (interrupt/bulk) transfers.
 type Device interface {
 	// HandleTransfer processes a non-EP0 transfer (interrupt/bulk).
-	// ep is the endpoint number (without direction). dir is usbip.DirIn or usbip.DirOut.
+	// ep is the endpoint number (without direction). dir is DirectionIn or
+	// DirectionOut.
 	// For IN transfers the implementation should block until data is available or ctx is
 	// cancelled, then return the payload. For OUT transfers, consume 'out' and return nil.
 	HandleTransfer(ctx context.Context, ep uint32, dir uint32, out []byte) []byte
 	GetDescriptor() *Descriptor
 	GetDeviceSpecificArgs() map[string]any
+}
+
+// InterruptInputDevice is an optional allocation-free interrupt-IN contract.
+// Native transports may keep one endpoint-sized buffer and ask the device to
+// encode directly into it instead of allocating a new report for every input
+// sample. Implementations must block until input is available or ctx is
+// cancelled, must not retain dst, and must be safe when different endpoints
+// are read concurrently. Native transports impose the endpoint's USB service
+// interval as a deadline. Stateful controllers may encode their cached state
+// when that deadline expires; event-only devices may return DeadlineExceeded
+// and keep waiting. A successful call returns the number of bytes written to
+// dst; zero-length successful reports are invalid.
+//
+// HandleTransfer remains the compatibility contract for USB/IP and for devices
+// which do not implement this interface.
+type InterruptInputDevice interface {
+	ReadInterruptInput(ctx context.Context, ep uint32, dst []byte) (int, error)
+}
+
+// InterruptInputEndpointSelector lets a device restrict the interrupt-IN
+// endpoints owned by the native producer lane. Descriptors may expose
+// auxiliary interrupt pipes which intentionally remain pending until a
+// protocol-specific event occurs. Starting a periodic state publisher for
+// those pipes would invent traffic and can break device enumeration.
+//
+// ep is the endpoint number without the direction bit, matching
+// ReadInterruptInput. Devices which do not implement this interface retain the
+// compatibility behavior of publishing every interrupt-IN endpoint.
+type InterruptInputEndpointSelector interface {
+	SupportsInterruptInputEndpoint(ep uint32) bool
+}
+
+// ScheduledInterruptInputDevice is the allocation-free deadline extension of
+// InterruptInputDevice. Native transports keep one reusable timer per active
+// endpoint and pass its channel here instead of creating a new timer-backed
+// context for every USB service interval. Implementations must preserve the
+// same behavior as ReadInterruptInput: ctx closes for lifecycle cancellation,
+// while deadline firing represents context.DeadlineExceeded for this one read.
+// Stateful devices may encode their current cached state at that boundary;
+// event-only devices return context.DeadlineExceeded.
+//
+// The implementation must consume at most one value from deadline and must not
+// retain either deadline or dst after returning.
+type ScheduledInterruptInputDevice interface {
+	InterruptInputDevice
+	ReadScheduledInterruptInput(
+		ctx context.Context, deadline <-chan time.Time, ep uint32, dst []byte,
+	) (int, error)
+}
+
+// ClassifiedScheduledInterruptInputDevice identifies whether a scheduled
+// report came from a newly queued controller state or from the deadline replay
+// of the current state. Native transports use that distinction to preserve
+// discrete edges while coalescing only idle cadence snapshots when Windows has
+// not yet posted its next interrupt poll.
+type ClassifiedScheduledInterruptInputDevice interface {
+	ScheduledInterruptInputDevice
+	ReadClassifiedScheduledInterruptInput(
+		ctx context.Context, deadline <-chan time.Time, ep uint32, dst []byte,
+	) (written int, transition bool, err error)
+}
+
+// IsochronousInputDevice is the corresponding optional caller-buffer contract
+// for isochronous IN packets. The transport supplies exactly the packet region
+// owned by the current URB. The native scheduler invokes this at the packet's
+// service time, so implementations must not wait for source data: they return
+// a legal zero packet when capture has not arrived. Implementations may return
+// a shorter legal packet, must not retain dst, and must honor cancellation.
+type IsochronousInputDevice interface {
+	ReadIsochronousInput(ctx context.Context, ep uint32, dst []byte) (int, error)
 }
 
 // ControlDevice is an optional interface for devices that need to handle
@@ -43,4 +125,12 @@ type InterfaceAltSettingDevice interface {
 // audio stream teardown even for virtual isochronous endpoints.
 type EndpointResetDevice interface {
 	ResetEndpoint(endpointAddress uint8)
+}
+
+// InterruptInputLifecycleDevice discards retained pre-boundary controller
+// transitions without changing the device's current state. Native transport
+// reset, purge, configuration, and power boundaries invoke it after joining
+// the old publisher so stale edges cannot replay into the next generation.
+type InterruptInputLifecycleDevice interface {
+	InvalidateInterruptInput(endpointAddress uint8)
 }

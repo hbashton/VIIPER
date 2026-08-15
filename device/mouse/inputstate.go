@@ -31,6 +31,17 @@ func NewInputState() *InputState { return &InputState{} }
 //	Bytes 7-8: Pan (int16 little-endian)
 func (m *InputState) BuildReport() []byte {
 	b := make([]byte, 9)
+	_, _ = m.BuildReportInto(b)
+	return b
+}
+
+// BuildReportInto encodes the HID report into caller-owned storage.
+func (m *InputState) BuildReportInto(dst []byte) (int, error) {
+	if len(dst) < 9 {
+		return 0, io.ErrShortBuffer
+	}
+	b := dst[:9]
+	clear(b)
 	b[0] = m.Buttons & 0x1F // 5 buttons, mask upper bits
 	b[1] = byte(m.DX)
 	b[2] = byte(m.DX >> 8)
@@ -40,7 +51,7 @@ func (m *InputState) BuildReport() []byte {
 	b[6] = byte(m.Wheel >> 8)
 	b[7] = byte(m.Pan)
 	b[8] = byte(m.Pan >> 8)
-	return b
+	return 9, nil
 }
 
 // MarshalBinary encodes InputState to 9 bytes.

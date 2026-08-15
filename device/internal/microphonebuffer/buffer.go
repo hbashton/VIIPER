@@ -156,9 +156,13 @@ func (b *Buffer) QueueFrame(frame []byte) bool {
 // byte length. Packets contain exactly one fewer, the nominal number, or one
 // additional interleaved PCM sample-frame. USB Audio accepts these variable
 // isochronous packet lengths to reconcile the source and host clocks without
-// resampling or dropping waveform samples. dst is never modified on failure.
+// resampling or dropping waveform samples. A host is also allowed to reserve
+// only the nominal packet capacity in an individual URB. In that case a long
+// correction remains owed instead of consuming and truncating a PCM frame.
+// dst is never modified on failure.
 func (b *Buffer) ReadPacket(dst []byte) (int, bool) {
-	if len(dst) < b.packetSize+b.pcmFrameSize {
+	shortSize := b.packetSize - b.pcmFrameSize
+	if len(dst) < shortSize {
 		return 0, false
 	}
 	if !b.primed {
@@ -166,15 +170,25 @@ func (b *Buffer) ReadPacket(dst []byte) (int, bool) {
 	}
 
 	actualSize := b.nextPacketSize()
+	if actualSize > len(dst) {
+		// The long correction cannot fit in this URB's packet region. Present
+		// the largest legal size it can hold and leave the positive servo debt
+		// untouched so a later max-packet reservation can service it. This is
+		// materially different from reading a long packet and truncating it.
+		actualSize = min(b.packetSize, len(dst))
+		actualSize -= actualSize % b.pcmFrameSize
+		if actualSize < shortSize {
+			return 0, false
+		}
+	}
 	if b.size < actualSize {
 		// USB Audio accepts the nominal packet and one fewer PCM sample-frame.
 		// Use the largest legal packet still available instead of turning a
 		// single clock-phase deficit into a capture gap. Packet accounting is
 		// committed only afterward so servo telemetry describes what reached the
 		// host and any unserved long-packet correction remains owed.
-		shortSize := b.packetSize - b.pcmFrameSize
 		if b.size >= b.packetSize {
-			actualSize = b.packetSize
+			actualSize = min(b.packetSize, len(dst))
 		} else if b.size >= shortSize {
 			actualSize = shortSize
 		} else {

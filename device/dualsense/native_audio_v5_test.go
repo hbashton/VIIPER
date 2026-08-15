@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"net"
 	"testing"
+	"time"
 
 	"github.com/Alia5/VIIPER/usbip"
 )
@@ -26,10 +27,12 @@ func TestAppendDualSenseV5SpeakerPreservesRawFrontPair(t *testing.T) {
 	}
 	destination := make([]byte, 0, dualSenseV5SpeakerPayloadSize)
 
-	if allocations := testing.AllocsPerRun(1000, func() {
-		destination = appendDualSenseV5Speaker(destination[:0], source)
-	}); allocations != 0 {
-		t.Fatalf("V5 front-channel assembler allocated %.2f objects per generation", allocations)
+	if !raceDetectorEnabled {
+		if allocations := testing.AllocsPerRun(1000, func() {
+			destination = appendDualSenseV5Speaker(destination[:0], source)
+		}); allocations != 0 {
+			t.Fatalf("V5 front-channel assembler allocated %.2f objects per generation", allocations)
+		}
 	}
 	destination = appendDualSenseV5Speaker(destination[:0], source)
 	if len(destination) != dualSenseV5SpeakerPayloadSize {
@@ -291,6 +294,93 @@ func TestDualSenseV5EndpointResetIsHardBoundaryForBothMediaClocks(t *testing.T) 
 	}
 }
 
+func TestDualSenseV5RejectsPublicationFromPreResetRevision(t *testing.T) {
+	device, err := New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	device.SetInterfaceAltSetting(InterfaceHapticsAudio, 1)
+	published := 0
+	device.setV5MediaCallbacks(func(OutputState, []byte) {
+		published++
+	}, nil, nil)
+
+	device.mtx.Lock()
+	revision := device.mediaRevision
+	device.mtx.Unlock()
+	pending := pendingBluetoothHapticsReport{
+		revision:   revision,
+		feedback:   OutputState{BluetoothCombinedOutputReport: [BluetoothCombinedHapticsReportSize]byte{BluetoothCombinedHapticsReportID}},
+		speakerPCM: make([]byte, dualSenseV5SpeakerPayloadSize),
+	}
+
+	device.ResetEndpoint(EndpointHapticsAudioOut)
+	if device.publishV5Media(pending) {
+		t.Fatal("pre-reset media revision was published")
+	}
+	if published != 0 {
+		t.Fatalf("pre-reset media callback count=%d", published)
+	}
+}
+
+func TestDualSenseV5ResetWaitsForInFlightDevicePublication(t *testing.T) {
+	device, err := New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	device.SetInterfaceAltSetting(InterfaceHapticsAudio, 1)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	callbackDone := make(chan struct{})
+	resetCalls := 0
+	device.setV5MediaCallbacks(func(OutputState, []byte) {
+		close(entered)
+		<-release
+		close(callbackDone)
+	}, nil, func() {
+		resetCalls++
+	})
+
+	pcm := makeV5USBPCM(0, dualSenseV5SpeakerFrames, 12000)
+	transferDone := make(chan struct{})
+	go func() {
+		device.HandleTransfer(context.Background(), EndpointHapticsAudioOut,
+			usbip.DirOut, pcm)
+		close(transferDone)
+	}()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("media callback did not start")
+	}
+
+	resetDone := make(chan struct{})
+	go func() {
+		device.ResetEndpoint(EndpointHapticsAudioOut)
+		close(resetDone)
+	}()
+	select {
+	case <-resetDone:
+		t.Fatal("endpoint reset crossed an in-flight device publication")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case <-callbackDone:
+	case <-time.After(time.Second):
+		t.Fatal("media callback did not finish")
+	}
+	select {
+	case <-resetDone:
+	case <-time.After(time.Second):
+		t.Fatal("endpoint reset did not finish after publication")
+	}
+	<-transferDone
+	if resetCalls != 1 {
+		t.Fatalf("transport reset calls=%d want=1", resetCalls)
+	}
+}
+
 func TestDualSenseV5SpeakerCombinesFreshStateWithCompletedRearSample(t *testing.T) {
 	device, captured := newV5CaptureDevice(t)
 	setV5TestLightbar(t, device, 0x11)
@@ -366,7 +456,9 @@ func TestDualSenseV5WriterPublishesExactAtomicContract(t *testing.T) {
 	}
 
 	_ = client.Close()
-	writer.Stop()
+	if err := writer.Stop(); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestDualSenseV5WriterRetainsNewestGenerationWhenBounded(t *testing.T) {
@@ -383,8 +475,8 @@ func TestDualSenseV5WriterRetainsNewestGenerationWhenBounded(t *testing.T) {
 			len(writer.audio), dualSenseOutputAudioQueueCapacity)
 	}
 	state := writer.telemetry.snapshot()
-	if state.ReceivedPayloads != dualSenseOutputAudioQueueCapacity+1 ||
-		state.EnqueuedPayloads != dualSenseOutputAudioQueueCapacity+1 ||
+	if state.ReceivedPayloads != uint64(dualSenseOutputAudioQueueCapacity+1) ||
+		state.EnqueuedPayloads != uint64(dualSenseOutputAudioQueueCapacity+1) ||
 		state.DroppedPayloads != 1 ||
 		state.DroppedBytes != dualSenseV5SpeakerPayloadSize {
 		t.Fatalf("unexpected V5 bounded telemetry: %+v", state)
@@ -392,6 +484,7 @@ func TestDualSenseV5WriterRetainsNewestGenerationWhenBounded(t *testing.T) {
 
 	for expected := 1; expected <= dualSenseOutputAudioQueueCapacity; expected++ {
 		frame := <-writer.audio
+		writer.recordMediaDequeued(frame)
 		feedbackLength := int(binary.LittleEndian.Uint16(frame.payload[:2]))
 		feedback := frame.payload[2 : 2+feedbackLength]
 		speaker := frame.payload[2+feedbackLength:]
@@ -402,7 +495,7 @@ func TestDualSenseV5WriterRetainsNewestGenerationWhenBounded(t *testing.T) {
 		}
 		writer.release(frame)
 	}
-	if len(writer.audioFree) != dualSenseOutputAudioQueueCapacity {
+	if len(writer.audioFree) != dualSenseOutputAudioPoolCapacity {
 		t.Fatalf("V5 bounded queue leaked buffers: free=%d", len(writer.audioFree))
 	}
 }

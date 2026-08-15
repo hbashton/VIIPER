@@ -3,6 +3,7 @@ package dualsense
 import (
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash/crc32"
 	"io"
@@ -144,32 +145,30 @@ func dualSenseV5StreamHandler(deviceName string) api.StreamHandlerFunc {
 			}
 			writer.EnqueueControl(StreamFrameOutputState, data)
 		})
-		dse.SetAtomicAudioHapticsCallback(func(feedback OutputState, speakerPCM []byte) {
+		atomicAudioHapticsCallback := func(feedback OutputState, speakerPCM []byte) {
 			data, err := marshalFeedback(feedback)
 			if err != nil {
 				logger.Error("failed to marshal V5 atomic audio/haptics feedback", "error", err)
 				return
 			}
 			writer.EnqueueAtomicAudioHaptics(data, speakerPCM)
-		})
-		dse.SetRealtimeHapticsCallback(func(feedback OutputState) {
+		}
+		realtimeHapticsCallback := func(feedback OutputState) {
 			data, err := marshalFeedback(feedback)
 			if err != nil {
 				logger.Error("failed to marshal V5 realtime haptics feedback", "error", err)
 				return
 			}
 			writer.EnqueueRealtimeHaptics(data)
-		})
-		dse.SetSpeakerResetCallback(writer.ResetSpeaker)
-		defer func() {
-			dse.SetOutputCallback(nil)
-			dse.SetAtomicAudioHapticsCallback(nil)
-			dse.SetRealtimeHapticsCallback(nil)
-			dse.SetSpeakerResetCallback(nil)
-			writer.Stop()
-		}()
-
-		return readDualSenseV5InputStream(conn, dse, logger)
+		}
+		dse.setV5MediaCallbacks(atomicAudioHapticsCallback,
+			realtimeHapticsCallback, writer.ResetSpeaker)
+		streamErr := readDualSenseV5InputStream(conn, dse, logger)
+		// Remove every producer before writer rundown. A join timeout is joined
+		// into the owning handler result rather than reported as clean shutdown.
+		dse.detachV5MediaStreamCallbacks()
+		dse.SetOutputCallback(nil)
+		return errors.Join(streamErr, writer.Stop())
 	}
 }
 
@@ -194,6 +193,7 @@ func releaseDualSenseIdentity(devPtr *usb.Device, deviceName string) {
 }
 
 func readDualSenseV5InputStream(conn net.Conn, dse *DualSense, logger *slog.Logger) error {
+	streamDone := api.StreamDone(conn)
 	header := make([]byte, StreamFrameHeaderSize)
 	input := make([]byte, InputStateSize)
 	microphonePCM := make([]byte, USBMicrophoneClientFrameSize)
@@ -266,7 +266,9 @@ func readDualSenseV5InputStream(conn net.Conn, dse *DualSense, logger *slog.Logg
 			if err := state.UnmarshalBinary(input); err != nil {
 				return fmt.Errorf("unmarshal framed input state: %w", err)
 			}
-			dse.UpdateInputState(&state)
+			if err := dse.UpdateInputStateUntil(streamDone, &state); err != nil {
+				return fmt.Errorf("queue framed DualSense input state: %w", err)
+			}
 		case StreamFrameMicrophonePCM:
 			dse.QueueMicrophonePCMFrame(microphonePCM)
 		}

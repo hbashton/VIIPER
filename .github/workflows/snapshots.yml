@@ -10,12 +10,12 @@ permissions:
 jobs:
     calculate-version:
         name: Calculate Dev Version
-        runs-on: ubuntu-latest
+        runs-on: ubuntu-24.04
         outputs:
             version: ${{ steps.version.outputs.version }}
         steps:
             - name: Checkout code
-              uses: actions/checkout@v6
+              uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
               with:
                   fetch-depth: 0
 
@@ -58,16 +58,16 @@ jobs:
     create-pre-release:
         name: Create Pre-Release
         needs: [build, generate-changelog, client-libraries]
-        runs-on: ubuntu-latest
+        runs-on: ubuntu-24.04
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/main')
         steps:
             - name: Checkout code
-              uses: actions/checkout@v6
+              uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
               with:
                   fetch-depth: 0
 
             - name: Download all artifacts
-              uses: actions/download-artifact@v8
+              uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
               with:
                   path: artifacts
 
@@ -104,7 +104,7 @@ jobs:
                   echo "Version from git: $GIT_VERSION"
 
             - name: Update Dev Snapshot Release
-              uses: andelf/nightly-release@v1
+              uses: andelf/nightly-release@c5ed4bdb7c1da04a4fa1e40bc5e67306f682563b # v1
               env:
                   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
               with:

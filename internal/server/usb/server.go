@@ -17,7 +17,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Alia5/VIIPER/device"
 	"github.com/Alia5/VIIPER/internal/log"
+	"github.com/Alia5/VIIPER/internal/transport/udecx"
 	"github.com/Alia5/VIIPER/usb"
 	"github.com/Alia5/VIIPER/usbip"
 	"github.com/Alia5/VIIPER/virtualbus"
@@ -197,14 +199,46 @@ type Server struct {
 	config    *ServerConfig
 	logger    *slog.Logger
 	rawLogger log.RawLogger
-	busses    map[uint32]*virtualbus.VirtualBus
-	busesMu   sync.Mutex
-	alts      map[usb.Device]map[uint8]uint8
-	altsMu    sync.Mutex
-	ready     chan struct{}
-	readyOnce sync.Once
-	ln        net.Listener
+	// lifecycleMu makes publication into the in-memory bus, native UdeCx
+	// driver, and native identity table one transaction. Device creation and
+	// removal are infrequent control-plane operations; serializing them avoids
+	// an orphaned child if removal races a driver plug-in or bus teardown.
+	lifecycleMu sync.Mutex
+	busses      map[uint32]*virtualbus.VirtualBus
+	busesMu     sync.Mutex
+	alts        map[usb.Device]map[uint8]uint8
+	altsMu      sync.Mutex
+	ready       chan struct{}
+	readyOnce   sync.Once
+	ln          net.Listener
+	nativeMu    sync.Mutex
+	native      *udecx.Host
+	nativeIDs   map[nativeDeviceKey]udecx.DeviceRegistration
 }
+
+type nativeDeviceKey struct {
+	busID uint32
+	devID uint32
+}
+
+// BusDeviceSnapshot is one topology entry and its exact native mutation
+// receipt captured under the server lifecycle lock. NativeRegistration is nil
+// only when the server is operating in legacy USB/IP mode.
+type BusDeviceSnapshot struct {
+	DeviceMeta         virtualbus.DeviceMeta
+	NativeRegistration *udecx.DeviceRegistration
+}
+
+var (
+	// ErrNativeDeviceCorrelationMismatch means the caller's immutable receipt
+	// no longer identifies the device currently occupying the requested IDs.
+	// Callers must treat it as a benign stale lifetime and never retry by ID.
+	ErrNativeDeviceCorrelationMismatch = errors.New("native UDE device correlation mismatch")
+	ErrInvalidNativeDeviceCorrelation  = errors.New("invalid native UDE device correlation")
+	ErrBusNotFound                     = errors.New("bus not found")
+	ErrBusNotEmpty                     = errors.New("bus is not empty")
+	ErrBusInstanceChanged              = errors.New("bus instance changed")
+)
 
 func New(config ServerConfig, logger *slog.Logger, rawLogger log.RawLogger) *Server {
 	return &Server{
@@ -214,12 +248,173 @@ func New(config ServerConfig, logger *slog.Logger, rawLogger log.RawLogger) *Ser
 		busses:    make(map[uint32]*virtualbus.VirtualBus),
 		alts:      make(map[usb.Device]map[uint8]uint8),
 		ready:     make(chan struct{}),
+		nativeIDs: make(map[nativeDeviceKey]udecx.DeviceRegistration),
 	}
+}
+
+// EnableNativeTransport binds bus lifecycle to a native UdeCx host. It must be
+// called before API handlers can add devices.
+func (s *Server) EnableNativeTransport(host *udecx.Host) error {
+	if host == nil {
+		return errors.New("native UDE host is nil")
+	}
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	s.nativeMu.Lock()
+	defer s.nativeMu.Unlock()
+	if s.native != nil {
+		return errors.New("native UDE transport is already enabled")
+	}
+	s.native = host
+	return nil
+}
+
+func (s *Server) NativeTransportEnabled() bool {
+	s.nativeMu.Lock()
+	defer s.nativeMu.Unlock()
+	return s.native != nil
+}
+
+func nativeDeviceID(busID, devID uint32) uint64 {
+	return uint64(busID)<<32 | uint64(devID)
+}
+
+// AddDeviceToBus publishes a device transactionally. A failed native plug-in
+// rolls the in-memory bus back before the device becomes visible to clients.
+func (s *Server) AddDeviceToBus(ctx context.Context, busID uint32, dev usb.Device) (context.Context, error) {
+	deviceCtx, _, err := s.AddDeviceToBusWithRegistration(ctx, busID, dev)
+	return deviceCtx, err
+}
+
+// AddDeviceToBusWithRegistration returns the source-authoritative native
+// correlation receipt atomically with publication. USB/IP mode returns nil.
+func (s *Server) AddDeviceToBusWithRegistration(
+	ctx context.Context, busID uint32, dev usb.Device,
+) (context.Context, *udecx.DeviceRegistration, error) {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+
+	bus := s.GetBus(busID)
+	if bus == nil {
+		return nil, nil, fmt.Errorf("bus %d not found", busID)
+	}
+	deviceCtx, err := bus.Add(dev)
+	if err != nil {
+		return nil, nil, err
+	}
+	meta := device.GetDeviceMeta(deviceCtx)
+	if meta == nil {
+		_ = bus.Remove(dev)
+		return nil, nil, errors.New("virtual bus returned no device metadata")
+	}
+
+	s.nativeMu.Lock()
+	host := s.native
+	if host == nil {
+		s.nativeMu.Unlock()
+		return deviceCtx, nil, nil
+	}
+	registration, err := host.RegisterWithCorrelation(ctx, nativeDeviceID(busID, meta.DevID), dev)
+	if err != nil {
+		s.nativeMu.Unlock()
+		_ = bus.Remove(dev)
+		return nil, nil, fmt.Errorf("plug native UDE device: %w", err)
+	}
+	s.nativeIDs[nativeDeviceKey{busID: busID, devID: meta.DevID}] = registration
+	s.nativeMu.Unlock()
+	return deviceCtx, &registration, nil
+}
+
+// SnapshotBusDevices captures the entire bus topology and native registration
+// table as one lifecycle transaction. A list response can therefore never pair
+// an old device's metadata with a successor's remove-authority receipt after a
+// bus/device ID is reused.
+func (s *Server) SnapshotBusDevices(busID uint32) ([]BusDeviceSnapshot, error) {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+
+	s.busesMu.Lock()
+	bus := s.busses[busID]
+	s.busesMu.Unlock()
+	if bus == nil {
+		return nil, fmt.Errorf("%w: %d", ErrBusNotFound, busID)
+	}
+	metas := bus.GetAllDeviceMetas()
+	snapshots := make([]BusDeviceSnapshot, 0, len(metas))
+
+	s.nativeMu.Lock()
+	defer s.nativeMu.Unlock()
+	nativeTransport := s.native != nil
+	for _, meta := range metas {
+		snapshot := BusDeviceSnapshot{DeviceMeta: meta}
+		if nativeTransport {
+			registration, ok := s.nativeIDs[nativeDeviceKey{
+				busID: meta.Meta.BusID, devID: meta.Meta.DevID,
+			}]
+			if !ok {
+				return nil, fmt.Errorf("%w: native device %d/%d has no receipt",
+					ErrNativeDeviceCorrelationMismatch, meta.Meta.BusID, meta.Meta.DevID)
+			}
+			copy := registration
+			snapshot.NativeRegistration = &copy
+		}
+		snapshots = append(snapshots, snapshot)
+	}
+	return snapshots, nil
+}
+
+// NativeDeviceRegistrationForDevice returns a native registration only when
+// the caller's exact device object and bus-owned lifetime context are still the
+// current occupant of the requested slot. Holding lifecycleMu across the bus
+// and native-table observations closes the interval in which removal has
+// retired the registration but has not yet cancelled the old device context.
+func (s *Server) NativeDeviceRegistrationForDevice(
+	busID, devID uint32, expectedDevice usb.Device, expectedContext context.Context,
+) (udecx.DeviceRegistration, bool) {
+	if expectedDevice == nil || expectedContext == nil || expectedContext.Done() == nil {
+		return udecx.DeviceRegistration{}, false
+	}
+
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+
+	s.busesMu.Lock()
+	bus := s.busses[busID]
+	s.busesMu.Unlock()
+	if bus == nil {
+		return udecx.DeviceRegistration{}, false
+	}
+
+	foundExactDevice := false
+	for _, meta := range bus.GetAllDeviceMetas() {
+		if meta.Meta.DevID == devID && meta.Dev == expectedDevice {
+			foundExactDevice = true
+			break
+		}
+	}
+	if !foundExactDevice {
+		return udecx.DeviceRegistration{}, false
+	}
+	currentContext := bus.GetDeviceContext(expectedDevice)
+	if currentContext == nil || currentContext.Done() == nil ||
+		currentContext.Done() != expectedContext.Done() {
+		return udecx.DeviceRegistration{}, false
+	}
+
+	s.nativeMu.Lock()
+	defer s.nativeMu.Unlock()
+	if s.native == nil {
+		return udecx.DeviceRegistration{}, false
+	}
+	registration, ok := s.nativeIDs[nativeDeviceKey{busID: busID, devID: devID}]
+	return registration, ok
 }
 
 // AddBus registers a bus with the server. If the bus number is already present,
 // an error is returned.
 func (s *Server) AddBus(bus *virtualbus.VirtualBus) error {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
 	s.busesMu.Lock()
 	defer s.busesMu.Unlock()
 	if bus == nil {
@@ -234,6 +429,47 @@ func (s *Server) AddBus(bus *virtualbus.VirtualBus) error {
 
 // RemoveBus unregisters a bus from the server.
 func (s *Server) RemoveBus(busID uint32) error {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	return s.removeBus(busID)
+}
+
+// RemoveBusIfEmpty is the safe public native-transport bus cleanup. The empty
+// proof and removal are one lifecycle transaction, so a concurrent device add
+// cannot turn an empty cleanup request into a non-empty bus teardown.
+func (s *Server) RemoveBusIfEmpty(busID uint32) error {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	return s.removeCurrentBusIfEmptyLocked(busID, nil)
+}
+
+func (s *Server) removeCurrentBusIfEmpty(
+	busID uint32, expected *virtualbus.VirtualBus,
+) error {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	return s.removeCurrentBusIfEmptyLocked(busID, expected)
+}
+
+func (s *Server) removeCurrentBusIfEmptyLocked(
+	busID uint32, expected *virtualbus.VirtualBus,
+) error {
+	s.busesMu.Lock()
+	current := s.busses[busID]
+	s.busesMu.Unlock()
+	if current == nil {
+		return fmt.Errorf("%w: %d", ErrBusNotFound, busID)
+	}
+	if expected != nil && current != expected {
+		return fmt.Errorf("%w: %d", ErrBusInstanceChanged, busID)
+	}
+	if len(current.Devices()) != 0 {
+		return fmt.Errorf("%w: %d", ErrBusNotEmpty, busID)
+	}
+	return s.removeBus(busID)
+}
+
+func (s *Server) removeBus(busID uint32) error {
 	s.busesMu.Lock()
 	bus, ok := s.busses[busID]
 	if !ok {
@@ -246,8 +482,10 @@ func (s *Server) RemoveBus(busID uint32) error {
 
 	if len(devices) > 0 {
 		s.logger.Warn(fmt.Sprintf("Removing non-empty bus %d with %d device(s) attached; removing devices", busID, len(devices)))
-		for _, dev := range devices {
-			_ = bus.Remove(dev)
+		for _, meta := range bus.GetAllDeviceMetas() {
+			if err := s.removeDevice(busID, meta.Meta.DevID, false, nil); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -260,47 +498,156 @@ func (s *Server) RemoveBus(busID uint32) error {
 
 // RemoveDeviceByID removes a device by busId and cancels its connections.
 func (s *Server) RemoveDeviceByID(busID uint32, deviceID string) error {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+
 	s.busesMu.Lock()
 	bus, ok := s.busses[busID]
 	s.busesMu.Unlock()
 
 	if !ok {
-		return fmt.Errorf("bus %d not found", busID)
+		return fmt.Errorf("%w: %d", ErrBusNotFound, busID)
 	}
-	err := bus.RemoveDeviceByID(deviceID)
+	parsedDeviceID, err := strconv.ParseUint(deviceID, 10, 32)
+	if err != nil {
+		return fmt.Errorf("invalid device id %q: %w", deviceID, err)
+	}
+	err = s.removeDevice(busID, uint32(parsedDeviceID), true, nil)
 	if err != nil {
 		return err
 	}
 
+	s.scheduleEmptyBusCleanup(busID, bus)
+
+	return nil
+}
+
+// RemoveNativeDeviceExact removes a native child only when the caller's full
+// immutable correlation receipt still matches the registration occupying the
+// requested bus/device IDs. Comparison and mutation share lifecycleMu and
+// nativeMu, closing the lookup-then-remove race across controller restarts.
+func (s *Server) RemoveNativeDeviceExact(
+	busID uint32, deviceID string, expected udecx.DeviceRegistration,
+) error {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+
+	parsedDeviceID, err := strconv.ParseUint(deviceID, 10, 32)
+	if err != nil || parsedDeviceID == 0 || strconv.FormatUint(parsedDeviceID, 10) != deviceID {
+		return fmt.Errorf("%w: non-canonical device id %q", ErrInvalidNativeDeviceCorrelation, deviceID)
+	}
+	deviceIDNumber := uint32(parsedDeviceID)
+	if err := validateExpectedNativeDeviceCorrelation(busID, deviceIDNumber, expected); err != nil {
+		return err
+	}
+
+	s.busesMu.Lock()
+	bus := s.busses[busID]
+	s.busesMu.Unlock()
+	if bus == nil {
+		return fmt.Errorf("%w: %d", ErrBusNotFound, busID)
+	}
+	if err := s.removeDevice(busID, deviceIDNumber, true, &expected); err != nil {
+		return err
+	}
+	s.scheduleEmptyBusCleanup(busID, bus)
+	return nil
+}
+
+func validateExpectedNativeDeviceCorrelation(
+	busID, deviceID uint32, expected udecx.DeviceRegistration,
+) error {
+	validUSB20 := expected.USB20PortNumber != 0 &&
+		expected.USB20PortNumber <= udecx.MaxDevices && expected.USB30PortNumber == 0
+	validUSB30 := expected.USB30PortNumber > udecx.MaxDevices &&
+		expected.USB30PortNumber <= 2*udecx.MaxDevices && expected.USB20PortNumber == 0
+	if expected.DeviceID == 0 || expected.DeviceID != nativeDeviceID(busID, deviceID) ||
+		expected.Generation == 0 || expected.ControllerSessionID == 0 ||
+		!udecx.IsCanonicalControllerInstanceID(expected.ControllerInstanceID) ||
+		(!validUSB20 && !validUSB30) {
+		return fmt.Errorf("%w for bus %d device %d", ErrInvalidNativeDeviceCorrelation, busID, deviceID)
+	}
+	return nil
+}
+
+func nativeDeviceCorrelationMatches(
+	current, expected udecx.DeviceRegistration,
+) bool {
+	return current.DeviceIdentity == expected.DeviceIdentity &&
+		current.ControllerSessionID == expected.ControllerSessionID &&
+		strings.EqualFold(current.ControllerInstanceID, expected.ControllerInstanceID) &&
+		current.USB20PortNumber == expected.USB20PortNumber &&
+		current.USB30PortNumber == expected.USB30PortNumber
+}
+
+func (s *Server) scheduleEmptyBusCleanup(busID uint32, bus *virtualbus.VirtualBus) {
+	remove := func() {
+		err := s.removeCurrentBusIfEmpty(busID, bus)
+		switch {
+		case err == nil:
+			s.logger.Info("timeout: removed empty bus", "busID", busID)
+		case errors.Is(err, ErrBusNotFound), errors.Is(err, ErrBusNotEmpty),
+			errors.Is(err, ErrBusInstanceChanged):
+			s.logger.Debug("empty bus cleanup retired without mutation", "busID", busID, "error", err)
+		default:
+			s.logger.Error("timeout: failed to remove empty bus", "busID", busID, "error", err)
+		}
+	}
 	if emptyCtx := bus.GetBusEmptyContext(); emptyCtx != nil {
 		go func() {
-			slog.Debug("Started bus cleanup goroutine (RemoveDeviceByID)")
+			slog.Debug("Started exact bus cleanup goroutine")
 			select {
 			case <-emptyCtx.Done():
 				// Cancelled - a new device was added
 				return
 			case <-time.After(s.config.BusCleanupTimeout):
-				if b := s.GetBus(busID); b != nil && len(b.Devices()) == 0 {
-					if err := s.RemoveBus(busID); err != nil {
-						s.logger.Error("timeout: failed to remove empty bus", "busID", busID, "error", err)
-					} else {
-						s.logger.Info("timeout: removed empty bus", "busID", busID)
-					}
-				}
+				remove()
 			}
 		}()
 	} else {
 		s.logger.Debug("No bus empty context; Cleaning bus immediately")
-		if b := s.GetBus(busID); b != nil && len(b.Devices()) == 0 {
-			if err := s.RemoveBus(busID); err != nil {
-				s.logger.Error("timeout: failed to remove empty bus", "busID", busID, "error", err)
-			} else {
-				s.logger.Info("timeout: removed empty bus", "busID", busID)
-			}
+		go remove()
+	}
+}
+
+func (s *Server) removeDevice(
+	busID, deviceID uint32, requireBus bool, expected *udecx.DeviceRegistration,
+) error {
+	s.busesMu.Lock()
+	bus := s.busses[busID]
+	s.busesMu.Unlock()
+	if bus == nil {
+		if requireBus {
+			return fmt.Errorf("%w: %d", ErrBusNotFound, busID)
 		}
+		return nil
 	}
 
-	return nil
+	key := nativeDeviceKey{busID: busID, devID: deviceID}
+	s.nativeMu.Lock()
+	host := s.native
+	registration, registered := s.nativeIDs[key]
+	if expected != nil && (host == nil || !registered ||
+		!nativeDeviceCorrelationMatches(registration, *expected)) {
+		s.nativeMu.Unlock()
+		return fmt.Errorf("%w for bus %d device %d", ErrNativeDeviceCorrelationMismatch, busID, deviceID)
+	}
+	if host != nil && registered {
+		timeout := s.config.ConnectionTimeout
+		if timeout <= 0 {
+			timeout = 30 * time.Second
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		err := host.Unregister(ctx, registration.DeviceIdentity)
+		cancel()
+		if err != nil {
+			s.nativeMu.Unlock()
+			return fmt.Errorf("unplug native UDE device: %w", err)
+		}
+		delete(s.nativeIDs, key)
+	}
+	s.nativeMu.Unlock()
+	return bus.RemoveDeviceByID(strconv.FormatUint(uint64(deviceID), 10))
 }
 
 // ListBuses returns a snapshot of active bus numbers.
@@ -780,33 +1127,7 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 		case <-ctx.Done():
 			s.logger.Info("device removed, closing URB stream")
 			busID := owningBus.BusID()
-			if emptyCtx := owningBus.GetBusEmptyContext(); emptyCtx != nil {
-				go func() {
-					slog.Debug("Started bus cleanup goroutine (HandleUrbStream ctx.Done)")
-					select {
-					case <-emptyCtx.Done():
-						// Cancelled - a new device was added
-						return
-					case <-time.After(s.config.BusCleanupTimeout):
-						if b := s.GetBus(busID); b != nil && len(b.Devices()) == 0 {
-							if err := s.RemoveBus(busID); err != nil {
-								s.logger.Error("timeout: failed to remove empty bus", "busID", busID, "error", err)
-							} else {
-								s.logger.Info("timeout: removed empty bus", "busID", busID)
-							}
-						}
-					}
-				}()
-			} else {
-				s.logger.Debug("No bus empty context; Cleaning bus immediately")
-				if b := s.GetBus(busID); b != nil && len(b.Devices()) == 0 {
-					if err := s.RemoveBus(busID); err != nil {
-						s.logger.Error("timeout: failed to remove empty bus", "busID", busID, "error", err)
-					} else {
-						s.logger.Info("timeout: removed empty bus", "busID", busID)
-					}
-				}
-			}
+			s.scheduleEmptyBusCleanup(busID, owningBus)
 			return nil
 		default:
 		}
@@ -1272,7 +1593,8 @@ func (s *Server) buildIsoInResponse(
 	// USB/IP removes the padding between ISO packets on the wire. The client
 	// restores each packet at its descriptor offset after receiving the compact
 	// payload. Sending the original offset gaps here makes actual_length differ
-	// from the sum of packet actual lengths, so usbip-win2 discards capture data.
+	// from the sum of packet actual lengths, so the receiving stack rejects the
+	// capture data.
 	respData := make([]byte, 0, maximumLen)
 	nextServiceSlot := serviceStart
 	for i, packet := range submitted {
@@ -1626,57 +1948,11 @@ func (s *Server) processSubmit(ctx context.Context, dev usb.Device, ep uint32, d
 }
 
 func (s *Server) buildConfigDescriptor(desc *usb.Descriptor) []byte {
-	var b bytes.Buffer
-	configValue := desc.Configuration.BConfigurationValue
-	if configValue == 0 {
-		configValue = usbConfigValueDefault
+	data, err := desc.ConfigurationBytes()
+	if err != nil {
+		s.logger.Error("failed to build configuration descriptor", "error", err)
+		return nil
 	}
-	attrs := desc.Configuration.BMAttributes
-	if attrs == 0 {
-		attrs = usbConfigAttrBusPowered
-	}
-	maxPower := desc.Configuration.BMaxPower
-	if maxPower == 0 {
-		maxPower = usbConfigMaxPower100mA
-	}
-	h := usb.ConfigHeader{
-		WTotalLength:        0, // to be patched
-		BNumInterfaces:      desc.NumInterfaces(),
-		BConfigurationValue: configValue,
-		IConfiguration:      desc.Configuration.IConfiguration,
-		BMAttributes:        attrs,
-		BMaxPower:           maxPower,
-	}
-	h.Write(&b)
-	for _, iface := range desc.Interfaces {
-		for _, iad := range desc.Associations {
-			if iad.BFirstInterface == iface.Descriptor.BInterfaceNumber && iface.Descriptor.BAlternateSetting == 0 {
-				iad.Write(&b)
-			}
-		}
-		iface.Descriptor.Write(&b)
-		if iface.HID != nil {
-			hd, err := iface.HID.DescriptorBytes()
-			if err != nil {
-				s.logger.Error("failed to build HID descriptor", "iface", iface.Descriptor.BInterfaceNumber, "error", err)
-				// Stall/return minimal config descriptor.
-				return nil
-			}
-			b.Write([]byte(hd))
-		}
-		for _, cd := range iface.ClassDescriptors {
-			b.Write([]byte(cd.Bytes()))
-		}
-		for _, ep := range iface.Endpoints {
-			ep.Write(&b)
-			for _, cd := range ep.ClassDescriptors {
-				b.Write([]byte(cd.Bytes()))
-			}
-		}
-	}
-
-	data := b.Bytes()
-	binary.LittleEndian.PutUint16(data[2:4], uint16(len(data)))
 	return data
 }
 

@@ -1,8 +1,10 @@
 package viipertypes
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"strconv"
 	"strings"
@@ -33,8 +35,33 @@ func (e APIError) Error() string {
 // --
 
 type PingResponse struct {
-	Server  string `json:"server"`
-	Version string `json:"version"`
+	Server    string         `json:"server"`
+	Version   string         `json:"version"`
+	Transport string         `json:"transport,omitempty"`
+	Ready     *bool          `json:"ready,omitempty"`
+	NativeUDE *NativeUDEInfo `json:"nativeUde,omitempty"`
+}
+
+// NativeUDEInfo is the negotiated kernel contract for the active native
+// transport. It is additive to the historical ping response so older clients
+// continue to work while safety-conscious clients can fail closed unless the
+// exact ABI and capabilities they require are live.
+type NativeUDEInfo struct {
+	ABIMajor                     uint16 `json:"abiMajor"`
+	ABIMinor                     uint16 `json:"abiMinor"`
+	Capabilities                 uint32 `json:"capabilities"`
+	ExpectedDriverPackageVersion string `json:"expectedDriverPackageVersion"`
+	// LoadedDriverBuildIdentity is the lowercase SHA-256 identity returned by
+	// the currently loaded kernel image during ABI negotiation. It is not an
+	// on-disk hash or a broker-computed status echo.
+	LoadedDriverBuildIdentity string `json:"loadedDriverBuildIdentity"`
+	ControllerSessionID       string `json:"controllerSessionId"`
+	ControllerInstanceID      string `json:"controllerInstanceId"`
+	MaxDevices                uint32 `json:"maxDevices"`
+	MaxDescriptorBytes        uint32 `json:"maxDescriptorBytes"`
+	MaxTransferBytes          uint32 `json:"maxTransferBytes"`
+	MaxIsoPackets             uint32 `json:"maxIsoPackets"`
+	MaxPendingOperations      uint32 `json:"maxPendingOperations"`
 }
 
 type BusListResponse struct {
@@ -50,14 +77,28 @@ type BusRemoveResponse struct {
 }
 
 type Device struct {
-	BusID            uint32         `json:"busId"`
-	DevID            string         `json:"devId"`
-	Vid              string         `json:"vid"`
-	Pid              string         `json:"pid"`
-	Type             string         `json:"type"`
-	DeviceSpecific   map[string]any `json:"deviceSpecific"`
-	USBIPPort        int32          `json:"usbipPort,omitempty"`
-	USBIPOwnerSerial string         `json:"usbipOwnerSerial,omitempty"`
+	BusID            uint32               `json:"busId"`
+	DevID            string               `json:"devId"`
+	Vid              string               `json:"vid"`
+	Pid              string               `json:"pid"`
+	Type             string               `json:"type"`
+	DeviceSpecific   map[string]any       `json:"deviceSpecific"`
+	Transport        string               `json:"transport"`
+	NativeUDE        *NativeUDEDeviceInfo `json:"nativeUde,omitempty"`
+	USBIPPort        int32                `json:"usbipPort,omitempty"`
+	USBIPOwnerSerial string               `json:"usbipOwnerSerial,omitempty"`
+}
+
+// NativeUDEDeviceInfo is the exact kernel/controller receipt used to
+// correlate one API device with its Windows HID and UAC descendants. DeviceID
+// is decimal text so every JSON consumer preserves the full uint64 value.
+type NativeUDEDeviceInfo struct {
+	DeviceID             string `json:"deviceId"`
+	DeviceGeneration     uint32 `json:"deviceGeneration"`
+	ControllerSessionID  string `json:"controllerSessionId"`
+	ControllerInstanceID string `json:"controllerInstanceId"`
+	USB20PortNumber      uint32 `json:"usb20PortNumber"`
+	USB30PortNumber      uint32 `json:"usb30PortNumber"`
 }
 
 type DevicesListResponse struct {
@@ -67,6 +108,146 @@ type DevicesListResponse struct {
 type DeviceRemoveResponse struct {
 	BusID uint32 `json:"busId"`
 	DevID string `json:"devId"`
+}
+
+// NativeUDEDeviceRemoveRequest is a compare-and-remove request. Native clients
+// must echo the exact correlation receipt returned by add/list so a delayed
+// cleanup cannot remove a successor that reused the same bus and device IDs.
+type NativeUDEDeviceRemoveRequest struct {
+	DevID     string               `json:"devId"`
+	Transport string               `json:"transport"`
+	NativeUDE *NativeUDEDeviceInfo `json:"nativeUde"`
+}
+
+// UnmarshalJSON rejects unknown, duplicate, and trailing fields. The echoed
+// correlation receipt is mutation authority, so ambiguous JSON is not
+// accepted even when encoding/json could otherwise choose a last value.
+func (r *NativeUDEDeviceRemoveRequest) UnmarshalJSON(data []byte) error {
+	if err := rejectDuplicateJSONKeys(data); err != nil {
+		return err
+	}
+	if err := validateNativeRemoveJSONFieldNames(data); err != nil {
+		return err
+	}
+	type requestAlias NativeUDEDeviceRemoveRequest
+	var decoded requestAlias
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&decoded); err != nil {
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("native remove request contains trailing JSON")
+		}
+		return fmt.Errorf("native remove request contains trailing JSON: %w", err)
+	}
+	*r = NativeUDEDeviceRemoveRequest(decoded)
+	return nil
+}
+
+func validateNativeRemoveJSONFieldNames(data []byte) error {
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(data, &top); err != nil {
+		return err
+	}
+	topFields := []string{"devId", "transport", "nativeUde"}
+	if len(top) != len(topFields) {
+		return fmt.Errorf("native remove request must contain exactly devId, transport, and nativeUde")
+	}
+	for _, field := range topFields {
+		if _, ok := top[field]; !ok {
+			return fmt.Errorf("native remove request is missing canonical JSON field %q", field)
+		}
+	}
+
+	var native map[string]json.RawMessage
+	if err := json.Unmarshal(top["nativeUde"], &native); err != nil {
+		return fmt.Errorf("nativeUde must be an object: %w", err)
+	}
+	nativeFields := []string{
+		"deviceId", "deviceGeneration", "controllerSessionId",
+		"controllerInstanceId", "usb20PortNumber", "usb30PortNumber",
+	}
+	if len(native) != len(nativeFields) {
+		return fmt.Errorf("nativeUde must contain the exact correlation receipt fields")
+	}
+	for _, field := range nativeFields {
+		if _, ok := native[field]; !ok {
+			return fmt.Errorf("nativeUde is missing canonical JSON field %q", field)
+		}
+	}
+	return nil
+}
+
+func rejectDuplicateJSONKeys(data []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	if err := walkUniqueJSONValue(decoder); err != nil {
+		return err
+	}
+	if _, err := decoder.Token(); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("native remove request contains trailing JSON")
+		}
+		return fmt.Errorf("native remove request contains trailing JSON: %w", err)
+	}
+	return nil
+}
+
+func walkUniqueJSONValue(decoder *json.Decoder) error {
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	delimiter, ok := token.(json.Delim)
+	if !ok {
+		return nil
+	}
+	switch delimiter {
+	case '{':
+		seen := make(map[string]struct{})
+		for decoder.More() {
+			keyToken, err := decoder.Token()
+			if err != nil {
+				return err
+			}
+			key, ok := keyToken.(string)
+			if !ok {
+				return fmt.Errorf("native remove request contains a non-string JSON object key")
+			}
+			if _, duplicate := seen[key]; duplicate {
+				return fmt.Errorf("native remove request contains duplicate JSON field %q", key)
+			}
+			seen[key] = struct{}{}
+			if err := walkUniqueJSONValue(decoder); err != nil {
+				return err
+			}
+		}
+		closing, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		if closing != json.Delim('}') {
+			return fmt.Errorf("native remove request has malformed JSON object")
+		}
+	case '[':
+		for decoder.More() {
+			if err := walkUniqueJSONValue(decoder); err != nil {
+				return err
+			}
+		}
+		closing, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		if closing != json.Delim(']') {
+			return fmt.Errorf("native remove request has malformed JSON array")
+		}
+	default:
+		return fmt.Errorf("native remove request has unexpected JSON delimiter %q", delimiter)
+	}
+	return nil
 }
 
 type DeviceCreateRequest struct {

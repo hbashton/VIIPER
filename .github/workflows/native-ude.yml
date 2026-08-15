@@ -1,0 +1,682 @@
+name: Native UdeCx bus
+
+on:
+  push:
+    branches: [main, "feature/**"]
+    tags: ["v*.*.*"]
+    paths:
+      - "go.mod"
+      - "go.sum"
+      - "justfile"
+      - "native/udecx/**"
+      - "internal/transport/udecx/**"
+      - "internal/server/usb/**"
+      - "internal/server/api/**"
+      - "internal/cmd/**"
+      - "internal/configpaths/**"
+      - "viipertypes/**"
+      - "device/**"
+      - "usb/**"
+      - "scripts/**"
+      - "_testing/e2e/**"
+      - "docs/testing/e2e_latency.md"
+      - ".github/workflows/build_base.yml"
+      - ".github/workflows/**"
+      - ".github/scripts/Test-WorkflowSecurity.ps1"
+      - ".github/workflows/native-ude.yml"
+      - ".github/workflows/native-package-transaction.yml"
+      - ".github/workflows/release.yml"
+  pull_request:
+    paths:
+      - "go.mod"
+      - "go.sum"
+      - "justfile"
+      - "native/udecx/**"
+      - "internal/transport/udecx/**"
+      - "internal/server/usb/**"
+      - "internal/server/api/**"
+      - "internal/cmd/**"
+      - "internal/configpaths/**"
+      - "viipertypes/**"
+      - "device/**"
+      - "usb/**"
+      - "scripts/**"
+      - "_testing/e2e/**"
+      - "docs/testing/e2e_latency.md"
+      - ".github/workflows/build_base.yml"
+      - ".github/workflows/**"
+      - ".github/scripts/Test-WorkflowSecurity.ps1"
+      - ".github/workflows/native-ude.yml"
+      - ".github/workflows/native-package-transaction.yml"
+      - ".github/workflows/release.yml"
+  workflow_call:
+    inputs:
+      upload_artifacts:
+        description: Upload the test-signed native package for controlled testing.
+        required: false
+        type: boolean
+        default: false
+      upload_release_helper:
+        description: Upload only the source-built runtime helper for an HLK/WHCP release composition.
+        required: false
+        type: boolean
+        default: false
+  workflow_dispatch:
+    inputs:
+      upload_artifacts:
+        description: Upload the compact source-bound local test package.
+        required: false
+        type: boolean
+        default: true
+      upload_release_helper:
+        description: Upload source-bound helpers and live probes separately.
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  actions: read
+  contents: read
+  security-events: write
+
+env:
+  GOFLAGS: -mod=readonly
+  GOTOOLCHAIN: local
+  VIIPER_NATIVE_SOURCE_REVISION: ${{ github.sha }}
+
+# A driver artifact is meaningful only for the exact current branch head.
+# Cancel superseded WDK/CodeQL work instead of letting several incompatible
+# ABI revisions finish and present equally downloadable test packages.
+concurrency:
+  group: native-ude-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  protocol:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Verify workflow and native toolchain policy
+        shell: pwsh
+        run: |
+          ./.github/scripts/Test-WorkflowSecurity.ps1
+          $identity = ./native/udecx/tools/Get-ViiperUdeBuildIdentity.ps1 `
+            -SourceRevision 0123456789abcdef0123456789abcdef01234567 `
+            -DriverPackageVersion 0.1.0.17 -ABIMajor 1 -ABIMinor 10 -Capabilities 13
+          if ($identity -cne '180003f7b141c8015c29e7b3dcb6d252601ca6e82e6cc43b4480db31e167a660') {
+            throw "Native build-identity generator drifted: $identity"
+          }
+          $expected = ((Get-Content go.mod | Where-Object { $_ -match '^go\s+' } | Select-Object -First 1) -split '\s+')[1]
+          $actual = (go env GOVERSION).TrimStart('g', 'o')
+          if ($actual -cne $expected) { throw "Expected Go $expected; runner selected $actual." }
+          go mod verify
+      - name: Gate native DriverVer and package-content monotonicity
+        shell: pwsh
+        env:
+          BASE_REVISION: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: >-
+          ./native/udecx/tools/Test-ViiperUdeVersionMonotonicity.ps1
+          -BaseRevision $env:BASE_REVISION
+          -HeadRevision $env:GITHUB_SHA
+      - name: Test complete VIIPER tree
+        run: go test ./...
+      - name: Stress native Windows client cancellation, close, pump failure, and reconnect
+        run: >-
+          go test -count=10 -timeout=5m
+          -run=^TestWindowsClientIOCPStress$
+          ./internal/transport/udecx
+      - name: Vet complete VIIPER tree
+        run: go vet ./...
+      - name: Type-check cross-transport end-to-end benchmark
+        env:
+          CGO_ENABLED: "0"
+        run: go test -run=^$ ./_testing/e2e
+      - name: Fuzz native protocol decoders
+        run: go test -run=^$ -fuzz=FuzzProtocolDecoders -fuzztime=1000000x ./internal/transport/udecx
+
+  race:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Race-test native host, USB processor, and realtime controller encoders
+        run: >-
+          go test -race -count=5
+          ./internal/transport/udecx
+          ./internal/server/usb
+          ./device/dualsense
+          ./device/dualshock4
+          ./device/xbox360
+          ./device/ns2pro
+          ./device/keyboard
+          ./device/mouse
+
+  driver:
+    runs-on: windows-2025-vs2026
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: github/codeql-action/init@5595ccaf912efad79be6eef63a5619ff05969be3 # v4
+        with:
+          languages: c-cpp
+          build-mode: manual
+          queries: security-extended
+      - uses: microsoft/setup-msbuild@6fb02220983dee41ce7ae257b6f4d8f9bf5ed4ce # v2
+        with:
+          msbuild-architecture: x64
+          vs-version: "[18.0,19.0)"
+      - uses: NuGet/setup-nuget@d105a947828025cd7a980103c35ba2bfae586d0f # v2
+        with:
+          nuget-version: "6.11.1"
+      - name: Restore WDK packages
+        run: nuget restore native/udecx/ViiperUde.sln -PackagesDirectory native/udecx/packages -NonInteractive
+      - name: Validate Windows and KMDF target contract
+        shell: pwsh
+        run: ./native/udecx/tools/Test-ViiperUdeTargetCompatibility.ps1
+      - name: Parse native PowerShell tooling
+        shell: pwsh
+        run: |
+          $failed = $false
+          Get-ChildItem native/udecx/tools -File -Filter *.ps1 | ForEach-Object {
+            $tokens = $null
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$tokens, [ref]$errors)
+            if ($errors.Count -gt 0) {
+              $failed = $true
+              Write-Error "$($_.Name): $($errors -join [Environment]::NewLine)"
+            }
+          }
+          if ($failed) { throw "Native PowerShell parser gate failed" }
+      - name: Parse native PowerShell tooling with Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          if ($PSVersionTable.PSEdition -cne 'Desktop' -or
+              $PSVersionTable.PSVersion.Major -ne 5) {
+            throw "Expected Windows PowerShell 5.1, got $($PSVersionTable.PSVersion)."
+          }
+          $failed = $false
+          Get-ChildItem native/udecx/tools -File -Filter *.ps1 | ForEach-Object {
+            $tokens = $null
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              $_.FullName, [ref]$tokens, [ref]$errors)
+            if ($errors.Count -gt 0) {
+              $failed = $true
+              Write-Error "$($_.Name): $($errors -join [Environment]::NewLine)"
+            }
+          }
+          if ($failed) { throw "Windows PowerShell 5.1 parser gate failed" }
+      - name: Expose WDK tools
+        shell: pwsh
+        run: |
+          $tools = Get-ChildItem native/udecx/packages -Recurse -File -Filter *.exe
+          $stampInf = $tools | Where-Object Name -ieq stampinf.exe | Select-Object -First 1
+          if (-not $stampInf) { throw "Restored WDK package did not contain stampinf.exe" }
+          $tools.DirectoryName | Sort-Object -Unique | Out-File $env:GITHUB_PATH -Append -Encoding utf8
+      - name: Build x64 driver
+        run: msbuild native/udecx/ViiperUde.sln /m /p:Configuration=Release /p:Platform=x64 /p:SignMode=TestSign
+      - name: Enforce WHQL-aligned and Universal INF rules
+        shell: pwsh
+        run: |
+          $inf = (Resolve-Path ./native/udecx/x64/Release/ViiperUde/ViiperUde.inf).Path
+          foreach ($mode in @('/h', '/u')) {
+            & infverif.exe $mode $inf
+            if ($LASTEXITCODE -ne 0) {
+              throw "InfVerif $mode rejected the stamped native INF (exit $LASTEXITCODE)."
+            }
+          }
+      - name: Verify stamped KMDF and DriverVer contract
+        shell: pwsh
+        run: >-
+          ./native/udecx/tools/Test-ViiperUdeTargetCompatibility.ps1
+          -ProjectPath ./native/udecx/driver/ViiperUde.vcxproj
+          -InfPath ./native/udecx/x64/Release/ViiperUde/ViiperUde.inf
+          -RequireStampedInf
+      - name: Verify matching private line and type debug artifacts
+        shell: pwsh
+        run: >-
+          ./native/udecx/tools/Test-ViiperUdeDebugArtifacts.ps1
+          -SysPath ./native/udecx/x64/Release/ViiperUde.sys
+          -PdbPath ./native/udecx/x64/Release/ViiperUde.pdb
+          -MapPath ./native/udecx/x64/Release/ViiperUde.map
+      - name: Build transactional root-devnode and live-media helpers
+        shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -version '[18.0,19.0)' -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vs) { throw "Visual C++ toolchain was not found" }
+          $devCmd = Join-Path $vs "Common7\Tools\VsDevCmd.bat"
+          $source = (Resolve-Path "native\udecx\tools\ViiperUdeCtl.cpp").Path
+          $outputDir = Join-Path $PWD "native\udecx\x64\Release"
+          $intermediateDir = Join-Path $env:RUNNER_TEMP "viiper-native-symbol-objects"
+          New-Item -ItemType Directory -Force $outputDir | Out-Null
+          New-Item -ItemType Directory -Force $intermediateDir | Out-Null
+          $output = Join-Path $outputDir "ViiperUdeCtl.exe"
+          $helperPdb = Join-Path $outputDir "ViiperUdeCtl.pdb"
+          $helperObj = Join-Path $intermediateDir "ViiperUdeCtl.obj"
+          $command = "`"$devCmd`" -arch=x64 -host_arch=x64 && cl.exe /nologo /std:c++20 /EHsc /W4 /WX /O2 /Z7 /MT /DUNICODE /D_UNICODE `"$source`" /Fo:`"$helperObj`" /Fe:`"$output`" /link Setupapi.lib Newdev.lib Cfgmgr32.lib Advapi32.lib /DEBUG:FULL /PDB:`"$helperPdb`" /PDBALTPATH:ViiperUdeCtl.pdb /INCREMENTAL:NO /OPT:REF /OPT:ICF"
+          cmd.exe /d /s /c $command
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path $output) -or -not (Test-Path $helperPdb)) { throw "ViiperUdeCtl full-symbol build failed" }
+          & $output self-test
+          if ($LASTEXITCODE -ne 0) { throw "ViiperUdeCtl self-test failed" }
+          $mediaSource = (Resolve-Path "native\udecx\tools\ViiperUdeMediaProbe.cpp").Path
+          $mediaOutput = Join-Path $outputDir "ViiperUdeMediaProbe.exe"
+          $mediaPdb = Join-Path $outputDir "ViiperUdeMediaProbe.pdb"
+          $mediaObj = Join-Path $intermediateDir "ViiperUdeMediaProbe.obj"
+          $mediaCommand = "`"$devCmd`" -arch=x64 -host_arch=x64 && cl.exe /nologo /std:c++20 /EHsc /W4 /WX /O2 /Z7 /MT /D_WIN32_WINNT=0x0A00 `"$mediaSource`" /Fo:`"$mediaObj`" /Fe:`"$mediaOutput`" /link Ole32.lib Ksuser.lib /DEBUG:FULL /PDB:`"$mediaPdb`" /PDBALTPATH:ViiperUdeMediaProbe.pdb /INCREMENTAL:NO /OPT:REF /OPT:ICF"
+          cmd.exe /d /s /c $mediaCommand
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path $mediaOutput) -or -not (Test-Path $mediaPdb)) { throw "ViiperUdeMediaProbe full-symbol build failed" }
+          $mediaSnapshot = Join-Path $env:RUNNER_TEMP "viiper-ude-media-smoke.snapshot"
+          & $mediaOutput snapshot $mediaSnapshot
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path $mediaSnapshot)) { throw "ViiperUdeMediaProbe endpoint snapshot smoke test failed" }
+          Remove-Item -LiteralPath $mediaSnapshot -Force
+          $inputSource = (Resolve-Path "native\udecx\tools\ViiperUdeInputProbe.cpp").Path
+          $inputOutput = Join-Path $outputDir "ViiperUdeInputProbe.exe"
+          $inputPdb = Join-Path $outputDir "ViiperUdeInputProbe.pdb"
+          $inputObj = Join-Path $intermediateDir "ViiperUdeInputProbe.obj"
+          $inputCommand = "`"$devCmd`" -arch=x64 -host_arch=x64 && cl.exe /nologo /std:c++20 /EHsc /W4 /WX /O2 /Z7 /MT /D_WIN32_WINNT=0x0A00 `"$inputSource`" /Fo:`"$inputObj`" /Fe:`"$inputOutput`" /link Setupapi.lib Hid.lib /DEBUG:FULL /PDB:`"$inputPdb`" /PDBALTPATH:ViiperUdeInputProbe.pdb /INCREMENTAL:NO /OPT:REF /OPT:ICF"
+          cmd.exe /d /s /c $inputCommand
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path $inputOutput) -or -not (Test-Path $inputPdb)) { throw "ViiperUdeInputProbe full-symbol build failed" }
+          $inputSnapshot = Join-Path $env:RUNNER_TEMP "viiper-ude-input-smoke.snapshot"
+          & $inputOutput snapshot $inputSnapshot
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path $inputSnapshot)) { throw "ViiperUdeInputProbe HID snapshot smoke test failed" }
+          Remove-Item -LiteralPath $inputSnapshot -Force
+          $probeManifest = [ordered]@{
+            schemaVersion = 1
+            sourceRevision = $env:GITHUB_SHA.ToLowerInvariant()
+            probes = [ordered]@{
+              'ViiperUdeMediaProbe.exe' = (Get-FileHash -LiteralPath $mediaOutput -Algorithm SHA256).Hash.ToLowerInvariant()
+              'ViiperUdeInputProbe.exe' = (Get-FileHash -LiteralPath $inputOutput -Algorithm SHA256).Hash.ToLowerInvariant()
+            }
+          }
+          $probeManifestPath = Join-Path $outputDir 'ViiperUdeLiveProbes.manifest.json'
+          $probeManifest | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $probeManifestPath -Encoding utf8NoBOM
+          if (-not (Test-Path -LiteralPath $probeManifestPath -PathType Leaf)) { throw "Live-probe manifest was not created" }
+          ./native/udecx/tools/Test-ViiperUdeDebugArtifacts.ps1 `
+            -SysPath native/udecx/x64/Release/ViiperUde.sys `
+            -PdbPath native/udecx/x64/Release/ViiperUde.pdb `
+            -MapPath native/udecx/x64/Release/ViiperUde.map `
+            -HelperPath $output -HelperPdbPath $helperPdb `
+            -MediaProbePath $mediaOutput -MediaProbePdbPath $mediaPdb `
+            -InputProbePath $inputOutput -InputProbePdbPath $inputPdb
+      - name: Build source-bound native broker
+        shell: pwsh
+        run: |
+          $output = 'native/udecx/x64/Release/viiper.exe'
+          $env:CGO_ENABLED = '0'
+          $buildDate = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
+          go build -tags release -trimpath `
+            -ldflags "-X main.Version=0.1.0-local-test -X main.Commit=$env:GITHUB_SHA -X main.Date=$buildDate -X github.com/Alia5/VIIPER/internal/codegen/common.Version=0.1.0-local-test -X github.com/Alia5/VIIPER/internal/transport/udecx.nativeSourceRevision=$env:GITHUB_SHA" `
+            -o $output ./cmd/viiper
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $output -PathType Leaf)) {
+            throw 'Source-bound native broker build failed.'
+          }
+          $nmPatterns = @(
+            ' main\.main(?:\.abi0)?$',
+            ' github\.com/Alia5/VIIPER/internal/transport/udecx\.\(\*Host\)\.runInputPublisher(?:\.abi0)?$'
+          )
+          $nmMatches = @(& go tool nm $output 2>&1 | Select-String -Pattern $nmPatterns)
+          $nmExitCode = $LASTEXITCODE
+          $nmLines = @($nmMatches | ForEach-Object { $_.Line })
+          if ($nmExitCode -ne 0 -or
+              @($nmPatterns | Where-Object { @($nmLines -match $_).Count -eq 0 }).Count -ne 0) {
+            throw 'Source-bound native broker is missing required Go/DWARF hot-path symbols.'
+          }
+          $brokerAscii = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($output))
+          $dwarfSectionPatterns = @(
+            '\.(?:z)?debug_info(?:\x00|$)',
+            '\.(?:z)?debug_line(?:\x00|$)',
+            '\.(?:z)?debug_abbrev(?:\x00|$)'
+          )
+          if (@($dwarfSectionPatterns | Where-Object { $brokerAscii -notmatch $_ }).Count -ne 0) {
+            throw 'Source-bound native broker is missing embedded Go DWARF sections.'
+          }
+          $helpOutput = (& $output --help 2>&1 | Out-String)
+          if ($LASTEXITCODE -ne 0 -or
+              $helpOutput -notmatch [regex]::Escape("Version: 0.1.0-local-test ($env:GITHUB_SHA)") -or
+              $helpOutput -notmatch [regex]::Escape($buildDate)) {
+            throw 'Retaining Go DWARF changed or removed the source-bound broker version metadata.'
+          }
+          $buildInfoPath = "$output.buildinfo.txt"
+          $buildInfo = (& go version -m $output 2>&1 | Out-String)
+          if ($LASTEXITCODE -ne 0 -or
+              $buildInfo -notmatch ('(?m)^\s*build\s+vcs\.revision=' + [regex]::Escape($env:GITHUB_SHA) + '\s*$')) {
+            throw 'The broker Go build information is not bound to the workflow source revision.'
+          }
+          [IO.File]::WriteAllText($buildInfoPath, $buildInfo, [Text.UTF8Encoding]::new($false))
+          $brokerItem = Get-Item -LiteralPath $output
+          $buildManifest = [ordered]@{
+            schema = 1
+            sourceRevision = $env:GITHUB_SHA.ToLowerInvariant()
+            version = '0.1.0-local-test'
+            commit = $env:GITHUB_SHA.ToLowerInvariant()
+            buildDate = $buildDate
+            goVersion = (go env GOVERSION)
+            trimpath = $true
+            embeddedDwarf = $true
+            embeddedDwarfSections = @('debug_info', 'debug_line', 'debug_abbrev')
+            binary = [ordered]@{
+              name = $brokerItem.Name
+              length = $brokerItem.Length
+              sha256 = (Get-FileHash -LiteralPath $output -Algorithm SHA256).Hash.ToLowerInvariant()
+            }
+            buildInfoSha256 = (Get-FileHash -LiteralPath $buildInfoPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          }
+          $buildManifestPath = "$output.build.json"
+          [IO.File]::WriteAllText($buildManifestPath,
+            ($buildManifest | ConvertTo-Json -Depth 5), [Text.UTF8Encoding]::new($false))
+      - name: Compose exact source-bound debug bundle
+        if: ${{ inputs.upload_release_helper == true || inputs.upload_artifacts == true }}
+        shell: pwsh
+        run: >-
+          ./native/udecx/tools/New-ViiperUdeDebugBundle.ps1
+          -RepositoryRoot .
+          -SourceRevision $env:GITHUB_SHA
+          -DriverImagePath native/udecx/x64/Release/ViiperUde.sys
+          -DriverPdbPath native/udecx/x64/Release/ViiperUde.pdb
+          -DriverMapPath native/udecx/x64/Release/ViiperUde.map
+          -BrokerPath native/udecx/x64/Release/viiper.exe
+          -BrokerBuildInfoPath native/udecx/x64/Release/viiper.exe.buildinfo.txt
+          -BrokerBuildManifestPath native/udecx/x64/Release/viiper.exe.build.json
+          -HelperPath native/udecx/x64/Release/ViiperUdeCtl.exe
+          -HelperPdbPath native/udecx/x64/Release/ViiperUdeCtl.pdb
+          -MediaProbePath native/udecx/x64/Release/ViiperUdeMediaProbe.exe
+          -MediaProbePdbPath native/udecx/x64/Release/ViiperUdeMediaProbe.pdb
+          -InputProbePath native/udecx/x64/Release/ViiperUdeInputProbe.exe
+          -InputProbePdbPath native/udecx/x64/Release/ViiperUdeInputProbe.pdb
+          -OutputDirectory native/udecx/x64/Release/ViiperUdeDebug
+      - name: Upload source-bound native live probes
+        if: ${{ inputs.upload_release_helper == true }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ViiperUdeLiveProbes-windows-amd64-${{ github.sha }}
+          path: |
+            native/udecx/x64/Release/ViiperUdeMediaProbe.exe
+            native/udecx/x64/Release/ViiperUdeMediaProbe.pdb
+            native/udecx/x64/Release/ViiperUdeInputProbe.exe
+            native/udecx/x64/Release/ViiperUdeInputProbe.pdb
+            native/udecx/x64/Release/ViiperUdeLiveProbes.manifest.json
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload source-bound native runtime helper
+        if: ${{ inputs.upload_release_helper == true }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ViiperUdeCtl-windows-amd64-${{ github.sha }}
+          path: |
+            native/udecx/x64/Release/ViiperUdeCtl.exe
+            native/udecx/x64/Release/ViiperUdeCtl.pdb
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload exact source-bound debug bundle
+        if: ${{ inputs.upload_release_helper == true || inputs.upload_artifacts == true }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ViiperUdeDebug-windows-amd64-${{ github.sha }}
+          path: native/udecx/x64/Release/ViiperUdeDebug/**
+          if-no-files-found: error
+          retention-days: 30
+      - name: Validate testing-only Hardware Dev Center CAB structure
+        shell: pwsh
+        run: |
+          ./native/udecx/tools/New-ViiperUdeAttestationPackage.ps1 `
+            -InfPath native/udecx/x64/Release/ViiperUde/ViiperUde.inf `
+            -SysPath native/udecx/x64/Release/ViiperUde/ViiperUde.sys `
+            -PdbPath native/udecx/x64/Release/ViiperUde.pdb `
+            -CatalogPath native/udecx/x64/Release/ViiperUde/viiperude.cat `
+            -OutputPath native/udecx/x64/Release/ViiperUdeAttestationStructure.cab `
+            -SourceRevision $env:GITHUB_SHA `
+            -AcknowledgeTestingOnly
+      - name: Compose compact source-bound local test package
+        if: ${{ inputs.upload_artifacts == true }}
+        shell: pwsh
+        run: |
+          $certificatePath = (Resolve-Path 'native/udecx/x64/Release/ViiperUde.cer').Path
+          $certificate = [Security.Cryptography.X509Certificates.X509Certificate2]::new(
+            $certificatePath)
+          $certificateSha256 = $certificate.GetCertHashString(
+            [Security.Cryptography.HashAlgorithmName]::SHA256)
+          $addedTrust = @()
+          if (-not ('ViiperNativeCertificateStore' -as [type])) {
+            Add-Type -Language CSharp -TypeDefinition @'
+          using System;
+          using System.ComponentModel;
+          using System.Runtime.InteropServices;
+
+          public static class ViiperNativeCertificateStore
+          {
+              private const int CERT_STORE_PROV_SYSTEM_W = 10;
+              private const uint CERT_SYSTEM_STORE_LOCAL_MACHINE = 0x00020000;
+              private const uint CERT_STORE_OPEN_EXISTING_FLAG = 0x00004000;
+              private const uint CERT_STORE_MAXIMUM_ALLOWED_FLAG = 0x00001000;
+              private const uint CERT_ENCODING = 0x00010001;
+              private const uint CERT_STORE_ADD_NEW = 1;
+              private const uint CERT_FIND_EXISTING = 0x000d0000;
+
+              [DllImport("crypt32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+              private static extern IntPtr CertOpenStore(
+                  IntPtr provider, uint encoding, IntPtr cryptProvider,
+                  uint flags, string storeName);
+
+              [DllImport("crypt32.dll", SetLastError = true)]
+              private static extern bool CertAddEncodedCertificateToStore(
+                  IntPtr store, uint encoding, byte[] certificate, uint length,
+                  uint disposition, out IntPtr context);
+
+              [DllImport("crypt32.dll", SetLastError = true)]
+              private static extern IntPtr CertCreateCertificateContext(
+                  uint encoding, byte[] certificate, uint length);
+
+              [DllImport("crypt32.dll", SetLastError = true)]
+              private static extern IntPtr CertFindCertificateInStore(
+                  IntPtr store, uint encoding, uint findFlags, uint findType,
+                  IntPtr findParameter, IntPtr previousContext);
+
+              [DllImport("crypt32.dll", SetLastError = true)]
+              private static extern bool CertDeleteCertificateFromStore(IntPtr context);
+
+              [DllImport("crypt32.dll")]
+              private static extern bool CertFreeCertificateContext(IntPtr context);
+
+              [DllImport("crypt32.dll", SetLastError = true)]
+              private static extern bool CertCloseStore(IntPtr store, uint flags);
+
+              private static IntPtr Open(string storeName)
+              {
+                  IntPtr store = CertOpenStore(
+                      new IntPtr(CERT_STORE_PROV_SYSTEM_W), 0, IntPtr.Zero,
+                      CERT_SYSTEM_STORE_LOCAL_MACHINE | CERT_STORE_OPEN_EXISTING_FLAG |
+                          CERT_STORE_MAXIMUM_ALLOWED_FLAG,
+                      storeName);
+                  if (store == IntPtr.Zero)
+                      throw new Win32Exception(Marshal.GetLastWin32Error(), "CertOpenStore");
+                  return store;
+              }
+
+              public static void Add(string storeName, byte[] certificate)
+              {
+                  IntPtr store = Open(storeName);
+                  IntPtr context = IntPtr.Zero;
+                  try
+                  {
+                      if (!CertAddEncodedCertificateToStore(
+                              store, CERT_ENCODING, certificate, (uint)certificate.Length,
+                              CERT_STORE_ADD_NEW, out context))
+                          throw new Win32Exception(
+                              Marshal.GetLastWin32Error(), "CertAddEncodedCertificateToStore");
+                  }
+                  finally
+                  {
+                      if (context != IntPtr.Zero) CertFreeCertificateContext(context);
+                      CertCloseStore(store, 0);
+                  }
+              }
+
+              public static bool Remove(string storeName, byte[] certificate)
+              {
+                  IntPtr store = Open(storeName);
+                  IntPtr search = IntPtr.Zero;
+                  try
+                  {
+                      search = CertCreateCertificateContext(
+                          CERT_ENCODING, certificate, (uint)certificate.Length);
+                      if (search == IntPtr.Zero)
+                          throw new Win32Exception(
+                              Marshal.GetLastWin32Error(), "CertCreateCertificateContext");
+                      IntPtr found = CertFindCertificateInStore(
+                          store, CERT_ENCODING, 0, CERT_FIND_EXISTING, search, IntPtr.Zero);
+                      if (found == IntPtr.Zero) return false;
+                      if (!CertDeleteCertificateFromStore(found))
+                          throw new Win32Exception(
+                              Marshal.GetLastWin32Error(), "CertDeleteCertificateFromStore");
+                      return true;
+                  }
+                  finally
+                  {
+                      if (search != IntPtr.Zero) CertFreeCertificateContext(search);
+                      CertCloseStore(store, 0);
+                  }
+              }
+          }
+          '@
+          }
+          $operationError = $null
+          $cleanupErrors = [Collections.Generic.List[string]]::new()
+          try {
+            foreach ($storeName in @(
+                [Security.Cryptography.X509Certificates.StoreName]::Root,
+                [Security.Cryptography.X509Certificates.StoreName]::TrustedPublisher)) {
+              $store = [Security.Cryptography.X509Certificates.X509Store]::new(
+                $storeName,
+                [Security.Cryptography.X509Certificates.StoreLocation]::LocalMachine)
+              try {
+                $store.Open([Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
+                $matches = $store.Certificates.Find(
+                  [Security.Cryptography.X509Certificates.X509FindType]::FindByThumbprint,
+                  $certificate.Thumbprint, $false)
+                $exactMatch = @($matches | Where-Object {
+                    $_.GetCertHashString(
+                      [Security.Cryptography.HashAlgorithmName]::SHA256) -ceq
+                        $certificateSha256
+                  })
+                if ($matches.Count -ne $exactMatch.Count) {
+                  throw "Certificate thumbprint collision in LocalMachine\\$storeName."
+                }
+                if ($exactMatch.Count -eq 0) {
+                  [ViiperNativeCertificateStore]::Add(
+                    $storeName.ToString(), $certificate.RawData)
+                  $addedTrust += $storeName
+                  $store.Close()
+                  $store.Open([Security.Cryptography.X509Certificates.OpenFlags]::ReadOnly)
+                  $installed = $store.Certificates.Find(
+                    [Security.Cryptography.X509Certificates.X509FindType]::FindByThumbprint,
+                    $certificate.Thumbprint, $false)
+                  $installedExact = @($installed | Where-Object {
+                      $_.GetCertHashString(
+                        [Security.Cryptography.HashAlgorithmName]::SHA256) -ceq
+                          $certificateSha256
+                    })
+                  if ($installed.Count -ne 1 -or $installedExact.Count -ne 1) {
+                    throw "Exact temporary certificate was not installed in LocalMachine\\$storeName."
+                  }
+                }
+              }
+              finally {
+                $store.Close()
+              }
+            }
+            ./native/udecx/tools/New-ViiperUdeLocalTestPackage.ps1 `
+              -InfPath native/udecx/x64/Release/ViiperUde/ViiperUde.inf `
+              -SysPath native/udecx/x64/Release/ViiperUde/ViiperUde.sys `
+              -PdbPath native/udecx/x64/Release/ViiperUde.pdb `
+              -CatalogPath native/udecx/x64/Release/ViiperUde/ViiperUde.cat `
+              -TestCertificatePath $certificatePath `
+              -BrokerPath native/udecx/x64/Release/viiper.exe `
+              -HelperPath native/udecx/x64/Release/ViiperUdeCtl.exe `
+              -MediaProbePath native/udecx/x64/Release/ViiperUdeMediaProbe.exe `
+              -InputProbePath native/udecx/x64/Release/ViiperUdeInputProbe.exe `
+              -ProbeManifestPath native/udecx/x64/Release/ViiperUdeLiveProbes.manifest.json `
+              -OutputDirectory native/udecx/x64/Release/ViiperUdeLocalTest `
+              -SourceRevision $env:GITHUB_SHA
+          }
+          catch {
+            $operationError = $_
+          }
+          finally {
+            try {
+              foreach ($storeName in $addedTrust) {
+                $store = $null
+                try {
+                  $store = [Security.Cryptography.X509Certificates.X509Store]::new(
+                    $storeName,
+                    [Security.Cryptography.X509Certificates.StoreLocation]::LocalMachine)
+                  $store.Open([Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
+                  $matches = $store.Certificates.Find(
+                    [Security.Cryptography.X509Certificates.X509FindType]::FindByThumbprint,
+                    $certificate.Thumbprint, $false)
+                  $exactMatch = @($matches | Where-Object {
+                      $_.GetCertHashString(
+                        [Security.Cryptography.HashAlgorithmName]::SHA256) -ceq
+                          $certificateSha256
+                    })
+                  if ($exactMatch.Count -ne 1) {
+                    if ($exactMatch.Count -eq 0) { continue }
+                    throw "Temporary certificate collision in LocalMachine\\$storeName."
+                  }
+                  $store.Close()
+                  if (-not [ViiperNativeCertificateStore]::Remove(
+                      $storeName.ToString(), $certificate.RawData)) {
+                    throw "Temporary certificate disappeared from LocalMachine\\$storeName."
+                  }
+                  $store.Open([Security.Cryptography.X509Certificates.OpenFlags]::ReadOnly)
+                  $remaining = $store.Certificates.Find(
+                    [Security.Cryptography.X509Certificates.X509FindType]::FindByThumbprint,
+                    $certificate.Thumbprint, $false)
+                  if ($remaining.Count -ne 0) {
+                    throw "Temporary certificate remained in LocalMachine\\$storeName after cleanup."
+                  }
+                }
+                catch {
+                  [void]$cleanupErrors.Add("LocalMachine\\$storeName cleanup failed: $($_.Exception.Message)")
+                }
+                finally {
+                  if ($null -ne $store) { $store.Close() }
+                }
+              }
+            }
+            finally {
+              $certificate.Dispose()
+            }
+          }
+          if ($cleanupErrors.Count -ne 0) {
+            $message = $cleanupErrors -join '; '
+            if ($null -ne $operationError) {
+              $message = "$($operationError.Exception.Message); $message"
+            }
+            throw $message
+          }
+          if ($null -ne $operationError) {
+            throw $operationError
+          }
+      - name: Analyze native driver and setup helper
+        uses: github/codeql-action/analyze@5595ccaf912efad79be6eef63a5619ff05969be3 # v4
+        with:
+          category: /language:c-cpp
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: ${{ inputs.upload_artifacts == true }}
+        with:
+          name: ViiperUde-x64-local-test-${{ github.sha }}
+          path: native/udecx/x64/Release/ViiperUdeLocalTest/**
+          if-no-files-found: error
+          retention-days: 7

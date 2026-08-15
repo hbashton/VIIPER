@@ -93,8 +93,14 @@ type release struct {
 }
 
 func CheckUpdate(currentVersion string, notify config.UpdateNotify) {
+	// Source-bound local validation binaries are intentionally not release
+	// channels. They must never open update UI or emit a false installer error
+	// while an elevated package transaction is still running.
+	if currentVersion == "dev" || strings.HasSuffix(currentVersion, "-local-test") {
+		return
+	}
 	cur, ok := parseVersion(currentVersion)
-	if !ok && currentVersion != "dev" {
+	if !ok {
 		slog.Error("failed to parse current version", "version", currentVersion)
 		return
 	}

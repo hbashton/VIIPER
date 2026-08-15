@@ -102,7 +102,7 @@ func (t *Transport) DoCtx(ctx context.Context, path string, payload any, pathPar
 	if err != nil {
 		return "", fmt.Errorf("dial: %w", err)
 	}
-	defer conn.Close() //nolint:errcheck
+	defer func() { _ = conn.Close() }()
 
 	if tcpConn, ok := conn.(*net.TCPConn); ok {
 		if err := tcpConn.SetNoDelay(true); err != nil {
@@ -129,11 +129,11 @@ func (t *Transport) DoCtx(ctx context.Context, path string, payload any, pathPar
 			return "", err
 		}
 		sessionKey := auth.DeriveSessionKey(key, serverNonce, clientNonce)
-		conn, err = auth.WrapConn(conn, sessionKey)
+		secureConn, err := auth.WrapClientConn(conn, sessionKey)
 		if err != nil {
-			conn.Close() // nolint
 			return "", err
 		}
+		conn = secureConn
 	}
 
 	if _, err := conn.Write(append(lineBytes, '\x00')); err != nil {

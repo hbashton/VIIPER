@@ -58,7 +58,9 @@ func TestDualSenseV5WriterPublishesOnlyV5AtomicFrames(t *testing.T) {
 	}
 
 	_ = client.Close()
-	writer.Stop()
+	if err := writer.Stop(); err != nil {
+		t.Fatal(err)
+	}
 	state := writer.telemetry.snapshot()
 	if state.ReceivedPayloads != 1 || state.WrittenPayloads != 1 ||
 		state.DroppedPayloads != 0 || state.WriteFailures != 0 || state.Active {
@@ -86,7 +88,9 @@ func TestDualSenseV5WriterPublishesRealtimeHapticsFrame(t *testing.T) {
 	}
 
 	_ = client.Close()
-	writer.Stop()
+	if err := writer.Stop(); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestDualSenseV5WriterAlternatesControlAndMedia(t *testing.T) {
@@ -109,8 +113,74 @@ func TestDualSenseV5WriterAlternatesControlAndMedia(t *testing.T) {
 			t.Fatalf("frame %d type=0x%02X want=0x%02X", index, header[5], want)
 		}
 	}
-	writer.Stop()
+	if err := writer.Stop(); err != nil {
+		t.Fatal(err)
+	}
 	_ = client.Close()
+}
+
+func TestDualSenseV5WriterFaultsOnOrderedSaturationWithoutEviction(t *testing.T) {
+	server, client := net.Pipe()
+	writer := newDualSenseOutputWriter(server, nil, nil)
+	for marker := 0; marker < dualSenseOutputControlQueueCapacity; marker++ {
+		writer.EnqueueControl(StreamFrameOutputState, []byte{byte(marker)})
+	}
+	writer.EnqueueControl(StreamFrameOutputState, []byte{0xFF})
+	if len(writer.control) != dualSenseOutputControlQueueCapacity {
+		t.Fatalf("control depth=%d want=%d", len(writer.control),
+			dualSenseOutputControlQueueCapacity)
+	}
+	for index := 0; index < dualSenseOutputControlQueueCapacity; index++ {
+		frame := <-writer.control
+		decrementUint64(&writer.telemetry.orderedQueueDepth)
+		want := byte(index)
+		if len(frame.payload) != 1 || frame.payload[0] != want {
+			t.Fatalf("control[%d]=% x want=%02x", index, frame.payload, want)
+		}
+	}
+	state := writer.telemetry.snapshot()
+	if state.OrderedReceived != uint64(dualSenseOutputControlQueueCapacity+1) ||
+		state.OrderedEnqueued != uint64(dualSenseOutputControlQueueCapacity) ||
+		state.OrderedRejected != 1 || state.OrderedSaturations != 1 ||
+		state.Active || writer.accepting.Load() {
+		t.Fatalf("unexpected saturation state: %+v", state)
+	}
+	buffer := make([]byte, 1)
+	if count, err := client.Read(buffer); count != 0 || err == nil {
+		t.Fatalf("saturation did not close owning stream: count=%d err=%v", count, err)
+	}
+	_ = client.Close()
+}
+
+func TestDualSenseV5WriterBoundsRealtimeMediaAndDropsOldest(t *testing.T) {
+	writer := newDualSenseOutputWriter(nil, nil, nil)
+	for marker := 0; marker < dualSenseRealtimeMediaQueueCapacity; marker++ {
+		writer.EnqueueRealtimeHaptics([]byte{byte(marker)})
+	}
+	writer.EnqueueRealtimeHaptics([]byte{0xFF})
+	if len(writer.audio) != dualSenseRealtimeMediaQueueCapacity {
+		t.Fatalf("media depth=%d want=%d", len(writer.audio),
+			dualSenseRealtimeMediaQueueCapacity)
+	}
+	for index := 0; index < dualSenseRealtimeMediaQueueCapacity; index++ {
+		frame := <-writer.audio
+		writer.recordMediaDequeued(frame)
+		want := byte(index + 1)
+		if index == dualSenseRealtimeMediaQueueCapacity-1 {
+			want = 0xFF
+		}
+		if len(frame.payload) != 1 || frame.payload[0] != want {
+			t.Fatalf("realtime[%d]=% x want=%02x", index, frame.payload, want)
+		}
+	}
+	state := writer.telemetry.snapshot()
+	if state.Overruns != 1 || state.DroppedPayloads != 1 ||
+		state.DroppedBytes != 1 ||
+		state.QueueHighWater != uint64(dualSenseRealtimeMediaQueueCapacity) ||
+		state.QueueDurationHighUS >
+			dualSenseMediaMaximumBufferTime.Microseconds() {
+		t.Fatalf("unexpected media overrun telemetry: %+v", state)
+	}
 }
 
 func TestDualSenseV5WriterShutdownReturnsEveryMediaBuffer(t *testing.T) {
@@ -121,12 +191,14 @@ func TestDualSenseV5WriterShutdownReturnsEveryMediaBuffer(t *testing.T) {
 		writer.EnqueueAtomicAudioHaptics(feedback, speaker)
 	}
 	go writer.Run()
-	writer.Stop()
+	if err := writer.Stop(); err != nil {
+		t.Fatal(err)
+	}
 	_ = client.Close()
 
 	state := writer.telemetry.snapshot()
 	if state.Active || state.QueueDepth != 0 || len(writer.audio) != 0 ||
-		len(writer.audioFree) != dualSenseOutputAudioQueueCapacity {
+		len(writer.audioFree) != dualSenseOutputAudioPoolCapacity {
 		t.Fatalf("shutdown retained buffers: state=%+v queued=%d free=%d",
 			state, len(writer.audio), len(writer.audioFree))
 	}
@@ -188,9 +260,10 @@ func TestDualSenseV5WriterWriteFailureCannotRaceFinalDrain(t *testing.T) {
 	writer.enqueueLock.RLock()
 	buffer := <-writer.audioFree
 	buffer[0] = 0x55
+	writer.telemetry.queueDepth.Add(1)
 	writer.audio <- dualSenseOutputFrame{
 		frameType: StreamFrameAtomicAudioHaptics,
-		payload:   buffer[:4], audio: true,
+		payload:   buffer[:4], media: true, audio: true, mediaBytes: 4,
 	}
 	_ = client.Close()
 	writer.enqueueLock.RUnlock()
@@ -201,9 +274,34 @@ func TestDualSenseV5WriterWriteFailureCannotRaceFinalDrain(t *testing.T) {
 		t.Fatal("writer did not finish after socket failure")
 	}
 	if len(writer.audio) != 0 ||
-		len(writer.audioFree) != dualSenseOutputAudioQueueCapacity {
+		len(writer.audioFree) != dualSenseOutputAudioPoolCapacity {
 		t.Fatalf("shutdown retained a pooled buffer: queued=%d free=%d",
 			len(writer.audio), len(writer.audioFree))
+	}
+	state := writer.telemetry.snapshot()
+	if state.OrderedWriteFailures != 1 || state.OrderedWritten != 0 {
+		t.Fatalf("ordered write failure was not accounted: %+v", state)
+	}
+}
+
+func TestDualSenseV5WriterAccountsMediaWriteFailure(t *testing.T) {
+	server, client := net.Pipe()
+	writer := newDualSenseOutputWriter(server, nil, nil)
+	feedback, speaker := testV5Media(0x61)
+	writer.EnqueueAtomicAudioHaptics(feedback, speaker)
+	_ = client.Close()
+	go writer.Run()
+	select {
+	case <-writer.done:
+	case <-time.After(time.Second):
+		t.Fatal("media write failure did not stop writer")
+	}
+	state := writer.telemetry.snapshot()
+	if state.WriteFailures != 1 || state.WrittenPayloads != 0 || state.Active {
+		t.Fatalf("media write failure was not accounted: %+v", state)
+	}
+	if len(writer.audioFree) != dualSenseOutputAudioPoolCapacity {
+		t.Fatalf("media write failure leaked pool: free=%d", len(writer.audioFree))
 	}
 }
 
@@ -245,7 +343,9 @@ func TestDualSenseV5WriterResetIsHardGenerationBarrier(t *testing.T) {
 	if newPayload[2] != 0x22 {
 		t.Fatalf("post-reset frame is stale: % x", newPayload[:4])
 	}
-	writer.Stop()
+	if err := writer.Stop(); err != nil {
+		t.Fatal(err)
+	}
 	_ = client.Close()
 }
 
@@ -271,14 +371,16 @@ func TestDualSenseV5WriterResetBoundsBlockedWrite(t *testing.T) {
 		t.Fatal("timed-out write did not stop the stream")
 	}
 	if writer.streamViable.Load() || len(writer.audio) != 0 ||
-		len(writer.audioFree) != dualSenseOutputAudioQueueCapacity {
+		len(writer.audioFree) != dualSenseOutputAudioPoolCapacity {
 		t.Fatal("failed stream retained V5 transport state")
 	}
 	buffer := make([]byte, StreamFrameHeaderSize+4)
 	if count, err := client.Read(buffer); count != 0 || err == nil {
 		t.Fatalf("failed stream replayed stale media: bytes=%d err=%v", count, err)
 	}
-	writer.Stop()
+	if err := writer.Stop(); err != nil {
+		t.Fatal(err)
+	}
 	_ = client.Close()
 }
 

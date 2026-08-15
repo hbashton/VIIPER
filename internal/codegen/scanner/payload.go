@@ -86,10 +86,11 @@ func scanPayloadFile(filePath string, acc map[string]PayloadInfo) error {
 		numericBitSize := ""
 		jsonTargetType := ""
 
-		// Walk body - also track local variable declarations
+		// Collect local variable declarations in a separate pass so payload type
+		// inference is independent of AST visitation order (including variables
+		// declared inside the returned HandlerFunc literal).
 		localVarTypes := make(map[string]string)
 		ast.Inspect(funcDecl.Body, func(nn ast.Node) bool {
-			// Track local variable declarations (var x Type)
 			if decl, ok := nn.(*ast.DeclStmt); ok {
 				if gen, ok := decl.Decl.(*ast.GenDecl); ok && gen.Tok == token.VAR {
 					for _, spec := range gen.Specs {
@@ -101,6 +102,10 @@ func scanPayloadFile(filePath string, acc map[string]PayloadInfo) error {
 					}
 				}
 			}
+			return true
+		})
+
+		ast.Inspect(funcDecl.Body, func(nn ast.Node) bool {
 
 			// If statements for empty/non-empty checks
 			if ifs, ok := nn.(*ast.IfStmt); ok {

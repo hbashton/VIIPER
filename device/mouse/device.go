@@ -3,12 +3,13 @@ package mouse
 
 import (
 	"context"
+	"fmt"
 	"sync"
+	"time"
 
 	"github.com/Alia5/VIIPER/device"
 	"github.com/Alia5/VIIPER/usb"
 	"github.com/Alia5/VIIPER/usb/hid"
-	"github.com/Alia5/VIIPER/usbip"
 )
 
 // Mouse implements the minimal Device interface for a 5-button HID mouse
@@ -49,7 +50,7 @@ func (m *Mouse) UpdateInputState(state InputState) {
 }
 
 func (m *Mouse) HandleTransfer(ctx context.Context, ep uint32, dir uint32, out []byte) []byte {
-	if dir == usbip.DirIn {
+	if dir == usb.DirectionIn {
 		switch ep {
 		case 1: // 0x81 - main input reports
 			select {
@@ -70,6 +71,53 @@ func (m *Mouse) HandleTransfer(ctx context.Context, ep uint32, dir uint32, out [
 		}
 	}
 	return nil
+}
+
+// ReadInterruptInput implements usb.InterruptInputDevice for native UDE.
+func (m *Mouse) ReadInterruptInput(ctx context.Context, ep uint32, dst []byte) (int, error) {
+	return m.readInterruptInput(ctx, nil, ep, dst)
+}
+
+func (m *Mouse) ReadScheduledInterruptInput(
+	ctx context.Context, deadline <-chan time.Time, ep uint32, dst []byte,
+) (int, error) {
+	return m.readInterruptInput(ctx, deadline, ep, dst)
+}
+
+func (m *Mouse) readInterruptInput(
+	ctx context.Context, deadline <-chan time.Time, ep uint32, dst []byte,
+) (int, error) {
+	if ep != 1 {
+		return 0, fmt.Errorf("mouse interrupt-IN endpoint %d is unsupported", ep)
+	}
+	if deadline != nil && ctx.Err() != nil {
+		return 0, ctx.Err()
+	}
+	select {
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	case <-deadline:
+		if ctx.Err() != nil {
+			return 0, ctx.Err()
+		}
+		return 0, context.DeadlineExceeded
+	case st := <-m.inputCh:
+		if deadline != nil && ctx.Err() != nil {
+			select {
+			case m.inputCh <- st:
+			default:
+			}
+			return 0, ctx.Err()
+		}
+		if st.DX != 0 || st.DY != 0 || st.Wheel != 0 || st.Pan != 0 {
+			zeroed := InputState{Buttons: st.Buttons}
+			select {
+			case m.inputCh <- zeroed:
+			default:
+			}
+		}
+		return st.BuildReportInto(dst)
+	}
 }
 
 // HID Report Descriptor for a 5-button mouse with vertical and horizontal wheels.

@@ -11,6 +11,7 @@ import (
 	"github.com/Alia5/VIIPER/internal/server/api"
 	apierror "github.com/Alia5/VIIPER/internal/server/api/error"
 	usbs "github.com/Alia5/VIIPER/internal/server/usb"
+	"github.com/Alia5/VIIPER/internal/transport/udecx"
 	"github.com/Alia5/VIIPER/viipertypes"
 )
 
@@ -66,7 +67,7 @@ func BusDeviceAdd(s *usbs.Server, apiSrv *api.Server) api.HandlerFunc {
 		if err != nil {
 			return apierror.ErrBadRequest(fmt.Sprintf("failed to create device: %v", err))
 		}
-		devCtx, err := b.Add(dev)
+		devCtx, nativeRegistration, err := s.AddDeviceToBusWithRegistration(req.Ctx, uint32(busID), dev)
 		if err != nil {
 			return apierror.ErrInternal(fmt.Sprintf("failed to add device to bus: %v", err))
 		}
@@ -77,10 +78,10 @@ func BusDeviceAdd(s *usbs.Server, apiSrv *api.Server) api.HandlerFunc {
 		}
 
 		apiSrv.ScheduleDeviceCleanup(uint32(busID),
-			fmt.Sprintf("%d", exportMeta.DevID), devCtx)
+			fmt.Sprintf("%d", exportMeta.DevID), devCtx, nativeRegistration)
 
 		autoAttachResult := api.AutoAttachResult{}
-		if apiSrv.Config().AutoAttachLocalClient {
+		if apiSrv.Config().AutoAttachLocalClient && !s.NativeTransportEnabled() {
 			autoAttachResult, err = attachLocalhostClientWithResult(
 				req.Ctx,
 				exportMeta,
@@ -96,6 +97,12 @@ func BusDeviceAdd(s *usbs.Server, apiSrv *api.Server) api.HandlerFunc {
 			}
 		}
 
+		transport := "usbip"
+		var nativeInfo *viipertypes.NativeUDEDeviceInfo
+		if nativeRegistration != nil {
+			transport = "native-ude"
+			nativeInfo = nativeUDEDeviceInfo(*nativeRegistration)
+		}
 		payload, err := json.Marshal(viipertypes.Device{
 			BusID:            uint32(busID),
 			DevID:            fmt.Sprintf("%d", exportMeta.DevID),
@@ -103,6 +110,8 @@ func BusDeviceAdd(s *usbs.Server, apiSrv *api.Server) api.HandlerFunc {
 			Pid:              fmt.Sprintf("0x%04x", dev.GetDescriptor().Device.IDProduct),
 			Type:             name,
 			DeviceSpecific:   dev.GetDeviceSpecificArgs(),
+			Transport:        transport,
+			NativeUDE:        nativeInfo,
 			USBIPPort:        autoAttachResult.USBIPPort,
 			USBIPOwnerSerial: autoAttachResult.USBIPOwnerSerial,
 		})
@@ -112,5 +121,16 @@ func BusDeviceAdd(s *usbs.Server, apiSrv *api.Server) api.HandlerFunc {
 
 		res.JSON = string(payload)
 		return nil
+	}
+}
+
+func nativeUDEDeviceInfo(registration udecx.DeviceRegistration) *viipertypes.NativeUDEDeviceInfo {
+	return &viipertypes.NativeUDEDeviceInfo{
+		DeviceID:             strconv.FormatUint(registration.DeviceID, 10),
+		DeviceGeneration:     registration.Generation,
+		ControllerSessionID:  strconv.FormatUint(registration.ControllerSessionID, 10),
+		ControllerInstanceID: registration.ControllerInstanceID,
+		USB20PortNumber:      registration.USB20PortNumber,
+		USB30PortNumber:      registration.USB30PortNumber,
 	}
 }

@@ -111,6 +111,18 @@ func (o *OutputState) UnmarshalBinary(data []byte) error {
 
 func (s InputState) buildCommonReport(counter, motionTimestamp uint32, features uint8, meta MetaState) []byte {
 	b := make([]byte, InputReportSize)
+	_, _ = s.buildCommonReportInto(b, counter, motionTimestamp, features, meta)
+	return b
+}
+
+func (s InputState) buildCommonReportInto(
+	dst []byte, counter, motionTimestamp uint32, features uint8, meta MetaState,
+) (int, error) {
+	if len(dst) < InputReportSize {
+		return 0, io.ErrShortBuffer
+	}
+	b := dst[:InputReportSize]
+	clear(b)
 	b[0] = ReportIDCommon
 	binary.LittleEndian.PutUint32(b[1:5], counter)
 
@@ -133,11 +145,23 @@ func (s InputState) buildCommonReport(counter, motionTimestamp uint32, features 
 		binary.LittleEndian.PutUint16(b[0x3B:0x3D], uint16(s.GyroZ))
 	}
 
-	return b
+	return InputReportSize, nil
 }
 
 func (s InputState) buildProReport(counter uint8, features uint8, meta MetaState) []byte {
 	b := make([]byte, InputReportSize)
+	_, _ = s.buildProReportInto(b, counter, features, meta)
+	return b
+}
+
+func (s InputState) buildProReportInto(
+	dst []byte, counter uint8, features uint8, meta MetaState,
+) (int, error) {
+	if len(dst) < InputReportSize {
+		return 0, io.ErrShortBuffer
+	}
+	b := dst[:InputReportSize]
+	clear(b)
 	b[0] = ReportIDPro
 	b[1] = counter
 	b[2] = powerInfo(meta)
@@ -155,7 +179,7 @@ func (s InputState) buildProReport(counter uint8, features uint8, meta MetaState
 	b[13] = 0x00
 	b[14] = 0x00
 	b[15] = 0x00
-	return b
+	return InputReportSize, nil
 }
 
 func (s InputState) commonButtonBytes() [4]byte {

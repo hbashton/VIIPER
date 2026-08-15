@@ -77,8 +77,8 @@ If you ever worked with HTTP APIs before, you'll feel right at home.
 The exception to this are the device-control and feedback streams, which are raw binary streams specific to each device type.
 
 - **Transport**: TCP with optional encryption (ChaCha20-Poly1305)
-- **Default listen address**: `:3242` (configurable via `--api.addr`)
-- **Authentication**: Required for remote connections, optional for localhost (password-based with HMAC validation)
+- **Default listen address**: `127.0.0.1:3242` (configurable via `--api.addr`)
+- **Authentication**: Required by default for localhost and always required for remote connections (password-based with HMAC validation)
 - **Encryption**: Automatic for authenticated connections (ChaCha20-Poly1305 with unique session keys)
 - **Request format**: a single ASCII/UTF‑8 line terminated by `\0`
 - **Routing**: path followed by optional payload separated by whitespace  
@@ -88,17 +88,32 @@ The exception to this are the device-control and feedback streams, which are raw
 - **Success response**: a single line containing a JSON payload (or an empty line for commands that have no payload), terminated by connection close
 - **Error response**: a single line JSON object following RFC 7807 Problem Details format with a `status` field (HTTP-style status code) and other error details, terminated by connection close
 
+Authenticated records use a 96-bit nonce split into a fixed 32-bit direction
+domain (`0` for client-to-server and `1` for server-to-client) and a 64-bit
+monotonic record counter. The Go server and Go client receivers require the
+expected direction and exact next counter, rejecting role inversion, replay,
+and reordering. This satisfies the [Go `cipher.AEAD` requirement that a nonce
+be unique for a given key](https://pkg.go.dev/crypto/cipher#AEAD). The nonce
+remains part of every wire record: existing generated clients continue to send
+the client domain and decrypt the server domain directly from the record.
+
+Upgrade authenticated deployments server-first. Existing clients accept the
+new server domain because each record carries its nonce, while the new Go
+client intentionally rejects records from an older roleless server that still
+sends domain `0`. Packaged service and Go client versions should otherwise be
+kept matched.
+
 !!! tip "Testing the API"
     For quick testing, you can use tools like `netcat` (Linux/macOS) or PowerShell scripts (Windows) to send requests and read responses.
 
 !!! warning "Connection timing and auto‑cleanup"
     After you add a device with `bus/{id}/add`, you must connect to its streaming endpoint within the configured `DeviceHandlerConnectTimeout` (default: 5s). If no stream connection is established in time, the device is automatically removed. Likewise, when a stream disconnects, a reconnection timer with the same timeout starts; if the client doesn’t reconnect before it expires, the device is removed.
 
-!!! warning "Authentication Required for Remote Connections"
-    **VIIPER requires authentication for all non-localhost connections.**  
+!!! warning "Authentication Required"
+    **VIIPER requires authentication for API topology and device-stream control by default.**
 
-    - **Localhost clients** (`127.0.0.1`, `::1`, `localhost`): Authentication is **optional** (but supported) by default
-    - **Remote clients**: Authentication is **required** and enforced
+    - **Localhost clients** (`127.0.0.1`, `::1`, `localhost`): Authentication is **required by default**
+    - **Remote clients**: Authentication is **always required** and enforced
     
     On first start, VIIPER generates a random password
     and saves it to `<USER_CONFIG_DIR>/viiper.key.txt`.  
@@ -106,9 +121,9 @@ The exception to this are the device-control and feedback streams, which are raw
     Linux (user): `~/.config/github.com/Alia5/viiper/viiper.key.txt`  
     Linux (root/systemd): `/etc/viiper/viiper.key.txt`
 
-    Remote clients must provide this password to establish a connection.  
+    Clients must provide this password to establish an authenticated connection. The value is never printed to a VIIPER log or console.
 
-    See the [Configuration](../cli/configuration.md) documentation for details on password management and the `--api.require-localhost-auth` option.
+    See the [Configuration](../cli/configuration.md) documentation for credential management and the legacy USB/IP localhost development opt-out.
 
 ## Endpoints
 
@@ -159,7 +174,37 @@ The exception to this are the device-control and feedback streams, which are raw
 ??? info "ping - Simple identity and version check"
     **Request:** `ping`
 
-    **Response:** `{ "server": "VIIPER", "version": "1.2.3[-dev-abcd]" }`
+    **Legacy response:** `{ "server": "VIIPER", "version": "1.2.3[-dev-abcd]" }`
+
+    The packaged server also reports its active transport and readiness. Native
+    UDE mode includes the exact negotiated ABI, capability mask, package
+    version expected by the service, the source-bound identity returned by the
+    currently loaded kernel image, and negotiated limits. Clients opting in to
+    the native backend should fail closed unless these fields match their
+    required contract:
+
+    ```json
+    {
+      "server": "VIIPER",
+      "version": "1.2.3",
+      "transport": "native-ude",
+      "ready": true,
+      "nativeUde": {
+        "abiMajor": 1,
+        "abiMinor": 14,
+        "capabilities": 61,
+        "expectedDriverPackageVersion": "0.1.0.38",
+        "loadedDriverBuildIdentity": "<64 lowercase hexadecimal characters returned by the loaded kernel>",
+        "controllerSessionId": "<nonzero canonical decimal uint64>",
+        "controllerInstanceId": "ROOT\\VIIPERUDE\\0000",
+        "maxDevices": 32,
+        "maxDescriptorBytes": 262144,
+        "maxTransferBytes": 1048576,
+        "maxIsoPackets": 1024,
+        "maxPendingOperations": 4096
+      }
+    }
+    ```
 
 #### `bus/list` {.toc-anchor}
 
@@ -203,9 +248,18 @@ The exception to this are the device-control and feedback streams, which are raw
           "devId": "1",
           "vid": "0x045e",
           "pid": "0x028e",
-          "type": "xbox360"
+          "type": "xbox360",
           "deviceSpecific": {
             "subType": 1
+          },
+          "transport": "native-ude",
+          "nativeUde": {
+            "deviceId": "4294967297",
+            "deviceGeneration": 1,
+            "controllerSessionId": "123456789",
+            "controllerInstanceId": "ROOT\\VIIPERUDE\\0000",
+            "usb20PortNumber": 1,
+            "usb30PortNumber": 0
           }
         }
       ]
@@ -242,6 +296,15 @@ The exception to this are the device-control and feedback streams, which are raw
       "type": "xbox360",
       "deviceSpecific": {
         "subType":7
+      },
+      "transport": "native-ude",
+      "nativeUde": {
+        "deviceId": "4294967297",
+        "deviceGeneration": 1,
+        "controllerSessionId": "123456789",
+        "controllerInstanceId": "ROOT\\VIIPERUDE\\0000",
+        "usb20PortNumber": 1,
+        "usb30PortNumber": 0
       }
     }
     ```
@@ -250,7 +313,7 @@ The exception to this are the device-control and feedback streams, which are raw
         After add, the server starts a connect timer (default `5s`). You must open a device stream before the timeout expires, otherwise the device is auto-removed.
     
     !!! info "Auto-attach"
-        If [auto-attach](../cli/server.md#api.auto-attach-local-client) is enabled (default), the server automatically attaches the new device to a local USBIP client on the same host (localhost only). Failures are logged but do not affect the API response.
+        In explicit USB/IP mode, [auto-attach](../cli/server.md#api.auto-attach-local-client) can attach the new device to a local USBIP client. Native UDE mode never performs USB/IP attach/detach; its response instead carries the authenticated `nativeUde` ownership tuple. Exactly one of `usb20PortNumber` and `usb30PortNumber` is nonzero. Treat `deviceId` and `controllerSessionId` as decimal strings rather than JSON numbers, and fail closed if any native ownership field is absent or inconsistent with `ping`.
 
 #### `bus/{id}/remove <deviceId>` {.toc-anchor}
 
@@ -258,8 +321,35 @@ The exception to this are the device-control and feedback streams, which are raw
     **Request:** `bus/1/remove 1`
 
     **Payload:** Numeric device ID (e.g., `1` for device 1-1 on the bus)
-    
+
+    This legacy ID-only endpoint is available only in explicit USB/IP mode.
+    Native UDE clients must use `remove-native`; an ID-only native removal is
+    rejected because IDs can be reused after a controller restart.
+
     **Response:** `{ "busId": <id>, "devId": "<dev>" }`
+
+#### `bus/{id}/remove-native <json_payload>` {.toc-anchor}
+
+??? info "bus/{id}/remove-native - Conditionally remove one exact native UDE device"
+    **Request:**
+
+    ```text
+    bus/1/remove-native {"devId":"1","transport":"native-ude","nativeUde":{"deviceId":"4294967297","deviceGeneration":1,"controllerSessionId":"123456789","controllerInstanceId":"ROOT\\VIIPERUDE\\0000","usb20PortNumber":1,"usb30PortNumber":0}}
+    ```
+
+    The payload must echo the exact `devId`, `transport`, and complete
+    `nativeUde` receipt returned by `add` or `list`. Field names, decimal string
+    encodings, and object shape are canonical; duplicate, missing, unknown, or
+    trailing JSON fields are rejected.
+
+    VIIPER compares the receipt with the current native registration while
+    holding the same lifecycle lock used for unregistration. A stale receipt
+    returns `409 Conflict` and removes nothing. Clients must treat that result as
+    a retired lifetime and must never retry through the ID-only endpoint. A
+    successful removal owns empty-bus cleanup; clients must not issue a separate
+    `bus/remove` operation.
+
+    **Response:** `{ "busId": 1, "devId": "1" }`
 
 ### Device Control / Feedback {#device-control--feedback}
 

@@ -11,7 +11,6 @@ import (
 
 	"github.com/Alia5/VIIPER/device"
 	"github.com/Alia5/VIIPER/usb"
-	"github.com/Alia5/VIIPER/usbip"
 )
 
 type NS2Pro struct {
@@ -131,7 +130,7 @@ func (d *NS2Pro) SetMetaState(meta MetaState) {
 
 func (d *NS2Pro) HandleTransfer(ctx context.Context, ep uint32, dir uint32, out []byte) []byte {
 	switch {
-	case dir == usbip.DirIn && ep == 1:
+	case dir == usb.DirectionIn && ep == 1:
 		for {
 			select {
 			case <-ctx.Done():
@@ -145,7 +144,7 @@ func (d *NS2Pro) HandleTransfer(ctx context.Context, ep uint32, dir uint32, out 
 				}
 			}
 		}
-	case dir == usbip.DirIn && ep == 2:
+	case dir == usb.DirectionIn && ep == 2:
 		for {
 			if resp := d.popBulkIn(); resp != nil {
 				return resp
@@ -156,12 +155,63 @@ func (d *NS2Pro) HandleTransfer(ctx context.Context, ep uint32, dir uint32, out 
 			case <-d.bulkCh:
 			}
 		}
-	case dir == usbip.DirOut && ep == 1:
+	case dir == usb.DirectionOut && ep == 1:
 		d.handleOutputReport(out)
-	case dir == usbip.DirOut && ep == 2:
+	case dir == usb.DirectionOut && ep == 2:
 		d.handleBulkOut(out)
 	}
 	return nil
+}
+
+// ReadInterruptInput implements usb.InterruptInputDevice for the HID input
+// endpoint. The bulk response endpoint remains on the ordered transfer broker.
+func (d *NS2Pro) ReadInterruptInput(ctx context.Context, ep uint32, dst []byte) (int, error) {
+	return d.readInterruptInput(ctx, nil, ep, dst)
+}
+
+func (d *NS2Pro) ReadScheduledInterruptInput(
+	ctx context.Context, deadline <-chan time.Time, ep uint32, dst []byte,
+) (int, error) {
+	return d.readInterruptInput(ctx, deadline, ep, dst)
+}
+
+func (d *NS2Pro) readInterruptInput(
+	ctx context.Context, deadline <-chan time.Time, ep uint32, dst []byte,
+) (int, error) {
+	if ep != EndpointHIDIn&0x0f {
+		return 0, fmt.Errorf("Switch 2 Pro interrupt-IN endpoint %d is unsupported", ep)
+	}
+	if deadline != nil && ctx.Err() != nil {
+		return 0, ctx.Err()
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			if deadline == nil && errors.Is(ctx.Err(), context.DeadlineExceeded) && d.reportsEnabled() {
+				return d.nextInputReportInto(dst)
+			}
+			return 0, ctx.Err()
+		case <-deadline:
+			if ctx.Err() != nil {
+				return 0, ctx.Err()
+			}
+			if d.reportsEnabled() {
+				return d.nextInputReportInto(dst)
+			}
+			return 0, context.DeadlineExceeded
+		case <-d.inputCh:
+			if deadline != nil && ctx.Err() != nil {
+				select {
+				case d.inputCh <- struct{}{}:
+				default:
+				}
+				return 0, ctx.Err()
+			}
+			if d.reportsEnabled() {
+				return d.nextInputReportInto(dst)
+			}
+		}
+	}
 }
 
 func (d *NS2Pro) HandleControl(bmRequestType, bRequest uint8, wValue, wIndex uint16, wLength uint16, data []byte) ([]byte, bool) {
@@ -231,7 +281,20 @@ func (d *NS2Pro) nextInputReport() []byte {
 	return d.inputReportForID(reportID)
 }
 
+func (d *NS2Pro) nextInputReportInto(dst []byte) (int, error) {
+	d.protoMu.Lock()
+	reportID := d.activeReportID
+	d.protoMu.Unlock()
+	return d.inputReportForIDInto(reportID, dst)
+}
+
 func (d *NS2Pro) inputReportForID(reportID uint8) []byte {
+	report := make([]byte, InputReportSize)
+	_, _ = d.inputReportForIDInto(reportID, report)
+	return report
+}
+
+func (d *NS2Pro) inputReportForIDInto(reportID uint8, dst []byte) (int, error) {
 	d.stateMu.Lock()
 	st := *d.inputState
 	meta := *d.metaState
@@ -242,7 +305,8 @@ func (d *NS2Pro) inputReportForID(reportID uint8) []byte {
 		reportID = d.activeReportID
 	}
 	features := d.featureFlags
-	var report []byte
+	var written int
+	var err error
 	switch reportID {
 	case ReportIDCommon:
 		d.reportCounter32++
@@ -251,13 +315,13 @@ func (d *NS2Pro) inputReportForID(reportID uint8) []byte {
 			motionTS = uint32(time.Since(d.motionStart).Microseconds())
 			d.lastMotionTS = motionTS
 		}
-		report = st.buildCommonReport(d.reportCounter32, motionTS, features, meta)
+		written, err = st.buildCommonReportInto(dst, d.reportCounter32, motionTS, features, meta)
 	default:
 		d.reportCounter8++
-		report = st.buildProReport(d.reportCounter8, features, meta)
+		written, err = st.buildProReportInto(dst, d.reportCounter8, features, meta)
 	}
 	d.protoMu.Unlock()
-	return report
+	return written, err
 }
 
 func (d *NS2Pro) serialNumber() string {
