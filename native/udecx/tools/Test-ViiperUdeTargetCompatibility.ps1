@@ -45,6 +45,35 @@ function Get-SingleProjectValue([string]$elementName) {
     return $nodes[0].InnerText.Trim()
 }
 
+function Get-CFunctionBody(
+    [string]$Source,
+    [string]$FunctionName
+) {
+    $escapedName = [regex]::Escape($FunctionName)
+    $definitionPattern =
+        "(?ms)^[ \t]*(?:static\s+)?(?:NTSTATUS|VOID)\s+$escapedName\s*\([^;{}]*?\)\s*\{"
+    $definitions = @([regex]::Matches($Source, $definitionPattern))
+    if ($definitions.Count -ne 1) {
+        throw "Expected exactly one C definition for $FunctionName; found $($definitions.Count)."
+    }
+
+    $openingBrace = $definitions[0].Index + $definitions[0].Length - 1
+    $depth = 0
+    for ($index = $openingBrace; $index -lt $Source.Length; $index++) {
+        if ($Source[$index] -eq '{') {
+            $depth++
+        } elseif ($Source[$index] -eq '}') {
+            $depth--
+            if ($depth -eq 0) {
+                return $Source.Substring(
+                    $openingBrace + 1,
+                    $index - $openingBrace - 1)
+            }
+        }
+    }
+    throw "Unbalanced C definition for $FunctionName."
+}
+
 $driverDate = Get-SingleProjectValue 'ViiperUdeDriverDate'
 $driverVersion = Get-SingleProjectValue 'ViiperUdeDriverVersion'
 $parsedDriverDate = [DateTime]::MinValue
@@ -150,16 +179,62 @@ $allDriverCSource = (Get-ChildItem -LiteralPath $driverSourceDirectory -Filter '
     ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw }) -join "`n"
 
 foreach ($requiredTraceContract in @(
-        'DECLSPEC_ALIGN(8) VIIPER_UDE_LIFECYCLE_TRACE_RECORD',
-        'LifecycleTrace[VIIPER_UDE_LIFECYCLE_TRACE_CAPACITY];',
+        '#define VIIPER_UDE_LIFECYCLE_TRACE_MAX_SHARDS 64',
+        'typedef struct VIIPER_UDE_LIFECYCLE_TRACE_SHARD',
+        'DECLSPEC_ALIGN(SYSTEM_CACHE_ALIGNMENT_SIZE) volatile LONG64 WriteSequence;',
+        'volatile LONG64 SlotStates[VIIPER_UDE_LIFECYCLE_TRACE_CAPACITY];',
+        'VIIPER_UDE_LIFECYCLE_TRACE_RECORD Records[VIIPER_UDE_LIFECYCLE_TRACE_CAPACITY];',
         'volatile LONG64 LifecycleTraceSequence;',
+        'volatile LONG LifecycleTraceStatus;',
+        'WDFMEMORY LifecycleTraceStorage;',
+        'VIIPER_UDE_LIFECYCLE_TRACE_SHARD *LifecycleTraceShards;',
+        'ULONG LifecycleTraceShardCount;',
         '#define VIIPER_TRACE_LIFECYCLE')) {
     if (-not $header.Contains($requiredTraceContract)) {
         throw "Missing bounded lifecycle-flight-recorder contract: $requiredTraceContract"
     }
 }
-if ($traceSource -notmatch 'InterlockedIncrement64[\s\S]*KeQueryPerformanceCounter[\s\S]*_ReturnAddress[\s\S]*KeGetCurrentIrql[\s\S]*InterlockedExchange64' -or
-        $traceSource -match 'ExAllocatePool|WdfMemoryCreate|WdfSpinLockAcquire|WdfWaitLockAcquire|KeWaitForSingleObject') {
+$traceInitialize = Get-CFunctionBody $traceSource 'ViiperInitializeLifecycleTrace'
+$traceHot = Get-CFunctionBody $traceSource 'ViiperTraceLifecycle'
+if ($traceInitialize -notmatch
+        '(?s)WdfMemoryCreate\s*\(\s*&attributes\s*,\s*NonPagedPoolNx\s*,\s*0x56495554\s*,\s*storageSize\s*,\s*&controllerContext->LifecycleTraceStorage\s*,\s*&rawStorage\s*\)' -or
+        $traceInitialize -notmatch
+        '(?s)shardCount\s*=\s*maximumProcessors\s*>\s*VIIPER_UDE_LIFECYCLE_TRACE_MAX_SHARDS\s*\?\s*VIIPER_UDE_LIFECYCLE_TRACE_MAX_SHARDS\s*:\s*maximumProcessors\s*;' -or
+        $traceInitialize -notmatch
+        '(?s)RtlZeroMemory\s*\(\s*rawStorage\s*,\s*storageSize\s*\).*?controllerContext->LifecycleTraceShards\s*=.*?controllerContext->LifecycleTraceShardCount\s*=\s*shardCount\s*;') {
+    throw 'Lifecycle trace initialization must allocate, clear, and publish exact nonpaged shard storage.'
+}
+foreach ($requiredHotContract in @(
+        'InterlockedIncrement64(&shard->WriteSequence)',
+        'InterlockedCompareExchange64(',
+        'VIIPER_UDE_LIFECYCLE_TRACE_STATUS_DROPPED_RECORD',
+        'InterlockedIncrement64(',
+        '&controllerContext->LifecycleTraceSequence',
+        'KeQueryPerformanceCounter(NULL)',
+        '_ReturnAddress()',
+        'KeGetCurrentIrql()',
+        'InterlockedExchange64(')) {
+    if (-not $traceHot.Contains($requiredHotContract)) {
+        throw "Lifecycle tracing hot path is missing: $requiredHotContract"
+    }
+}
+$statusUpdates = @([regex]::Matches(
+        $traceHot,
+        'InterlockedOr\s*\(\s*&controllerContext->LifecycleTraceStatus\s*,'))
+if ($statusUpdates.Count -ne 2 -or
+        $traceHot -notmatch
+        'InterlockedIncrement64\s*\(\s*&shard->WriteSequence\s*\)' -or
+        $traceHot -notmatch
+        'InterlockedCompareExchange64\s*\(\s*slotState\s*,\s*claimedSlotState\s*,\s*observedSlotState\s*\)' -or
+        $traceHot -notmatch
+        'InterlockedIncrement64\s*\(\s*&controllerContext->LifecycleTraceSequence\s*\)' -or
+        $traceHot -notmatch
+        '(?s)Event\s*>=\s*VIIPER_UDE_TRACE_ENDPOINT_QUIESCENCE_WATCHDOG\s*&&\s*Event\s*<=\s*VIIPER_UDE_TRACE_OWNER_RUNDOWN_WATCHDOG.*?InterlockedOr\s*\(\s*&controllerContext->LifecycleTraceStatus\s*,\s*VIIPER_UDE_LIFECYCLE_TRACE_STATUS_WATCHDOG_FIRED\s*\)' -or
+        $traceHot -notmatch
+        '(?s)\(observedSlotState\s*&\s*1\)\s*!=\s*0\s*\|\|.*?>=\s*localSequence.*?InterlockedOr\s*\(\s*&controllerContext->LifecycleTraceStatus\s*,\s*VIIPER_UDE_LIFECYCLE_TRACE_STATUS_DROPPED_RECORD\s*\)' -or
+        $traceHot -notmatch
+        '(?s)InterlockedExchange64\s*\(\s*\(volatile LONG64 \*\)&record->PublishedSequence\s*,\s*0\s*\)\s*;\s*KeMemoryBarrier\s*\(\s*\)\s*;.*?KeMemoryBarrier\s*\(\s*\)\s*;\s*\(VOID\)InterlockedExchange64\s*\(\s*\(volatile LONG64 \*\)&record->PublishedSequence\s*,\s*\(LONG64\)sequence\s*\)\s*;\s*KeMemoryBarrier\s*\(\s*\)\s*;\s*\(VOID\)InterlockedExchange64\s*\(\s*slotState\s*,\s*\(LONG64\)\(localSequence\s*<<\s*1\)\s*\)\s*;' -or
+        $traceHot -match 'ExAllocatePool|WdfMemoryCreate|WdfSpinLockAcquire|WdfWaitLockAcquire|KeWaitForSingleObject') {
     throw 'Lifecycle tracing must remain preallocated, nonblocking, timestamped, and source-addressable.'
 }
 
@@ -197,9 +272,23 @@ foreach ($requiredHeaderContract in @(
         throw "Missing native teardown contract in ViiperUde.h: $requiredHeaderContract"
     }
 }
-if ($controllerSource -notmatch
-        'KeWaitForSingleObject\s*\(\s*&context->FileCleanupsDrained') {
-    throw 'Terminal rundown must join any file cleanup admitted before ShuttingDown.'
+$controllerRundownBody = Get-CFunctionBody $controllerSource 'ViiperWaitForControllerRundown'
+if ($controllerRundownBody -notmatch
+        '(?s)watchdogWait\.QuadPart\s*=\s*-\s*\(LONGLONG\)VIIPER_UDE_RUNDOWN_WATCHDOG_INTERVAL_100NS\s*;.*?for\s*\(\s*;\s*;\s*\).*?KeWaitForSingleObject\s*\(\s*Event\s*,.*?&watchdogWait\s*\).*?waitStatus\s*!=\s*STATUS_TIMEOUT.*?return\s*;.*?VIIPER_TRACE_LIFECYCLE\s*\(.*?WatchdogEvent\s*,.*?STATUS_IO_TIMEOUT\s*,.*?InterlockedCompareExchange\s*\(\s*ActiveCounter\s*,\s*0\s*,\s*0\s*\)') {
+    throw 'Controller rundown must wait to completion while recording every bounded watchdog interval.'
+}
+$terminalCleanupBody = Get-CFunctionBody $controllerSource 'ViiperEvtDeviceSelfManagedIoCleanup'
+$fileCleanupBody = Get-CFunctionBody $controllerSource 'ViiperEvtFileCleanup'
+$deviceAddBody = Get-CFunctionBody $controllerSource 'ViiperEvtDeviceAdd'
+if ($deviceAddBody -notmatch
+        'KeInitializeEvent\s*\(\s*&context->FileCleanupsDrained\s*,\s*NotificationEvent\s*,\s*TRUE\s*\)\s*;' -or
+        $fileCleanupBody -notmatch
+        '(?s)WdfWaitLockAcquire\s*\(\s*context->OwnerLock\s*,\s*NULL\s*\)\s*;\s*if\s*\(\s*InterlockedCompareExchange\s*\(\s*&context->ShuttingDown\s*,\s*0\s*,\s*0\s*\)\s*==\s*0\s*&&\s*context->OwnerFile\s*==\s*FileObject\s*\)\s*\{.*?InterlockedCompareExchange\s*\(\s*&context->ActiveFileCleanups\s*,\s*0\s*,\s*0\s*\)\s*==\s*0.*?KeClearEvent\s*\(\s*&context->FileCleanupsDrained\s*\).*?InterlockedIncrement\s*\(\s*&context->ActiveFileCleanups\s*\).*?cleanupAdmitted\s*=\s*TRUE\s*;.*?\}\s*WdfWaitLockRelease\s*\(\s*context->OwnerLock\s*\)\s*;' -or
+        $fileCleanupBody -notmatch
+        '(?s)if\s*\(\s*cleanupAdmitted\s*\)\s*\{\s*WdfWaitLockAcquire\s*\(\s*context->OwnerLock\s*,\s*NULL\s*\)\s*;\s*remainingCleanups\s*=\s*InterlockedDecrement\s*\(\s*&context->ActiveFileCleanups\s*\)\s*;.*?if\s*\(\s*remainingCleanups\s*==\s*0\s*\)\s*\{\s*KeSetEvent\s*\(\s*&context->FileCleanupsDrained\s*,\s*IO_NO_INCREMENT\s*,\s*FALSE\s*\)\s*;\s*\}\s*WdfWaitLockRelease\s*\(\s*context->OwnerLock\s*\)\s*;\s*\}' -or
+        $terminalCleanupBody -notmatch
+        '(?s)InterlockedExchange\s*\(\s*&context->ShuttingDown\s*,\s*TRUE\s*\)\s*;.*?ViiperWaitForControllerRundown\s*\(\s*Device\s*,\s*&context->FileCleanupsDrained\s*,\s*VIIPER_UDE_TRACE_CONTROLLER_RUNDOWN_WATCHDOG\s*,\s*&context->ActiveFileCleanups\s*\)\s*;.*?WdfIoQueuePurgeSynchronously\s*\(\s*context->DefaultQueue\s*\)') {
+    throw 'Terminal rundown must account admitted file cleanup, close admission, join with watchdog telemetry, and only then purge queues.'
 }
 if ($controllerSource -notmatch
         'pnpCallbacks\.EvtDeviceSelfManagedIoInit\s*=\s*ViiperEvtDeviceSelfManagedIoInit\s*;' -or
@@ -629,11 +718,8 @@ foreach ($forbiddenCall in $forbiddenCleanupCalls) {
 if ($controllerCleanupMatch.Groups['body'].Value -match '\b(?:Wdf|Udecx)[A-Za-z0-9_]*\s*\(') {
     throw 'Controller EvtCleanup must not call any WDF/UdeCx child-backed API.'
 }
-$selfManagedCleanupMatch = [regex]::Match(
-    $controllerSource,
-    '(?ms)^VOID\s+ViiperEvtDeviceSelfManagedIoCleanup\s*\([^)]*\)\s*\{(?<body>.*?)^\}')
-if (-not $selfManagedCleanupMatch.Success -or
-        $selfManagedCleanupMatch.Groups['body'].Value -notmatch
+$selfManagedCleanupMatch = $terminalCleanupBody
+if ($selfManagedCleanupMatch -notmatch
             'ViiperPurgeOwnerOperations[\s\S]*ViiperDrainControllerEndpointOperations[\s\S]*BrokerOperationsDrained[\s\S]*ViiperDrainUrbCompletions[\s\S]*PendingOperations[\s\S]*PendingCompletions[\s\S]*CompletionQueue[\s\S]*CompletionDpcActive[\s\S]*ViiperBeginControllerShutdown') {
     throw 'Terminal rundown must join VIIPER-owned endpoint work and the completion DPC before asynchronously consuming children.'
 }
