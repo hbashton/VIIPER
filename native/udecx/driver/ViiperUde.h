@@ -108,6 +108,12 @@ typedef struct VIIPER_UDE_REQUEST_CONTEXT {
     ULONG IsoPacketCount;
     ULONG IsoStartFrame;
     BOOLEAN DirectionIn;
+    // Nonzero only for a cached direct-input delivery. The completion DPC
+    // snapshots these before UdeCx can recycle the request context, so stats
+    // and a crash dump describe an OS-visible completion rather than a copy
+    // which had not yet crossed the virtual host-controller boundary.
+    ULONG DirectInputBytes;
+    ULONGLONG DirectInputSequence;
     // Protected by the controller BrokerLock. The DPC removes and snapshots
     // these fields before UdeCx may recycle this request context.
     LIST_ENTRY CompletionEntry;
@@ -163,6 +169,7 @@ typedef struct VIIPER_UDE_CONTROLLER_CONTEXT {
     volatile LONG ActiveFileCleanups;
     volatile LONG CleanupRetries;
     volatile LONG ActiveDevices;
+    volatile LONG ReservedPorts;
     volatile LONG PendingOperations;
     volatile LONG PendingCompletions;
     volatile LONG WaitingDequeueCount;
@@ -188,6 +195,12 @@ typedef struct VIIPER_UDE_CONTROLLER_CONTEXT {
     // to the physical UDE port table below.
     ULONG InputDeviceCount;
     UDECXUSBDEVICE InputDevices[VIIPER_UDE_MAX_DEVICES];
+    // A logical device leaves Devices[] as soon as removal wins admission, but
+    // its physical port cannot be reused until the matching framework cleanup
+    // callback runs. The epoch prevents a delayed cleanup from releasing a
+    // later reservation after an early create/plug-in failure.
+    ULONGLONG PortReservationEpochs[VIIPER_UDE_MAX_DEVICES];
+    BOOLEAN PortReserved[VIIPER_UDE_MAX_DEVICES];
     UDECXUSBDEVICE Devices[VIIPER_UDE_MAX_DEVICES];
 } VIIPER_UDE_CONTROLLER_CONTEXT;
 
@@ -251,13 +264,16 @@ WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(VIIPER_UDE_FILE_CONTEXT, ViiperGetFileContext
 
 typedef struct VIIPER_UDE_DEVICE_CONTEXT {
     WDFDEVICE Controller;
+    WDFWORKITEM D0ExitWorkItem;
     WDFFILEOBJECT OwnerFile;
     ULONGLONG DeviceId;
     ULONG Generation;
     ULONG Slot;
+    ULONGLONG PortReservation;
     UDECX_USB_DEVICE_SPEED Speed;
     BOOLEAN Plugged;
     volatile LONG InD0;
+    volatile LONG D0ExitPending;
     volatile LONG Resetting;
     volatile LONG64 ResetEpoch;
     volatile LONG Purging;
@@ -278,11 +294,14 @@ typedef struct VIIPER_UDE_ENDPOINT_CONTEXT {
     UDECXUSBDEVICE Device;
     WDFQUEUE Queue;
     WDFWAITLOCK InputLock;
+    WDFWORKITEM PurgeWorkItem;
     WDFWORKITEM ResetWorkItem;
     WDFREQUEST ResetRequest;
     KEVENT OperationsDrained;
     USB_ENDPOINT_DESCRIPTOR Descriptor;
     volatile LONG Purging;
+    volatile LONG PurgeOutstanding;
+    volatile LONG PurgeWorkerActive;
     volatile LONG StartAnnounced;
     volatile LONG Resetting;
     volatile LONG64 ResetDeviceEpoch;
@@ -301,6 +320,7 @@ typedef struct VIIPER_UDE_ENDPOINT_CONTEXT {
     volatile LONG InputTransitionHead;
     volatile LONG InputTransitionCount;
     USHORT InputTransitionLengths[VIIPER_UDE_MAX_INPUT_TRANSITIONS];
+    ULONGLONG InputTransitionSequences[VIIPER_UDE_MAX_INPUT_TRANSITIONS];
     // BrokerLock protects this FIFO and every slot AdmissionEntry.  It keeps
     // same-endpoint publication ordered without scanning the controller-wide
     // 4096-slot table on every USB transfer.
@@ -326,6 +346,7 @@ EVT_WDF_IO_QUEUE_IO_DEVICE_CONTROL ViiperEvtIoDeviceControl;
 EVT_UDECX_WDF_DEVICE_QUERY_USB_CAPABILITY ViiperEvtQueryUsbCapability;
 EVT_UDECX_USB_DEVICE_D0_ENTRY ViiperEvtUsbDeviceD0Entry;
 EVT_UDECX_USB_DEVICE_D0_EXIT ViiperEvtUsbDeviceD0Exit;
+EVT_WDF_WORKITEM ViiperEvtUsbDeviceD0ExitWorkItem;
 EVT_UDECX_USB_DEVICE_SET_FUNCTION_SUSPEND_AND_WAKE ViiperEvtUsbDeviceSetFunctionSuspendAndWake;
 EVT_UDECX_USB_DEVICE_DEFAULT_ENDPOINT_ADD ViiperEvtDefaultEndpointAdd;
 EVT_UDECX_USB_DEVICE_ENDPOINT_ADD ViiperEvtEndpointAdd;
@@ -337,7 +358,7 @@ EVT_WDF_IO_QUEUE_IO_INTERNAL_DEVICE_CONTROL ViiperEvtEndpointIoInternalControl;
 EVT_WDF_IO_QUEUE_IO_CANCELED_ON_QUEUE ViiperEvtUrbCanceledOnQueue;
 EVT_WDF_IO_QUEUE_STATE ViiperEvtFastInputQueueReady;
 EVT_WDF_IO_QUEUE_IO_CANCELED_ON_QUEUE ViiperEvtDequeueCanceledOnQueue;
-EVT_WDF_IO_QUEUE_STATE ViiperEvtEndpointQueuePurged;
+EVT_WDF_WORKITEM ViiperEvtEndpointPurgeWorkItem;
 EVT_WDF_WORKITEM ViiperEvtEndpointResetWorkItem;
 EVT_WDF_DPC ViiperEvtCompletionDpc;
 EVT_WDF_OBJECT_CONTEXT_CLEANUP ViiperEvtVirtualDeviceCleanup;
@@ -376,7 +397,9 @@ BOOLEAN ViiperQueueUrbCompletion(
     _In_ ULONGLONG Token,
     _In_ NTSTATUS Status,
     _In_ USBD_STATUS UsbdStatus,
-    _In_ BOOLEAN CompleteWithNtStatus);
+    _In_ BOOLEAN CompleteWithNtStatus,
+    _In_ ULONG DirectInputBytes,
+    _In_ ULONGLONG DirectInputSequence);
 _IRQL_requires_(PASSIVE_LEVEL)
 VOID ViiperDrainUrbCompletions(_In_ WDFDEVICE Controller);
 NTSTATUS ViiperSubmitInputReport(_In_ WDFQUEUE Queue, _In_ WDFREQUEST Request);

@@ -14,7 +14,7 @@
     <MinimumVisualStudioVersion>17.0</MinimumVisualStudioVersion>
     <Platform Condition="'$(Platform)' == ''">x64</Platform>
     <ViiperUdeDriverDate>08/14/2026</ViiperUdeDriverDate>
-    <ViiperUdeDriverVersion>0.1.0.33</ViiperUdeDriverVersion>
+    <ViiperUdeDriverVersion>0.1.0.34</ViiperUdeDriverVersion>
     <ViiperUdeSourceRevision Condition="'$(ViiperUdeSourceRevision)' == ''">$(VIIPER_NATIVE_SOURCE_REVISION)</ViiperUdeSourceRevision>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
@@ -45,6 +45,8 @@
     <KMDF_VERSION_MAJOR>1</KMDF_VERSION_MAJOR>
     <KMDF_VERSION_MINOR>27</KMDF_VERSION_MINOR>
     <Driver_SpectreMitigation>Spectre</Driver_SpectreMitigation>
+    <RunCodeAnalysis>true</RunCodeAnalysis>
+    <EnableMicrosoftCodeAnalysis>true</EnableMicrosoftCodeAnalysis>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
   <ImportGroup Label="ExtensionSettings" />
@@ -112,5 +114,8 @@
   <Target Name="GenerateViiperUdeBuildIdentity" BeforeTargets="ClCompile">
     <Error Condition="'$(ViiperUdeSourceRevision)' == ''" Text="VIIPER_NATIVE_SOURCE_REVISION (or ViiperUdeSourceRevision) is required; native driver identity generation fails closed without an explicit source revision." />
     <Exec Command="powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\..\tools\Get-ViiperUdeBuildIdentity.ps1&quot; -SourceRevision &quot;$(ViiperUdeSourceRevision)&quot; -DriverPackageVersion &quot;$(ViiperUdeDriverVersion)&quot; -ABIMajor 1 -ABIMinor 11 -Capabilities 29 -OutputHeaderPath &quot;$(IntDir)ViiperUdeBuildIdentity.g.h&quot;" />
+  </Target>
+  <Target Name="VerifyViiperUdeStaticAnalysis" AfterTargets="ClCompile" Condition="'$(RunCodeAnalysis)' == 'true'">
+    <Exec Command="powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\..\tools\Test-ViiperUdeStaticAnalysis.ps1&quot; -AnalysisDirectory &quot;$(MSBuildProjectDirectory)\$(IntDir).&quot; -ExpectedSourceCount 6" />
   </Target>
 </Project>

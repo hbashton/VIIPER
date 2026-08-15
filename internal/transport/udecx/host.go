@@ -623,6 +623,12 @@ func (h *Host) runInputPublisher(ctx context.Context, entry *registeredDevice, p
 	classifiedReader, classified := entry.device.(usb.ClassifiedScheduledInterruptInputDevice)
 	var reportBuffer []byte
 	var deadlineTimer *time.Timer
+	var retryTimer *time.Timer
+	defer func() {
+		if retryTimer != nil {
+			stopInputDeadlineTimer(retryTimer)
+		}
+	}()
 	if direct {
 		reportBuffer = make([]byte, publisher.reportSize)
 		if scheduled && publisher.interval > 0 {
@@ -737,7 +743,11 @@ func (h *Host) runInputPublisher(ctx context.Context, entry *registeredDevice, p
 			if retryInterval <= 0 {
 				retryInterval = time.Millisecond
 			}
-			retryTimer := time.NewTimer(retryInterval)
+			if retryTimer == nil {
+				retryTimer = time.NewTimer(retryInterval)
+			} else {
+				retryTimer.Reset(retryInterval)
+			}
 			select {
 			case <-publisher.submitCtx.Done():
 				stopInputDeadlineTimer(retryTimer)

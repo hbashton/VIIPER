@@ -75,6 +75,21 @@ if ($null -eq $linkDefinition -or
         $linkDefinition.AdditionalOptions -notmatch '/PDBALTPATH:%_PDB%') {
     throw 'Every native build must emit a full matching PDB and link map with a relocatable image PDB path.'
 }
+$releaseConfiguration = $project.SelectSingleNode(
+    "//msb:PropertyGroup[contains(@Condition, 'Release|x64')]", $namespace)
+$staticAnalysisTarget = $project.SelectSingleNode(
+    "//msb:Target[@Name='VerifyViiperUdeStaticAnalysis']", $namespace)
+if ($null -eq $releaseConfiguration -or
+        $releaseConfiguration.RunCodeAnalysis -cne 'true' -or
+        $releaseConfiguration.EnableMicrosoftCodeAnalysis -cne 'true' -or
+        $null -eq $staticAnalysisTarget -or
+        $staticAnalysisTarget.AfterTargets -cne 'ClCompile' -or
+        $staticAnalysisTarget.Condition -notmatch 'RunCodeAnalysis' -or
+        $null -eq $staticAnalysisTarget.Exec -or
+        $staticAnalysisTarget.Exec.Command -notmatch 'Test-ViiperUdeStaticAnalysis\.ps1' -or
+        $staticAnalysisTarget.Exec.Command -notmatch '-ExpectedSourceCount 6') {
+    throw 'Every Release driver build must run WDK static analysis and fail closed if any translation unit reports a defect.'
+}
 $traceCompileItems = @($project.SelectNodes(
         "//msb:ClCompile[@Include='Trace.c']", $namespace))
 if ($traceCompileItems.Count -ne 1) {
@@ -167,6 +182,14 @@ foreach ($requiredHeaderContract in @(
         'KEVENT CompletionOperationsDrained;',
         'KEVENT FileCleanupsDrained;',
         'WDFDPC CompletionDpc;',
+        'WDFWORKITEM D0ExitWorkItem;',
+        'volatile LONG D0ExitPending;',
+        'EVT_WDF_WORKITEM ViiperEvtUsbDeviceD0ExitWorkItem;',
+        'volatile LONG ReservedPorts;',
+        'WDFWORKITEM PurgeWorkItem;',
+		'volatile LONG PurgeOutstanding;',
+		'volatile LONG PurgeWorkerActive;',
+        'EVT_WDF_WORKITEM ViiperEvtEndpointPurgeWorkItem;',
         'LIST_ENTRY CompletionQueue;',
         'volatile LONG PendingCompletions;',
         'volatile LONG ShuttingDown;')) {
@@ -199,6 +222,86 @@ if ($deviceSource -notmatch
 if ($deviceSource -notmatch
         'WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE\(&attributes,\s*UDECXUSBENDPOINT\);[\s\S]{0,300}?attributes\.ExecutionLevel\s*=\s*WdfExecutionLevelPassive\s*;[\s\S]{0,300}?WdfIoQueueCreate') {
     throw 'Every endpoint queue must explicitly run at PASSIVE_LEVEL for buffer preparation and broker admission.'
+}
+$d0ExitMatch = [regex]::Match(
+    $deviceSource,
+    '(?ms)^NTSTATUS\s+ViiperEvtUsbDeviceD0Exit\s*\([^)]*\)\s*\{(?<body>.*?)^\}')
+$d0ExitWorkItemMatch = [regex]::Match(
+    $deviceSource,
+    '(?ms)^VOID\s+ViiperEvtUsbDeviceD0ExitWorkItem\s*\([^)]*\)\s*\{(?<body>.*?)^\}')
+$d0EntryMatch = [regex]::Match(
+    $deviceSource,
+    '(?ms)^NTSTATUS\s+ViiperEvtUsbDeviceD0Entry\s*\([^)]*\)\s*\{(?<body>.*?)^\}')
+$d0ExitForbiddenDispatchWork =
+    'ViiperInvalidate(?:Endpoint|Device)InputReports?|ViiperAcquireDeviceLock|WdfWaitLockAcquire|KeWaitForSingleObject|KeDelayExecutionThread'
+if (-not $d0ExitMatch.Success -or
+        $d0ExitMatch.Groups['body'].Value -notmatch
+			'WdfSpinLockAcquire\s*\(\s*controllerContext->BrokerLock\s*\)[\s\S]*InterlockedExchange\s*\(\s*&deviceContext->InD0\s*,\s*FALSE\s*\)[\s\S]*controllerContext->ShuttingDown[\s\S]*deviceContext->Purging[\s\S]*status\s*=\s*STATUS_SUCCESS[\s\S]*D0ExitPending\s*,\s*TRUE\s*,\s*FALSE[\s\S]*status\s*=\s*STATUS_DEVICE_BUSY[\s\S]*WdfWorkItemEnqueue\s*\(\s*deviceContext->D0ExitWorkItem\s*\)[\s\S]*status\s*=\s*STATUS_PENDING[\s\S]*WdfSpinLockRelease\s*\(\s*controllerContext->BrokerLock\s*\)[\s\S]*return\s+status' -or
+        $d0ExitMatch.Groups['body'].Value -match $d0ExitForbiddenDispatchWork -or
+        -not $d0ExitWorkItemMatch.Success -or
+        $d0ExitWorkItemMatch.Groups['body'].Value -notmatch
+            'KeGetCurrentIrql\s*\(\s*\)\s*==\s*PASSIVE_LEVEL[\s\S]*ViiperInvalidateDeviceInputReports\s*\(\s*device\s*\)[\s\S]*ViiperUdeOperationDeviceD0Exit[\s\S]*InterlockedExchange\s*\(\s*&deviceContext->D0ExitPending\s*,\s*FALSE\s*\)[\s\S]*UdecxUsbDeviceLinkPowerExitComplete\s*\(\s*device\s*,\s*STATUS_SUCCESS\s*\)' -or
+        -not $d0EntryMatch.Success -or
+        $d0EntryMatch.Groups['body'].Value -notmatch
+            'WdfSpinLockAcquire\s*\(\s*controllerContext->BrokerLock\s*\)[\s\S]*deviceContext->Purging[\s\S]*deviceContext->D0ExitPending[\s\S]*STATUS_DEVICE_BUSY[\s\S]*InterlockedExchange\s*\(\s*&deviceContext->InD0\s*,\s*TRUE\s*\)[\s\S]*WdfSpinLockRelease\s*\(\s*controllerContext->BrokerLock\s*\)' -or
+        $d0EntryMatch.Groups['body'].Value -match $d0ExitForbiddenDispatchWork) {
+    throw 'D0 entry/exit must gate admission at DISPATCH_LEVEL and defer cache invalidation to one passive asynchronous completion.'
+}
+$d0ExitCompletion = 'UdecxUsbDeviceLinkPowerExitComplete(device, STATUS_SUCCESS);'
+$d0ExitCompletionOffset = $d0ExitWorkItemMatch.Groups['body'].Value.IndexOf(
+    $d0ExitCompletion,
+    [StringComparison]::Ordinal)
+if ($d0ExitCompletionOffset -lt 0 -or
+        $d0ExitWorkItemMatch.Groups['body'].Value.Substring(
+            $d0ExitCompletionOffset + $d0ExitCompletion.Length) -match
+            'deviceContext|controllerContext|ViiperGet|Wdf|VIIPER_TRACE') {
+    throw 'The D0-exit work item must not access device state after completing the UdeCx transition.'
+}
+if ($deviceSource -notmatch
+		'WDF_WORKITEM_CONFIG_INIT\s*\(\s*&workItemConfig\s*,\s*ViiperEvtUsbDeviceD0ExitWorkItem\s*\)\s*;\s*workItemConfig\.AutomaticSerialization\s*=\s*WdfFalse\s*;[\s\S]*?attributes\.ParentObject\s*=\s*device\s*;[\s\S]*?WdfWorkItemCreate\s*\([\s\S]*?&deviceContext->D0ExitWorkItem\s*\)[\s\S]*?ViiperClaimDeviceSlot[\s\S]*?UdecxUsbDevicePlugIn') {
+	throw 'Every virtual device must create its passive D0-exit work item before UdeCx exposure.'
+}
+$d0ExitFlushMatch = [regex]::Match(
+	$deviceSource,
+	'(?ms)^ViiperFlushD0ExitWorkItem\s*\([^)]*\)\s*\{(?<body>.*?)^\}')
+$destroyDeviceMatch = [regex]::Match(
+	$deviceSource,
+	'(?ms)^NTSTATUS\s+ViiperDestroyVirtualDevice\s*\([^)]*\)\s*\{(?<body>.*?)^\}')
+$destroyOwnedMatch = [regex]::Match(
+	$deviceSource,
+	'(?ms)^BOOLEAN\s+ViiperDestroyOwnedDevices\s*\([^)]*\)\s*\{(?<body>.*?)^\}')
+$controllerShutdownMatch = [regex]::Match(
+	$deviceSource,
+	'(?ms)^VOID\s+ViiperBeginControllerShutdown\s*\([^)]*\)\s*\{(?<body>.*?)^\}')
+if (-not $d0ExitFlushMatch.Success -or
+		$d0ExitFlushMatch.Groups['body'].Value -notmatch
+			'KeGetCurrentIrql\s*\(\s*\)\s*==\s*PASSIVE_LEVEL[\s\S]*WdfWorkItemFlush\s*\(\s*deviceContext->D0ExitWorkItem\s*\)[\s\S]*D0ExitPending\s*,\s*0\s*,\s*0\s*\)\s*==\s*0' -or
+		$d0ExitFlushMatch.Groups['body'].Value -match
+			'if\s*\([^)]*D0ExitPending' -or
+		-not $destroyDeviceMatch.Success -or
+		$destroyDeviceMatch.Groups['body'].Value -notmatch
+			'ViiperBeginRemoveDevice[\s\S]*ViiperFlushD0ExitWorkItem\s*\(\s*device\s*\)[\s\S]*ViiperAbortDeviceManagementOperations[\s\S]*UdecxUsbDevicePlugOutAndDelete\s*\(\s*device\s*\)' -or
+		-not $destroyOwnedMatch.Success -or
+		$destroyOwnedMatch.Groups['body'].Value -notmatch
+			'plugged\s*=\s*deviceContext->Plugged[\s\S]*ViiperFlushD0ExitWorkItem\s*\(\s*device\s*\)[\s\S]*ViiperAbortDeviceManagementOperations[\s\S]*if\s*\(\s*plugged\s*\)[\s\S]*UdecxUsbDevicePlugOutAndDelete\s*\(\s*device\s*\)' -or
+		-not $controllerShutdownMatch.Success -or
+		$controllerShutdownMatch.Groups['body'].Value -notmatch
+			'plugged\s*=\s*deviceContext->Plugged[\s\S]*ViiperFlushD0ExitWorkItem\s*\(\s*devices\[index\]\s*\)[\s\S]*if\s*\(\s*plugged\s*\)[\s\S]*UdecxUsbDevicePlugOutAndDelete\s*\(\s*devices\[index\]\s*\)') {
+	throw 'Every device-consuming teardown path must unconditionally join D0-exit work after closing admission and before consuming the UdeCx handle.'
+}
+$claimDeviceSlotMatch = [regex]::Match(
+    $deviceSource,
+    '(?ms)^static\s+NTSTATUS\s+ViiperClaimDeviceSlot\s*\([^)]*\)\s*\{(?<body>.*?)^\}')
+$releaseDeviceSlotMatch = [regex]::Match(
+    $deviceSource,
+    '(?ms)^static\s+VOID\s+ViiperReleaseDeviceSlot\s*\([^)]*\)\s*\{(?<body>.*?)^\}')
+if (-not $claimDeviceSlotMatch.Success -or
+        $claimDeviceSlotMatch.Groups['body'].Value -notmatch
+            'ControllerContext->PortReserved\[freeSlot\]\s*=\s*TRUE\s*;[\s\S]*InterlockedIncrement\s*\(\s*&ControllerContext->ReservedPorts\s*\)[\s\S]*ControllerContext->Devices\[freeSlot\]\s*=\s*Device\s*;' -or
+        -not $releaseDeviceSlotMatch.Success -or
+        $releaseDeviceSlotMatch.Groups['body'].Value -notmatch
+            'PortReservationEpochs\[Slot\]\s*==\s*PortReservation[\s\S]*ControllerContext->PortReserved\[Slot\]\s*=\s*FALSE\s*;[\s\S]*InterlockedDecrement\s*\(\s*&ControllerContext->ReservedPorts\s*\)[\s\S]*NT_ASSERT\s*\(\s*remaining\s*>=\s*0\s*\)') {
+    throw 'Physical-port accounting must increment after reservation publication and decrement only after an exact token-matched release.'
 }
 if (($controllerSource + $deviceSource + $brokerSource) -match
         'WdfWaitLock(?:Acquire|Release)\s*\([^;\r\n]*DeviceLock') {
@@ -338,9 +441,44 @@ if (-not $endpointQuiescenceMatch.Success -or
             'WDF_IO_QUEUE_IDLE|WdfIoQueueAcceptRequests|WdfIoQueueDispatchRequests') {
     throw 'Reset and terminal pre-consumption quiescence must join only driver-owned requests and BrokerLock-owned rundown.'
 }
-$purgeQueueCallbackMatch = [regex]::Match(
+$endpointAddMatch = [regex]::Match(
     $deviceSource,
-    '(?ms)^VOID\s+ViiperEvtEndpointQueuePurged\s*\([^)]*\)\s*\{(?<body>.*?)^\}')
+    '(?ms)^NTSTATUS\s+ViiperEvtEndpointAdd\s*\([^)]*\)\s*\{(?<body>.*?)^\}')
+if (-not $endpointAddMatch.Success -or
+        $endpointAddMatch.Groups['body'].Value -notmatch
+            'KeInitializeEvent\s*\(\s*&endpointContext->OperationsDrained[\s\S]*WDF_WORKITEM_CONFIG_INIT\s*\(\s*&workItemConfig\s*,\s*ViiperEvtEndpointPurgeWorkItem\s*\)[\s\S]*attributes\.ParentObject\s*=\s*endpoint\s*;[\s\S]*WdfWorkItemCreate\s*\([\s\S]*&endpointContext->PurgeWorkItem\s*\)') {
+    throw 'Every endpoint must own a passive PURGE work item before its queue can be published.'
+}
+$purgeQuiescenceMatch = [regex]::Match(
+    $deviceSource,
+    '(?ms)^ViiperWaitForEndpointPurgeQuiescence\s*\([^)]*\)\s*\{(?<body>.*?)^\}')
+$purgeSampleMatch = if ($purgeQuiescenceMatch.Success) {
+    [regex]::Match(
+        $purgeQuiescenceMatch.Groups['body'].Value,
+        '(?ms)WdfSpinLockAcquire\s*\(\s*controllerContext->BrokerLock\s*\)\s*;(?<sample>.*?)WdfSpinLockRelease\s*\(\s*controllerContext->BrokerLock\s*\)\s*;')
+} else {
+    [Text.RegularExpressions.Match]::Empty
+}
+if (-not $purgeQuiescenceMatch.Success -or
+        $purgeQuiescenceMatch.Groups['body'].Value -notmatch
+            'KeWaitForSingleObject\s*\(\s*&endpointContext->OperationsDrained' -or
+        $purgeQuiescenceMatch.Groups['body'].Value -notmatch 'KeDelayExecutionThread' -or
+        -not $purgeSampleMatch.Success -or
+        $purgeSampleMatch.Groups['sample'].Value -notmatch
+            'WdfIoQueueGetState\s*\(\s*endpointContext->Queue' -or
+		$purgeSampleMatch.Groups['sample'].Value -notmatch 'endpointContext->PurgeOutstanding' -or
+		$purgeSampleMatch.Groups['sample'].Value -notmatch 'endpointContext->Purging' -or
+        $purgeSampleMatch.Groups['sample'].Value -notmatch '!\s*WDF_IO_QUEUE_READY' -or
+		$purgeSampleMatch.Groups['sample'].Value -notmatch 'WdfIoQueueDriverNoRequests' -or
+		$purgeSampleMatch.Groups['sample'].Value -notmatch 'driverRequests\s*==\s*0' -or
+        $purgeSampleMatch.Groups['sample'].Value -notmatch 'endpointContext->ActiveOperations' -or
+		$purgeQuiescenceMatch.Groups['body'].Value -match
+			'WDF_IO_QUEUE_(?:IDLE|PURGED)|queuedRequests\s*==\s*0') {
+	throw 'Endpoint PURGE must prove stopped driver-owned quiescence without waiting on UdeCx-owned queued requests.'
+}
+$purgeWorkItemMatch = [regex]::Match(
+    $deviceSource,
+    '(?ms)^VOID\s+ViiperEvtEndpointPurgeWorkItem\s*\([^)]*\)\s*\{(?<body>.*?)^\}')
 $endpointPurgeMatch = [regex]::Match(
     $deviceSource,
     '(?ms)^VOID\s+ViiperEvtEndpointPurge\s*\([^)]*\)\s*\{(?<body>.*?)^\}')
@@ -350,30 +488,47 @@ $endpointStartMatch = [regex]::Match(
 $endpointActivateMatch = [regex]::Match(
     $deviceSource,
     '(?ms)^static\s+VOID\s+ViiperActivateEndpoint\s*\([^)]*\)\s*\{(?<body>.*?)^\}')
-if (-not $purgeQueueCallbackMatch.Success -or
-        $purgeQueueCallbackMatch.Groups['body'].Value -notmatch
-            'KeWaitForSingleObject\s*\(\s*&endpointContext->OperationsDrained[\s\S]*endpointContext->ActiveOperations[\s\S]*ViiperInvalidateEndpointInputReport\s*\(\s*endpoint\s*\)[\s\S]*UdecxUsbEndpointPurgeComplete\s*\(\s*endpoint\s*\)' -or
+if (-not $purgeWorkItemMatch.Success -or
+        $purgeWorkItemMatch.Groups['body'].Value -notmatch
+			'WdfWorkItemGetParentObject\s*\(\s*WorkItem\s*\)[\s\S]*for\s*\(\s*;\s*;\s*\)[\s\S]*PurgeOutstanding[\s\S]*PurgeWorkerActive[\s\S]*ViiperWaitForEndpointPurgeQuiescence\s*\(\s*endpoint\s*,[\s\S]*&queueState\s*,[\s\S]*&queuedRequests\s*,[\s\S]*&driverRequests\s*\)[\s\S]*ViiperInvalidateEndpointInputReport\s*\(\s*endpoint\s*\)[\s\S]*InterlockedDecrement\s*\(\s*&endpointContext->PurgeOutstanding\s*\)[\s\S]*UdecxUsbEndpointPurgeComplete\s*\(\s*endpoint\s*\)[\s\S]*PurgeOutstanding[\s\S]*InterlockedExchange\s*\(\s*&endpointContext->PurgeWorkerActive\s*,\s*FALSE\s*\)' -or
+		$purgeWorkItemMatch.Groups['body'].Value -notmatch
+			'InterlockedDecrement\s*\(\s*&endpointContext->PurgeOutstanding\s*\)[\s\S]*UdecxUsbEndpointPurgeComplete\s*\(\s*endpoint\s*\)[\s\S]*InterlockedExchange\s*\(\s*&endpointContext->PurgeWorkerActive\s*,\s*FALSE\s*\)' -or
         -not $endpointPurgeMatch.Success -or
         $endpointPurgeMatch.Groups['body'].Value -notmatch
-            'InterlockedExchange\s*\(\s*&endpointContext->Purging\s*,\s*TRUE\s*\)[\s\S]*InterlockedExchange\s*\(\s*&endpointContext->StartAnnounced\s*,\s*FALSE\s*\)[\s\S]*ViiperPurgeEndpointOperations[\s\S]*WdfIoQueuePurge\s*\(\s*endpointContext->Queue\s*,\s*ViiperEvtEndpointQueuePurged\s*,\s*Endpoint\s*\)' -or
+			'InterlockedExchange\s*\(\s*&endpointContext->Purging\s*,\s*TRUE\s*\)[\s\S]*InterlockedExchange\s*\(\s*&endpointContext->StartAnnounced\s*,\s*FALSE\s*\)[\s\S]*InterlockedIncrement\s*\(\s*&endpointContext->PurgeOutstanding\s*\)[\s\S]*InterlockedCompareExchange\s*\(\s*&endpointContext->PurgeWorkerActive\s*,\s*TRUE\s*,\s*FALSE\s*\)[\s\S]*ViiperPurgeEndpointOperations[\s\S]*if\s*\(\s*enqueueWorkItem\s*\)[\s\S]*WdfWorkItemEnqueue\s*\(\s*endpointContext->PurgeWorkItem\s*\)' -or
+        $endpointPurgeMatch.Groups['body'].Value -match
+            'ViiperInvalidateEndpointInputReport' -or
+		$deviceSource -notmatch
+			'WDF_WORKITEM_CONFIG_INIT\s*\(\s*&workItemConfig\s*,\s*ViiperEvtEndpointPurgeWorkItem\s*\)\s*;\s*workItemConfig\.AutomaticSerialization\s*=\s*WdfFalse\s*;' -or
+		$deviceSource -notmatch
+			'WDF_WORKITEM_CONFIG_INIT\s*\(\s*&workItemConfig\s*,\s*ViiperEvtEndpointResetWorkItem\s*\)\s*;\s*workItemConfig\.AutomaticSerialization\s*=\s*WdfFalse\s*;' -or
         -not $endpointStartMatch.Success -or
         $endpointStartMatch.Groups['body'].Value -notmatch
-            'ViiperActivateEndpoint\s*\(\s*Endpoint\s*,\s*TRUE\s*\)' -or
+            'ViiperActivateEndpoint\s*\(\s*Endpoint\s*\)' -or
         -not $endpointActivateMatch.Success -or
         $endpointActivateMatch.Groups['body'].Value -notmatch
-            'InterlockedExchange\s*\(\s*&endpointContext->Purging\s*,\s*FALSE\s*\)[\s\S]*StartAnnounced[\s\S]*if\s*\(\s*StartQueue\s*\)[\s\S]*WdfIoQueueStart\s*\(\s*endpointContext->Queue\s*\)[\s\S]*ViiperQueueEndpointLifecycleEvent') {
-    throw 'Endpoint PURGE/START must use the UdeCx-required asynchronous WDF queue lifecycle and keep admission closed until START.'
+			'deviceContext->InD0[\s\S]*deviceContext->D0ExitPending[\s\S]*endpointContext->PurgeOutstanding[\s\S]*InterlockedExchange\s*\(\s*&endpointContext->Purging\s*,\s*FALSE\s*\)[\s\S]*StartAnnounced[\s\S]*ViiperQueueEndpointLifecycleEvent' -or
+		$endpointActivateMatch.Groups['body'].Value -match 'PurgeWorkerActive') {
+	throw 'Endpoint PURGE/START must count every callback, preserve worker ownership across synchronous completion, and reopen only after the final decrement.'
 }
+$endpointResetMatch = [regex]::Match(
+    $deviceSource,
+    '(?ms)^VOID\s+ViiperEvtEndpointReset\s*\([^)]*\)\s*\{(?<body>.*?)^\}')
 $resetWorkItemMatch = [regex]::Match(
     $deviceSource,
     '(?ms)^VOID\s+ViiperEvtEndpointResetWorkItem\s*\([^)]*\)\s*\{(?<body>.*?)^\}')
-if (-not $resetWorkItemMatch.Success -or
+if (-not $endpointResetMatch.Success -or
+        $endpointResetMatch.Groups['body'].Value -match
+            'ViiperInvalidate(?:Endpoint|Device)InputReports?|ViiperAcquireDeviceLock|WdfWaitLockAcquire|KeWaitForSingleObject|KeDelayExecutionThread' -or
+        -not $resetWorkItemMatch.Success -or
         $resetWorkItemMatch.Groups['body'].Value -notmatch
-            'ViiperQuiesceResetByIdentity[\s\S]*if\s*\(\s*!resetCurrent\s*\)[\s\S]*WdfSpinLockAcquire\s*\(\s*controllerContext->BrokerLock\s*\)[\s\S]*InterlockedExchange\s*\(\s*&endpointContext->Resetting\s*,\s*FALSE\s*\)[\s\S]*WdfSpinLockRelease\s*\(\s*controllerContext->BrokerLock\s*\)[\s\S]*WdfRequestComplete\s*\(\s*request\s*,\s*STATUS_DEVICE_NOT_READY\s*\)[\s\S]*ViiperQueueAcknowledgedEndpointLifecycleEvent') {
-    throw 'Endpoint reset publication must prove a live exact identity after DriverNoRequests/rundown and fail closed on removal.'
+            'ViiperQuiesceResetByIdentity[\s\S]*if\s*\(\s*!resetCurrent\s*\)[\s\S]*WdfSpinLockAcquire\s*\(\s*controllerContext->BrokerLock\s*\)[\s\S]*InterlockedExchange\s*\(\s*&endpointContext->Resetting\s*,\s*FALSE\s*\)[\s\S]*WdfSpinLockRelease\s*\(\s*controllerContext->BrokerLock\s*\)[\s\S]*WdfRequestComplete\s*\(\s*request\s*,\s*STATUS_DEVICE_NOT_READY\s*\)[\s\S]*ViiperInvalidateEndpointInputReport\s*\(\s*endpoint\s*\)[\s\S]*ViiperQueueAcknowledgedEndpointLifecycleEvent') {
+    throw 'Endpoint RESET must defer passive input invalidation, prove a live exact identity after rundown, and fail closed on removal.'
 }
 foreach ($forbiddenAssociatedQueueMutation in @(
+        'WdfIoQueuePurge',
         'WdfIoQueuePurgeSynchronously',
+        'WdfIoQueueStart',
         'WdfIoQueueStop',
         'WdfIoQueueStopSynchronously',
         'WdfIoQueueDrain',
@@ -403,7 +558,7 @@ $endpointsConfigureMatch = [regex]::Match(
     '(?ms)^VOID\s+ViiperEvtEndpointsConfigure\s*\([^)]*\)\s*\{(?<body>.*?)^\}')
 if (-not $endpointsConfigureMatch.Success -or
         $endpointsConfigureMatch.Groups['body'].Value -notmatch
-            'case\s+UdecxEndpointsConfigureTypeDeviceConfigurationChange\s*:[\s\S]*EndpointsToConfigureCount[\s\S]*ViiperActivateEndpoint\s*\([\s\S]*FALSE\s*\)[\s\S]*WdfRequestComplete\s*\(\s*Request\s*,\s*STATUS_SUCCESS\s*\)[\s\S]*return\s*;[\s\S]*case\s+UdecxEndpointsConfigureTypeInterfaceSettingChange\s*:' -or
+            'case\s+UdecxEndpointsConfigureTypeDeviceConfigurationChange\s*:[\s\S]*EndpointsToConfigureCount[\s\S]*ViiperActivateEndpoint\s*\(\s*ConfigureParams->EndpointsToConfigure\[endpointIndex\]\s*\)\s*;[\s\S]*WdfRequestComplete\s*\(\s*Request\s*,\s*STATUS_SUCCESS\s*\)[\s\S]*return\s*;[\s\S]*case\s+UdecxEndpointsConfigureTypeInterfaceSettingChange\s*:' -or
         $endpointsConfigureMatch.Groups['body'].Value -match
             'ViiperBeginAcknowledgedDeviceReset|ViiperUdeOperationDeviceReset') {
     throw 'Device configuration selection must announce selected dynamic endpoints before completing directly.'
@@ -454,6 +609,10 @@ $controllerCleanupMatch = [regex]::Match(
     '(?ms)^VOID\s+ViiperEvtControllerCleanup\s*\([^)]*\)\s*\{(?<body>.*?)^\}')
 if (-not $controllerCleanupMatch.Success) {
     throw 'Could not locate ViiperEvtControllerCleanup for teardown validation.'
+}
+if ($controllerCleanupMatch.Groups['body'].Value -notmatch
+        'context->ActiveDevices[\s\S]*context->ReservedPorts[\s\S]*context->InputDeviceCount\s*==\s*0[\s\S]*for\s*\(\s*index\s*=\s*0\s*;[\s\S]*VIIPER_UDE_MAX_DEVICES[\s\S]*!context->PortReserved\[index\]') {
+    throw 'Controller cleanup must prove both logical-device and physical-port accounting reached zero.'
 }
 $forbiddenCleanupCalls = @(
     'WdfTimerStop',

@@ -1,10 +1,9 @@
 /*
  * Dynamic UdeCx device and endpoint lifecycle.
  *
- * The endpoint creation and purge order follows the documented UdeCx contract
- * and the permissively licensed usbip-win2 implementation identified in
- * THIRD_PARTY_NOTICES.md. VIIPER-specific ownership, identity, and broker
- * semantics are implemented here.
+ * The endpoint creation and purge order follows the documented UdeCx contract.
+ * VIIPER-specific ownership, identity, and broker semantics are implemented
+ * here.
  */
 
 #include "ViiperUde.h"
@@ -13,10 +12,8 @@
 #pragma alloc_text(PAGE, ViiperCreateVirtualDevice)
 #pragma alloc_text(PAGE, ViiperDestroyVirtualDevice)
 #pragma alloc_text(PAGE, ViiperDestroyOwnedDevices)
-#pragma alloc_text(PAGE, ViiperBeginControllerShutdown)
 #pragma alloc_text(PAGE, ViiperEvtEndpointAdd)
 #pragma alloc_text(PAGE, ViiperEvtDefaultEndpointAdd)
-#pragma alloc_text(PAGE, ViiperEvtVirtualDeviceCleanup)
 #pragma alloc_text(PAGE, ViiperEvtEndpointCleanup)
 #endif
 
@@ -39,23 +36,25 @@ ViiperValidateDescriptorChain(
     _In_ UCHAR ExpectedType
     )
 {
-    ULONG offset = 0;
+    const UCHAR *cursor = Descriptor;
+    ULONG remaining = Length;
 
-    if (Length < 2 || Descriptor[1] != ExpectedType) {
+    if (remaining < 2 || cursor[1] != ExpectedType) {
         return FALSE;
     }
-    while (offset < Length) {
+    while (remaining != 0) {
         ULONG itemLength;
-        if (Length - offset < 2) {
+        if (remaining < 2) {
             return FALSE;
         }
-        itemLength = Descriptor[offset];
-        if (itemLength < 2 || itemLength > Length - offset) {
+        itemLength = cursor[0];
+        if (itemLength < 2 || itemLength > remaining) {
             return FALSE;
         }
-        offset += itemLength;
+        cursor += itemLength;
+        remaining -= itemLength;
     }
-    return offset == Length;
+    return TRUE;
 }
 
 static
@@ -504,9 +503,11 @@ ViiperClaimDeviceSlot(
     _In_ VIIPER_UDE_CONTROLLER_CONTEXT *ControllerContext,
     _In_ UDECXUSBDEVICE Device,
     _In_ ULONGLONG DeviceId,
-    _Out_ ULONG *Slot
+    _Out_ ULONG *Slot,
+    _Out_ ULONGLONG *PortReservation
     )
 {
+    VIIPER_UDE_DEVICE_CONTEXT *deviceContext = ViiperGetDeviceContext(Device);
     ULONG index;
     ULONG freeSlot = VIIPER_UDE_MAX_DEVICES;
     NTSTATUS status = STATUS_INSUFFICIENT_RESOURCES;
@@ -519,7 +520,8 @@ ViiperClaimDeviceSlot(
     for (index = 0; index < VIIPER_UDE_MAX_DEVICES; ++index) {
         UDECXUSBDEVICE current = ControllerContext->Devices[index];
         if (current == WDF_NO_HANDLE) {
-            if (freeSlot == VIIPER_UDE_MAX_DEVICES) {
+            if (!ControllerContext->PortReserved[index] &&
+                freeSlot == VIIPER_UDE_MAX_DEVICES) {
                 freeSlot = index;
             }
             continue;
@@ -534,8 +536,25 @@ ViiperClaimDeviceSlot(
     if (freeSlot != VIIPER_UDE_MAX_DEVICES) {
         status = ViiperInsertInputDeviceLocked(ControllerContext, Device);
         if (NT_SUCCESS(status)) {
+            ULONGLONG reservation = ++ControllerContext->PortReservationEpochs[freeSlot];
+            if (reservation == 0) {
+                reservation = ++ControllerContext->PortReservationEpochs[freeSlot];
+            }
+            NT_ASSERT(InterlockedCompareExchange(
+                &deviceContext->ActiveCounted, 0, 0) == 0);
+            deviceContext->Slot = freeSlot;
+            deviceContext->PortReservation = reservation;
+            // Publish a complete lifecycle record before PlugIn can expose
+            // the object to UdeCx. For a claimed object, Plugged means that
+            // successful exposure must be unwound with PlugOutAndDelete.
+            deviceContext->Plugged = TRUE;
+            ControllerContext->PortReserved[freeSlot] = TRUE;
+            InterlockedIncrement(&ControllerContext->ReservedPorts);
             ControllerContext->Devices[freeSlot] = Device;
+            InterlockedIncrement(&ControllerContext->ActiveDevices);
+            InterlockedExchange(&deviceContext->ActiveCounted, 1);
             *Slot = freeSlot;
+            *PortReservation = reservation;
         }
     }
 
@@ -549,14 +568,23 @@ VOID
 ViiperReleaseDeviceSlot(
     _In_ VIIPER_UDE_CONTROLLER_CONTEXT *ControllerContext,
     _In_ UDECXUSBDEVICE Device,
-    _In_ ULONG Slot
+    _In_ ULONG Slot,
+    _In_ ULONGLONG PortReservation
     )
 {
     ViiperAcquireDeviceLockExclusive(ControllerContext);
-    if (Slot < VIIPER_UDE_MAX_DEVICES) {
+    if (Slot < VIIPER_UDE_MAX_DEVICES && PortReservation != 0 &&
+        ControllerContext->PortReserved[Slot] &&
+        ControllerContext->PortReservationEpochs[Slot] == PortReservation) {
         if (ControllerContext->Devices[Slot] == Device) {
             ViiperRemoveInputDeviceLocked(ControllerContext, Device);
             ControllerContext->Devices[Slot] = WDF_NO_HANDLE;
+        }
+        ControllerContext->PortReserved[Slot] = FALSE;
+        {
+            LONG remaining = InterlockedDecrement(&ControllerContext->ReservedPorts);
+            NT_ASSERT(remaining >= 0);
+            (VOID)remaining;
         }
     }
     ViiperReleaseDeviceLockExclusive(ControllerContext);
@@ -578,6 +606,25 @@ ViiperRetireActiveDevice(
     NT_ASSERT(remaining >= 0);
 }
 
+_IRQL_requires_(PASSIVE_LEVEL)
+static
+VOID
+ViiperFlushD0ExitWorkItem(
+    _In_ UDECXUSBDEVICE Device
+    )
+{
+    VIIPER_UDE_DEVICE_CONTEXT *deviceContext = ViiperGetDeviceContext(Device);
+
+    NT_ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
+    NT_ASSERT(deviceContext->D0ExitWorkItem != WDF_NO_HANDLE);
+    // Flush unconditionally: the worker clears D0ExitPending immediately
+    // before its final UdeCx completion call, so a false flag does not prove
+    // that the callback has returned and stopped using the device handle.
+    WdfWorkItemFlush(deviceContext->D0ExitWorkItem);
+    NT_ASSERT(InterlockedCompareExchange(
+        &deviceContext->D0ExitPending, 0, 0) == 0);
+}
+
 NTSTATUS
 ViiperCreateVirtualDevice(
     _In_ WDFQUEUE Queue,
@@ -594,10 +641,14 @@ ViiperCreateVirtualDevice(
     UDECX_USB_DEVICE_STATE_CHANGE_CALLBACKS callbacks;
     UDECX_USB_DEVICE_SPEED speed;
     WDF_OBJECT_ATTRIBUTES attributes;
+    WDF_WORKITEM_CONFIG workItemConfig;
     UDECXUSBDEVICE device = WDF_NO_HANDLE;
     VIIPER_UDE_DEVICE_CONTEXT *deviceContext;
     UDECX_USB_DEVICE_PLUG_IN_OPTIONS plugOptions;
     ULONG slot;
+    ULONG generation;
+    ULONGLONG deviceId;
+    ULONGLONG portReservation;
 
     PAGED_CODE();
     status = WdfRequestRetrieveInputBuffer(Request, sizeof(*input), (PVOID *)&input, &inputLength);
@@ -608,6 +659,8 @@ ViiperCreateVirtualDevice(
         InterlockedIncrement64(&controllerContext->InvalidMessages);
         return STATUS_INVALID_PARAMETER;
     }
+    deviceId = input->DeviceId;
+    generation = input->Generation;
     speed = ViiperMapSpeed(input->Speed);
     if (speed == (UDECX_USB_DEVICE_SPEED)0) {
         return STATUS_NOT_SUPPORTED;
@@ -618,7 +671,7 @@ ViiperCreateVirtualDevice(
     }
     VIIPER_TRACE_LIFECYCLE(
         controller, VIIPER_UDE_TRACE_SOURCE_DEVICE, VIIPER_UDE_TRACE_CREATE_BEGIN,
-        input->DeviceId, input->Generation, WDF_NO_HANDLE, WDF_NO_HANDLE, 0,
+        deviceId, generation, WDF_NO_HANDLE, WDF_NO_HANDLE, 0,
         STATUS_SUCCESS, 0, 0);
 
     deviceInit = UdecxUsbDeviceInitAllocate(controller);
@@ -649,17 +702,15 @@ ViiperCreateVirtualDevice(
     WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&attributes, VIIPER_UDE_DEVICE_CONTEXT);
     attributes.ParentObject = controller;
     attributes.EvtCleanupCallback = ViiperEvtVirtualDeviceCleanup;
-    // UdeCx permits its USB-device callbacks at <= DISPATCH_LEVEL, while
-    // endpoint creation and the DeviceLock snapshot used by power/reset
-    // callbacks are PASSIVE_LEVEL-only. KMDF controller objects otherwise
-    // default to dispatch execution, so make the child callback contract
-    // explicit instead of relying on the current UdeCx call context.
+    // Keep ordinary WDF cleanup and child-owned callbacks passive. This object
+    // attribute does not narrow the documented <= DISPATCH_LEVEL contract of
+    // UdeCx state callbacks; those paths remain independently dispatch-safe.
     attributes.ExecutionLevel = WdfExecutionLevelPassive;
     status = UdecxUsbDeviceCreate(&deviceInit, &attributes, &device);
     VIIPER_TRACE_LIFECYCLE(
         controller, VIIPER_UDE_TRACE_SOURCE_DEVICE,
-        VIIPER_UDE_TRACE_DEVICE_CREATE_RETURNED, input->DeviceId,
-        input->Generation, device, WDF_NO_HANDLE, 0, status, 0, 0);
+        VIIPER_UDE_TRACE_DEVICE_CREATE_RETURNED, deviceId,
+        generation, device, WDF_NO_HANDLE, 0, status, 0, 0);
     if (!NT_SUCCESS(status)) {
         UdecxUsbDeviceInitFree(deviceInit);
         goto ExitAdmission;
@@ -669,8 +720,8 @@ ViiperCreateVirtualDevice(
     RtlZeroMemory(deviceContext, sizeof(*deviceContext));
     deviceContext->Controller = controller;
     deviceContext->OwnerFile = ownerFile;
-    deviceContext->DeviceId = input->DeviceId;
-    deviceContext->Generation = input->Generation;
+    deviceContext->DeviceId = deviceId;
+    deviceContext->Generation = generation;
     deviceContext->Slot = VIIPER_UDE_MAX_DEVICES;
     deviceContext->Speed = speed;
     deviceContext->MaxPendingOperations = input->MaxPendingOperations;
@@ -682,16 +733,28 @@ ViiperCreateVirtualDevice(
     WdfObjectReference(ownerFile);
     InterlockedExchange(&deviceContext->OwnerReferenced, 1);
 
-    status = ViiperClaimDeviceSlot(controllerContext, device, input->DeviceId, &slot);
+    WDF_WORKITEM_CONFIG_INIT(&workItemConfig, ViiperEvtUsbDeviceD0ExitWorkItem);
+    workItemConfig.AutomaticSerialization = WdfFalse;
+    WDF_OBJECT_ATTRIBUTES_INIT(&attributes);
+    attributes.ParentObject = device;
+    status = WdfWorkItemCreate(
+        &workItemConfig, &attributes, &deviceContext->D0ExitWorkItem);
     if (!NT_SUCCESS(status)) {
         WdfObjectDelete(device);
         goto ExitAdmission;
     }
-    deviceContext->Slot = slot;
+
+    status = ViiperClaimDeviceSlot(
+        controllerContext, device, deviceId, &slot, &portReservation);
+    if (!NT_SUCCESS(status)) {
+        WdfObjectDelete(device);
+        goto ExitAdmission;
+    }
     VIIPER_TRACE_LIFECYCLE(
         controller, VIIPER_UDE_TRACE_SOURCE_DEVICE,
-        VIIPER_UDE_TRACE_DEVICE_SLOT_CLAIMED, deviceContext->DeviceId,
-        deviceContext->Generation, device, WDF_NO_HANDLE, 0, STATUS_SUCCESS, 0, 0);
+        VIIPER_UDE_TRACE_DEVICE_SLOT_CLAIMED, deviceId,
+        generation, device, WDF_NO_HANDLE, 0, STATUS_SUCCESS,
+        InterlockedCompareExchange(&controllerContext->ReservedPorts, 0, 0), slot);
 
     UDECX_USB_DEVICE_PLUG_IN_OPTIONS_INIT(&plugOptions);
     if (speed == UdecxUsbSuperSpeed) {
@@ -704,22 +767,20 @@ ViiperCreateVirtualDevice(
     }
     VIIPER_TRACE_LIFECYCLE(
         controller, VIIPER_UDE_TRACE_SOURCE_DEVICE, VIIPER_UDE_TRACE_PLUG_IN_BEGIN,
-        deviceContext->DeviceId, deviceContext->Generation, device, WDF_NO_HANDLE,
+        deviceId, generation, device, WDF_NO_HANDLE,
         0, STATUS_SUCCESS, 0, 0);
     status = UdecxUsbDevicePlugIn(device, &plugOptions);
     VIIPER_TRACE_LIFECYCLE(
         controller, VIIPER_UDE_TRACE_SOURCE_DEVICE,
-        VIIPER_UDE_TRACE_PLUG_IN_RETURNED, deviceContext->DeviceId,
-        deviceContext->Generation, device, WDF_NO_HANDLE, 0, status, 0, 0);
+        VIIPER_UDE_TRACE_PLUG_IN_RETURNED, deviceId,
+        generation, device, WDF_NO_HANDLE, 0, status, 0, 0);
     if (!NT_SUCCESS(status)) {
-        ViiperReleaseDeviceSlot(controllerContext, device, slot);
+        ViiperReleaseDeviceSlot(controllerContext, device, slot, portReservation);
+        ViiperRetireActiveDevice(controllerContext, deviceContext);
         WdfObjectDelete(device);
         goto ExitAdmission;
     }
 
-    deviceContext->Plugged = TRUE;
-    InterlockedExchange(&deviceContext->ActiveCounted, 1);
-    InterlockedIncrement(&controllerContext->ActiveDevices);
     WdfRequestSetInformation(Request, 0);
     status = STATUS_SUCCESS;
 
@@ -765,10 +826,11 @@ ViiperBeginRemoveDevice(
         InterlockedExchange(&deviceContext->Purging, TRUE);
         WdfSpinLockRelease(ControllerContext->BrokerLock);
         ViiperRemoveInputDeviceLocked(ControllerContext, current);
+        // Revoke logical ownership immediately, but keep the physical port
+        // reserved until this exact object's cleanup callback. Reusing a port
+        // while its prior child is still disappearing can strand that child
+        // and prevent the successor from enumerating.
         ControllerContext->Devices[index] = WDF_NO_HANDLE;
-        // Devices[] is the logical ownership table. Retire the slot and its
-        // active count while the UDE handle is still valid; KMDF may defer the
-        // object's cleanup long after PlugOutAndDelete consumes this handle.
         ViiperRetireActiveDevice(ControllerContext, deviceContext);
         *Device = current;
         status = STATUS_SUCCESS;
@@ -821,6 +883,7 @@ ViiperDestroyVirtualDevice(
         controller, VIIPER_UDE_TRACE_SOURCE_DEVICE, VIIPER_UDE_TRACE_REMOVE_CLAIMED,
         input->DeviceId, input->Generation, device, WDF_NO_HANDLE, 0,
         STATUS_SUCCESS, 0, 0);
+    ViiperFlushD0ExitWorkItem(device);
     ViiperAbortDeviceManagementOperations(controller, device, STATUS_DEVICE_REMOVED);
     VIIPER_TRACE_LIFECYCLE(
         controller, VIIPER_UDE_TRACE_SOURCE_DEVICE, VIIPER_UDE_TRACE_PLUG_OUT_BEGIN,
@@ -886,6 +949,7 @@ ViiperDestroyOwnedDevices(
         }
         deviceContext = ViiperGetDeviceContext(device);
         plugged = deviceContext->Plugged;
+        ViiperFlushD0ExitWorkItem(device);
         ViiperAbortDeviceManagementOperations(Controller, device, STATUS_FILE_CLOSED);
         // Completing a held UdeCx management request can make framework
         // cleanup runnable once the slot pins are released. Do not access the
@@ -911,7 +975,7 @@ ViiperBeginControllerShutdown(
     ULONG deviceCount = 0;
     ULONG index;
 
-    PAGED_CODE();
+    NT_ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
 
     VIIPER_TRACE_LIFECYCLE(
         Controller, VIIPER_UDE_TRACE_SOURCE_CONTROLLER,
@@ -941,9 +1005,12 @@ ViiperBeginControllerShutdown(
 
     for (index = 0; index < deviceCount; ++index) {
         VIIPER_UDE_DEVICE_CONTEXT *deviceContext = ViiperGetDeviceContext(devices[index]);
-        if (deviceContext->Plugged) {
-            ULONGLONG deviceId = deviceContext->DeviceId;
-            ULONG generation = deviceContext->Generation;
+        BOOLEAN plugged = deviceContext->Plugged;
+        ULONGLONG deviceId = deviceContext->DeviceId;
+        ULONG generation = deviceContext->Generation;
+
+        ViiperFlushD0ExitWorkItem(devices[index]);
+        if (plugged) {
             NTSTATUS status;
 
             // A successful call starts UdeCx-owned asynchronous deletion. If
@@ -965,7 +1032,8 @@ ViiperBeginControllerShutdown(
     VIIPER_TRACE_LIFECYCLE(
         Controller, VIIPER_UDE_TRACE_SOURCE_CONTROLLER,
         VIIPER_UDE_TRACE_CONTROLLER_SHUTDOWN_END, 0, 0, WDF_NO_HANDLE,
-        WDF_NO_HANDLE, 0, STATUS_SUCCESS, 0, 0);
+        WDF_NO_HANDLE, 0, STATUS_SUCCESS,
+        InterlockedCompareExchange(&controllerContext->ReservedPorts, 0, 0), 0);
 }
 
 VOID
@@ -978,7 +1046,7 @@ ViiperEvtVirtualDeviceCleanup(
     VIIPER_UDE_CONTROLLER_CONTEXT *controllerContext;
     WDFFILEOBJECT ownerFile = WDF_NO_HANDLE;
 
-    PAGED_CODE();
+    NT_ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
     if (deviceContext->Controller == WDF_NO_HANDLE) {
         return;
     }
@@ -1003,7 +1071,9 @@ ViiperEvtVirtualDeviceCleanup(
     }
     WdfSpinLockRelease(controllerContext->BrokerLock);
 
-    ViiperReleaseDeviceSlot(controllerContext, device, deviceContext->Slot);
+    ViiperReleaseDeviceSlot(
+        controllerContext, device, deviceContext->Slot,
+        deviceContext->PortReservation);
     // Normal removal retired the logical count before PlugOutAndDelete. This
     // is only the fallback for an unexpected framework-owned deletion.
     ViiperRetireActiveDevice(controllerContext, deviceContext);
@@ -1014,7 +1084,8 @@ ViiperEvtVirtualDeviceCleanup(
         deviceContext->Controller, VIIPER_UDE_TRACE_SOURCE_DEVICE,
         VIIPER_UDE_TRACE_DEVICE_CLEANUP_END, deviceContext->DeviceId,
         deviceContext->Generation, device, WDF_NO_HANDLE, 0, STATUS_SUCCESS,
-        deviceContext->PendingOperations, 0);
+        deviceContext->PendingOperations,
+        InterlockedCompareExchange(&controllerContext->ReservedPorts, 0, 0));
 }
 
 static
@@ -1030,6 +1101,7 @@ ViiperClearEndpointInputReportLocked(
     InterlockedExchange(&EndpointContext->InputTransitionCount, 0);
 }
 
+_IRQL_requires_(PASSIVE_LEVEL)
 static
 VOID
 ViiperInvalidateEndpointInputReport(
@@ -1038,6 +1110,7 @@ ViiperInvalidateEndpointInputReport(
 {
     VIIPER_UDE_ENDPOINT_CONTEXT *endpointContext = ViiperGetEndpointContext(Endpoint);
 
+    NT_ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
     if (endpointContext->InputLock != WDF_NO_HANDLE) {
         WdfWaitLockAcquire(endpointContext->InputLock, NULL);
     }
@@ -1071,6 +1144,7 @@ ViiperInvalidateInputIfLifecycleClosed(
     WdfSpinLockRelease(controllerContext->BrokerLock);
 }
 
+_IRQL_requires_(PASSIVE_LEVEL)
 static
 VOID
 ViiperInvalidateDeviceInputReports(
@@ -1082,6 +1156,7 @@ ViiperInvalidateDeviceInputReports(
         ViiperGetControllerContext(deviceContext->Controller);
     ULONG index;
 
+    NT_ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
     // Device power/reset admission is already closed before this helper is
     // called, so no new report can become valid. Keep endpoint lookup and the
     // final atomic invalidation inside one shared index acquisition; a WDF
@@ -1104,15 +1179,24 @@ ViiperEvtUsbDeviceD0Entry(
 {
     VIIPER_UDE_CONTROLLER_CONTEXT *controllerContext =
         ViiperGetControllerContext(Controller);
+    VIIPER_UDE_DEVICE_CONTEXT *deviceContext = ViiperGetDeviceContext(Device);
+    NTSTATUS status = STATUS_SUCCESS;
+
     // This callback is the exact UdeCx power boundary. Open direct input
     // admission before publishing the ordered advisory event to user mode.
     WdfSpinLockAcquire(controllerContext->BrokerLock);
     if (InterlockedCompareExchange(&controllerContext->ShuttingDown, 0, 0) != 0) {
-        WdfSpinLockRelease(controllerContext->BrokerLock);
-        return STATUS_DEVICE_REMOVED;
+        status = STATUS_DEVICE_REMOVED;
+    } else if (InterlockedCompareExchange(&deviceContext->Purging, 0, 0) != 0 ||
+        InterlockedCompareExchange(&deviceContext->D0ExitPending, 0, 0) != 0) {
+        status = STATUS_DEVICE_BUSY;
+    } else {
+        InterlockedExchange(&deviceContext->InD0, TRUE);
     }
-    InterlockedExchange(&ViiperGetDeviceContext(Device)->InD0, TRUE);
     WdfSpinLockRelease(controllerContext->BrokerLock);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
     (VOID)ViiperQueueDeviceLifecycleEvent(Device, ViiperUdeOperationDeviceD0Entry);
     return STATUS_SUCCESS;
 }
@@ -1126,16 +1210,59 @@ ViiperEvtUsbDeviceD0Exit(
 {
     VIIPER_UDE_CONTROLLER_CONTEXT *controllerContext =
         ViiperGetControllerContext(Controller);
+    VIIPER_UDE_DEVICE_CONTEXT *deviceContext = ViiperGetDeviceContext(Device);
+    NTSTATUS status;
+
     UNREFERENCED_PARAMETER(WakeSetting);
     // Close direct input admission synchronously. Waiting for the user-mode
     // notification would leave a scheduler window in which a fresh report
     // could complete a Windows poll after the child had left D0.
     WdfSpinLockAcquire(controllerContext->BrokerLock);
-    InterlockedExchange(&ViiperGetDeviceContext(Device)->InD0, FALSE);
+    InterlockedExchange(&deviceContext->InD0, FALSE);
+    if (InterlockedCompareExchange(&controllerContext->ShuttingDown, 0, 0) != 0 ||
+        InterlockedCompareExchange(&deviceContext->Purging, 0, 0) != 0) {
+        // Teardown already owns cache destruction and will consume the handle.
+        // No asynchronous power completion is owed when this callback returns
+        // success synchronously.
+        status = STATUS_SUCCESS;
+    } else if (InterlockedCompareExchange(
+            &deviceContext->D0ExitPending, TRUE, FALSE) != FALSE) {
+        NT_ASSERT(FALSE);
+        status = STATUS_DEVICE_BUSY;
+    } else {
+        // Enqueue before releasing the same gate which removal uses to set
+        // Purging. Teardown therefore either observes and flushes this work or
+        // wins first and prevents a late enqueue against a consumed handle.
+        WdfWorkItemEnqueue(deviceContext->D0ExitWorkItem);
+        status = STATUS_PENDING;
+    }
     WdfSpinLockRelease(controllerContext->BrokerLock);
-    ViiperInvalidateDeviceInputReports(Device);
-    (VOID)ViiperQueueDeviceLifecycleEvent(Device, ViiperUdeOperationDeviceD0Exit);
-    return STATUS_SUCCESS;
+    return status;
+}
+
+VOID
+ViiperEvtUsbDeviceD0ExitWorkItem(
+    _In_ WDFWORKITEM WorkItem
+    )
+{
+    UDECXUSBDEVICE device =
+        (UDECXUSBDEVICE)WdfWorkItemGetParentObject(WorkItem);
+    VIIPER_UDE_DEVICE_CONTEXT *deviceContext = ViiperGetDeviceContext(device);
+    VIIPER_UDE_CONTROLLER_CONTEXT *controllerContext =
+        ViiperGetControllerContext(deviceContext->Controller);
+
+    NT_ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
+    ViiperInvalidateDeviceInputReports(device);
+    (VOID)ViiperQueueDeviceLifecycleEvent(
+        device, ViiperUdeOperationDeviceD0Exit);
+    WdfSpinLockAcquire(controllerContext->BrokerLock);
+    NT_ASSERT(InterlockedCompareExchange(
+        &deviceContext->D0ExitPending, 0, 0) != 0);
+    InterlockedExchange(&deviceContext->D0ExitPending, FALSE);
+    WdfSpinLockRelease(controllerContext->BrokerLock);
+    // UdeCx may synchronously advance lifecycle or cleanup once this returns.
+    // Do not access the device or any of its contexts after completion.
+    UdecxUsbDeviceLinkPowerExitComplete(device, STATUS_SUCCESS);
 }
 
 NTSTATUS
@@ -1154,10 +1281,10 @@ ViiperEvtUsbDeviceSetFunctionSuspendAndWake(
     // VIIPER's production controller set is low/full/high-speed, so UdeCx
     // never invokes this SuperSpeed-only callback for a supported child.  A
     // virtual child has no physical function to power down; acknowledge the
-    // host's bookkeeping transition exactly as usbip-win2's UdeCx reference
-    // does, without mutating endpoint/media state behind UdeCx's queue
-    // lifecycle.  If VIIPER adds a SuperSpeed controller with real remote-wake
-    // behavior, that device must add an explicit per-interface state contract
+    // host's bookkeeping transition without mutating endpoint/media state
+    // behind UdeCx's queue lifecycle. If VIIPER adds a SuperSpeed controller
+    // with real remote-wake behavior, that device must add an explicit
+    // per-interface state contract
     // rather than repurposing endpoint purge/start implicitly.
     return STATUS_SUCCESS;
 }
@@ -1227,13 +1354,17 @@ ViiperEvtEndpointCleanup(
     ViiperAcquireDeviceLockExclusive(controllerContext);
     // Microsoft permits no ordinary object access after EvtCleanup is called,
     // even when a WDF reference postpones destruction. UdeCx therefore owns
-    // the lifetime ordering: EvtEndpointPurge closes BrokerLock admission and
-    // asynchronously purges the associated WDF queue. Its completion callback
-    // acknowledges UdeCx only after all queued and driver-owned requests end.
+    // the lifetime ordering: EvtEndpointPurge closes BrokerLock admission while
+    // UdeCx owns its associated queue state. The passive work item acknowledges
+    // UdeCx only after all framework-delivered and VIIPER-owned requests end.
     // Endpoint creation failure has no published users. Cleanup must never be
     // used as a late wait for an operation which can still access this context.
     NT_ASSERT(InterlockedCompareExchange(
         &endpointContext->ActiveOperations, 0, 0) == 0);
+    NT_ASSERT(InterlockedCompareExchange(
+        &endpointContext->PurgeOutstanding, 0, 0) == 0);
+    NT_ASSERT(InterlockedCompareExchange(
+        &endpointContext->PurgeWorkerActive, 0, 0) == 0);
     ViiperInvalidateEndpointInputReport(endpoint);
     if (deviceContext->DefaultEndpoint == endpoint) {
         deviceContext->DefaultEndpoint = WDF_NO_HANDLE;
@@ -1307,7 +1438,17 @@ ViiperEvtEndpointAdd(
     endpointContext->Descriptor = descriptor;
     InitializeListHead(&endpointContext->AdmissionQueue);
     KeInitializeEvent(&endpointContext->OperationsDrained, NotificationEvent, TRUE);
+    WDF_WORKITEM_CONFIG_INIT(&workItemConfig, ViiperEvtEndpointPurgeWorkItem);
+    workItemConfig.AutomaticSerialization = WdfFalse;
+    WDF_OBJECT_ATTRIBUTES_INIT(&attributes);
+    attributes.ParentObject = endpoint;
+    status = WdfWorkItemCreate(
+        &workItemConfig, &attributes, &endpointContext->PurgeWorkItem);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
     WDF_WORKITEM_CONFIG_INIT(&workItemConfig, ViiperEvtEndpointResetWorkItem);
+    workItemConfig.AutomaticSerialization = WdfFalse;
     WDF_OBJECT_ATTRIBUTES_INIT(&attributes);
     attributes.ParentObject = endpoint;
     status = WdfWorkItemCreate(
@@ -1369,9 +1510,9 @@ ViiperEvtEndpointAdd(
     if (endpointContext->FastInput) {
         // A direct report can arrive just before Windows posts its interrupt
         // poll. Preserve that latest state and service the poll when the
-        // manual endpoint queue changes from empty to non-empty. This mirrors
-        // ViGEmBus's pending-read/cache contract without routing HID input
-        // through the ordered control/media broker.
+        // manual endpoint queue changes from empty to non-empty. Keep this
+        // pending-read/cache path separate from the ordered control/media
+        // broker.
         status = WdfIoQueueReadyNotify(
             endpointContext->Queue, ViiperEvtFastInputQueueReady, endpoint);
         if (!NT_SUCCESS(status)) {
@@ -1421,7 +1562,9 @@ VOID
 ViiperCompleteRetrievedInputUrb(
     _In_ UDECXUSBENDPOINT Endpoint,
     _In_ WDFREQUEST Request,
-    _In_ NTSTATUS Status
+    _In_ NTSTATUS Status,
+    _In_ ULONG DirectInputBytes,
+    _In_ ULONGLONG DirectInputSequence
     )
 {
     VIIPER_UDE_DEVICE_CONTEXT *deviceContext =
@@ -1438,7 +1581,9 @@ ViiperCompleteRetrievedInputUrb(
         0,
         Status,
         NT_SUCCESS(Status) ? USBD_STATUS_SUCCESS : USBD_STATUS_INTERNAL_HC_ERROR,
-        !NT_SUCCESS(Status));
+        !NT_SUCCESS(Status),
+        NT_SUCCESS(Status) ? DirectInputBytes : 0,
+        NT_SUCCESS(Status) ? DirectInputSequence : 0);
     if (!queued) {
         NT_ASSERT(FALSE);
     }
@@ -1448,20 +1593,25 @@ static
 NTSTATUS
 ViiperPrepareCachedInputUrb(
     _In_ UDECXUSBENDPOINT Endpoint,
-    _In_ WDFREQUEST Request
+    _In_ WDFREQUEST Request,
+    _Out_ ULONG *BytesPrepared,
+    _Out_ ULONGLONG *SequencePrepared
     )
 {
     VIIPER_UDE_ENDPOINT_CONTEXT *endpointContext = ViiperGetEndpointContext(Endpoint);
-    VIIPER_UDE_DEVICE_CONTEXT *deviceContext = ViiperGetDeviceContext(endpointContext->Device);
-    VIIPER_UDE_CONTROLLER_CONTEXT *controllerContext =
-        ViiperGetControllerContext(deviceContext->Controller);
     PURB urb = ViiperGetUrb(Request);
     PUCHAR report = endpointContext->InputReport;
     ULONG reportLength = endpointContext->InputReportLength;
     ULONG transitionHead = 0;
+    ULONGLONG reportSequence;
     BOOLEAN transition = FALSE;
     ULONG transferLength;
     NTSTATUS status;
+
+    *BytesPrepared = 0;
+    *SequencePrepared = 0;
+    reportSequence = (ULONGLONG)InterlockedCompareExchange64(
+        &endpointContext->LastInputSequence, 0, 0);
 
     if (InterlockedCompareExchange(&endpointContext->InputTransitionCount, 0, 0) > 0) {
         transitionHead = (ULONG)InterlockedCompareExchange(
@@ -1469,6 +1619,7 @@ ViiperPrepareCachedInputUrb(
         report = endpointContext->InputTransitionReports +
             ((SIZE_T)transitionHead * endpointContext->InputTransitionStride);
         reportLength = endpointContext->InputTransitionLengths[transitionHead];
+        reportSequence = endpointContext->InputTransitionSequences[transitionHead];
         transition = TRUE;
     }
 
@@ -1498,8 +1649,8 @@ ViiperPrepareCachedInputUrb(
     } else {
         InterlockedExchange(&endpointContext->InputSnapshotPending, FALSE);
     }
-    InterlockedAdd64(&controllerContext->BytesFromDevice, reportLength);
-    InterlockedIncrement64(&controllerContext->InputReportsCompleted);
+    *BytesPrepared = reportLength;
+    *SequencePrepared = reportSequence;
     return STATUS_SUCCESS;
 }
 
@@ -1517,11 +1668,13 @@ ViiperEvtFastInputQueueReady(
         ViiperGetControllerContext(deviceContext->Controller);
     WDFREQUEST request = WDF_NO_HANDLE;
     NTSTATUS completionStatus = STATUS_SUCCESS;
+    ULONG directInputBytes = 0;
+    ULONGLONG directInputSequence = 0;
     BOOLEAN admitted = FALSE;
     BOOLEAN deliveryReady = FALSE;
     BOOLEAN completionAdmitted = FALSE;
 
-    PAGED_CODE();
+    NT_ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
     // KMDF explicitly permits a passive ReadyNotify callback to retrieve the
     // request that made a manual queue non-empty. Copy the already-cached
     // latest state here, then transfer terminal ownership to the driver's
@@ -1600,12 +1753,15 @@ ViiperEvtFastInputQueueReady(
             break;
         }
         ViiperInvalidateInputIfLifecycleClosed(endpoint);
-        completionStatus = ViiperPrepareCachedInputUrb(endpoint, request);
+        completionStatus = ViiperPrepareCachedInputUrb(
+            endpoint, request, &directInputBytes, &directInputSequence);
         InterlockedExchange(
             &endpointContext->CachedDeliveryPending,
             InterlockedCompareExchange(&endpointContext->InputTransitionCount, 0, 0) > 0 ||
                 InterlockedCompareExchange(&endpointContext->InputSnapshotPending, 0, 0) != 0);
-        ViiperCompleteRetrievedInputUrb(endpoint, request, completionStatus);
+        ViiperCompleteRetrievedInputUrb(
+            endpoint, request, completionStatus,
+            directInputBytes, directInputSequence);
     }
     WdfWaitLockRelease(endpointContext->InputLock);
     // Release the callback-lifetime hold only after the final endpoint access.
@@ -1632,6 +1788,8 @@ ViiperSubmitInputReport(
     VIIPER_UDE_ENDPOINT_CONTEXT *endpointContext = NULL;
     WDFREQUEST urbRequest = WDF_NO_HANDLE;
     NTSTATUS status;
+    ULONG directInputBytes = 0;
+    ULONGLONG directInputSequence = 0;
     BOOLEAN admitted = FALSE;
     BOOLEAN lifecycleDrop = FALSE;
 
@@ -1803,6 +1961,7 @@ ViiperSubmitInputReport(
             payload,
             input->PayloadLength);
         endpointContext->InputTransitionLengths[tail] = (USHORT)input->PayloadLength;
+        endpointContext->InputTransitionSequences[tail] = input->Sequence;
         InterlockedIncrement(&endpointContext->InputTransitionCount);
         InterlockedExchange(&endpointContext->InputSnapshotPending, FALSE);
     } else {
@@ -1830,7 +1989,8 @@ ViiperSubmitInputReport(
     // reset/purge/D0 boundary. Revalidate under the same admission lock so
     // either this path or the lifecycle callback performs the final clear.
     ViiperInvalidateInputIfLifecycleClosed(endpoint);
-    status = ViiperPrepareCachedInputUrb(endpoint, urbRequest);
+    status = ViiperPrepareCachedInputUrb(
+        endpoint, urbRequest, &directInputBytes, &directInputSequence);
     InterlockedExchange(
         &endpointContext->CachedDeliveryPending,
         InterlockedCompareExchange(&endpointContext->InputTransitionCount, 0, 0) > 0 ||
@@ -1839,7 +1999,8 @@ ViiperSubmitInputReport(
     // This call is the active-operation handoff. It performs every remaining
     // endpoint lookup before enqueuing the DPC; the caller performs no endpoint
     // access after a concurrently running DPC can release rundown.
-    ViiperCompleteRetrievedInputUrb(endpoint, urbRequest, status);
+    ViiperCompleteRetrievedInputUrb(
+        endpoint, urbRequest, status, directInputBytes, directInputSequence);
     // The producer publication was accepted before servicing this host poll.
     // A malformed/short URB fails through its own DPC but does not make user
     // mode retry an already-accepted sequence or discard the retained edge.
@@ -1859,7 +2020,7 @@ ViiperWaitForEndpointQuiescence(
         ViiperGetControllerContext(deviceContext->Controller);
     LARGE_INTEGER retryInterval;
 
-    PAGED_CODE();
+    NT_ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
     // One millisecond is used only on the cold purge/reset path. The ordinary
     // case returns after one event wait and one read-only queue-state sample.
     retryInterval.QuadPart = -10 * 1000;
@@ -1897,6 +2058,73 @@ ViiperWaitForEndpointQuiescence(
     }
 }
 
+_IRQL_requires_(PASSIVE_LEVEL)
+static
+VOID
+ViiperWaitForEndpointPurgeQuiescence(
+    _In_ UDECXUSBENDPOINT Endpoint,
+    _Out_ WDF_IO_QUEUE_STATE *FinalQueueState,
+    _Out_ ULONG *FinalQueuedRequests,
+    _Out_ ULONG *FinalDriverRequests
+    )
+{
+    VIIPER_UDE_ENDPOINT_CONTEXT *endpointContext = ViiperGetEndpointContext(Endpoint);
+    VIIPER_UDE_DEVICE_CONTEXT *deviceContext = ViiperGetDeviceContext(endpointContext->Device);
+    VIIPER_UDE_CONTROLLER_CONTEXT *controllerContext =
+        ViiperGetControllerContext(deviceContext->Controller);
+    LARGE_INTEGER retryInterval;
+
+    NT_ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
+    retryInterval.QuadPart = -10 * 1000;
+    for (;;) {
+        WDF_IO_QUEUE_STATE queueState;
+        ULONG queuedRequests;
+        ULONG driverRequests;
+        BOOLEAN quiescent;
+
+        (VOID)KeWaitForSingleObject(
+            &endpointContext->OperationsDrained,
+            Executive,
+            KernelMode,
+            FALSE,
+            NULL);
+
+        // UdeCx exclusively owns the associated queue's START/PURGE state.
+        // Its PURGE callback can leave UdeCx-owned host polls queued while
+        // stopping delivery to this driver. Reject READY and require the
+        // framework's DriverNoRequests proof, then combine it with VIIPER's
+        // rundown in one BrokerLock sample. This also closes a callback
+        // delivered just before it could enter ActiveOperations without
+        // waiting for queued requests which the class extension itself owns.
+        WdfSpinLockAcquire(controllerContext->BrokerLock);
+        queueState = WdfIoQueueGetState(
+            endpointContext->Queue, &queuedRequests, &driverRequests);
+        quiescent = InterlockedCompareExchange(
+                &endpointContext->PurgeOutstanding, 0, 0) > 0 &&
+            InterlockedCompareExchange(
+                &endpointContext->Purging, 0, 0) != 0 &&
+            !WDF_IO_QUEUE_READY(queueState) &&
+            (queueState & WdfIoQueueDriverNoRequests) != 0 &&
+            driverRequests == 0 &&
+            InterlockedCompareExchange(
+                &endpointContext->ActiveOperations, 0, 0) == 0;
+        if (quiescent) {
+            *FinalQueueState = queueState;
+            *FinalQueuedRequests = queuedRequests;
+            *FinalDriverRequests = driverRequests;
+        }
+        WdfSpinLockRelease(controllerContext->BrokerLock);
+        if (quiescent) {
+            return;
+        }
+
+        // This runs only during an endpoint lifecycle transition. A short
+        // passive wait lets any callback already dispatched by KMDF reach its
+        // terminal DPC without consuming CPU or touching the input hot path.
+        (VOID)KeDelayExecutionThread(KernelMode, FALSE, &retryInterval);
+    }
+}
+
 VOID
 ViiperDrainControllerEndpointOperations(
     _In_ WDFDEVICE Controller
@@ -1906,7 +2134,7 @@ ViiperDrainControllerEndpointOperations(
         ViiperGetControllerContext(Controller);
     ULONG deviceIndex;
 
-    PAGED_CODE();
+    NT_ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
     // Hold the shared device index while observing every endpoint so cleanup
     // cannot invalidate a handle between lookup and the final driver-owned
     // operation proof. ShuttingDown is already set, so no broker or direct
@@ -1953,7 +2181,7 @@ ViiperQuiesceResetByIdentity(
     BOOLEAN found = FALSE;
     ULONG deviceIndex;
 
-    PAGED_CODE();
+    NT_ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
     // The asynchronous UdeCx reset request keeps the child alive. Retain the
     // shared index as an additional cleanup fence while joining any terminal
     // callback admitted after the reset event was first published.
@@ -2093,7 +2321,6 @@ ViiperEvtEndpointReset(
     }
 
     InterlockedExchange64(&endpointContext->NextIsoStartFrame, 0);
-    ViiperInvalidateEndpointInputReport(Endpoint);
     ViiperPurgeEndpointOperations(Endpoint, STATUS_DEVICE_NOT_READY);
     endpointContext->ResetRequest = Request;
     // A forwarded broker operation or direct input copy may have won
@@ -2118,7 +2345,7 @@ ViiperEvtEndpointResetWorkItem(
     NTSTATUS status;
     BOOLEAN resetCurrent;
 
-    PAGED_CODE();
+    NT_ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
     resetCurrent = ViiperQuiesceResetByIdentity(
         deviceContext->Controller,
         deviceContext->DeviceId,
@@ -2162,70 +2389,101 @@ ViiperEvtEndpointResetWorkItem(
 }
 
 VOID
-ViiperEvtEndpointQueuePurged(
-    _In_ WDFQUEUE Queue,
-    _In_ WDFCONTEXT Context
+ViiperEvtEndpointPurgeWorkItem(
+    _In_ WDFWORKITEM WorkItem
     )
 {
-    UDECXUSBENDPOINT endpoint = (UDECXUSBENDPOINT)Context;
+    UDECXUSBENDPOINT endpoint =
+        (UDECXUSBENDPOINT)WdfWorkItemGetParentObject(WorkItem);
     VIIPER_UDE_ENDPOINT_CONTEXT *endpointContext = ViiperGetEndpointContext(endpoint);
     VIIPER_UDE_DEVICE_CONTEXT *deviceContext =
         ViiperGetDeviceContext(endpointContext->Device);
+    VIIPER_UDE_CONTROLLER_CONTEXT *controllerContext =
+        ViiperGetControllerContext(deviceContext->Controller);
     WDFDEVICE controller = deviceContext->Controller;
     UDECXUSBDEVICE device = endpointContext->Device;
     ULONGLONG deviceId = deviceContext->DeviceId;
     ULONG generation = deviceContext->Generation;
     UCHAR endpointAddress = endpointContext->Descriptor.bEndpointAddress;
 
-    PAGED_CODE();
-    UNREFERENCED_PARAMETER(Queue);
-    VIIPER_TRACE_LIFECYCLE(
-        deviceContext->Controller, VIIPER_UDE_TRACE_SOURCE_DEVICE,
-        VIIPER_UDE_TRACE_ENDPOINT_QUEUE_PURGED, deviceContext->DeviceId,
-        deviceContext->Generation, endpointContext->Device, endpoint,
-        endpointContext->Descriptor.bEndpointAddress, STATUS_SUCCESS,
-        endpointContext->ActiveOperations,
-        (ULONG)WdfIoQueueGetState(endpointContext->Queue, NULL, NULL));
-    // WDF invokes this only after queued cancellation and every request it
-    // delivered to the endpoint driver has completed. Join direct-input work
-    // admitted from the controller queue before PURGE closed its BrokerLock
-    // gate, then clear cached state before acknowledging UdeCx. No queue-state
-    // polling is needed: this callback is the framework's purge-complete fence.
-    VIIPER_TRACE_LIFECYCLE(
-        deviceContext->Controller, VIIPER_UDE_TRACE_SOURCE_DEVICE,
-        VIIPER_UDE_TRACE_ENDPOINT_DRAIN_BEGIN, deviceContext->DeviceId,
-        deviceContext->Generation, endpointContext->Device, endpoint,
-        endpointContext->Descriptor.bEndpointAddress, STATUS_SUCCESS,
-        endpointContext->ActiveOperations,
-        (ULONG)WdfIoQueueGetState(endpointContext->Queue, NULL, NULL));
-    (VOID)KeWaitForSingleObject(
-        &endpointContext->OperationsDrained,
-        Executive,
-        KernelMode,
-        FALSE,
-        NULL);
-    VIIPER_TRACE_LIFECYCLE(
-        deviceContext->Controller, VIIPER_UDE_TRACE_SOURCE_DEVICE,
-        VIIPER_UDE_TRACE_ENDPOINT_DRAIN_END, deviceContext->DeviceId,
-        deviceContext->Generation, endpointContext->Device, endpoint,
-        endpointContext->Descriptor.bEndpointAddress, STATUS_SUCCESS,
-        endpointContext->ActiveOperations,
-        (ULONG)WdfIoQueueGetState(endpointContext->Queue, NULL, NULL));
-    NT_ASSERT(InterlockedCompareExchange(
-        &endpointContext->ActiveOperations, 0, 0) == 0);
-    ViiperInvalidateEndpointInputReport(endpoint);
-    VIIPER_TRACE_LIFECYCLE(
-        deviceContext->Controller, VIIPER_UDE_TRACE_SOURCE_DEVICE,
-        VIIPER_UDE_TRACE_ENDPOINT_PURGE_COMPLETE_BEGIN, deviceContext->DeviceId,
-        deviceContext->Generation, endpointContext->Device, endpoint,
-        endpointContext->Descriptor.bEndpointAddress, STATUS_SUCCESS,
-        endpointContext->ActiveOperations,
-        (ULONG)WdfIoQueueGetState(endpointContext->Queue, NULL, NULL));
-    UdecxUsbEndpointPurgeComplete(endpoint);
-    VIIPER_TRACE_LIFECYCLE(
-        controller, VIIPER_UDE_TRACE_SOURCE_DEVICE,
-        VIIPER_UDE_TRACE_ENDPOINT_PURGE_COMPLETE_END, deviceId, generation,
-        device, endpoint, endpointAddress, STATUS_SUCCESS, 0, 0);
+    NT_ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
+    for (;;) {
+        WDF_IO_QUEUE_STATE queueState;
+        ULONG queuedRequests;
+        ULONG driverRequests;
+        LONG remaining;
+
+        WdfSpinLockAcquire(controllerContext->BrokerLock);
+        if (InterlockedCompareExchange(
+                &endpointContext->PurgeOutstanding, 0, 0) <= 0) {
+            InterlockedExchange(&endpointContext->PurgeWorkerActive, FALSE);
+            WdfSpinLockRelease(controllerContext->BrokerLock);
+            return;
+        }
+        NT_ASSERT(InterlockedCompareExchange(
+            &endpointContext->PurgeWorkerActive, 0, 0) != 0);
+        WdfSpinLockRelease(controllerContext->BrokerLock);
+
+        VIIPER_TRACE_LIFECYCLE(
+            deviceContext->Controller, VIIPER_UDE_TRACE_SOURCE_DEVICE,
+            VIIPER_UDE_TRACE_ENDPOINT_DRAIN_BEGIN, deviceContext->DeviceId,
+            deviceContext->Generation, endpointContext->Device, endpoint,
+            endpointContext->Descriptor.bEndpointAddress, STATUS_SUCCESS,
+            endpointContext->ActiveOperations,
+            (ULONG)WdfIoQueueGetState(endpointContext->Queue, NULL, NULL));
+        ViiperWaitForEndpointPurgeQuiescence(
+            endpoint, &queueState, &queuedRequests, &driverRequests);
+        VIIPER_TRACE_LIFECYCLE(
+            deviceContext->Controller, VIIPER_UDE_TRACE_SOURCE_DEVICE,
+            VIIPER_UDE_TRACE_ENDPOINT_QUEUE_PURGED, deviceContext->DeviceId,
+            deviceContext->Generation, endpointContext->Device, endpoint,
+            endpointContext->Descriptor.bEndpointAddress, STATUS_SUCCESS,
+            endpointContext->ActiveOperations, (ULONG)queueState);
+        VIIPER_TRACE_LIFECYCLE(
+            deviceContext->Controller, VIIPER_UDE_TRACE_SOURCE_DEVICE,
+            VIIPER_UDE_TRACE_ENDPOINT_DRAIN_END, deviceContext->DeviceId,
+            deviceContext->Generation, endpointContext->Device, endpoint,
+            endpointContext->Descriptor.bEndpointAddress, STATUS_SUCCESS,
+            endpointContext->ActiveOperations, (ULONG)queueState);
+        NT_ASSERT(InterlockedCompareExchange(
+            &endpointContext->ActiveOperations, 0, 0) == 0);
+        ViiperInvalidateEndpointInputReport(endpoint);
+        VIIPER_TRACE_LIFECYCLE(
+            deviceContext->Controller, VIIPER_UDE_TRACE_SOURCE_DEVICE,
+            VIIPER_UDE_TRACE_ENDPOINT_PURGE_COMPLETE_BEGIN,
+            deviceContext->DeviceId, deviceContext->Generation,
+            endpointContext->Device, endpoint,
+            endpointContext->Descriptor.bEndpointAddress, STATUS_SUCCESS,
+            endpointContext->ActiveOperations,
+            (ULONG)WdfIoQueueGetState(endpointContext->Queue, NULL, NULL));
+
+        // Retire exactly one callback before completing it. A synchronous
+        // final START observes zero and may reopen admission; an earlier START
+        // sees another outstanding PURGE and remains closed. Keep worker
+        // ownership through the completion so a reentrant PURGE is drained by
+        // this same invocation instead of being lost to work-item coalescing.
+        WdfSpinLockAcquire(controllerContext->BrokerLock);
+        NT_ASSERT(InterlockedCompareExchange(
+            &endpointContext->PurgeWorkerActive, 0, 0) != 0);
+        remaining = InterlockedDecrement(&endpointContext->PurgeOutstanding);
+        NT_ASSERT(remaining >= 0);
+        WdfSpinLockRelease(controllerContext->BrokerLock);
+
+        UdecxUsbEndpointPurgeComplete(endpoint);
+        VIIPER_TRACE_LIFECYCLE(
+            controller, VIIPER_UDE_TRACE_SOURCE_DEVICE,
+            VIIPER_UDE_TRACE_ENDPOINT_PURGE_COMPLETE_END, deviceId, generation,
+            device, endpoint, endpointAddress, STATUS_SUCCESS, remaining, 0);
+
+        WdfSpinLockAcquire(controllerContext->BrokerLock);
+        if (InterlockedCompareExchange(
+                &endpointContext->PurgeOutstanding, 0, 0) == 0) {
+            InterlockedExchange(&endpointContext->PurgeWorkerActive, FALSE);
+            WdfSpinLockRelease(controllerContext->BrokerLock);
+            return;
+        }
+        WdfSpinLockRelease(controllerContext->BrokerLock);
+    }
 }
 
 VOID
@@ -2237,6 +2495,8 @@ ViiperEvtEndpointPurge(
     VIIPER_UDE_DEVICE_CONTEXT *deviceContext = ViiperGetDeviceContext(endpointContext->Device);
     VIIPER_UDE_CONTROLLER_CONTEXT *controllerContext =
         ViiperGetControllerContext(deviceContext->Controller);
+    BOOLEAN enqueueWorkItem;
+    LONG outstanding;
 
     VIIPER_TRACE_LIFECYCLE(
         deviceContext->Controller, VIIPER_UDE_TRACE_SOURCE_DEVICE,
@@ -2251,9 +2511,13 @@ ViiperEvtEndpointPurge(
     WdfSpinLockAcquire(controllerContext->BrokerLock);
     InterlockedExchange(&endpointContext->Purging, TRUE);
     InterlockedExchange(&endpointContext->StartAnnounced, FALSE);
+    outstanding = InterlockedIncrement(&endpointContext->PurgeOutstanding);
+    enqueueWorkItem = InterlockedCompareExchange(
+        &endpointContext->PurgeWorkerActive, TRUE, FALSE) == FALSE;
     WdfSpinLockRelease(controllerContext->BrokerLock);
+    NT_ASSERT(outstanding > 0);
+    (VOID)outstanding;
     InterlockedExchange64(&endpointContext->NextIsoStartFrame, 0);
-    ViiperInvalidateEndpointInputReport(Endpoint);
     ViiperPurgeEndpointOperations(Endpoint, STATUS_DEVICE_NOT_READY);
     VIIPER_TRACE_LIFECYCLE(
         deviceContext->Controller, VIIPER_UDE_TRACE_SOURCE_DEVICE,
@@ -2263,10 +2527,11 @@ ViiperEvtEndpointPurge(
         endpointContext->ActiveOperations,
         (ULONG)WdfIoQueueGetState(endpointContext->Queue, NULL, NULL));
     (VOID)ViiperQueueEndpointLifecycleEvent(Endpoint, ViiperUdeOperationEndpointPurge);
-    // UdeCx requires its client to stop dispatch, cancel queued requests, and
-    // acknowledge only after every driver-owned request has completed. The
-    // asynchronous queue callback is that framework-owned completion fence.
-    WdfIoQueuePurge(endpointContext->Queue, ViiperEvtEndpointQueuePurged, Endpoint);
+    // UdeCx owns the associated queue's state. Only the operations forwarded
+    // into VIIPER-owned paths are ours to cancel and join. The passive work
+    // item observes the class-extension state without changing it, performs a
+    // final cache clear, and acknowledges each outstanding callback only after
+    // all framework-delivered and VIIPER-owned work drains.
     VIIPER_TRACE_LIFECYCLE(
         deviceContext->Controller, VIIPER_UDE_TRACE_SOURCE_DEVICE,
         VIIPER_UDE_TRACE_ENDPOINT_QUEUE_PURGE_REQUESTED, deviceContext->DeviceId,
@@ -2274,13 +2539,17 @@ ViiperEvtEndpointPurge(
         endpointContext->Descriptor.bEndpointAddress, STATUS_SUCCESS,
         endpointContext->ActiveOperations,
         (ULONG)WdfIoQueueGetState(endpointContext->Queue, NULL, NULL));
+    // This must remain the final endpoint access. Once the worker completes a
+    // PURGE, UdeCx can synchronously advance lifecycle or delete the endpoint.
+    if (enqueueWorkItem) {
+        WdfWorkItemEnqueue(endpointContext->PurgeWorkItem);
+    }
 }
 
 static
 VOID
 ViiperActivateEndpoint(
-    _In_ UDECXUSBENDPOINT Endpoint,
-    _In_ BOOLEAN StartQueue
+    _In_ UDECXUSBENDPOINT Endpoint
     )
 {
     VIIPER_UDE_ENDPOINT_CONTEXT *endpointContext = ViiperGetEndpointContext(Endpoint);
@@ -2295,12 +2564,17 @@ ViiperActivateEndpoint(
     // endpoints. UdeCx does not issue a separate START callback for every
     // newly selected endpoint on all supported Windows builds, so publish that
     // selection before completing the configuration request. A later explicit
-    // START still owns the KMDF queue transition, but its user-mode activation
-    // is deduplicated by StartAnnounced. PURGE closes both gates together.
+    // START still opens VIIPER's forwarded-operation admission gate, while its
+    // user-mode activation is deduplicated by StartAnnounced. UdeCx alone owns
+    // the associated KMDF queue transition. PURGE closes both VIIPER gates.
     InterlockedExchange64(&endpointContext->NextIsoStartFrame, 0);
     WdfSpinLockAcquire(controllerContext->BrokerLock);
     if (InterlockedCompareExchange(&controllerContext->ShuttingDown, 0, 0) == 0 &&
-        InterlockedCompareExchange(&deviceContext->Purging, 0, 0) == 0) {
+        InterlockedCompareExchange(&deviceContext->Purging, 0, 0) == 0 &&
+        InterlockedCompareExchange(&deviceContext->InD0, 0, 0) != 0 &&
+        InterlockedCompareExchange(&deviceContext->D0ExitPending, 0, 0) == 0 &&
+        InterlockedCompareExchange(
+            &endpointContext->PurgeOutstanding, 0, 0) == 0) {
         InterlockedExchange(&endpointContext->Purging, FALSE);
         active = TRUE;
         announce = InterlockedCompareExchange(
@@ -2309,9 +2583,6 @@ ViiperActivateEndpoint(
     WdfSpinLockRelease(controllerContext->BrokerLock);
     if (!active) {
         return;
-    }
-    if (StartQueue) {
-        WdfIoQueueStart(endpointContext->Queue);
     }
     if (announce) {
         status = ViiperQueueEndpointLifecycleEvent(
@@ -2331,7 +2602,7 @@ ViiperEvtEndpointStart(
     _In_ UDECXUSBENDPOINT Endpoint
     )
 {
-    ViiperActivateEndpoint(Endpoint, TRUE);
+    ViiperActivateEndpoint(Endpoint);
 }
 
 VOID
@@ -2357,7 +2628,7 @@ ViiperEvtEndpointsConfigure(
              endpointIndex < ConfigureParams->EndpointsToConfigureCount;
              ++endpointIndex) {
             ViiperActivateEndpoint(
-                ConfigureParams->EndpointsToConfigure[endpointIndex], FALSE);
+                ConfigureParams->EndpointsToConfigure[endpointIndex]);
         }
         WdfRequestComplete(Request, STATUS_SUCCESS);
         return;
@@ -2368,12 +2639,12 @@ ViiperEvtEndpointsConfigure(
         // leaves every non-default endpoint in UdeCx's preceding PURGE state.
         // Publish the selected endpoints before completing this asynchronous
         // configuration boundary. PURGE remains authoritative for release and
-        // a later explicit START performs only the KMDF queue transition.
+        // a later explicit START reopens only VIIPER-owned forwarding paths.
         for (endpointIndex = 0;
              endpointIndex < ConfigureParams->EndpointsToConfigureCount;
              ++endpointIndex) {
             ViiperActivateEndpoint(
-                ConfigureParams->EndpointsToConfigure[endpointIndex], FALSE);
+                ConfigureParams->EndpointsToConfigure[endpointIndex]);
         }
         WdfRequestComplete(Request, STATUS_SUCCESS);
         return;

@@ -5,16 +5,18 @@ import (
 	"testing"
 )
 
-func TestNativeEndpointQuiescenceUsesUdeCxRequiredQueueLifecycle(t *testing.T) {
+func TestNativeEndpointQuiescenceUsesReadOnlyUdeCxQueueState(t *testing.T) {
 	broker := nativeContractSource(t, "native", "udecx", "driver", "Broker.c")
 	controller := nativeContractSource(t, "native", "udecx", "driver", "Controller.c")
 	device := nativeContractSource(t, "native", "udecx", "driver", "Device.c")
+	header := nativeContractSource(t, "native", "udecx", "driver", "ViiperUde.h")
 
-	// UdeCx delegates PURGE/START handling for the associated queue to the
-	// client. Only the asynchronous purge and matching start transitions are
-	// allowed; stop, drain, and synchronous purge create competing ownership.
+	// UdeCx exclusively owns the associated endpoint queue's START/PURGE
+	// state. VIIPER may observe that queue, but must never mutate it.
 	for _, mutation := range []string{
+		"WdfIoQueuePurge(",
 		"WdfIoQueuePurgeSynchronously(",
+		"WdfIoQueueStart(",
 		"WdfIoQueueStop(",
 		"WdfIoQueueStopSynchronously(",
 		"WdfIoQueueDrain(",
@@ -44,6 +46,31 @@ func TestNativeEndpointQuiescenceUsesUdeCxRequiredQueueLifecycle(t *testing.T) {
 		"if (quiescent)",
 		"return;",
 		"KeDelayExecutionThread(")
+	purgeQuiescence := normalizedContract(nativeCFunction(
+		t, device, "ViiperWaitForEndpointPurgeQuiescence"))
+	requireContractOrder(t, purgeQuiescence,
+		"KeWaitForSingleObject( &endpointContext->OperationsDrained",
+		"WdfSpinLockAcquire(controllerContext->BrokerLock);",
+		"WdfIoQueueGetState( endpointContext->Queue, &queuedRequests, &driverRequests);",
+		"endpointContext->PurgeOutstanding",
+		"endpointContext->Purging",
+		"!WDF_IO_QUEUE_READY(queueState)",
+		"WdfIoQueueDriverNoRequests",
+		"driverRequests == 0",
+		"endpointContext->ActiveOperations",
+		"WdfSpinLockRelease(controllerContext->BrokerLock);",
+		"if (quiescent)",
+		"return;",
+		"KeDelayExecutionThread(")
+	for _, forbidden := range []string{
+		"WDF_IO_QUEUE_IDLE",
+		"WDF_IO_QUEUE_PURGED",
+		"queuedRequests == 0",
+	} {
+		if strings.Contains(purgeQuiescence, forbidden) {
+			t.Fatalf("purge quiescence incorrectly waits on UdeCx-owned queue state %q", forbidden)
+		}
+	}
 
 	queueUrb := normalizedContract(nativeCFunction(t, broker, "ViiperQueueUrb"))
 	requireContractOrder(t, queueUrb,
@@ -73,28 +100,81 @@ func TestNativeEndpointQuiescenceUsesUdeCxRequiredQueueLifecycle(t *testing.T) {
 
 	purge := normalizedContract(nativeCFunction(t, device, "ViiperEvtEndpointPurge"))
 	requireContractOrder(t, purge,
+		"WdfSpinLockAcquire(controllerContext->BrokerLock);",
 		"InterlockedExchange(&endpointContext->Purging, TRUE);",
 		"InterlockedExchange(&endpointContext->StartAnnounced, FALSE);",
+		"outstanding = InterlockedIncrement(&endpointContext->PurgeOutstanding);",
+		"enqueueWorkItem = InterlockedCompareExchange( &endpointContext->PurgeWorkerActive, TRUE, FALSE) == FALSE;",
+		"WdfSpinLockRelease(controllerContext->BrokerLock);",
 		"ViiperPurgeEndpointOperations(Endpoint, STATUS_DEVICE_NOT_READY);",
-		"WdfIoQueuePurge(endpointContext->Queue, ViiperEvtEndpointQueuePurged, Endpoint);")
-	purgeComplete := normalizedContract(nativeCFunction(t, device, "ViiperEvtEndpointQueuePurged"))
-	requireContractOrder(t, purgeComplete,
-		"KeWaitForSingleObject( &endpointContext->OperationsDrained",
-		"endpointContext->ActiveOperations",
+		"ViiperQueueEndpointLifecycleEvent(Endpoint, ViiperUdeOperationEndpointPurge);",
+		"if (enqueueWorkItem)",
+		"WdfWorkItemEnqueue(endpointContext->PurgeWorkItem);")
+	if strings.Contains(purge, "ViiperInvalidateEndpointInputReport") {
+		t.Fatal("DISPATCH-level endpoint PURGE must defer wait-lock-backed input invalidation to its passive work item")
+	}
+	enqueueEnd := strings.Index(purge, "WdfWorkItemEnqueue(endpointContext->PurgeWorkItem);")
+	if enqueueEnd < 0 || strings.Contains(purge[enqueueEnd+len("WdfWorkItemEnqueue(endpointContext->PurgeWorkItem);"):], "endpointContext") {
+		t.Fatal("PURGE work-item enqueue must remain the callback's final endpoint-context access")
+	}
+	purgeWork := normalizedContract(nativeCFunction(t, device, "ViiperEvtEndpointPurgeWorkItem"))
+	requireContractOrder(t, purgeWork,
+		"WdfWorkItemGetParentObject(WorkItem)",
+		"for (;;)",
+		"endpointContext->PurgeOutstanding",
+		"endpointContext->PurgeWorkerActive",
+		"ViiperWaitForEndpointPurgeQuiescence( endpoint, &queueState, &queuedRequests, &driverRequests);",
 		"ViiperInvalidateEndpointInputReport(endpoint);",
-		"UdecxUsbEndpointPurgeComplete(endpoint);")
+		"remaining = InterlockedDecrement(&endpointContext->PurgeOutstanding);",
+		"WdfSpinLockRelease(controllerContext->BrokerLock);",
+		"UdecxUsbEndpointPurgeComplete(endpoint);",
+		"WdfSpinLockAcquire(controllerContext->BrokerLock);",
+		"endpointContext->PurgeOutstanding",
+		"InterlockedExchange(&endpointContext->PurgeWorkerActive, FALSE);")
+	decrement := strings.Index(purgeWork,
+		"remaining = InterlockedDecrement(&endpointContext->PurgeOutstanding);")
+	complete := strings.Index(purgeWork, "UdecxUsbEndpointPurgeComplete(endpoint);")
+	workerRelease := strings.LastIndex(purgeWork,
+		"InterlockedExchange(&endpointContext->PurgeWorkerActive, FALSE);")
+	if decrement < 0 || complete <= decrement || workerRelease <= complete {
+		t.Fatal("PURGE worker must decrement before completion and retain worker ownership through synchronous callbacks")
+	}
+	if !strings.Contains(header, "WDFWORKITEM PurgeWorkItem;") ||
+		!strings.Contains(header, "volatile LONG PurgeOutstanding;") ||
+		!strings.Contains(header, "volatile LONG PurgeWorkerActive;") ||
+		!strings.Contains(header, "EVT_WDF_WORKITEM ViiperEvtEndpointPurgeWorkItem;") {
+		t.Fatal("endpoint context lost its counted passive PURGE worker state")
+	}
+	endpointAdd := normalizedContract(nativeCFunction(t, device, "ViiperEvtEndpointAdd"))
+	requireContractOrder(t, endpointAdd,
+		"KeInitializeEvent(&endpointContext->OperationsDrained, NotificationEvent, TRUE);",
+		"WDF_WORKITEM_CONFIG_INIT(&workItemConfig, ViiperEvtEndpointPurgeWorkItem);",
+		"workItemConfig.AutomaticSerialization = WdfFalse;",
+		"attributes.ParentObject = endpoint;",
+		"WdfWorkItemCreate( &workItemConfig, &attributes, &endpointContext->PurgeWorkItem);")
+	requireContractOrder(t, endpointAdd,
+		"WDF_WORKITEM_CONFIG_INIT(&workItemConfig, ViiperEvtEndpointResetWorkItem);",
+		"workItemConfig.AutomaticSerialization = WdfFalse;",
+		"attributes.ParentObject = endpoint;",
+		"WdfWorkItemCreate( &workItemConfig, &attributes, &endpointContext->ResetWorkItem);")
 	start := normalizedContract(nativeCFunction(t, device, "ViiperEvtEndpointStart"))
-	if !strings.Contains(start, "ViiperActivateEndpoint(Endpoint, TRUE);") {
-		t.Fatal("explicit UdeCx START no longer performs the queue-owning endpoint activation")
+	if !strings.Contains(start, "ViiperActivateEndpoint(Endpoint);") {
+		t.Fatal("explicit UdeCx START no longer opens the VIIPER endpoint admission gate")
 	}
 	activate := normalizedContract(nativeCFunction(t, device, "ViiperActivateEndpoint"))
 	requireContractOrder(t, activate,
+		"endpointContext->PurgeOutstanding",
 		"InterlockedExchange(&endpointContext->Purging, FALSE);",
 		"endpointContext->StartAnnounced, TRUE, FALSE",
-		"if (StartQueue)",
-		"WdfIoQueueStart(endpointContext->Queue);",
 		"ViiperQueueEndpointLifecycleEvent( Endpoint, ViiperUdeOperationEndpointStart);",
 		"endpointContext->StartAnnounced, FALSE, TRUE")
+	if strings.Contains(activate, "PurgeWorkerActive") {
+		t.Fatal("synchronous final START must not wait for the still-executing PURGE worker to return")
+	}
+	reset := normalizedContract(nativeCFunction(t, device, "ViiperEvtEndpointReset"))
+	if strings.Contains(reset, "ViiperInvalidateEndpointInputReport") {
+		t.Fatal("DISPATCH-level endpoint RESET must defer wait-lock-backed input invalidation to its passive work item")
+	}
 	resetWork := normalizedContract(nativeCFunction(t, device, "ViiperEvtEndpointResetWorkItem"))
 	requireContractOrder(t, resetWork,
 		"resetCurrent = ViiperQuiesceResetByIdentity(",
@@ -134,6 +214,136 @@ func TestNativeEndpointQuiescenceUsesUdeCxRequiredQueueLifecycle(t *testing.T) {
 	}
 	if !strings.Contains(shutdown, "UdecxUsbDevicePlugOutAndDelete(devices[index]);") {
 		t.Fatal("controller shutdown no longer consumes the snapshotted UdeCx children")
+	}
+}
+
+func TestNativeEndpointPurgeWorkerCountsRepeatedAndReentrantCallbacks(t *testing.T) {
+	type purgeState struct {
+		purging          bool
+		queueReady       bool
+		driverNoRequest  bool
+		driverRequests   int
+		activeOperations int
+		queuedHostPolls  int
+		outstanding      int
+		workerActive     bool
+		enqueues         int
+		callbacks        int
+		completions      int
+	}
+
+	beginPurge := func(state *purgeState) {
+		state.purging = true
+		// The class extension closes dispatch before invoking the callback.
+		state.queueReady = false
+		state.callbacks++
+		state.outstanding++
+		if !state.workerActive {
+			state.workerActive = true
+			state.enqueues++
+		}
+	}
+	start := func(state *purgeState) bool {
+		// START is allowed immediately after the final counter decrement, even
+		// though the completing worker remains active until the callback returns.
+		if state.outstanding != 0 {
+			return false
+		}
+		state.purging = false
+		state.queueReady = true
+		return true
+	}
+	quiescent := func(state *purgeState) bool {
+		// queuedHostPolls is intentionally excluded: those requests remain owned
+		// by UdeCx while delivery is stopped.
+		return state.outstanding > 0 && state.purging && !state.queueReady &&
+			state.driverNoRequest && state.driverRequests == 0 &&
+			state.activeOperations == 0
+	}
+	completeOne := func(state *purgeState, duringComplete func()) bool {
+		if !state.workerActive || !quiescent(state) {
+			return false
+		}
+		// This is the source contract's decrement-before-PurgeComplete boundary.
+		state.outstanding--
+		state.completions++
+		if duringComplete != nil {
+			duringComplete()
+		}
+		if state.outstanding == 0 {
+			state.workerActive = false
+		}
+		return true
+	}
+
+	state := purgeState{driverNoRequest: true, queuedHostPolls: 7}
+	beginPurge(&state)
+	beginPurge(&state)
+	if state.outstanding != 2 || state.enqueues != 1 || !state.workerActive {
+		t.Fatalf("overlapping PURGE callbacks were not coalesced onto one counted worker: %+v", state)
+	}
+	if !completeOne(&state, func() {
+		if start(&state) {
+			t.Fatal("non-final PURGE completion admitted a synchronous START")
+		}
+		if !state.workerActive || state.outstanding != 1 {
+			t.Fatalf("worker ownership/count changed before non-final completion returned: %+v", state)
+		}
+	}) {
+		t.Fatal("first counted PURGE did not complete after driver quiescence")
+	}
+	if !completeOne(&state, func() {
+		if !start(&state) {
+			t.Fatal("final counter decrement did not admit synchronous START")
+		}
+		if !state.workerActive {
+			t.Fatal("worker ownership was released before synchronous completion callbacks")
+		}
+		beginPurge(&state) // reentrant from PurgeComplete
+		if state.enqueues != 1 || state.outstanding != 1 || !state.purging {
+			t.Fatalf("reentrant PURGE was lost or redundantly enqueued: %+v", state)
+		}
+	}) {
+		t.Fatal("second counted PURGE did not complete")
+	}
+	if !state.workerActive || state.outstanding != 1 {
+		t.Fatalf("worker did not retain a reentrant PURGE: %+v", state)
+	}
+	if !completeOne(&state, func() {
+		if !start(&state) || !state.workerActive {
+			t.Fatalf("final reentrant completion did not expose the intended START boundary: %+v", state)
+		}
+	}) {
+		t.Fatal("reentrant PURGE did not complete")
+	}
+	if state.outstanding != 0 || state.workerActive || state.enqueues != 1 ||
+		state.completions != state.callbacks || state.queuedHostPolls != 7 {
+		t.Fatalf("counted worker lost a callback or consumed UdeCx-owned polls: %+v", state)
+	}
+
+	for _, test := range []struct {
+		name  string
+		state purgeState
+		want  bool
+	}{
+		{name: "stopped with queued host polls", state: purgeState{
+			purging: true, driverNoRequest: true, outstanding: 1, queuedHostPolls: 99}, want: true},
+		{name: "ready queue", state: purgeState{
+			purging: true, queueReady: true, driverNoRequest: true, outstanding: 1}},
+		{name: "framework callback delivered", state: purgeState{
+			purging: true, driverNoRequest: false, outstanding: 1}},
+		{name: "driver request held", state: purgeState{
+			purging: true, driverNoRequest: true, driverRequests: 1, outstanding: 1}},
+		{name: "VIIPER operation held", state: purgeState{
+			purging: true, driverNoRequest: true, activeOperations: 1, outstanding: 1}},
+		{name: "no outstanding callback", state: purgeState{
+			purging: true, driverNoRequest: true}},
+		{name: "START reopened gate", state: purgeState{
+			driverNoRequest: true, outstanding: 1}},
+	} {
+		if got := quiescent(&test.state); got != test.want {
+			t.Fatalf("%s: quiescent=%v want %v: %+v", test.name, got, test.want, test.state)
+		}
 	}
 }
 
@@ -546,6 +756,7 @@ func TestNativeDeliveredBeforeRundownInterleavings(t *testing.T) {
 		queueDispatching bool
 		queued           int
 		driverOwned      int
+		driverNoRequests bool
 		active           int
 		terminalDPCs     int
 		resetOutstanding bool
@@ -558,6 +769,7 @@ func TestNativeDeliveredBeforeRundownInterleavings(t *testing.T) {
 		}
 		state.queued--
 		state.driverOwned++
+		state.driverNoRequests = false
 		return true
 	}
 	resumeDeliveredCallback := func(state *endpoint) bool {
@@ -576,17 +788,19 @@ func TestNativeDeliveredBeforeRundownInterleavings(t *testing.T) {
 		state.terminalDPCs++
 		state.active--
 		state.driverOwned--
+		state.driverNoRequests = state.driverOwned == 0
 	}
-	closeForPurge := func(state *endpoint) {
+	udeCxBeginPurge := func(state *endpoint) {
 		state.open = false
-		state.queueAccepting = false
+		// UdeCx owns this transition. A stopped+idle queue may still accept
+		// and retain host requests (0x0d), while dispatch remains closed until
+		// START. VIIPER must not consume or wait on those queued requests.
 		state.queueDispatching = false
-		state.queued = 0 // WdfIoQueuePurge cancels requests it had not delivered.
 	}
 	queuePurgeComplete := func(state *endpoint) bool {
-		stopped := !state.queueAccepting && !state.queueDispatching
-		queueIdle := state.queued == 0 && state.driverOwned == 0
-		return stopped && queueIdle && state.active == 0
+		queueReady := state.queueAccepting && state.queueDispatching
+		return !queueReady && state.driverNoRequests &&
+			state.driverOwned == 0 && state.active == 0 && !state.open
 	}
 	closeForShutdown := func(state *endpoint) {
 		// The controller admission gate closes first. Queued host polls remain
@@ -611,11 +825,12 @@ func TestNativeDeliveredBeforeRundownInterleavings(t *testing.T) {
 		queueAccepting:   true,
 		queueDispatching: true,
 		queued:           2,
+		driverNoRequests: true,
 	}
 	if !deliverByWDF(&purge) {
 		t.Fatal("purge: WDF did not deliver the pre-boundary callback")
 	}
-	closeForPurge(&purge)
+	udeCxBeginPurge(&purge)
 	if queuePurgeComplete(&purge) {
 		t.Fatal("purge passed a WDF-delivered callback before rundown entry")
 	}
@@ -626,8 +841,28 @@ func TestNativeDeliveredBeforeRundownInterleavings(t *testing.T) {
 		t.Fatal("purge completed before the terminal DPC")
 	}
 	runTerminalDPC(&purge)
-	if !queuePurgeComplete(&purge) || purge.terminalDPCs != 1 {
-		t.Fatalf("purge failed asynchronous queue completion proof: %+v", purge)
+	if !queuePurgeComplete(&purge) || purge.terminalDPCs != 1 ||
+		!purge.queueAccepting || purge.queueDispatching || purge.queued != 1 {
+		t.Fatalf("purge consumed queued host polls or failed driver-rundown proof: %+v", purge)
+	}
+
+	// Direct input is admitted through the controller queue, so endpoint queue
+	// state alone cannot make PURGE complete. ActiveOperations is the second
+	// half of the proof and is sampled under the same BrokerLock.
+	direct := endpoint{
+		open:             true,
+		queueAccepting:   true,
+		queueDispatching: true,
+		driverNoRequests: true,
+		active:           1,
+	}
+	udeCxBeginPurge(&direct)
+	if queuePurgeComplete(&direct) {
+		t.Fatal("purge passed direct input while the associated queue was idle")
+	}
+	direct.active--
+	if !queuePurgeComplete(&direct) {
+		t.Fatalf("purge did not complete after direct input rundown: %+v", direct)
 	}
 
 	shutdown := endpoint{
@@ -635,6 +870,7 @@ func TestNativeDeliveredBeforeRundownInterleavings(t *testing.T) {
 		queueAccepting:   true,
 		queueDispatching: true,
 		queued:           2,
+		driverNoRequests: true,
 	}
 	if !deliverByWDF(&shutdown) {
 		t.Fatal("shutdown: WDF did not deliver the pre-boundary callback")
@@ -650,7 +886,7 @@ func TestNativeDeliveredBeforeRundownInterleavings(t *testing.T) {
 	if !driverQuiescent(&shutdown) || !shutdown.queueDispatching || shutdown.queued != 1 {
 		t.Fatalf("shutdown waited on class-extension-owned queued polls: %+v", shutdown)
 	}
-	closeForPurge(&shutdown) // UdeCx callback after child consumption.
+	udeCxBeginPurge(&shutdown) // UdeCx callback after child consumption.
 	if !queuePurgeComplete(&shutdown) {
 		t.Fatalf("post-consumption endpoint purge did not complete: %+v", shutdown)
 	}
@@ -660,6 +896,7 @@ func TestNativeDeliveredBeforeRundownInterleavings(t *testing.T) {
 		queueAccepting:   true,
 		queueDispatching: true,
 		queued:           2,
+		driverNoRequests: true,
 	}
 	if !deliverByWDF(&reset) {
 		t.Fatal("reset: WDF did not deliver the pre-boundary callback")

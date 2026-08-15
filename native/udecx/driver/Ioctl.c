@@ -51,6 +51,9 @@ ViiperHandleNegotiate(
     if (!NT_SUCCESS(status)) {
         return status;
     }
+    if (outputLength < sizeof(*output)) {
+        return STATUS_BUFFER_TOO_SMALL;
+    }
     if (inputLength != sizeof(*input) ||
         input->Header.Magic != VIIPER_UDE_MAGIC ||
         input->Header.Flags != 0 ||

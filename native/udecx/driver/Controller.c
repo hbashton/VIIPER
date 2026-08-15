@@ -15,12 +15,18 @@ DEFINE_GUID(
     VIIPER_UDE_INTERFACE_GUID_DATA4_6,
     VIIPER_UDE_INTERFACE_GUID_DATA4_7);
 
+static
+BOOLEAN
+ViiperFinishOwnerCleanup(
+    _In_ WDFDEVICE Device,
+    _In_ WDFFILEOBJECT OwnerFile
+    );
+
 #ifdef ALLOC_PRAGMA
 #pragma alloc_text(PAGE, ViiperEvtDeviceAdd)
 #pragma alloc_text(PAGE, ViiperEvtDeviceSelfManagedIoInit)
-#pragma alloc_text(PAGE, ViiperEvtDeviceSelfManagedIoCleanup)
+#pragma alloc_text(PAGE, ViiperFinishOwnerCleanup)
 #pragma alloc_text(PAGE, ViiperEvtFileCreate)
-#pragma alloc_text(PAGE, ViiperEvtFileCleanup)
 #pragma alloc_text(PAGE, ViiperEvtFileClose)
 #pragma alloc_text(PAGE, ViiperCreateQueues)
 #endif
@@ -232,6 +238,7 @@ ViiperEvtControllerCleanup(
     )
 {
     VIIPER_UDE_CONTROLLER_CONTEXT *context;
+    ULONG index;
 
     context = ViiperGetControllerContext((WDFDEVICE)ControllerObject);
     // Every active operation belongs in SelfManagedIoCleanup, while the
@@ -245,8 +252,12 @@ ViiperEvtControllerCleanup(
     NT_ASSERT(InterlockedCompareExchange(&context->ActiveOwnerAdmissions, 0, 0) == 0);
     NT_ASSERT(InterlockedCompareExchange(&context->ActiveFileCleanups, 0, 0) == 0);
     NT_ASSERT(InterlockedCompareExchange(&context->ActiveDevices, 0, 0) == 0);
+    NT_ASSERT(InterlockedCompareExchange(&context->ReservedPorts, 0, 0) == 0);
     NT_ASSERT(InterlockedCompareExchange(&context->OwnerReferenced, 0, 0) == 0);
     NT_ASSERT(context->InputDeviceCount == 0);
+    for (index = 0; index < VIIPER_UDE_MAX_DEVICES; ++index) {
+        NT_ASSERT(!context->PortReserved[index]);
+    }
 }
 
 NTSTATUS
@@ -270,7 +281,7 @@ ViiperEvtDeviceSelfManagedIoCleanup(
     WDFFILEOBJECT ownerFile = WDF_NO_HANDLE;
     BOOLEAN releaseOwner = FALSE;
 
-    PAGED_CODE();
+    NT_ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
 
     // Close every user/UdeCx admission path before draining work that already
     // crossed the boundary. Interlocked operations also provide the ordering
@@ -318,8 +329,8 @@ ViiperEvtDeviceSelfManagedIoCleanup(
     ViiperPurgeOwnerOperations(Device, STATUS_DEVICE_REMOVED);
     // Close and join only operations already delivered into VIIPER. Queued host
     // polls remain owned by the associated endpoint queues; PlugOutAndDelete
-    // causes UdeCx to issue PURGE, and that callback performs the required
-    // asynchronous WDF queue cancellation before acknowledging the extension.
+    // causes UdeCx to stop those queues and issue PURGE. That callback drains
+    // only VIIPER-owned forwarded work before acknowledging the extension.
     ViiperDrainControllerEndpointOperations(Device);
     if (context->CompletionDpc != WDF_NO_HANDLE) {
         for (;;) {
@@ -452,7 +463,7 @@ ViiperEvtFileCleanup(
     BOOLEAN cleanupAdmitted = FALSE;
     LONG remainingCleanups;
 
-    PAGED_CODE();
+    NT_ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
     device = WdfFileObjectGetDevice(FileObject);
     context = ViiperGetControllerContext(device);
     fileContext = ViiperGetFileContext(FileObject);

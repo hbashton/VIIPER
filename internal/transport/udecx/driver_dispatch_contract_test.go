@@ -21,12 +21,12 @@ func TestNativeConfigurationSelectionDoesNotEnterResetProtocol(t *testing.T) {
 	requireContractOrder(t, device,
 		"case UdecxEndpointsConfigureTypeDeviceInitialize:",
 		"ConfigureParams->EndpointsToConfigureCount",
-		"ViiperActivateEndpoint( ConfigureParams->EndpointsToConfigure[endpointIndex], FALSE);",
+		"ViiperActivateEndpoint( ConfigureParams->EndpointsToConfigure[endpointIndex]);",
 		"WdfRequestComplete(Request, STATUS_SUCCESS);",
 		"return;",
 		"case UdecxEndpointsConfigureTypeDeviceConfigurationChange:",
 		"ConfigureParams->EndpointsToConfigureCount",
-		"ViiperActivateEndpoint( ConfigureParams->EndpointsToConfigure[endpointIndex], FALSE);",
+		"ViiperActivateEndpoint( ConfigureParams->EndpointsToConfigure[endpointIndex]);",
 		"WdfRequestComplete(Request, STATUS_SUCCESS);",
 		"return;",
 		"case UdecxEndpointsConfigureTypeInterfaceSettingChange:")
@@ -350,8 +350,8 @@ func TestNativeCachedInputReadyUsesCompletionDPCWithoutWorkerHop(t *testing.T) {
 		"WdfWaitLockAcquire(endpointContext->InputLock, NULL);",
 		"for (;;)",
 		"WdfIoQueueRetrieveNextRequest(Queue, &request)",
-		"ViiperPrepareCachedInputUrb(endpoint, request);",
-		"ViiperCompleteRetrievedInputUrb(endpoint, request, completionStatus);",
+		"ViiperPrepareCachedInputUrb( endpoint, request, &directInputBytes, &directInputSequence);",
+		"ViiperCompleteRetrievedInputUrb( endpoint, request, completionStatus, directInputBytes, directInputSequence);",
 		"WdfWaitLockRelease(endpointContext->InputLock);",
 		"ViiperEndpointOperationCompleted(endpoint);")
 	if strings.Count(ready, "ViiperEndpointOperationStarted(endpoint);") != 2 {
@@ -366,6 +366,40 @@ func TestNativeCachedInputReadyUsesCompletionDPCWithoutWorkerHop(t *testing.T) {
 	if !strings.Contains(complete, "ViiperQueueUrbCompletion(") {
 		t.Fatal("cached input no longer transfers terminal completion to the shared DPC")
 	}
+}
+
+func TestNativeDirectInputStatsCommitAfterTerminalUdeCxCompletion(t *testing.T) {
+	device := nativeContractSource(t, "native", "udecx", "driver", "Device.c")
+	broker := nativeContractSource(t, "native", "udecx", "driver", "Broker.c")
+
+	prepare := normalizedContract(nativeCFunction(t, device, "ViiperPrepareCachedInputUrb"))
+	if strings.Contains(prepare, "BytesFromDevice") ||
+		strings.Contains(prepare, "InputReportsCompleted") {
+		t.Fatal("cached input preparation reports completion before the terminal UdeCx call")
+	}
+	requireContractOrder(t, prepare,
+		"*BytesPrepared = 0;",
+		"*SequencePrepared = 0;",
+		"UdecxUrbSetBytesCompleted(Request, reportLength);",
+		"*BytesPrepared = reportLength;",
+		"*SequencePrepared = reportSequence;")
+
+	queueCompletion := normalizedContract(nativeCFunction(t, broker, "ViiperQueueUrbCompletion"))
+	requireContractOrder(t, queueCompletion,
+		"requestContext->DirectInputBytes = DirectInputBytes;",
+		"requestContext->DirectInputSequence = DirectInputSequence;",
+		"requestContext->CompletionQueued = TRUE;")
+
+	dpc := normalizedContract(nativeCFunction(t, broker, "ViiperEvtCompletionDpc"))
+	requireContractOrder(t, dpc,
+		"directInputBytes = requestContext->DirectInputBytes;",
+		"directInputSequence = requestContext->DirectInputSequence;",
+		"WdfSpinLockRelease(controllerContext->BrokerLock);",
+		"UdecxUrbCompleteWithNtStatus(request, completionStatus);",
+		"UdecxUrbComplete(request, usbdStatus);",
+		"directInputSequence != 0",
+		"InterlockedAdd64(&controllerContext->BytesFromDevice, directInputBytes);",
+		"InterlockedIncrement64(&controllerContext->InputReportsCompleted);")
 }
 
 func TestNativeFastInputQueuesTransitionsButCoalescesIdleCadence(t *testing.T) {
@@ -385,11 +419,11 @@ func TestNativeFastInputQueuesTransitionsButCoalescesIdleCadence(t *testing.T) {
 		"WdfIoQueueRetrieveNextRequest(endpointContext->Queue")
 	ready := normalizedContract(nativeCFunction(t, device, "ViiperEvtFastInputQueueReady"))
 	requireContractOrder(t, ready,
-		"ViiperPrepareCachedInputUrb(endpoint, request);",
+		"ViiperPrepareCachedInputUrb( endpoint, request, &directInputBytes, &directInputSequence);",
 		"&endpointContext->CachedDeliveryPending",
 		"&endpointContext->InputTransitionCount",
 		"&endpointContext->InputSnapshotPending",
-		"ViiperCompleteRetrievedInputUrb(endpoint, request, completionStatus);")
+		"ViiperCompleteRetrievedInputUrb( endpoint, request, completionStatus, directInputBytes, directInputSequence);")
 	prepare := normalizedContract(nativeCFunction(t, device, "ViiperPrepareCachedInputUrb"))
 	requireContractOrder(t, prepare,
 		"if (InterlockedCompareExchange(&endpointContext->InputTransitionCount",
@@ -623,9 +657,9 @@ func TestNativeFastInputUsesSharedIndexedLifetimeAdmission(t *testing.T) {
 		"ViiperReleaseDeviceLockShared(controllerContext);",
 		"WdfWaitLockAcquire(endpointContext->InputLock, NULL);")
 	requireContractOrder(t, submit,
-		"ViiperPrepareCachedInputUrb(endpoint, urbRequest);",
+		"ViiperPrepareCachedInputUrb( endpoint, urbRequest, &directInputBytes, &directInputSequence);",
 		"WdfWaitLockRelease(endpointContext->InputLock);",
-		"ViiperCompleteRetrievedInputUrb(endpoint, urbRequest, status);")
+		"ViiperCompleteRetrievedInputUrb( endpoint, urbRequest, status, directInputBytes, directInputSequence);")
 	requireContractOrder(t, submit,
 		"endpointContext->LastInputSequence",
 		"RtlCopyMemory(endpointContext->InputReport, payload, input->PayloadLength);",
@@ -750,20 +784,45 @@ func TestNativeEndpointRundownPrecedesCleanupAndDPCMayRunImmediately(t *testing.
 	requireContractOrder(t, purge,
 		"WdfSpinLockAcquire(controllerContext->BrokerLock);",
 		"InterlockedExchange(&endpointContext->Purging, TRUE);",
+		"InterlockedExchange(&endpointContext->StartAnnounced, FALSE);",
+		"outstanding = InterlockedIncrement(&endpointContext->PurgeOutstanding);",
+		"enqueueWorkItem = InterlockedCompareExchange( &endpointContext->PurgeWorkerActive, TRUE, FALSE) == FALSE;",
 		"WdfSpinLockRelease(controllerContext->BrokerLock);",
 		"ViiperPurgeEndpointOperations(Endpoint, STATUS_DEVICE_NOT_READY);",
-		"WdfIoQueuePurge(endpointContext->Queue, ViiperEvtEndpointQueuePurged, Endpoint);")
+		"if (enqueueWorkItem)",
+		"WdfWorkItemEnqueue(endpointContext->PurgeWorkItem);")
 	createQueue := normalizedContract(nativeCFunction(t, device, "ViiperCreateEndpointQueue"))
 	if !strings.Contains(createQueue,
 		"UdecxUsbEndpointSetWdfIoQueue(Endpoint, endpointContext->Queue);") {
 		t.Fatal("endpoint purge lost its explicitly associated WDF queue")
 	}
-	purgeComplete := normalizedContract(nativeCFunction(t, device, "ViiperEvtEndpointQueuePurged"))
-	requireContractOrder(t, purgeComplete,
-		"KeWaitForSingleObject( &endpointContext->OperationsDrained",
-		"endpointContext->ActiveOperations",
+	if strings.Contains(device, "WdfIoQueuePurge(") ||
+		strings.Contains(device, "WdfIoQueueStart(") {
+		t.Fatal("UdeCx-associated endpoint queue state is client-mutated")
+	}
+	purgeQuiescence := normalizedContract(nativeCFunction(
+		t, device, "ViiperWaitForEndpointPurgeQuiescence"))
+	requireContractOrder(t, purgeQuiescence,
+		"WdfIoQueueGetState( endpointContext->Queue, &queuedRequests, &driverRequests);",
+		"endpointContext->PurgeOutstanding",
+		"endpointContext->Purging",
+		"!WDF_IO_QUEUE_READY(queueState)",
+		"WdfIoQueueDriverNoRequests",
+		"driverRequests == 0",
+		"endpointContext->ActiveOperations")
+	for _, forbidden := range []string{"WDF_IO_QUEUE_IDLE", "queuedRequests == 0"} {
+		if strings.Contains(purgeQuiescence, forbidden) {
+			t.Fatalf("endpoint PURGE incorrectly waits on UdeCx-owned queue state %q", forbidden)
+		}
+	}
+	purgeWork := normalizedContract(nativeCFunction(t, device, "ViiperEvtEndpointPurgeWorkItem"))
+	requireContractOrder(t, purgeWork,
+		"ViiperWaitForEndpointPurgeQuiescence( endpoint, &queueState, &queuedRequests, &driverRequests);",
 		"ViiperInvalidateEndpointInputReport(endpoint);",
-		"UdecxUsbEndpointPurgeComplete(endpoint);")
+		"remaining = InterlockedDecrement(&endpointContext->PurgeOutstanding);",
+		"UdecxUsbEndpointPurgeComplete(endpoint);",
+		"endpointContext->PurgeOutstanding",
+		"InterlockedExchange(&endpointContext->PurgeWorkerActive, FALSE);")
 	resetWork := normalizedContract(nativeCFunction(t, device, "ViiperEvtEndpointResetWorkItem"))
 	requireContractOrder(t, resetWork,
 		"resetCurrent = ViiperQuiesceResetByIdentity(",
@@ -772,20 +831,25 @@ func TestNativeEndpointRundownPrecedesCleanupAndDPCMayRunImmediately(t *testing.
 		"ViiperInvalidateEndpointInputReport(endpoint);",
 		"ViiperQueueAcknowledgedEndpointLifecycleEvent(")
 	start := normalizedContract(nativeCFunction(t, device, "ViiperEvtEndpointStart"))
-	if !strings.Contains(start, "ViiperActivateEndpoint(Endpoint, TRUE);") {
-		t.Fatal("explicit endpoint START no longer performs the KMDF queue transition")
+	if !strings.Contains(start, "ViiperActivateEndpoint(Endpoint);") {
+		t.Fatal("explicit endpoint START no longer opens VIIPER endpoint admission")
 	}
 	activate := normalizedContract(nativeCFunction(t, device, "ViiperActivateEndpoint"))
 	requireContractOrder(t, activate,
+		"endpointContext->PurgeOutstanding",
 		"InterlockedExchange(&endpointContext->Purging, FALSE);",
 		"endpointContext->StartAnnounced, TRUE, FALSE",
-		"WdfIoQueueStart(endpointContext->Queue);",
 		"ViiperQueueEndpointLifecycleEvent( Endpoint, ViiperUdeOperationEndpointStart);")
+	if strings.Contains(activate, "PurgeWorkerActive") {
+		t.Fatal("final synchronous START is incorrectly coupled to worker callback return")
+	}
 
 	cleanup := normalizedContract(nativeCFunction(t, device, "ViiperEvtEndpointCleanup"))
 	requireContractOrder(t, cleanup,
 		"ViiperAcquireDeviceLockExclusive(controllerContext);",
 		"endpointContext->ActiveOperations",
+		"endpointContext->PurgeOutstanding",
+		"endpointContext->PurgeWorkerActive",
 		"ViiperInvalidateEndpointInputReport(endpoint);",
 		"deviceContext->Endpoints[address] = WDF_NO_HANDLE;",
 		"ViiperReleaseDeviceLockExclusive(controllerContext);")
@@ -891,7 +955,7 @@ func TestNativeDeviceAndBrokerLockOrderNeverReverses(t *testing.T) {
 	requireContractOrder(t, virtualCleanup,
 		"WdfSpinLockAcquire(controllerContext->BrokerLock);",
 		"WdfSpinLockRelease(controllerContext->BrokerLock);",
-		"ViiperReleaseDeviceSlot(controllerContext, device, deviceContext->Slot);")
+		"ViiperReleaseDeviceSlot( controllerContext, device, deviceContext->Slot, deviceContext->PortReservation);")
 	management := normalizedContract(nativeCFunction(t, broker, "ViiperCompleteManagementOperation"))
 	firstRelease := strings.Index(management,
 		"WdfSpinLockRelease(ControllerContext->BrokerLock);")

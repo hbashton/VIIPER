@@ -259,27 +259,35 @@ jobs:
           $devCmd = Join-Path $vs "Common7\Tools\VsDevCmd.bat"
           $source = (Resolve-Path "native\udecx\tools\ViiperUdeCtl.cpp").Path
           $outputDir = Join-Path $PWD "native\udecx\x64\Release"
+          $intermediateDir = Join-Path $env:RUNNER_TEMP "viiper-native-symbol-objects"
           New-Item -ItemType Directory -Force $outputDir | Out-Null
+          New-Item -ItemType Directory -Force $intermediateDir | Out-Null
           $output = Join-Path $outputDir "ViiperUdeCtl.exe"
-          $command = "`"$devCmd`" -arch=x64 -host_arch=x64 && cl.exe /nologo /std:c++20 /EHsc /W4 /WX /O2 /MT /DUNICODE /D_UNICODE `"$source`" /Fe:`"$output`" /link Setupapi.lib Newdev.lib Cfgmgr32.lib Advapi32.lib"
+          $helperPdb = Join-Path $outputDir "ViiperUdeCtl.pdb"
+          $helperObj = Join-Path $intermediateDir "ViiperUdeCtl.obj"
+          $command = "`"$devCmd`" -arch=x64 -host_arch=x64 && cl.exe /nologo /std:c++20 /EHsc /W4 /WX /O2 /Z7 /MT /DUNICODE /D_UNICODE `"$source`" /Fo:`"$helperObj`" /Fe:`"$output`" /link Setupapi.lib Newdev.lib Cfgmgr32.lib Advapi32.lib /DEBUG:FULL /PDB:`"$helperPdb`" /PDBALTPATH:ViiperUdeCtl.pdb /INCREMENTAL:NO /OPT:REF /OPT:ICF"
           cmd.exe /d /s /c $command
-          if ($LASTEXITCODE -ne 0 -or -not (Test-Path $output)) { throw "ViiperUdeCtl build failed" }
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path $output) -or -not (Test-Path $helperPdb)) { throw "ViiperUdeCtl full-symbol build failed" }
           & $output self-test
           if ($LASTEXITCODE -ne 0) { throw "ViiperUdeCtl self-test failed" }
           $mediaSource = (Resolve-Path "native\udecx\tools\ViiperUdeMediaProbe.cpp").Path
           $mediaOutput = Join-Path $outputDir "ViiperUdeMediaProbe.exe"
-          $mediaCommand = "`"$devCmd`" -arch=x64 -host_arch=x64 && cl.exe /nologo /std:c++20 /EHsc /W4 /WX /O2 /MT /D_WIN32_WINNT=0x0A00 `"$mediaSource`" /Fe:`"$mediaOutput`" /link Ole32.lib Ksuser.lib"
+          $mediaPdb = Join-Path $outputDir "ViiperUdeMediaProbe.pdb"
+          $mediaObj = Join-Path $intermediateDir "ViiperUdeMediaProbe.obj"
+          $mediaCommand = "`"$devCmd`" -arch=x64 -host_arch=x64 && cl.exe /nologo /std:c++20 /EHsc /W4 /WX /O2 /Z7 /MT /D_WIN32_WINNT=0x0A00 `"$mediaSource`" /Fo:`"$mediaObj`" /Fe:`"$mediaOutput`" /link Ole32.lib Ksuser.lib /DEBUG:FULL /PDB:`"$mediaPdb`" /PDBALTPATH:ViiperUdeMediaProbe.pdb /INCREMENTAL:NO /OPT:REF /OPT:ICF"
           cmd.exe /d /s /c $mediaCommand
-          if ($LASTEXITCODE -ne 0 -or -not (Test-Path $mediaOutput)) { throw "ViiperUdeMediaProbe build failed" }
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path $mediaOutput) -or -not (Test-Path $mediaPdb)) { throw "ViiperUdeMediaProbe full-symbol build failed" }
           $mediaSnapshot = Join-Path $env:RUNNER_TEMP "viiper-ude-media-smoke.snapshot"
           & $mediaOutput snapshot $mediaSnapshot
           if ($LASTEXITCODE -ne 0 -or -not (Test-Path $mediaSnapshot)) { throw "ViiperUdeMediaProbe endpoint snapshot smoke test failed" }
           Remove-Item -LiteralPath $mediaSnapshot -Force
           $inputSource = (Resolve-Path "native\udecx\tools\ViiperUdeInputProbe.cpp").Path
           $inputOutput = Join-Path $outputDir "ViiperUdeInputProbe.exe"
-          $inputCommand = "`"$devCmd`" -arch=x64 -host_arch=x64 && cl.exe /nologo /std:c++20 /EHsc /W4 /WX /O2 /MT /D_WIN32_WINNT=0x0A00 `"$inputSource`" /Fe:`"$inputOutput`" /link Setupapi.lib Hid.lib"
+          $inputPdb = Join-Path $outputDir "ViiperUdeInputProbe.pdb"
+          $inputObj = Join-Path $intermediateDir "ViiperUdeInputProbe.obj"
+          $inputCommand = "`"$devCmd`" -arch=x64 -host_arch=x64 && cl.exe /nologo /std:c++20 /EHsc /W4 /WX /O2 /Z7 /MT /D_WIN32_WINNT=0x0A00 `"$inputSource`" /Fo:`"$inputObj`" /Fe:`"$inputOutput`" /link Setupapi.lib Hid.lib /DEBUG:FULL /PDB:`"$inputPdb`" /PDBALTPATH:ViiperUdeInputProbe.pdb /INCREMENTAL:NO /OPT:REF /OPT:ICF"
           cmd.exe /d /s /c $inputCommand
-          if ($LASTEXITCODE -ne 0 -or -not (Test-Path $inputOutput)) { throw "ViiperUdeInputProbe build failed" }
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path $inputOutput) -or -not (Test-Path $inputPdb)) { throw "ViiperUdeInputProbe full-symbol build failed" }
           $inputSnapshot = Join-Path $env:RUNNER_TEMP "viiper-ude-input-smoke.snapshot"
           & $inputOutput snapshot $inputSnapshot
           if ($LASTEXITCODE -ne 0 -or -not (Test-Path $inputSnapshot)) { throw "ViiperUdeInputProbe HID snapshot smoke test failed" }
@@ -295,6 +303,13 @@ jobs:
           $probeManifestPath = Join-Path $outputDir 'ViiperUdeLiveProbes.manifest.json'
           $probeManifest | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $probeManifestPath -Encoding utf8NoBOM
           if (-not (Test-Path -LiteralPath $probeManifestPath -PathType Leaf)) { throw "Live-probe manifest was not created" }
+          ./native/udecx/tools/Test-ViiperUdeDebugArtifacts.ps1 `
+            -SysPath native/udecx/x64/Release/ViiperUde.sys `
+            -PdbPath native/udecx/x64/Release/ViiperUde.pdb `
+            -MapPath native/udecx/x64/Release/ViiperUde.map `
+            -HelperPath $output -HelperPdbPath $helperPdb `
+            -MediaProbePath $mediaOutput -MediaProbePdbPath $mediaPdb `
+            -InputProbePath $inputOutput -InputProbePdbPath $inputPdb
       - name: Build source-bound native broker
         shell: pwsh
         run: |
@@ -302,11 +317,85 @@ jobs:
           $env:CGO_ENABLED = '0'
           $buildDate = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
           go build -tags release -trimpath `
-            -ldflags "-s -w -X main.Version=0.1.0-local-test -X main.Commit=$env:GITHUB_SHA -X main.Date=$buildDate -X github.com/Alia5/VIIPER/internal/codegen/common.Version=0.1.0-local-test -X github.com/Alia5/VIIPER/internal/transport/udecx.nativeSourceRevision=$env:GITHUB_SHA" `
+            -ldflags "-X main.Version=0.1.0-local-test -X main.Commit=$env:GITHUB_SHA -X main.Date=$buildDate -X github.com/Alia5/VIIPER/internal/codegen/common.Version=0.1.0-local-test -X github.com/Alia5/VIIPER/internal/transport/udecx.nativeSourceRevision=$env:GITHUB_SHA" `
             -o $output ./cmd/viiper
           if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $output -PathType Leaf)) {
             throw 'Source-bound native broker build failed.'
           }
+          $nmPatterns = @(
+            ' main\.main(?:\.abi0)?$',
+            ' github\.com/Alia5/VIIPER/internal/transport/udecx\.\(\*Host\)\.runInputPublisher(?:\.abi0)?$'
+          )
+          $nmMatches = @(& go tool nm $output 2>&1 | Select-String -Pattern $nmPatterns)
+          $nmExitCode = $LASTEXITCODE
+          $nmText = $nmMatches -join [Environment]::NewLine
+          if ($nmExitCode -ne 0 -or
+              @($nmPatterns | Where-Object { $nmText -notmatch $_ }).Count -ne 0) {
+            throw 'Source-bound native broker is missing required Go/DWARF hot-path symbols.'
+          }
+          $brokerAscii = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($output))
+          $dwarfSectionPatterns = @(
+            '\.(?:z)?debug_info(?:\x00|$)',
+            '\.(?:z)?debug_line(?:\x00|$)',
+            '\.(?:z)?debug_abbrev(?:\x00|$)'
+          )
+          if (@($dwarfSectionPatterns | Where-Object { $brokerAscii -notmatch $_ }).Count -ne 0) {
+            throw 'Source-bound native broker is missing embedded Go DWARF sections.'
+          }
+          $helpOutput = (& $output --help 2>&1 | Out-String)
+          if ($LASTEXITCODE -ne 0 -or
+              $helpOutput -notmatch [regex]::Escape("Version: 0.1.0-local-test ($env:GITHUB_SHA)") -or
+              $helpOutput -notmatch [regex]::Escape($buildDate)) {
+            throw 'Retaining Go DWARF changed or removed the source-bound broker version metadata.'
+          }
+          $buildInfoPath = "$output.buildinfo.txt"
+          $buildInfo = (& go version -m $output 2>&1 | Out-String)
+          if ($LASTEXITCODE -ne 0 -or
+              $buildInfo -notmatch ('(?m)^\s*build\s+vcs\.revision=' + [regex]::Escape($env:GITHUB_SHA) + '\s*$')) {
+            throw 'The broker Go build information is not bound to the workflow source revision.'
+          }
+          [IO.File]::WriteAllText($buildInfoPath, $buildInfo, [Text.UTF8Encoding]::new($false))
+          $brokerItem = Get-Item -LiteralPath $output
+          $buildManifest = [ordered]@{
+            schema = 1
+            sourceRevision = $env:GITHUB_SHA.ToLowerInvariant()
+            version = '0.1.0-local-test'
+            commit = $env:GITHUB_SHA.ToLowerInvariant()
+            buildDate = $buildDate
+            goVersion = (go env GOVERSION)
+            trimpath = $true
+            embeddedDwarf = $true
+            embeddedDwarfSections = @('debug_info', 'debug_line', 'debug_abbrev')
+            binary = [ordered]@{
+              name = $brokerItem.Name
+              length = $brokerItem.Length
+              sha256 = (Get-FileHash -LiteralPath $output -Algorithm SHA256).Hash.ToLowerInvariant()
+            }
+            buildInfoSha256 = (Get-FileHash -LiteralPath $buildInfoPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          }
+          $buildManifestPath = "$output.build.json"
+          [IO.File]::WriteAllText($buildManifestPath,
+            ($buildManifest | ConvertTo-Json -Depth 5), [Text.UTF8Encoding]::new($false))
+      - name: Compose exact source-bound debug bundle
+        if: ${{ inputs.upload_release_helper == true || inputs.upload_artifacts == true }}
+        shell: pwsh
+        run: >-
+          ./native/udecx/tools/New-ViiperUdeDebugBundle.ps1
+          -RepositoryRoot .
+          -SourceRevision $env:GITHUB_SHA
+          -DriverImagePath native/udecx/x64/Release/ViiperUde.sys
+          -DriverPdbPath native/udecx/x64/Release/ViiperUde.pdb
+          -DriverMapPath native/udecx/x64/Release/ViiperUde.map
+          -BrokerPath native/udecx/x64/Release/viiper.exe
+          -BrokerBuildInfoPath native/udecx/x64/Release/viiper.exe.buildinfo.txt
+          -BrokerBuildManifestPath native/udecx/x64/Release/viiper.exe.build.json
+          -HelperPath native/udecx/x64/Release/ViiperUdeCtl.exe
+          -HelperPdbPath native/udecx/x64/Release/ViiperUdeCtl.pdb
+          -MediaProbePath native/udecx/x64/Release/ViiperUdeMediaProbe.exe
+          -MediaProbePdbPath native/udecx/x64/Release/ViiperUdeMediaProbe.pdb
+          -InputProbePath native/udecx/x64/Release/ViiperUdeInputProbe.exe
+          -InputProbePdbPath native/udecx/x64/Release/ViiperUdeInputProbe.pdb
+          -OutputDirectory native/udecx/x64/Release/ViiperUdeDebug
       - name: Upload source-bound native live probes
         if: ${{ inputs.upload_release_helper == true }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -314,7 +403,9 @@ jobs:
           name: ViiperUdeLiveProbes-windows-amd64-${{ github.sha }}
           path: |
             native/udecx/x64/Release/ViiperUdeMediaProbe.exe
+            native/udecx/x64/Release/ViiperUdeMediaProbe.pdb
             native/udecx/x64/Release/ViiperUdeInputProbe.exe
+            native/udecx/x64/Release/ViiperUdeInputProbe.pdb
             native/udecx/x64/Release/ViiperUdeLiveProbes.manifest.json
           if-no-files-found: error
           retention-days: 30
@@ -323,7 +414,17 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ViiperUdeCtl-windows-amd64-${{ github.sha }}
-          path: native/udecx/x64/Release/ViiperUdeCtl.exe
+          path: |
+            native/udecx/x64/Release/ViiperUdeCtl.exe
+            native/udecx/x64/Release/ViiperUdeCtl.pdb
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload exact source-bound debug bundle
+        if: ${{ inputs.upload_release_helper == true || inputs.upload_artifacts == true }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ViiperUdeDebug-windows-amd64-${{ github.sha }}
+          path: native/udecx/x64/Release/ViiperUdeDebug/**
           if-no-files-found: error
           retention-days: 30
       - name: Validate testing-only Hardware Dev Center CAB structure

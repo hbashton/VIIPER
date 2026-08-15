@@ -36,7 +36,9 @@ ViiperCompleteUnownedUrb(
         0,
         Status,
         USBD_STATUS_INTERNAL_HC_ERROR,
-        TRUE);
+        TRUE,
+        0,
+        0);
     if (!queued) {
         NT_ASSERT(FALSE);
     }
@@ -550,7 +552,9 @@ ViiperQueueUrbCompletion(
     _In_ ULONGLONG Token,
     _In_ NTSTATUS Status,
     _In_ USBD_STATUS UsbdStatus,
-    _In_ BOOLEAN CompleteWithNtStatus
+    _In_ BOOLEAN CompleteWithNtStatus,
+    _In_ ULONG DirectInputBytes,
+    _In_ ULONGLONG DirectInputSequence
     )
 {
     VIIPER_UDE_CONTROLLER_CONTEXT *controllerContext = ViiperGetControllerContext(Controller);
@@ -574,6 +578,8 @@ ViiperQueueUrbCompletion(
     requestContext->CompletionStatus = Status;
     requestContext->CompletionUsbdStatus = UsbdStatus;
     requestContext->CompleteWithNtStatus = CompleteWithNtStatus;
+    requestContext->DirectInputBytes = DirectInputBytes;
+    requestContext->DirectInputSequence = DirectInputSequence;
     requestContext->CompletionQueued = TRUE;
     if (InterlockedCompareExchange(&controllerContext->PendingCompletions, 0, 0) == 0) {
         KeClearEvent(&controllerContext->CompletionOperationsDrained);
@@ -603,6 +609,11 @@ ViiperEvtCompletionDpc(
     WDFDEVICE controller = (WDFDEVICE)WdfDpcGetParentObject(Dpc);
     VIIPER_UDE_CONTROLLER_CONTEXT *controllerContext = ViiperGetControllerContext(controller);
 
+    // The authored UDE host-compatibility contract requires terminal URB
+    // completion at DISPATCH_LEVEL and on a separate DPC when processing began
+    // synchronously. Keep this boundary even though generated per-function
+    // documentation has carried conflicting IRQL metadata: the shipped class-
+    // extension helpers are nonpaged wrappers which complete at caller IRQL.
     NT_ASSERT(KeGetCurrentIrql() == DISPATCH_LEVEL);
 
     for (;;) {
@@ -613,6 +624,8 @@ ViiperEvtCompletionDpc(
         NTSTATUS completionStatus = STATUS_SUCCESS;
         USBD_STATUS usbdStatus = USBD_STATUS_SUCCESS;
         BOOLEAN completeWithNtStatus = FALSE;
+        ULONG directInputBytes = 0;
+        ULONGLONG directInputSequence = 0;
         BOOLEAN ownershipReleased = FALSE;
         PLIST_ENTRY entry;
         VIIPER_UDE_REQUEST_CONTEXT *requestContext;
@@ -634,6 +647,8 @@ ViiperEvtCompletionDpc(
         completionStatus = requestContext->CompletionStatus;
         usbdStatus = requestContext->CompletionUsbdStatus;
         completeWithNtStatus = requestContext->CompleteWithNtStatus;
+        directInputBytes = requestContext->DirectInputBytes;
+        directInputSequence = requestContext->DirectInputSequence;
         requestContext->CompletionRequest = WDF_NO_HANDLE;
         requestContext->CompletionQueued = FALSE;
         if (slot < VIIPER_UDE_MAX_PENDING_OPERATIONS) {
@@ -654,6 +669,16 @@ ViiperEvtCompletionDpc(
             UdecxUrbCompleteWithNtStatus(request, completionStatus);
         } else {
             UdecxUrbComplete(request, usbdStatus);
+        }
+
+        if (directInputBytes != 0 &&
+            !completeWithNtStatus &&
+            usbdStatus == USBD_STATUS_SUCCESS &&
+            directInputSequence != 0) {
+            InterlockedAdd64(&controllerContext->BytesFromDevice, directInputBytes);
+            InterlockedIncrement64(&controllerContext->InputReportsCompleted);
+        } else if (directInputBytes != 0) {
+            NT_ASSERT(FALSE);
         }
 
         WdfSpinLockAcquire(controllerContext->BrokerLock);
@@ -693,7 +718,7 @@ ViiperDrainUrbCompletions(
 {
     VIIPER_UDE_CONTROLLER_CONTEXT *controllerContext = ViiperGetControllerContext(Controller);
 
-    PAGED_CODE();
+    NT_ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
     for (;;) {
         BOOLEAN drained;
 
@@ -1226,7 +1251,9 @@ ViiperEvtUrbCanceledOnQueue(
         0,
         STATUS_CANCELLED,
         USBD_STATUS_CANCELED,
-        TRUE);
+        TRUE,
+        0,
+        0);
     if (!queued) {
         NT_ASSERT(FALSE);
     }
@@ -1276,7 +1303,9 @@ ViiperEvtUrbCancel(
             token,
             STATUS_CANCELLED,
             USBD_STATUS_CANCELED,
-            TRUE);
+            TRUE,
+            0,
+            0);
         if (notifyOwner) {
             ViiperDispatchNotificationEvents(controller);
         }
@@ -1637,9 +1666,9 @@ ViiperSerializeOperation(
     if (urb->UrbHeader.Function != URB_FUNCTION_CONTROL_TRANSFER &&
         urb->UrbHeader.Function != URB_FUNCTION_CONTROL_TRANSFER_EX) {
         // Windows can supply stale or inconsistent direction bits in
-        // TransferFlags (usbip-win2 observes this for bulk URBs). The endpoint
-        // descriptor is authoritative for every non-control pipe; only a
-        // control setup packet owns its direction. Normalize both ABI fields
+        // TransferFlags for bulk URBs. The endpoint descriptor is authoritative
+        // for every non-control pipe; only a control setup packet owns its
+        // direction. Normalize both ABI fields
         // together so user mode never rejects or inverts an otherwise valid
         // media/output transfer.
         directionIn = (endpointContext->Descriptor.bEndpointAddress &
@@ -1779,7 +1808,9 @@ ViiperQueueOwnedCompletion(
             Token,
             completionStatus,
             completionUsbdStatus,
-            completionWithNtStatus);
+            completionWithNtStatus,
+            0,
+            0);
     }
     return queued;
 }
@@ -1850,7 +1881,9 @@ ViiperRemovePublishingRequest(
             Token,
             Status,
             USBD_STATUS_CANCELED,
-            TRUE);
+            TRUE,
+            0,
+            0);
         if (notifyOwner) {
             ViiperDispatchNotificationEvents(controller);
         }
@@ -2179,7 +2212,9 @@ ViiperQueueUrb(
                 token,
                 STATUS_CANCELLED,
                 USBD_STATUS_CANCELED,
-                TRUE);
+                TRUE,
+                0,
+                0);
             InterlockedIncrement64(&controllerContext->OperationsCancelled);
             // MarkCancelableEx can reject a request before it ever reaches
             // dispatch.  Retiring that admission exposes the next endpoint
