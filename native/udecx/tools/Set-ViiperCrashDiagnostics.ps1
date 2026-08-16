@@ -90,7 +90,9 @@ function Write-StateFile {
     $temporary = "$fullPath.tmp"
     [IO.File]::WriteAllText($temporary, ($State | ConvertTo-Json -Depth 8),
         [Text.UTF8Encoding]::new($false))
-    [IO.File]::Replace($temporary, $fullPath, $null, $true)
+    [IO.File]::Replace(
+        $temporary, $fullPath,
+        [Management.Automation.Language.NullString]::Value, $true)
 }
 
 function Write-NewStateFile {

@@ -218,6 +218,12 @@ jobs:
             }
           }
           if ($failed) { throw "Windows PowerShell 5.1 parser gate failed" }
+      - name: Test crash-diagnostic state writer
+        shell: pwsh
+        run: ./native/udecx/tools/Test-ViiperCrashDiagnosticsContract.ps1
+      - name: Test crash-diagnostic state writer with Windows PowerShell 5.1
+        shell: powershell
+        run: ./native/udecx/tools/Test-ViiperCrashDiagnosticsContract.ps1
       - name: Expose WDK tools
         shell: pwsh
         run: |
