@@ -13,18 +13,23 @@ import (
 )
 
 type fakeNativePackageUninstallTransaction struct {
-	events             []string
-	fail               string
-	closeErr           error
-	restoreErr         error
-	removeResult       nativePackageRemoveResult
-	snapshot           nativePackageUninstallServiceSnapshot
-	cancelAt           string
-	cancel             context.CancelFunc
-	restoreHadDeadline bool
-	cleanupHadDeadline bool
-	unsafeStop         bool
-	cleanupReboot      bool
+	events              []string
+	fail                string
+	preflightErr        error
+	closeErr            error
+	restoreErr          error
+	removeResult        nativePackageRemoveResult
+	snapshot            nativePackageUninstallServiceSnapshot
+	topologyGeneration  string
+	topologyMutations   int
+	trustMutations      int
+	cancelAt            string
+	cancel              context.CancelFunc
+	restoreHadDeadline  bool
+	cleanupHadDeadline  bool
+	finalizeHadDeadline bool
+	unsafeStop          bool
+	cleanupReboot       bool
 }
 
 func (f *fakeNativePackageUninstallTransaction) event(name string) error {
@@ -38,8 +43,18 @@ func (f *fakeNativePackageUninstallTransaction) event(name string) error {
 	return nil
 }
 
+func (f *fakeNativePackageUninstallTransaction) LockTrust(context.Context) error {
+	return f.event("trust-lock")
+}
+
 func (f *fakeNativePackageUninstallTransaction) LockPackage(context.Context) error {
 	return f.event("package-lock")
+}
+
+func (f *fakeNativePackageUninstallTransaction) FinalizeTrust(ctx context.Context) error {
+	_, f.finalizeHadDeadline = ctx.Deadline()
+	f.trustMutations++
+	return f.event("trust-finalize")
 }
 
 func (f *fakeNativePackageUninstallTransaction) LockService(context.Context) error {
@@ -47,7 +62,10 @@ func (f *fakeNativePackageUninstallTransaction) LockService(context.Context) err
 }
 
 func (f *fakeNativePackageUninstallTransaction) Preflight(context.Context) error {
-	return f.event("preflight")
+	if err := f.event("preflight"); err != nil {
+		return err
+	}
+	return f.preflightErr
 }
 
 func (f *fakeNativePackageUninstallTransaction) InspectService(context.Context) (nativePackageUninstallServiceSnapshot, error) {
@@ -60,6 +78,8 @@ func (f *fakeNativePackageUninstallTransaction) StopService(
 	if snapshot != f.snapshot {
 		return errors.New("service snapshot changed")
 	}
+	f.topologyMutations++
+	f.topologyGeneration = "stopped"
 	err := f.event("stop")
 	if err != nil && f.unsafeStop {
 		return &nativePackageUninstallUnsafeRestoreError{cause: err}
@@ -68,6 +88,8 @@ func (f *fakeNativePackageUninstallTransaction) StopService(
 }
 
 func (f *fakeNativePackageUninstallTransaction) RemoveDriver(context.Context) (nativePackageRemoveResult, error) {
+	f.topologyMutations++
+	f.topologyGeneration = "removed"
 	return f.removeResult, f.event("remove")
 }
 
@@ -77,6 +99,8 @@ func (f *fakeNativePackageUninstallTransaction) Cleanup(
 	if snapshot != f.snapshot {
 		return false, errors.New("service snapshot changed")
 	}
+	f.topologyMutations++
+	f.topologyGeneration = "cleaned"
 	_, f.cleanupHadDeadline = ctx.Deadline()
 	return f.cleanupReboot, f.event("cleanup")
 }
@@ -87,6 +111,8 @@ func (f *fakeNativePackageUninstallTransaction) RestoreService(
 	if snapshot != f.snapshot {
 		return errors.New("service snapshot changed")
 	}
+	f.topologyMutations++
+	f.topologyGeneration = "restored"
 	f.events = append(f.events, "restore")
 	_, f.restoreHadDeadline = ctx.Deadline()
 	return f.restoreErr
@@ -108,8 +134,8 @@ func TestNativePackageUninstallUsesFixedLockAndCommitOrder(t *testing.T) {
 		t.Fatalf("run uninstall: %v", err)
 	}
 	want := []string{
-		"package-lock", "service-lock", "preflight", "inspect",
-		"stop", "remove", "cleanup", "close",
+		"trust-lock", "package-lock", "service-lock", "preflight", "inspect",
+		"stop", "remove", "cleanup", "trust-finalize", "close",
 	}
 	if !reflect.DeepEqual(fake.events, want) {
 		t.Fatalf("events=%v want=%v", fake.events, want)
@@ -117,12 +143,102 @@ func TestNativePackageUninstallUsesFixedLockAndCommitOrder(t *testing.T) {
 	if !fake.cleanupHadDeadline {
 		t.Fatal("committed driver removal cleanup did not receive a bounded reconciliation context")
 	}
+	if !fake.finalizeHadDeadline {
+		t.Fatal("local-test trust finalization did not receive a bounded reconciliation context")
+	}
+}
+
+func TestNativePackageLocalTestUninstallTopologyAuthorityMatrix(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		state string
+		want  bool
+	}{
+		{state: "preparing", want: false},
+		{state: "pending", want: true},
+		{state: "owned", want: true},
+		{state: "uninstalling", want: true},
+		{state: "cleared", want: false},
+		{state: "absent", want: false},
+		{state: "unknown", want: false},
+	} {
+		test := test
+		t.Run(test.state, func(t *testing.T) {
+			t.Parallel()
+			if got := nativePackageLocalTestUninstallMayMutateTopology(test.state); got != test.want {
+				t.Fatalf("state=%q mayMutate=%v want=%v", test.state, got, test.want)
+			}
+		})
+	}
+}
+
+func TestNativePackageProductionUninstallLocalTrustAdmission(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name    string
+		states  []string
+		wantErr bool
+	}{
+		{name: "absent"},
+		{name: "cleared", states: []string{"cleared"}},
+		{name: "preparing", states: []string{"preparing"}, wantErr: true},
+		{name: "pending", states: []string{"pending"}, wantErr: true},
+		{name: "owned", states: []string{"owned"}, wantErr: true},
+		{name: "uninstalling", states: []string{"uninstalling"}, wantErr: true},
+		{name: "multiple", states: []string{"cleared", "owned"}, wantErr: true},
+		{name: "unknown", states: []string{"future"}, wantErr: true},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			err := nativePackageProductionUninstallLocalTrustAdmission(test.states)
+			if (err != nil) != test.wantErr {
+				t.Fatalf("states=%v error=%v wantErr=%v", test.states, err, test.wantErr)
+			}
+		})
+	}
+}
+
+func TestNativePackageSettledLocalTestUninstallCannotRemoveProductionSuccessor(t *testing.T) {
+	t.Parallel()
+	for _, state := range []string{"absent", "cleared"} {
+		state := state
+		t.Run(state, func(t *testing.T) {
+			t.Parallel()
+			// Model local owned -> uninstall -> cleared -> production install,
+			// followed by a replay of the now-stale source-bound local request.
+			const productionGeneration = "production-successor"
+			fake := &fakeNativePackageUninstallTransaction{
+				preflightErr:       &nativePackageUninstallAlreadySettledError{state: state},
+				topologyGeneration: productionGeneration,
+				snapshot:           nativePackageUninstallServiceSnapshot{exists: true, wasRunning: true},
+			}
+			if err := runNativePackageUninstallTransaction(
+				context.Background(), nativePackageTestLogger(), fake,
+			); err != nil {
+				t.Fatalf("settled stale local uninstall: %v", err)
+			}
+			wantEvents := []string{
+				"trust-lock", "package-lock", "service-lock", "preflight", "close",
+			}
+			if !reflect.DeepEqual(fake.events, wantEvents) {
+				t.Fatalf("stale local uninstall crossed topology boundary: events=%v want=%v", fake.events, wantEvents)
+			}
+			if fake.topologyMutations != 0 || fake.trustMutations != 0 {
+				t.Fatalf("stale local uninstall mutated successor: topology=%d trust=%d",
+					fake.topologyMutations, fake.trustMutations)
+			}
+			if fake.topologyGeneration != productionGeneration {
+				t.Fatalf("production topology changed to %q", fake.topologyGeneration)
+			}
+		})
+	}
 }
 
 func TestNativePackageUninstallFailureMatrix(t *testing.T) {
 	t.Parallel()
 	for _, fail := range []string{
-		"package-lock", "service-lock", "preflight", "inspect", "stop", "remove", "cleanup",
+		"trust-lock", "package-lock", "service-lock", "preflight", "inspect", "stop", "remove", "cleanup", "trust-finalize",
 	} {
 		fail := fail
 		t.Run(fail, func(t *testing.T) {
@@ -164,11 +280,12 @@ func TestNativePackageUninstallCancellationBoundaries(t *testing.T) {
 		wantEvents  []string
 		wantRestore bool
 	}{
-		{cancelAt: "package-lock", wantEvents: []string{"package-lock", "close"}},
-		{cancelAt: "service-lock", wantEvents: []string{"package-lock", "service-lock", "close"}},
-		{cancelAt: "preflight", wantEvents: []string{"package-lock", "service-lock", "preflight", "close"}},
-		{cancelAt: "inspect", wantEvents: []string{"package-lock", "service-lock", "preflight", "inspect", "close"}},
-		{cancelAt: "stop", wantEvents: []string{"package-lock", "service-lock", "preflight", "inspect", "stop", "restore", "close"}, wantRestore: true},
+		{cancelAt: "trust-lock", wantEvents: []string{"trust-lock", "close"}},
+		{cancelAt: "package-lock", wantEvents: []string{"trust-lock", "package-lock", "close"}},
+		{cancelAt: "service-lock", wantEvents: []string{"trust-lock", "package-lock", "service-lock", "close"}},
+		{cancelAt: "preflight", wantEvents: []string{"trust-lock", "package-lock", "service-lock", "preflight", "close"}},
+		{cancelAt: "inspect", wantEvents: []string{"trust-lock", "package-lock", "service-lock", "preflight", "inspect", "close"}},
+		{cancelAt: "stop", wantEvents: []string{"trust-lock", "package-lock", "service-lock", "preflight", "inspect", "stop", "restore", "close"}, wantRestore: true},
 	}
 	for _, test := range cases {
 		test := test
@@ -276,7 +393,7 @@ func TestNativePackageUninstallRebootSuccessCleansBefore3010(t *testing.T) {
 		t.Fatalf("error=%v exitCoder=%T", err, exitCoder)
 	}
 	want := []string{
-		"package-lock", "service-lock", "preflight", "inspect",
+		"trust-lock", "package-lock", "service-lock", "preflight", "inspect",
 		"stop", "remove", "cleanup", "close",
 	}
 	if !reflect.DeepEqual(fake.events, want) {
@@ -492,6 +609,63 @@ func TestNativePackageUninstallRequestFailsClosed(t *testing.T) {
 			mutate(&request)
 			if err := request.validate(); err == nil {
 				t.Fatal("invalid request accepted")
+			}
+		})
+	}
+}
+
+func TestNativePackageLocalTestUninstallRequestIsAllOrNothing(t *testing.T) {
+	t.Parallel()
+	base := nativePackageUninstallRequest{
+		driverHelper:                       `C:\bundle\ViiperUdeCtl.exe`,
+		expectedHelperSHA256:               strings.Repeat("a", 64),
+		targetUserSID:                      "S-1-5-21-1-2-3-1001",
+		sourceRevision:                     strings.Repeat("b", 40),
+		localTestCertificatePath:           `C:\bundle\ViiperUdeTest.cer`,
+		expectedLocalTestCertificateSHA256: strings.Repeat("c", 64),
+		expectedLocalTestPackageLockSHA256: strings.Repeat("d", 64),
+	}
+	if err := base.validate(); err != nil {
+		t.Fatalf("valid local-test request: %v", err)
+	}
+	if !base.localTestTrustRequested() {
+		t.Fatal("complete local-test identity was not detected")
+	}
+	production := base
+	production.sourceRevision = ""
+	production.localTestCertificatePath = ""
+	production.expectedLocalTestCertificateSHA256 = ""
+	production.expectedLocalTestPackageLockSHA256 = ""
+	if err := production.validate(); err != nil {
+		t.Fatalf("valid production request: %v", err)
+	}
+	if production.localTestTrustRequested() {
+		t.Fatal("production request was treated as local-test")
+	}
+	cases := map[string]func(*nativePackageUninstallRequest){
+		"missing revision":     func(r *nativePackageUninstallRequest) { r.sourceRevision = "" },
+		"bad revision":         func(r *nativePackageUninstallRequest) { r.sourceRevision = "abc" },
+		"missing certificate":  func(r *nativePackageUninstallRequest) { r.localTestCertificatePath = "" },
+		"relative certificate": func(r *nativePackageUninstallRequest) { r.localTestCertificatePath = "ViiperUdeTest.cer" },
+		"wrong certificate":    func(r *nativePackageUninstallRequest) { r.localTestCertificatePath = `C:\bundle\other.cer` },
+		"missing certificate hash": func(r *nativePackageUninstallRequest) {
+			r.expectedLocalTestCertificateSHA256 = ""
+		},
+		"bad package lock hash": func(r *nativePackageUninstallRequest) {
+			r.expectedLocalTestPackageLockSHA256 = strings.Repeat("z", 64)
+		},
+		"certificate NUL": func(r *nativePackageUninstallRequest) {
+			r.localTestCertificatePath += "\x00evil"
+		},
+	}
+	for name, mutate := range cases {
+		name, mutate := name, mutate
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			request := base
+			mutate(&request)
+			if err := request.validate(); err == nil {
+				t.Fatal("incomplete or malformed local-test identity accepted")
 			}
 		})
 	}

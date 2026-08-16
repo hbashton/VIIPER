@@ -295,3 +295,82 @@ func TestNativePackageUninstallCapturesLogCreatedBeforeStop(t *testing.T) {
 		t.Fatalf("created exact log was not locked: %+v", transaction.ownedFiles)
 	}
 }
+
+func TestNativePackageLocalTestUninstallIdentityBinding(t *testing.T) {
+	t.Parallel()
+	request := nativePackageUninstallRequest{
+		sourceRevision:                     strings.Repeat("a", 40),
+		expectedLocalTestCertificateSHA256: strings.Repeat("b", 64),
+		expectedLocalTestPackageLockSHA256: strings.Repeat("c", 64),
+	}
+	record := nativePackageLocalTestTrustOwnership{
+		Schema:                   nativePackageLocalTestTrustOwnershipSchema,
+		SourceRevision:           request.sourceRevision,
+		CertificateSHA256:        request.expectedLocalTestCertificateSHA256,
+		PackageLockSHA256:        request.expectedLocalTestPackageLockSHA256,
+		BaselineRoot:             0,
+		BaselineTrustedPublisher: 0,
+	}
+	if !nativePackageLocalTestTrustRecordMatchesUninstall(record, request) {
+		t.Fatal("exact source/certificate/package-lock ownership did not match")
+	}
+	mutations := []func(*nativePackageLocalTestTrustOwnership){
+		func(value *nativePackageLocalTestTrustOwnership) { value.SourceRevision = strings.Repeat("d", 40) },
+		func(value *nativePackageLocalTestTrustOwnership) { value.CertificateSHA256 = strings.Repeat("e", 64) },
+		func(value *nativePackageLocalTestTrustOwnership) { value.PackageLockSHA256 = strings.Repeat("f", 64) },
+	}
+	for index, mutate := range mutations {
+		changed := record
+		mutate(&changed)
+		if nativePackageLocalTestTrustRecordMatchesUninstall(changed, request) {
+			t.Fatalf("mismatched ownership identity %d was admitted", index)
+		}
+	}
+}
+
+func TestNativePackageLocalTestUninstallJournalTransitionsAreResumable(t *testing.T) {
+	requireNativeMutexAdministrator(t)
+	directory := t.TempDir()
+	pending := filepath.Join(directory, nativePackageLocalTrustPendingName)
+	uninstalling := filepath.Join(directory, nativePackageLocalTrustUninstallingName)
+	cleared := filepath.Join(directory, nativePackageLocalTrustClearedName)
+	record := nativePackageLocalTestTrustOwnership{
+		Schema:                   nativePackageLocalTestTrustOwnershipSchema,
+		SourceRevision:           strings.Repeat("a", 40),
+		CertificateSHA256:        strings.Repeat("b", 64),
+		PackageLockSHA256:        strings.Repeat("c", 64),
+		BaselineRoot:             0,
+		BaselineTrustedPublisher: 1,
+	}
+	contents, err := canonicalNativePackageLocalTestTrustOwnership(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := publishNativePackageLocalTestTrustPreparing(pending, contents); err != nil {
+		t.Fatalf("publish pending fixture: %v", err)
+	}
+	if err := transitionNativePackageLocalTestTrustRecord(
+		pending, uninstalling, contents,
+	); err != nil {
+		t.Fatalf("arm uninstall authority: %v", err)
+	}
+	observed, observedBytes, exists, err := readNativePackageLocalTestTrustRecord(uninstalling)
+	if err != nil || !exists || !nativePackageLocalTestTrustRecordMatchesUninstall(
+		observed,
+		nativePackageUninstallRequest{
+			sourceRevision:                     record.SourceRevision,
+			expectedLocalTestCertificateSHA256: record.CertificateSHA256,
+			expectedLocalTestPackageLockSHA256: record.PackageLockSHA256,
+		},
+	) || string(observedBytes) != string(contents) {
+		t.Fatalf("uninstalling cut was not exactly resumable: exists=%v record=%+v error=%v", exists, observed, err)
+	}
+	if err := transitionNativePackageLocalTestTrustRecord(
+		uninstalling, cleared, contents,
+	); err != nil {
+		t.Fatalf("settle cleared authority: %v", err)
+	}
+	if _, finalBytes, exists, err := readNativePackageLocalTestTrustRecord(cleared); err != nil || !exists || string(finalBytes) != string(contents) {
+		t.Fatalf("cleared cut was not exact: exists=%v error=%v", exists, err)
+	}
+}

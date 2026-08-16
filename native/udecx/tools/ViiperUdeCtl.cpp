@@ -4608,6 +4608,28 @@ bool IsCanonicalLowerHex(std::string_view value, size_t length) noexcept {
         });
 }
 
+bool SameCanonicalSha256Digest(
+    std::string_view observed,
+    std::string_view expected) noexcept {
+    // Sha256Handle uses the CryptoAPI display convention with uppercase A-F,
+    // while durable package and journal identities are canonical lowercase.
+    if (!IsCanonicalLowerHex(expected, 64U) || observed.size() != expected.size()) {
+        return false;
+    }
+    for (size_t index = 0; index < observed.size(); ++index) {
+        const unsigned char character =
+            static_cast<unsigned char>(observed[index]);
+        const unsigned char canonical =
+            character >= 'A' && character <= 'F'
+                ? static_cast<unsigned char>(character + ('a' - 'A'))
+                : character;
+        if (canonical != static_cast<unsigned char>(expected[index])) {
+            return false;
+        }
+    }
+    return true;
+}
+
 bool ParseBrokerJournalProofLine(
     const std::string& line,
     BrokerCommitProof* proof) {
@@ -7602,7 +7624,7 @@ bool LockProtectedBrokerImage(
         error->phase = L"install-journal-broker-image-hash";
         return false;
     }
-    if (observed != expectedSha256) {
+    if (!SameCanonicalSha256Digest(observed, expectedSha256)) {
         return SetError(error, L"install-journal-broker-image-hash",
             ERROR_CRC,
             L"protected broker evidence differs from its immutable digest");
@@ -15802,6 +15824,83 @@ Outcome Recover(uint64_t transactionDeadlineUnixMs) {
     return outcome;
 }
 
+bool VerifyRecordlessRecoveryActivePathAbsent(
+    const std::filesystem::path& active,
+    const wchar_t* phase,
+    Error* error) {
+    const DWORD attributes = GetFileAttributesW(active.c_str());
+    if (attributes != INVALID_FILE_ATTRIBUTES) {
+        return SetError(error, phase, ERROR_BUSY,
+            L"an active journal exists; recordless failed-install verification has no mutation authority");
+    }
+    const DWORD code = GetLastError();
+    if (code != ERROR_FILE_NOT_FOUND && code != ERROR_PATH_NOT_FOUND) {
+        return SetError(error, phase, code,
+            L"active-journal absence could not be proven");
+    }
+    return true;
+}
+
+// RecoverFailedInstallRecordless is intentionally verify-only. The exact R4
+// digest cut happened before the first durable install record and its
+// destructor already removed active-v2. Parent VIIPER/UdeCx skeletons may
+// remain, but this operation never retires a directory, calls Reconcile*, or
+// mutates services, devices, packages, or trust. Any active install/remove
+// journal belongs to a different/current transaction and is a hard stop.
+Outcome RecoverFailedInstallRecordless(uint64_t transactionDeadlineUnixMs) {
+    Outcome outcome;
+    if (!ValidateTransactionDeadlineBudget(
+            transactionDeadlineUnixMs, &outcome.error)) {
+        outcome.exitCode = ExitCode::PreflightRejected;
+        return outcome;
+    }
+    if (!IsElevated()) {
+        SetError(&outcome.error, L"elevation", ERROR_ELEVATION_REQUIRED);
+        outcome.exitCode = ExitCode::PreflightRejected;
+        return outcome;
+    }
+    TransactionMutex mutex;
+    if (!mutex.Acquire(&outcome.error)) {
+        outcome.exitCode = ExitCode::PreflightRejected;
+        return outcome;
+    }
+    InstallRecoveryDirectory installDirectory;
+    bool installActive = false;
+    if (!installDirectory.OpenChain(
+            false, nullptr, &installActive, &outcome.error)) {
+        outcome.exitCode = ExitCode::PreflightRejected;
+        return outcome;
+    }
+    RemoveRecoveryDirectory removeDirectory;
+    bool removeActive = false;
+    if (!removeDirectory.OpenChain(false, &removeActive, &outcome.error)) {
+        outcome.exitCode = ExitCode::PreflightRejected;
+        return outcome;
+    }
+    if (installActive || removeActive) {
+        SetError(&outcome.error, L"failed-install-recordless-active-journal",
+            ERROR_BUSY,
+            L"an active install/remove journal is outside the exact recordless R4 failure authority");
+        outcome.exitCode = ExitCode::PreflightRejected;
+        return outcome;
+    }
+    if (!VerifyRecordlessRecoveryActivePathAbsent(
+            installDirectory.active,
+            L"failed-install-recordless-install-postcheck", &outcome.error) ||
+        !VerifyRecordlessRecoveryActivePathAbsent(
+            removeDirectory.active,
+            L"failed-install-recordless-remove-postcheck", &outcome.error)) {
+        outcome.exitCode = ExitCode::PreflightRejected;
+        return outcome;
+    }
+    outcome.success = true;
+    outcome.changed = false;
+    outcome.rebootRequired = false;
+    outcome.rollback = L"not-needed";
+    outcome.exitCode = ExitCode::Success;
+    return outcome;
+}
+
 enum class InstallJournalRecoveryModelAction {
     RetirePrior,
     RetireForward,
@@ -17659,6 +17758,23 @@ Outcome SelfTest() {
         !RunRemoveJournalModelSelfTest(&outcome.error)) {
         return outcome;
     }
+    const std::string canonicalSha256 =
+        "0123456789abcdef0123456789abcdef"
+        "0123456789abcdef0123456789abcdef";
+    const std::string uppercaseSha256 =
+        "0123456789ABCDEF0123456789ABCDEF"
+        "0123456789ABCDEF0123456789ABCDEF";
+    std::string differentSha256 = canonicalSha256;
+    differentSha256.back() = '0';
+    if (!SameCanonicalSha256Digest(canonicalSha256, canonicalSha256) ||
+        !SameCanonicalSha256Digest(uppercaseSha256, canonicalSha256) ||
+        SameCanonicalSha256Digest(differentSha256, canonicalSha256) ||
+        SameCanonicalSha256Digest(canonicalSha256, uppercaseSha256)) {
+        SetError(&outcome.error, L"self-test-canonical-sha256",
+            ERROR_INVALID_DATA,
+            L"protected evidence hashes do not use exact canonical SHA-256 comparison");
+        return outcome;
+    }
     InstallOptions brokerCommandOptions;
     brokerCommandOptions.brokerExecutable = LR"(C:\Program Files\VIIPER\viiper.exe)";
     brokerCommandOptions.brokerToken = LR"(C:\ProgramData\VIIPER\package.token)";
@@ -18766,6 +18882,7 @@ void Usage() {
            L"--transaction-deadline-unix-ms <positive integer>\n"
         << L"  ViiperUdeCtl.exe remove [--transaction-deadline-unix-ms <positive integer>]\n"
         << L"  ViiperUdeCtl.exe recover [--transaction-deadline-unix-ms <positive integer>]\n"
+        << L"  ViiperUdeCtl.exe recover-failed-install-recordless [--transaction-deadline-unix-ms <positive integer>]\n"
         << L"  ViiperUdeCtl.exe broker-settlement-ack --request <protected-json> --request-sha256 <64 hex> --transaction-deadline-unix-ms <positive integer>\n"
         << L"  ViiperUdeCtl.exe broker-settlement-discard --broker-transaction-id <32 hex> --broker-settled-digest <64 hex> --driver-transaction-id <64 hex> --driver-settled-digest <64 hex> --settlement-nonce <64 hex> --request-sha256 <64 hex> --broker-final-receipt <protected-json> --broker-final-receipt-sha256 <64 hex> --transaction-deadline-unix-ms <positive integer>\n"
         << L"  ViiperUdeCtl.exe status\n"
@@ -18890,6 +19007,23 @@ int RunViiperUdeCtl(int argc, wchar_t** argv) {
         EmitOutcome(L"recover", outcome);
         return static_cast<int>(outcome.exitCode);
     }
+    if (argc >= 2 &&
+        _wcsicmp(argv[1], L"recover-failed-install-recordless") == 0) {
+        RemoveOptions options;
+        Error argumentError;
+        if (!ParseRemoveOptions(argc, argv, &options, &argumentError)) {
+            Usage();
+            Outcome outcome;
+            outcome.error = std::move(argumentError);
+            outcome.exitCode = ExitCode::Usage;
+            EmitOutcome(L"recover-failed-install-recordless", outcome);
+            return static_cast<int>(outcome.exitCode);
+        }
+        Outcome outcome = RecoverFailedInstallRecordless(
+            options.transactionDeadlineUnixMs);
+        EmitOutcome(L"recover-failed-install-recordless", outcome);
+        return static_cast<int>(outcome.exitCode);
+    }
     if (argc == 2 && _wcsicmp(argv[1], L"status") == 0) {
         Outcome outcome = Status();
         EmitOutcome(L"status", outcome);
@@ -18915,7 +19049,8 @@ const wchar_t* ExceptionOperation(int argc, wchar_t** argv) noexcept {
     for (const wchar_t* operation :
             {L"install", L"verify", L"remove", L"recover", L"status",
                 L"self-test", L"broker-settlement-ack",
-                L"broker-settlement-discard"}) {
+                L"broker-settlement-discard",
+                L"recover-failed-install-recordless"}) {
         if (_wcsicmp(argv[1], operation) == 0) {
             return operation;
         }

@@ -172,6 +172,15 @@ $requiredContracts = [ordered]@{
     'nested broker expected executable hash option' = '--expected-broker-sha-256'
     'cooperative package deadline' = '--transaction-deadline-unix-ms'
     'same-handle manifest binding' = 'Sha256Handle\(manifest\.get\(\)'
+    'canonical protected broker digest comparison' =
+        'bool LockProtectedBrokerImage\([\s\S]{0,2600}!SameCanonicalSha256Digest\(observed, expectedSha256\)'
+    'compiled protected broker digest regression' = 'self-test-canonical-sha256'
+    'recordless failed-install recovery command' =
+        'recover-failed-install-recordless'
+    'recordless failed-install recovery implementation' =
+        'Outcome RecoverFailedInstallRecordless\('
+    'recordless failed-install active absence proof' =
+        'VerifyRecordlessRecoveryActivePathAbsent\('
     'final exact package enumeration' = 'ValidateExactPackageDirectory\('
     'reboot boundary rollback' = 'broker-reboot-boundary'
     'fixed remove recovery root' =
@@ -256,6 +265,37 @@ $requiredContracts = [ordered]@{
 foreach ($entry in $requiredContracts.GetEnumerator()) {
     if ($source -notmatch $entry.Value) {
         throw "ViiperUdeCtl is missing its $($entry.Key) contract."
+    }
+}
+
+$recordlessRecovery = Get-SourceContractRegion -Text $source `
+    -Start 'Outcome RecoverFailedInstallRecordless(' `
+    -End 'enum class InstallJournalRecoveryModelAction' `
+    -Name 'recordless failed-install recovery'
+Assert-OrderedSourceFragments -Text $recordlessRecovery -Name `
+    'recordless failed-install recovery' -Fragments @(
+        'ValidateTransactionDeadlineBudget(',
+        'IsElevated()',
+        'TransactionMutex mutex;',
+        'mutex.Acquire(&outcome.error)',
+        'installDirectory.OpenChain(',
+        'false, nullptr, &installActive',
+        'removeDirectory.OpenChain(false, &removeActive',
+        'if (installActive || removeActive)',
+        'VerifyRecordlessRecoveryActivePathAbsent(',
+        'outcome.success = true;',
+        'outcome.changed = false;',
+        'outcome.rebootRequired = false;',
+        'outcome.rollback = L"not-needed";',
+        'outcome.exitCode = ExitCode::Success;'
+    )
+foreach ($forbidden in @(
+        'ReconcileInstallJournal(', 'ReconcileRemoveJournal(',
+        'RemoveDevice(', 'DiUninstallDriverW(', 'SetupCopyOEMInfW(',
+        'CreateOrOpenInstallRecoveryDirectory(', 'remove_all(',
+        'MoveFileExW(', 'DeleteFileW(')) {
+    if ($recordlessRecovery.Contains($forbidden)) {
+        throw "Recordless failed-install recovery gained forbidden mutation '$forbidden'."
     }
 }
 

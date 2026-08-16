@@ -21,10 +21,14 @@ type Install struct {
 // Uninstall removes VIIPER's platform-owned service/startup state. Production
 // Windows packages also remove their exact native devnode and Driver Store package.
 type Uninstall struct {
-	Yes                  bool   `help:"Confirm removal without prompting." short:"y"`
-	TargetUserSID        string `help:"Interactive Windows user SID that owns VIIPER startup state." hidden:""`
-	DriverHelper         string `help:"Path to the packaged ViiperUdeCtl.exe used for exact native package removal." hidden:""`
-	ExpectedHelperSHA256 string `help:"Installer-embedded SHA-256 of ViiperUdeCtl.exe used for exact native package removal." hidden:""`
+	Yes                                bool   `help:"Confirm removal without prompting." short:"y"`
+	TargetUserSID                      string `help:"Interactive Windows user SID that owns VIIPER startup state." hidden:""`
+	DriverHelper                       string `help:"Path to the packaged ViiperUdeCtl.exe used for exact native package removal." hidden:""`
+	ExpectedHelperSHA256               string `help:"Installer-embedded SHA-256 of ViiperUdeCtl.exe used for exact native package removal." hidden:""`
+	SourceRevision                     string `help:"Reviewed source revision that owns local-test trust." hidden:""`
+	LocalTestCertificatePath           string `help:"Path to the exact local-test certificate whose ownership must be settled." hidden:""`
+	ExpectedLocalTestCertificateSHA256 string `help:"SHA-256 of the exact local-test certificate whose ownership must be settled." hidden:""`
+	ExpectedLocalTestPackageLockSHA256 string `help:"SHA-256 of the package lock that owns local-test trust." hidden:""`
 }
 
 func (c *Install) Run(logger *slog.Logger) error {
@@ -73,6 +77,10 @@ func (c *Uninstall) Run(logger *slog.Logger) error {
 		strings.TrimSpace(c.TargetUserSID),
 		strings.TrimSpace(c.DriverHelper),
 		strings.ToLower(strings.TrimSpace(c.ExpectedHelperSHA256)),
+		strings.ToLower(strings.TrimSpace(c.SourceRevision)),
+		strings.TrimSpace(c.LocalTestCertificatePath),
+		strings.ToLower(strings.TrimSpace(c.ExpectedLocalTestCertificateSHA256)),
+		strings.ToLower(strings.TrimSpace(c.ExpectedLocalTestPackageLockSHA256)),
 	)
 }
 

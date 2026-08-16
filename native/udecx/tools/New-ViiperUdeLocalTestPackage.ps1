@@ -187,7 +187,11 @@ $brokerHelpText = $brokerHelpOutput -join [Environment]::NewLine
 $expectedBrokerFlags = @(
     '--expected-broker-sha-256', '--expected-helper-sha-256',
     '--expected-manifest-sha-256', '--expected-inf-sha-256',
-    '--expected-sys-sha-256', '--expected-cat-sha-256'
+    '--expected-sys-sha-256', '--expected-cat-sha-256',
+    '--local-test-trust-capability', '--expected-trust-capability-sha-256',
+    '--local-test-certificate-path',
+    '--expected-local-test-certificate-sha-256',
+    '--expected-local-test-package-lock-sha-256'
 )
 if ($brokerHelpExitCode -ne 0 -or
     @($expectedBrokerFlags | Where-Object {

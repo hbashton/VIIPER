@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	viipercmd "github.com/Alia5/VIIPER/internal/cmd"
 	"github.com/Alia5/VIIPER/internal/config"
 	"github.com/Alia5/VIIPER/internal/configpaths"
 	"github.com/Alia5/VIIPER/internal/log"
@@ -23,7 +24,75 @@ import (
 )
 
 func main() {
+	bootstrap, err := classifyBootstrap(os.Args[1:])
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "refusing privileged lifecycle bootstrap:", err)
+		os.Exit(2)
+	}
+
 	handlePlainHelpFlag()
+	if bootstrap == bootstrapPrivilegedLifecycle {
+		runPrivilegedLifecycle()
+		return
+	}
+	runStandard()
+}
+
+type bootstrapMode uint8
+
+const (
+	bootstrapStandard bootstrapMode = iota
+	bootstrapPrivilegedLifecycle
+)
+
+// privilegedLifecycleCLI intentionally contains no configurable global fields.
+// These commands can be launched elevated from a user-controlled environment;
+// parsing them through config.CLI would consult env-backed config, log, and
+// updater settings before their command-specific authorization checks run.
+type privilegedLifecycleCLI struct {
+	Install                   viipercmd.Install                   `cmd:"" help:"Add the current VIIPER executable to system startup and runs it (creates a Systemd service on Linux)"`
+	Uninstall                 viipercmd.Uninstall                 `cmd:"" help:"Remove any VIIPER system startup configuration / Systemd service"`
+	NativePackageInstall      viipercmd.NativePackageInstall      `cmd:"" name:"native-package-install" help:"Install a verified native UDE package and broker transactionally" hidden:""`
+	NativePackageRecover      viipercmd.NativePackageRecover      `cmd:"" name:"native-package-recover" help:"Reconcile only retained native package journals" hidden:""`
+	NativePackageBrokerCommit viipercmd.NativePackageBrokerCommit `cmd:"" name:"native-package-broker-commit" help:"Commit the broker inside an active native package transaction" hidden:""`
+}
+
+func runPrivilegedLifecycle() {
+	var cli privilegedLifecycleCLI
+	ctx := kong.Parse(&cli, privilegedLifecycleKongOptions()...)
+
+	// A privileged lifecycle command never opens a configured file logger or
+	// raw packet logger. The fixed console logger is independent of argv, env,
+	// user config, and default config locations.
+	logger, closeFiles, err := setupPrivilegedLifecycleLogger()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "failed to setup privileged lifecycle console logger:", err)
+		os.Exit(2)
+	}
+	defer closeLogFiles(closeFiles)
+
+	rawLogger := log.NewRaw(nil)
+	ctx.Bind(logger)
+	ctx.BindTo(rawLogger, (*log.RawLogger)(nil))
+
+	err = ctx.Run()
+	ctx.FatalIfErrorf(err)
+}
+
+func privilegedLifecycleKongOptions() []kong.Option {
+	return []kong.Option{
+		kong.Name("VIIPER"),
+		kong.Description(Description()),
+		kong.UsageOnError(),
+		kong.Help(kong.DefaultHelpPrinter),
+	}
+}
+
+func setupPrivilegedLifecycleLogger() (*slog.Logger, []io.Closer, error) {
+	return log.SetupLogger("info", "")
+}
+
+func runStandard() {
 
 	userCfg := findUserConfig(os.Args[1:])
 	jsonPaths, yamlPaths, tomlPaths := configpaths.ConfigCandidatePaths(userCfg)
@@ -45,21 +114,15 @@ func main() {
 		fmt.Fprintln(os.Stderr, "failed to setup logger:", err)
 		os.Exit(2)
 	}
-	defer func() {
-		for _, c := range closeFiles {
-			_ = c.Close()
-		}
-	}()
-
 	rawLogger := setupRawLogger(&cli, logger, &closeFiles)
+	defer closeLogFiles(closeFiles)
 
 	ctx.Bind(logger)
 	ctx.BindTo(rawLogger, (*log.RawLogger)(nil))
 
 	// A broker hosted by Service Control Manager has no interactive desktop.
 	// Update UI belongs to DS4Windows/the package installer, never session 0.
-	isServiceCommand := strings.HasPrefix(ctx.Command(), "service")
-	if !isServiceCommand && cli.UpdateNotify != config.UpdateNotifyNone {
+	if shouldStartUpdateNotifier(bootstrapStandard, ctx.Command(), cli.UpdateNotify) {
 		go func() {
 			time.Sleep(10 * time.Second)
 			updater.CheckUpdate(Version, cli.UpdateNotify)
@@ -71,6 +134,110 @@ func main() {
 
 	err = ctx.Run()
 	ctx.FatalIfErrorf(err)
+}
+
+func shouldStartUpdateNotifier(
+	bootstrap bootstrapMode,
+	command string,
+	notify config.UpdateNotify,
+) bool {
+	return bootstrap == bootstrapStandard &&
+		!strings.HasPrefix(command, "service") &&
+		notify != config.UpdateNotifyNone
+}
+
+func closeLogFiles(closeFiles []io.Closer) {
+	for _, closer := range closeFiles {
+		_ = closer.Close()
+	}
+}
+
+func classifyBootstrap(args []string) (bootstrapMode, error) {
+	command := rawCommand(args)
+	canonical, protected := privilegedLifecycleCommand(command)
+	if !protected {
+		return bootstrapStandard, nil
+	}
+	if command != canonical {
+		return bootstrapPrivilegedLifecycle, fmt.Errorf(
+			"command %q must use canonical spelling %q", command, canonical,
+		)
+	}
+	for _, arg := range args {
+		if option, forbidden := privilegedBootstrapForbiddenOption(arg); forbidden {
+			return bootstrapPrivilegedLifecycle, fmt.Errorf(
+				"%s is not allowed for command %q", option, canonical,
+			)
+		}
+	}
+	return bootstrapPrivilegedLifecycle, nil
+}
+
+func rawCommand(args []string) string {
+	for position := 0; position < len(args); position++ {
+		arg := args[position]
+		if arg == "--" {
+			if position+1 < len(args) {
+				return args[position+1]
+			}
+			return ""
+		}
+		if option, consumesNext := configurableGlobalOption(arg); option != "" {
+			if consumesNext && position+1 < len(args) {
+				position++
+			}
+			continue
+		}
+		if strings.HasPrefix(arg, "-") {
+			continue
+		}
+		return arg
+	}
+	return ""
+}
+
+func configurableGlobalOption(arg string) (name string, consumesNext bool) {
+	lower := strings.ToLower(arg)
+	for _, option := range []string{
+		"--config", "--update-notify", "--log.level", "--log.file", "--log.raw-file",
+	} {
+		if lower == option {
+			return option, true
+		}
+		if strings.HasPrefix(lower, option+"=") {
+			return option, false
+		}
+	}
+	if lower == "-l" {
+		return "-l", true
+	}
+	if strings.HasPrefix(lower, "-l=") || (strings.HasPrefix(lower, "-l") && len(lower) > 2) {
+		return "-l", false
+	}
+	return "", false
+}
+
+func privilegedBootstrapForbiddenOption(arg string) (string, bool) {
+	option, _ := configurableGlobalOption(arg)
+	if option == "" {
+		return "", false
+	}
+	return option, true
+}
+
+func privilegedLifecycleCommand(command string) (canonical string, protected bool) {
+	for _, candidate := range []string{
+		"install",
+		"uninstall",
+		"native-package-install",
+		"native-package-broker-commit",
+		"native-package-recover",
+	} {
+		if strings.EqualFold(command, candidate) {
+			return candidate, true
+		}
+	}
+	return "", false
 }
 
 func handlePlainHelpFlag() {

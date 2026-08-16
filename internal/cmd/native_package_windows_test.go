@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 	"unsafe"
@@ -14,6 +15,386 @@ import (
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/mgr"
 )
+
+func TestNativePackageLocalTestTrustCapabilityBindsParentAndPackage(t *testing.T) {
+	t.Parallel()
+	request := nativePackageRequest{
+		sourceRevision:                     strings.Repeat("a", 40),
+		localTestCertificatePath:           `C:\package\ViiperUdeTest.cer`,
+		expectedLocalTestCertificateSHA256: strings.Repeat("b", 64),
+		expectedLocalTestPackageLockSHA256: strings.Repeat("c", 64),
+	}
+	journalDirectory := `C:\ProgramData\VIIPER-TrustManager`
+	capability := nativePackageLocalTestTrustCapability{
+		Schema:                 nativePackageLocalTestTrustCapabilitySchema,
+		Nonce:                  strings.Repeat("01", 16),
+		ParentPID:              1234,
+		ParentCreationFileTime: 134000000000000000,
+		SourceRevision:         request.sourceRevision,
+		CertificatePath:        request.localTestCertificatePath,
+		CertificateSHA256:      request.expectedLocalTestCertificateSHA256,
+		PackageLockSHA256:      request.expectedLocalTestPackageLockSHA256,
+		TrustJournalSchema:     nativePackageLocalTestTrustOwnershipSchema,
+		TrustJournalDirectory:  journalDirectory,
+	}
+	if err := validateNativePackageLocalTestTrustCapability(
+		capability, request, journalDirectory,
+		capability.ParentPID, capability.ParentCreationFileTime,
+	); err != nil {
+		t.Fatalf("valid capability: %v", err)
+	}
+	mutations := map[string]func(*nativePackageLocalTestTrustCapability){
+		"schema":           func(value *nativePackageLocalTestTrustCapability) { value.Schema = "v2" },
+		"nonce":            func(value *nativePackageLocalTestTrustCapability) { value.Nonce = strings.Repeat("A", 32) },
+		"parent PID":       func(value *nativePackageLocalTestTrustCapability) { value.ParentPID++ },
+		"parent creation":  func(value *nativePackageLocalTestTrustCapability) { value.ParentCreationFileTime++ },
+		"source":           func(value *nativePackageLocalTestTrustCapability) { value.SourceRevision = strings.Repeat("d", 40) },
+		"certificate path": func(value *nativePackageLocalTestTrustCapability) { value.CertificatePath += ".other" },
+		"certificate":      func(value *nativePackageLocalTestTrustCapability) { value.CertificateSHA256 = strings.Repeat("e", 64) },
+		"package lock":     func(value *nativePackageLocalTestTrustCapability) { value.PackageLockSHA256 = strings.Repeat("f", 64) },
+		"journal schema":   func(value *nativePackageLocalTestTrustCapability) { value.TrustJournalSchema = "v2" },
+		"journal directory": func(value *nativePackageLocalTestTrustCapability) {
+			value.TrustJournalDirectory += ".other"
+		},
+	}
+	for name, mutate := range mutations {
+		name, mutate := name, mutate
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			changed := capability
+			mutate(&changed)
+			if err := validateNativePackageLocalTestTrustCapability(
+				changed, request, journalDirectory,
+				capability.ParentPID, capability.ParentCreationFileTime,
+			); err == nil {
+				t.Fatal("mismatched capability accepted")
+			}
+		})
+	}
+}
+
+func TestNativePackageLocalTestTrustOwnershipRequiresCanonicalBytes(t *testing.T) {
+	t.Parallel()
+	contents := []byte(`{"schema":"viiper.native.local-test-trust-ownership/v1","sourceRevision":"` +
+		strings.Repeat("a", 40) + `","certificateSha256":"` + strings.Repeat("b", 64) +
+		`","packageLockSha256":"` + strings.Repeat("c", 64) +
+		`","baselineRoot":0,"baselineTrustedPublisher":1}` + "\n")
+	value, err := decodeCanonicalNativePackageLocalTestTrustOwnership(contents)
+	if err != nil {
+		t.Fatalf("canonical ownership: %v", err)
+	}
+	if value.BaselineRoot != 0 || value.BaselineTrustedPublisher != 1 {
+		t.Fatalf("ownership baselines=%d/%d", value.BaselineRoot, value.BaselineTrustedPublisher)
+	}
+	for name, changed := range map[string][]byte{
+		"missing LF": contents[:len(contents)-1],
+		"unknown field": []byte(strings.Replace(string(contents),
+			`"baselineRoot":0`, `"unknown":0,"baselineRoot":0`, 1)),
+		"duplicate field": []byte(strings.Replace(string(contents),
+			`"baselineRoot":0`, `"baselineRoot":0,"baselineRoot":0`, 1)),
+		"noncanonical whitespace": []byte(strings.Replace(string(contents), `,"sourceRevision"`, `, "sourceRevision"`, 1)),
+	} {
+		name, changed := name, changed
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if _, err := decodeCanonicalNativePackageLocalTestTrustOwnership(changed); err == nil {
+				t.Fatal("noncanonical ownership bytes accepted")
+			}
+		})
+	}
+}
+
+func TestNativePackageLocalTestTrustDurableCutMatrix(t *testing.T) {
+	t.Parallel()
+	cutError := errors.New("simulated process cut")
+	type model struct {
+		journal   string
+		root      int
+		publisher int
+		topology  bool
+	}
+	t.Run("protected publication", func(t *testing.T) {
+		t.Parallel()
+		for _, artifact := range []string{"lease", "preparing"} {
+			artifact := artifact
+			t.Run(artifact, func(t *testing.T) {
+				t.Parallel()
+				for _, cutName := range []string{
+					"scratch-created", "scratch-written", "scratch-flushed",
+					"scratch-verified", "before-publish", "after-publish",
+				} {
+					cutName := cutName
+					t.Run(cutName, func(t *testing.T) {
+						t.Parallel()
+						type publication struct {
+							scratch   string
+							flushed   bool
+							verified  bool
+							canonical string
+						}
+						state := publication{}
+						cut := func(name string) error {
+							if name == cutName {
+								return cutError
+							}
+							return nil
+						}
+						steps := []struct {
+							name      string
+							cutBefore bool
+							op        func()
+						}{
+							{name: "scratch-created", op: func() { state.scratch = ".random.scratch" }},
+							{name: "scratch-written", op: func() { state.scratch = "complete" }},
+							{name: "scratch-flushed", op: func() { state.flushed = true }},
+							{name: "scratch-verified", op: func() { state.verified = true }},
+							{name: "before-publish", cutBefore: true, op: func() {
+								state.canonical = state.scratch
+								state.scratch = ""
+							}},
+							{name: "after-publish", op: func() {}},
+						}
+						var observed error
+						for _, step := range steps {
+							observed = executeNativePackageLocalTestTrustStep(
+								step.name, step.cutBefore,
+								func() error { step.op(); return nil }, cut,
+							)
+							if observed != nil {
+								break
+							}
+						}
+						if !errors.Is(observed, cutError) {
+							t.Fatalf("publication cut %s was not reached: %v", cutName, observed)
+						}
+						if cutName == "after-publish" {
+							if state.canonical != "complete" || state.scratch != "" ||
+								!state.flushed || !state.verified {
+								t.Fatalf("post-publication cut exposed incomplete authority: %+v", state)
+							}
+							return
+						}
+						if state.canonical != "" {
+							t.Fatalf("pre-publication cut exposed canonical authority: %+v", state)
+						}
+						// A process cut may retain only a protected, random scratch name.
+						// It is never interpreted as authority and a successor can retire it.
+						state.scratch = ""
+						if state.canonical != "" || state.scratch != "" {
+							t.Fatalf("successor could not retire inert scratch: %+v", state)
+						}
+					})
+				}
+			})
+		}
+	})
+	t.Run("install", func(t *testing.T) {
+		t.Parallel()
+		for _, cutName := range []string{
+			"preparing-published",
+			"pending-published",
+			"root-added",
+			"trusted-publisher-added",
+			"topology-success-before-owned",
+		} {
+			cutName := cutName
+			t.Run(cutName, func(t *testing.T) {
+				t.Parallel()
+				state := model{}
+				cut := func(name string) error {
+					if name == cutName {
+						return cutError
+					}
+					return nil
+				}
+				steps := []struct {
+					name      string
+					cutBefore bool
+					op        func()
+				}{
+					{name: "preparing-published", op: func() { state.journal = "preparing" }},
+					{name: "pending-published", op: func() { state.journal = "pending" }},
+					{name: "root-added", op: func() { state.root = 1 }},
+					{name: "trusted-publisher-added", op: func() { state.publisher = 1 }},
+					{name: "topology-success-before-owned", cutBefore: true, op: func() { state.journal = "owned" }},
+				}
+				var observed error
+				for _, step := range steps {
+					if step.name == "topology-success-before-owned" {
+						state.topology = true
+					}
+					observed = executeNativePackageLocalTestTrustStep(
+						step.name, step.cutBefore,
+						func() error { step.op(); return nil }, cut,
+					)
+					if observed != nil {
+						break
+					}
+				}
+				if !errors.Is(observed, cutError) {
+					t.Fatalf("cut %s was not reached: %v", cutName, observed)
+				}
+				expected := map[string]model{
+					"preparing-published":           {journal: "preparing"},
+					"pending-published":             {journal: "pending"},
+					"root-added":                    {journal: "pending", root: 1},
+					"trusted-publisher-added":       {journal: "pending", root: 1, publisher: 1},
+					"topology-success-before-owned": {journal: "pending", root: 1, publisher: 1, topology: true},
+				}[cutName]
+				if state != expected {
+					t.Fatalf("cut %s durable model=%+v want=%+v", cutName, state, expected)
+				}
+				if cutName == "topology-success-before-owned" {
+					if !state.topology || state.journal != "pending" || state.root != 1 || state.publisher != 1 {
+						t.Fatalf("success-before-owned cut lost pending authority: %+v", state)
+					}
+					// A successor repairs/revalidates the exact installed topology and
+					// only then performs the same pre-cut Owned publication step.
+					if err := executeNativePackageLocalTestTrustStep(
+						"topology-success-before-owned", true,
+						func() error { state.journal = "owned"; return nil }, nil,
+					); err != nil {
+						t.Fatal(err)
+					}
+					if state.journal != "owned" {
+						t.Fatalf("successor did not settle owned: %+v", state)
+					}
+				}
+			})
+		}
+	})
+
+	t.Run("baseline restore", func(t *testing.T) {
+		t.Parallel()
+		for _, cutName := range []string{
+			"root-restored", "trusted-publisher-restored", "cleared-published",
+		} {
+			cutName := cutName
+			t.Run(cutName, func(t *testing.T) {
+				t.Parallel()
+				state := model{journal: "uninstalling", root: 1, publisher: 1}
+				cut := func(name string) error {
+					if name == cutName {
+						return cutError
+					}
+					return nil
+				}
+				steps := []struct {
+					name string
+					op   func()
+				}{
+					{name: "root-restored", op: func() { state.root = 0 }},
+					{name: "trusted-publisher-restored", op: func() { state.publisher = 0 }},
+					{name: "cleared-published", op: func() { state.journal = "cleared" }},
+				}
+				var observed error
+				for _, step := range steps {
+					observed = executeNativePackageLocalTestTrustStep(
+						step.name, false,
+						func() error { step.op(); return nil }, cut,
+					)
+					if observed != nil {
+						break
+					}
+				}
+				if !errors.Is(observed, cutError) || state.journal != "uninstalling" && cutName != "cleared-published" {
+					t.Fatalf("restore cut %s left unsafe model %+v error=%v", cutName, state, observed)
+				}
+				// All store operations are idempotent and an uninstalling retry
+				// re-proves topology absence before completing the same sequence.
+				state.root, state.publisher, state.journal = 0, 0, "cleared"
+				if state.root != 0 || state.publisher != 0 || state.journal != "cleared" {
+					t.Fatalf("restore retry did not settle: %+v", state)
+				}
+			})
+		}
+	})
+}
+
+func TestNativePackageLocalTestTrustFailureCleanupRejectsAmbiguousOrResumedAuthority(t *testing.T) {
+	t.Parallel()
+	baseState := nativePackageLocalTestTrustState{state: "pending", createdCurrent: true}
+	baseProof := nativePackageInstallProof{
+		success: false, changed: false, rebootRequired: false,
+		rollback: "not-needed", exitCode: 4,
+	}
+	if !nativePackageLocalTestTrustMayRestoreAfterFailure(
+		&baseState, baseProof, true, true, false, false,
+	) {
+		t.Fatal("exact fresh settled no-change failure was not eligible for topology-gated restore")
+	}
+	validExitOne := baseProof
+	validExitOne.exitCode = 1
+	if !nativePackageLocalTestTrustMayRestoreAfterFailure(
+		&baseState, validExitOne, true, true, false, false,
+	) {
+		t.Fatal("exact fresh exit-1 no-change failure was not eligible for topology-gated restore")
+	}
+	cases := map[string]func(*nativePackageLocalTestTrustState, *nativePackageInstallProof) (bool, bool, bool, bool){
+		"resumed pending": func(state *nativePackageLocalTestTrustState, _ *nativePackageInstallProof) (bool, bool, bool, bool) {
+			state.resumed = true
+			return true, true, false, false
+		},
+		"prior owned": func(state *nativePackageLocalTestTrustState, _ *nativePackageInstallProof) (bool, bool, bool, bool) {
+			state.alreadyOwned = true
+			return true, true, false, false
+		},
+		"not current": func(state *nativePackageLocalTestTrustState, _ *nativePackageInstallProof) (bool, bool, bool, bool) {
+			state.createdCurrent = false
+			return true, true, false, false
+		},
+		"wrong state": func(state *nativePackageLocalTestTrustState, _ *nativePackageInstallProof) (bool, bool, bool, bool) {
+			state.state = "uninstalling"
+			return true, true, false, false
+		},
+		"proof missing": func(_ *nativePackageLocalTestTrustState, _ *nativePackageInstallProof) (bool, bool, bool, bool) {
+			return false, true, false, false
+		},
+		"helper unsettled": func(_ *nativePackageLocalTestTrustState, _ *nativePackageInstallProof) (bool, bool, bool, bool) {
+			return true, false, false, false
+		},
+		"success": func(_ *nativePackageLocalTestTrustState, proof *nativePackageInstallProof) (bool, bool, bool, bool) {
+			proof.success = true
+			return true, true, false, false
+		},
+		"changed": func(_ *nativePackageLocalTestTrustState, proof *nativePackageInstallProof) (bool, bool, bool, bool) {
+			proof.changed = true
+			return true, true, false, false
+		},
+		"reboot": func(_ *nativePackageLocalTestTrustState, proof *nativePackageInstallProof) (bool, bool, bool, bool) {
+			proof.rebootRequired = true
+			return true, true, false, false
+		},
+		"rollback": func(_ *nativePackageLocalTestTrustState, proof *nativePackageInstallProof) (bool, bool, bool, bool) {
+			proof.rollback = "succeeded"
+			return true, true, false, false
+		},
+		"exit 3": func(_ *nativePackageLocalTestTrustState, proof *nativePackageInstallProof) (bool, bool, bool, bool) {
+			proof.exitCode = 3
+			return true, true, false, false
+		},
+		"broker settlement": func(_ *nativePackageLocalTestTrustState, _ *nativePackageInstallProof) (bool, bool, bool, bool) {
+			return true, true, true, false
+		},
+		"broker handoff": func(_ *nativePackageLocalTestTrustState, _ *nativePackageInstallProof) (bool, bool, bool, bool) {
+			return true, true, false, true
+		},
+	}
+	for name, mutate := range cases {
+		name, mutate := name, mutate
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			state := baseState
+			proof := baseProof
+			present, settled, brokerSettlement, handoff := mutate(&state, &proof)
+			if nativePackageLocalTestTrustMayRestoreAfterFailure(
+				&state, proof, present, settled, brokerSettlement, handoff,
+			) {
+				t.Fatal("ambiguous or successor-owned failure authorized trust restore")
+			}
+		})
+	}
+}
 
 func TestNativePackageDriverCoordinationUsesDistinctInheritedEvents(t *testing.T) {
 	t.Parallel()

@@ -23,9 +23,54 @@ const (
 )
 
 type nativePackageUninstallRequest struct {
-	driverHelper         string
-	expectedHelperSHA256 string
-	targetUserSID        string
+	driverHelper                       string
+	expectedHelperSHA256               string
+	targetUserSID                      string
+	sourceRevision                     string
+	localTestCertificatePath           string
+	expectedLocalTestCertificateSHA256 string
+	expectedLocalTestPackageLockSHA256 string
+}
+
+func nativePackageLocalTestUninstallMayMutateTopology(state string) bool {
+	switch state {
+	case "pending", "owned", "uninstalling":
+		return true
+	default:
+		return false
+	}
+}
+
+// nativePackageProductionUninstallLocalTrustAdmission classifies local-test
+// ownership while the production uninstall holds Trust -> Package -> Service.
+// A production uninstall has no source-bound local certificate authority, so
+// only no journal or one validated terminal settlement may proceed.
+func nativePackageProductionUninstallLocalTrustAdmission(states []string) error {
+	if len(states) == 0 {
+		return nil
+	}
+	if len(states) != 1 {
+		return errors.New("multiple local-test trust ownership states block production uninstall")
+	}
+	switch states[0] {
+	case "cleared":
+		return nil
+	case "preparing", "pending", "owned", "uninstalling":
+		return fmt.Errorf(
+			"active local-test trust %s state requires exact source-bound uninstall identity",
+			states[0],
+		)
+	default:
+		return fmt.Errorf(
+			"unknown local-test trust %q state blocks production uninstall", states[0],
+		)
+	}
+}
+
+func (r nativePackageUninstallRequest) localTestTrustRequested() bool {
+	return r.sourceRevision != "" || r.localTestCertificatePath != "" ||
+		r.expectedLocalTestCertificateSHA256 != "" ||
+		r.expectedLocalTestPackageLockSHA256 != ""
 }
 
 func (r nativePackageUninstallRequest) validate() error {
@@ -35,8 +80,29 @@ func (r nativePackageUninstallRequest) validate() error {
 	if strings.TrimSpace(r.targetUserSID) == "" {
 		return errors.New("native package uninstall target user SID is empty")
 	}
-	if strings.IndexByte(r.driverHelper, 0) >= 0 || strings.IndexByte(r.targetUserSID, 0) >= 0 {
-		return errors.New("native package uninstall input contains NUL")
+	for _, value := range []string{
+		r.driverHelper, r.targetUserSID, r.sourceRevision,
+		r.localTestCertificatePath, r.expectedLocalTestCertificateSHA256,
+		r.expectedLocalTestPackageLockSHA256,
+	} {
+		if strings.IndexByte(value, 0) >= 0 {
+			return errors.New("native package uninstall input contains NUL")
+		}
+	}
+	if r.localTestTrustRequested() {
+		if !nativePackageHexRevision.MatchString(r.sourceRevision) {
+			return errors.New("native package local-test uninstall source revision must contain exactly 40 or 64 hexadecimal characters")
+		}
+		if !filepath.IsAbs(r.localTestCertificatePath) ||
+			!strings.EqualFold(filepath.Base(r.localTestCertificatePath), "ViiperUdeTest.cer") {
+			return errors.New("native package local-test uninstall certificate must be an absolute ViiperUdeTest.cer path")
+		}
+		if !nativePackageSHA256.MatchString(r.expectedLocalTestCertificateSHA256) {
+			return errors.New("native package local-test uninstall certificate SHA-256 must contain exactly 64 hexadecimal characters")
+		}
+		if !nativePackageSHA256.MatchString(r.expectedLocalTestPackageLockSHA256) {
+			return errors.New("native package local-test uninstall package-lock SHA-256 must contain exactly 64 hexadecimal characters")
+		}
 	}
 	if !filepath.IsAbs(r.driverHelper) {
 		return fmt.Errorf("native package uninstall driver helper must be an absolute path: %s", r.driverHelper)
@@ -481,7 +547,21 @@ func (e *nativePackageUninstallUnsafeRestoreError) Unwrap() error {
 	return e.cause
 }
 
+// nativePackageUninstallAlreadySettledError is returned only after a
+// source-bound local-test request proves, under Trust -> Package -> Service,
+// that no driver package/device, service, or broker journal remains. The runner
+// treats it as terminal idempotent success before entering any generic broker
+// file inspection or topology mutation.
+type nativePackageUninstallAlreadySettledError struct {
+	state string
+}
+
+func (e *nativePackageUninstallAlreadySettledError) Error() string {
+	return fmt.Sprintf("local-test uninstall is already settled in %s state", e.state)
+}
+
 type nativePackageUninstallTransaction interface {
+	LockTrust(context.Context) error
 	LockPackage(context.Context) error
 	LockService(context.Context) error
 	Preflight(context.Context) error
@@ -489,6 +569,7 @@ type nativePackageUninstallTransaction interface {
 	StopService(context.Context, nativePackageUninstallServiceSnapshot) error
 	RemoveDriver(context.Context) (nativePackageRemoveResult, error)
 	Cleanup(context.Context, nativePackageUninstallServiceSnapshot) (bool, error)
+	FinalizeTrust(context.Context) error
 	RestoreService(context.Context, nativePackageUninstallServiceSnapshot) error
 	Close() error
 }
@@ -508,6 +589,12 @@ func runNativePackageUninstallTransaction(
 		}
 	}()
 	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("native package uninstall canceled before trust lock: %w", err)
+	}
+	if err := transaction.LockTrust(ctx); err != nil {
+		return fmt.Errorf("acquire native package uninstall trust transaction: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("native package uninstall canceled before package lock: %w", err)
 	}
 	if err := transaction.LockPackage(ctx); err != nil {
@@ -523,6 +610,10 @@ func runNativePackageUninstallTransaction(
 		return fmt.Errorf("native package uninstall canceled before preflight: %w", err)
 	}
 	if err := transaction.Preflight(ctx); err != nil {
+		var alreadySettled *nativePackageUninstallAlreadySettledError
+		if errors.As(err, &alreadySettled) {
+			return nil
+		}
 		return fmt.Errorf("native package uninstall preflight rejected before mutation: %w", err)
 	}
 	if err := ctx.Err(); err != nil {
@@ -604,6 +695,9 @@ func runNativePackageUninstallTransaction(
 	}
 	if removeResult.rebootRequired || cleanupRebootRequired {
 		return &nativePackageUninstallRebootRequiredError{}
+	}
+	if err := transaction.FinalizeTrust(cleanupCtx); err != nil {
+		return fmt.Errorf("finalize exact local-test trust after topology removal: %w", err)
 	}
 	return nil
 }
