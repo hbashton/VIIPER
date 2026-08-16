@@ -53,13 +53,19 @@ func install(logger *slog.Logger, transport, targetUserSID string) error {
 
 func uninstall(
 	logger *slog.Logger,
-	targetUserSID, driverHelper, expectedHelperSHA256 string,
+	targetUserSID, driverHelper, expectedHelperSHA256, sourceRevision,
+	localTestCertificatePath, expectedLocalTestCertificateSHA256,
+	expectedLocalTestPackageLockSHA256 string,
 ) error {
 	if targetUserSID != "" {
 		return errors.New("--target-user-sid is supported only by the Windows native broker installer")
 	}
 	if driverHelper != "" || expectedHelperSHA256 != "" {
 		return errors.New("native package uninstall helper inputs are supported only on Windows")
+	}
+	if sourceRevision != "" || localTestCertificatePath != "" ||
+		expectedLocalTestCertificateSHA256 != "" || expectedLocalTestPackageLockSHA256 != "" {
+		return errors.New("local-test native package trust cleanup is supported only on Windows")
 	}
 	var errs []error
 

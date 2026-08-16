@@ -72,6 +72,16 @@ $requiredContracts = [ordered]@{
     'signed-certificate EKU extension only' = 'CERT_FIND_EXT_ONLY_ENHKEY_USAGE_FLAG'
     'published INF capture' = 'SetupGetInfPublishedNameW\('
     'driver-store source capture' = 'SetupGetInfDriverStoreLocationW\('
+    'shared-system Windows directory identity' = 'GetSystemWindowsDirectoryW\('
+    'canonical package digest comparison' = 'SameCanonicalPackageDigest\('
+    'pure published INF normalization' = 'NormalizePublishedInfPath\('
+    'published INF local-file validation' = 'ValidatePublishedInfPath\('
+    'compiled published INF normalization regressions' =
+        'self-test-published-inf-normalization'
+    'read-only live SetupAPI round trip' =
+        'RunPublishedInfRoundTripLiveSelfTest\('
+    'prior-rollback broker-lock cut regression' =
+        'RunInstallJournalBrokerLockRetirementSelfTest\('
     'installed INF ownership' = 'DEVPKEY_Device_DriverInfPath'
     'installed version ownership' = 'DEVPKEY_Device_DriverVersion'
     'documented add-only package staging' = 'SetupCopyOEMInfW\('
@@ -172,6 +182,15 @@ $requiredContracts = [ordered]@{
     'nested broker expected executable hash option' = '--expected-broker-sha-256'
     'cooperative package deadline' = '--transaction-deadline-unix-ms'
     'same-handle manifest binding' = 'Sha256Handle\(manifest\.get\(\)'
+    'canonical protected broker digest comparison' =
+        'bool LockProtectedBrokerImage\([\s\S]{0,2600}!SameCanonicalSha256Digest\(observed, expectedSha256\)'
+    'compiled protected broker digest regression' = 'self-test-canonical-sha256'
+    'recordless failed-install recovery command' =
+        'recover-failed-install-recordless'
+    'recordless failed-install recovery implementation' =
+        'Outcome RecoverFailedInstallRecordless\('
+    'recordless failed-install active absence proof' =
+        'VerifyRecordlessRecoveryActivePathAbsent\('
     'final exact package enumeration' = 'ValidateExactPackageDirectory\('
     'reboot boundary rollback' = 'broker-reboot-boundary'
     'fixed remove recovery root' =
@@ -256,6 +275,296 @@ $requiredContracts = [ordered]@{
 foreach ($entry in $requiredContracts.GetEnumerator()) {
     if ($source -notmatch $entry.Value) {
         throw "ViiperUdeCtl is missing its $($entry.Key) contract."
+    }
+}
+
+$publishedInfResolver = Get-SourceContractRegion -Text $source `
+    -Start 'bool GetPublishedInfPath(' `
+    -End 'bool GetDriverStoreInfPath(' `
+    -Name 'published INF resolver'
+if ([regex]::Matches(
+        $publishedInfResolver, 'SetupGetInfPublishedNameW\s*\(').Count -ne 1) {
+    throw 'Published INF resolution must use exactly one SetupGetInfPublishedNameW call.'
+}
+if ($publishedInfResolver -match
+        'SetupGetInfPublishedNameW\([\s\S]{0,300}nullptr\s*,\s*0') {
+    throw 'Published INF resolution must not use a NULL/zero sizing probe.'
+}
+Assert-OrderedSourceFragments -Text $publishedInfResolver `
+    -Name 'single-call published INF resolution' -Fragments @(
+        'std::array<wchar_t, MAX_PATH> buffer{};',
+        'buffer.fill(static_cast<wchar_t>(0xffffU));',
+        'SetupGetInfPublishedNameW(',
+        'infPath.c_str(), buffer.data()',
+        'static_cast<DWORD>(buffer.size()), nullptr',
+        'DecodeFixedPublishedInfReturnBuffer(',
+        'GetCanonicalSystemInfDirectory(',
+        'NormalizePublishedInfPath(',
+        'ValidatePublishedInfPath('
+    )
+
+$stageCandidateSource = Get-SourceContractRegion -Text $source `
+    -Start 'bool StageCandidatePackage(' -End 'bool RemoveDevice(' `
+    -Name 'candidate package staging'
+Assert-OrderedSourceFragments -Text $stageCandidateSource `
+    -Name 'documented SetupAPI package round trip' -Fragments @(
+        'SetupCopyOEMInfW(',
+        'DecodePublishedInfReturnBuffer(',
+        'NormalizePublishedInfPath(',
+        'ValidatePublishedInfPath(',
+        'GetDriverStoreInfPath(',
+        'GetPublishedInfPath(',
+        'FindPublishedCandidate('
+    )
+if ($stageCandidateSource.Contains(
+        'GetPublishedInfPath(candidate.infPath')) {
+    throw 'Candidate source INF must never be passed to SetupGetInfPublishedNameW.'
+}
+foreach ($fragment in @(
+        'PWSTR destinationComponent = nullptr;',
+        '&required, &destinationComponent',
+        'destinationComponent == destination.data() + componentOffset')) {
+    if (-not $stageCandidateSource.Contains($fragment)) {
+        throw "Candidate staging lost SetupCopyOEMInf's exact destination receipt '$fragment'."
+    }
+}
+
+$packageDigestSource = Get-SourceContractRegion -Text $source `
+    -Start 'bool SamePackageBytes(' -End 'std::string PackageBytesKey(' `
+    -Name 'package digest comparison'
+if ([regex]::Matches(
+        $packageDigestSource, 'SameCanonicalPackageDigest\(').Count -ne 3) {
+    throw 'Package identity must canonically compare exactly INF, SYS, and CAT digests.'
+}
+$canonicalDigestComparison = Get-SourceContractRegion -Text $source `
+    -Start 'bool SameCanonicalPackageDigest(' `
+    -End 'bool SamePackageBytes(' `
+    -Name 'allocation-free package digest comparison'
+foreach ($fragment in @(
+        'std::string_view right) noexcept',
+        'left.size() != 64U || right.size() != 64U',
+        'canonicalCharacter', 'canonicalLeft != canonicalRight')) {
+    if (-not $canonicalDigestComparison.Contains($fragment)) {
+        throw "Allocation-free package digest comparison lost '$fragment'."
+    }
+}
+if ($canonicalDigestComparison.Contains('CanonicalizePackageDigest(') -or
+    $canonicalDigestComparison -match 'std::string\s+canonical') {
+    throw 'Noexcept package digest comparison must remain allocation-free.'
+}
+$packageDigestKeySource = Get-SourceContractRegion -Text $source `
+    -Start 'std::string PackageBytesKey(' `
+    -End 'bool GetDriverStoreInfPath(' `
+    -Name 'canonical package digest key'
+if ([regex]::Matches(
+        $packageDigestKeySource, 'CanonicalizePackageDigest\(').Count -ne 3 -or
+    -not $packageDigestKeySource.Contains(
+        'return inf + ":" + sys + ":" + cat;')) {
+    throw 'Package byte keys must canonicalize exactly INF, SYS, and CAT digests.'
+}
+if ($source -match
+        '(?:infSha256|sysSha256|catSha256)\s*(?:==|!=)|(?:==|!=)\s*[^;\r\n]*(?:infSha256|sysSha256|catSha256)') {
+    throw 'Package digest identity must never use case-sensitive direct comparison.'
+}
+foreach ($fragment in @(
+        'value.size() != 64U',
+        "character >= 'A' && character <= 'F'",
+        "character + ('a' - 'A')",
+        'PackageInfo mixedCaseCandidate = candidate;',
+        'PackageInfo mismatchedCandidate = mixedCaseCandidate;',
+        'PackageInfo malformedCandidate = candidate;',
+        'self-test-package-digest-canonicalization')) {
+    if (-not $source.Contains($fragment)) {
+        throw "Canonical package digest validation lost '$fragment'."
+    }
+}
+
+$normalizerSource = Get-SourceContractRegion -Text $source `
+    -Start 'bool NormalizePublishedInfPath(' `
+    -End 'bool DecodePublishedInfReturnBuffer(' `
+    -Name 'pure published INF normalizer'
+Assert-OrderedSourceFragments -Text $normalizerSource `
+    -Name 'pure published INF normalization' -Fragments @(
+        "value.find(L'\0')",
+        'IsDriveAbsoluteCanonicalPath(systemRoot)',
+        'IsDriveAbsoluteCanonicalPath(value)',
+        'component == L"." || component == L".."',
+        'OrdinalPathEqualsInsensitive(parent, systemRoot)',
+        'IsSafePublishedInfName(fileName)'
+    )
+foreach ($forbidden in @(
+        'GetFileAttributesW(', 'CreateFileW(', 'GetFinalPathNameByHandleW(',
+        'std::filesystem::canonical(')) {
+    if ($normalizerSource.Contains($forbidden)) {
+        throw "Pure published INF normalization gained filesystem access '$forbidden'."
+    }
+}
+
+$publishedInfBasicAttributes = Get-SourceContractRegion -Text $source `
+    -Start 'constexpr DWORD kPublishedInfBasicUnsafeAttributes' `
+    -End 'constexpr DWORD kPublishedInfEnumerationRecallOnOpen' `
+    -Name 'published INF basic attributes'
+if ($publishedInfBasicAttributes -match '0x00040000UL\s*\|' -or
+    -not $source.Contains(
+        'constexpr DWORD kPublishedInfEnumerationRecallOnOpen = 0x00040000UL;')) {
+    throw 'RECALL_ON_OPEN must be rejected only from directory-enumeration attributes, never handle/basic EA attributes.'
+}
+
+$publishedInfValidator = Get-SourceContractRegion -Text $source `
+    -Start 'bool ValidatePublishedInfPath(' `
+    -End 'bool GetPublishedInfPath(' `
+    -Name 'published INF local-file validator'
+Assert-OrderedSourceFragments -Text $publishedInfValidator `
+    -Name 'published INF local-file validation' -Fragments @(
+        'path.parent_path().native(), canonicalSystemInf.native()',
+        'IsSafePublishedInfName(path.filename().wstring())',
+        'FindFirstFileW(path.c_str(), &enumeration)',
+        'PublishedInfEnumerationAttributesAreSafe(',
+        'GetFileAttributesW(path.c_str())',
+        'PublishedInfBasicAttributesAreSafe(rawAttributes, false)',
+        'path.c_str(), FILE_READ_ATTRIBUTES',
+        'FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE',
+        'OPEN_EXISTING',
+        'FILE_FLAG_OPEN_REPARSE_POINT',
+        'FILE_FLAG_OPEN_NO_RECALL',
+        'FileAttributeTagInfo',
+        'PublishedInfBasicAttributesAreSafe(',
+        'GetFileType(file.get()) != FILE_TYPE_DISK',
+        'GetFinalPathNameByHandleW(',
+        'OrdinalPathEqualsInsensitive(finalPath, path.native())'
+    )
+foreach ($forbidden in @(
+        'CREATE_NEW', 'CREATE_ALWAYS', 'OPEN_ALWAYS', 'TRUNCATE_EXISTING',
+        'GENERIC_WRITE', 'FILE_WRITE_DATA', 'DeleteFileW(', 'MoveFileExW(')) {
+    if ($publishedInfValidator.Contains($forbidden)) {
+        throw "Published INF validation gained mutation capability '$forbidden'."
+    }
+}
+
+$driverInfoSource = Get-SourceContractRegion -Text $source `
+    -Start 'bool DriverInfoUsesPublishedPackage(' `
+    -End 'struct PreparedDriverBinding {' `
+    -Name 'compatible-driver package identity'
+Assert-OrderedSourceFragments -Text $driverInfoSource `
+    -Name 'compatible-driver system-INF containment' -Fragments @(
+        'IsSafePublishedInfName(expectedPublishedName)',
+        'GetPublishedInfPath(driverInfPath, &publishedPath, &ignored)',
+        'OrdinalPathEqualsInsensitive('
+    )
+if ($driverInfoSource.Contains(
+        'IsSafePublishedInfName(driverInfPath.filename().wstring())')) {
+    throw 'A compatible-driver basename must not bypass system-INF containment.'
+}
+
+$priorRetirementSource = Get-SourceContractRegion -Text $source `
+    -Start 'bool InstallJournal::RetireAfterPriorValidation(' `
+    -End 'bool RequireJournalObject(' `
+    -Name 'prior rollback retirement'
+Assert-OrderedSourceFragments -Text $priorRetirementSource `
+    -Name 'prior rollback lock release before retirement' -Fragments @(
+        'impl_->candidateLocks.clear();',
+        'impl_->brokerLock.reset();',
+        'impl_->priorBackups.clear();',
+        'RetireInstallRecoveryActiveDirectory('
+    )
+
+$brokerLockCutSource = Get-SourceContractRegion -Text $source `
+    -Start 'bool RunInstallJournalBrokerLockRetirementSelfTest(' `
+    -End 'bool RunInstallJournalModelSelfTest(' `
+    -Name 'prior rollback broker-lock cut test'
+Assert-OrderedSourceFragments -Text $brokerLockCutSource `
+    -Name 'prior rollback broker-lock cut test' -Fragments @(
+        'std::filesystem::temp_directory_path(',
+        'FILE_SHARE_READ,',
+        'MoveFileExW(active.c_str(), settled.c_str(), MOVEFILE_WRITE_THROUGH)',
+        'brokerLock.reset();',
+        'MoveFileExW(active.c_str(), settled.c_str(), MOVEFILE_WRITE_THROUGH)'
+    )
+
+$normalizationTestSource = Get-SourceContractRegion -Text $source `
+    -Start 'bool RunPublishedInfNormalizationSelfTest(' `
+    -End 'bool RunPublishedInfRoundTripLiveSelfTest(' `
+    -Name 'published INF normalization self-test'
+foreach ($fragment in @(
+        'L"oem0.inf"', 'L"OEM1.INF"', 'L"oem9.inf"',
+        'LR"(\\server\share\oem1.inf)"',
+        'LR"(\\?\C:\Windows\INF\oem1.inf)"',
+        'L"oem1.inf:stream"', 'embeddedNul.push_back',
+        'unterminated.fill', 'FILE_ATTRIBUTE_REPARSE_POINT',
+        'FILE_ATTRIBUTE_OFFLINE',
+        'kPublishedInfEnumerationRecallOnOpen',
+        'PublishedInfEnumerationAttributesAreSafe(')) {
+    if (-not $normalizationTestSource.Contains($fragment)) {
+        throw "Published INF normalization self-test lost '$fragment'."
+    }
+}
+
+$liveRoundTripSource = Get-SourceContractRegion -Text $source `
+    -Start 'bool RunPublishedInfRoundTripLiveSelfTest(' `
+    -End 'bool MultiSzContains(' `
+    -Name 'live published INF round trip'
+Assert-OrderedSourceFragments -Text $liveRoundTripSource `
+    -Name 'read-only live published INF round trip' -Fragments @(
+        'QueryProcessElevation(&elevated, error)',
+        'if (!elevated) return true;',
+        'EnumerateOwnedPackages(&packages, error)',
+        'if (packages.empty()) return true;',
+        'GetDriverStoreInfPath(',
+        'GetPublishedInfPath(',
+        'std::filesystem::path(package.publishedName)',
+        'FindPublishedCandidate(',
+        'SamePackageBytes(unique, package)'
+    )
+foreach ($forbidden in @(
+        'SetupCopyOEMInfW(', 'SetupUninstallOEMInfW(',
+        'DiInstallDevice(', 'DiUninstallDriverW(', 'DiUninstallDevice(',
+        'RemoveDevice(', 'MoveFileExW(', 'DeleteFileW(')) {
+    if ($liveRoundTripSource.Contains($forbidden)) {
+        throw "Live SetupAPI round-trip self-test gained forbidden mutation '$forbidden'."
+    }
+}
+
+$ownedPackageEnumeration = Get-SourceContractRegion -Text $source `
+    -Start 'bool EnumerateOwnedPackages(' `
+    -End 'bool FindPublishedCandidate(' `
+    -Name 'safe owned-package enumeration'
+Assert-OrderedSourceFragments -Text $ownedPackageEnumeration `
+    -Name 'safe owned-package enumeration' -Fragments @(
+        'GetCanonicalSystemInfDirectory(&infDirectory, error)',
+        'FindFirstFileW(pattern.c_str(), &data)',
+        'PublishedInfEnumerationAttributesAreSafe(',
+        'ValidatePublishedInfPath(',
+        'LoadOwnedPackage(publishedInf, false, false'
+    )
+
+$recordlessRecovery = Get-SourceContractRegion -Text $source `
+    -Start 'Outcome RecoverFailedInstallRecordless(' `
+    -End 'enum class InstallJournalRecoveryModelAction' `
+    -Name 'recordless failed-install recovery'
+Assert-OrderedSourceFragments -Text $recordlessRecovery -Name `
+    'recordless failed-install recovery' -Fragments @(
+        'ValidateTransactionDeadlineBudget(',
+        'IsElevated()',
+        'TransactionMutex mutex;',
+        'mutex.Acquire(&outcome.error)',
+        'installDirectory.OpenChain(',
+        'false, nullptr, &installActive',
+        'removeDirectory.OpenChain(false, &removeActive',
+        'if (installActive || removeActive)',
+        'VerifyRecordlessRecoveryActivePathAbsent(',
+        'outcome.success = true;',
+        'outcome.changed = false;',
+        'outcome.rebootRequired = false;',
+        'outcome.rollback = L"not-needed";',
+        'outcome.exitCode = ExitCode::Success;'
+    )
+foreach ($forbidden in @(
+        'ReconcileInstallJournal(', 'ReconcileRemoveJournal(',
+        'RemoveDevice(', 'DiUninstallDriverW(', 'SetupCopyOEMInfW(',
+        'CreateOrOpenInstallRecoveryDirectory(', 'remove_all(',
+        'MoveFileExW(', 'DeleteFileW(')) {
+    if ($recordlessRecovery.Contains($forbidden)) {
+        throw "Recordless failed-install recovery gained forbidden mutation '$forbidden'."
     }
 }
 

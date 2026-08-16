@@ -74,11 +74,22 @@ type windowsNativePackageUninstallTransaction struct {
 	logger  *slog.Logger
 	request nativePackageUninstallRequest
 
-	releasePackageMutex func()
-	releaseServiceMutex func()
-	helperHandles       []windows.Handle
-	managedDirectories  []windows.Handle
-	helperHandle        windows.Handle
+	releaseTrustLease     func() error
+	trustLeaseDirectories []windows.Handle
+	releasePackageMutex   func()
+	releaseServiceMutex   func()
+	helperHandles         []windows.Handle
+	managedDirectories    []windows.Handle
+	helperHandle          windows.Handle
+	certificateHandle     windows.Handle
+	certificateDER        []byte
+	trustPaths            nativePackageLocalTestTrustPaths
+	trustRecord           nativePackageLocalTestTrustOwnership
+	trustRecordBytes      []byte
+	trustState            string
+	trustRootStore        windows.Handle
+	trustPublisherStore   windows.Handle
+	trustCutpoint         func(string) error
 
 	userSID     string
 	manager     nativeSCM
@@ -112,7 +123,35 @@ func remainingNativePackageUninstallBudget(ctx context.Context) (time.Duration, 
 	return remaining, nil
 }
 
+func (t *windowsNativePackageUninstallTransaction) LockTrust(ctx context.Context) error {
+	if err := initializeNativePackageRecoveryTrustLease(); err != nil {
+		return fmt.Errorf("initialize protected local-test trust lease: %w", err)
+	}
+	budget, err := remainingNativePackageUninstallBudget(ctx)
+	if err != nil {
+		return err
+	}
+	deadline := time.Now().Add(budget)
+	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
+		deadline = contextDeadline
+	}
+	lease, directories, err := acquireNativePackageRecoveryTrustLease(ctx, deadline)
+	if err != nil {
+		return err
+	}
+	t.trustLeaseDirectories = directories
+	t.releaseTrustLease = func() error {
+		err := releaseNativePackageRecoveryTrustLease(lease, t.trustLeaseDirectories)
+		t.trustLeaseDirectories = nil
+		return err
+	}
+	return nil
+}
+
 func (t *windowsNativePackageUninstallTransaction) LockPackage(ctx context.Context) error {
+	if t.releaseTrustLease == nil {
+		return errors.New("local-test trust lease must be held before the native package mutex")
+	}
 	budget, err := remainingNativePackageUninstallBudget(ctx)
 	if err != nil {
 		return err
@@ -142,8 +181,8 @@ func (t *windowsNativePackageUninstallTransaction) LockService(ctx context.Conte
 }
 
 func (t *windowsNativePackageUninstallTransaction) Preflight(ctx context.Context) error {
-	if t.releasePackageMutex == nil || t.releaseServiceMutex == nil {
-		return errors.New("native package uninstall mutex order is incomplete")
+	if t.releaseTrustLease == nil || t.releasePackageMutex == nil || t.releaseServiceMutex == nil {
+		return errors.New("native package uninstall Trust -> Package -> Service lock order is incomplete")
 	}
 	if err := ctx.Err(); err != nil {
 		return err
@@ -153,9 +192,6 @@ func (t *windowsNativePackageUninstallTransaction) Preflight(ctx context.Context
 		return fmt.Errorf("resolve exact native broker credential owner: %w", err)
 	}
 	t.userSID = userSID
-	if err := reconcileNativeBrokerJournalBeforeAdmission(ctx, t.logger, t.userSID); err != nil {
-		return fmt.Errorf("reconcile interrupted native broker transaction before uninstall: %w", err)
-	}
 
 	directoryHandles, err := lockNativePackageDirectoryChain(filepath.Dir(t.request.driverHelper))
 	if err != nil {
@@ -177,6 +213,241 @@ func (t *windowsNativePackageUninstallTransaction) Preflight(ctx context.Context
 	}
 	if err := requireNativePackagePE(helper); err != nil {
 		return fmt.Errorf("validate packaged driver helper image: %w", err)
+	}
+	if t.request.localTestTrustRequested() {
+		certificateDirectories, err := lockNativePackageDirectoryChain(
+			filepath.Dir(t.request.localTestCertificatePath),
+		)
+		if err != nil {
+			return fmt.Errorf("lock source-bound local-test certificate directory chain: %w", err)
+		}
+		t.helperHandles = append(t.helperHandles, certificateDirectories...)
+		t.certificateHandle, err = lockNativePackageInput(t.request.localTestCertificatePath)
+		if err != nil {
+			return fmt.Errorf("lock source-bound local-test certificate: %w", err)
+		}
+		certificateHash, err := hashNativePackageHandle(t.certificateHandle)
+		if err != nil {
+			return fmt.Errorf("hash source-bound local-test certificate: %w", err)
+		}
+		if !strings.EqualFold(certificateHash, t.request.expectedLocalTestCertificateSHA256) {
+			return fmt.Errorf("local-test certificate SHA-256=%s expected=%s",
+				certificateHash, t.request.expectedLocalTestCertificateSHA256)
+		}
+		t.certificateDER, err = readNativePackageRecoveryFile(
+			t.certificateHandle, nativePackageRecoveryMaximumCertificateBytes,
+		)
+		if err != nil {
+			return fmt.Errorf("read source-bound local-test certificate: %w", err)
+		}
+	}
+	if err := t.prepareLocalTestTrustUninstall(ctx); err != nil {
+		return fmt.Errorf("prepare local-test trust uninstall transaction: %w", err)
+	}
+	// Broker-journal reconciliation can stop, restore, or replace SCM/image
+	// state. Arm the exact local-test uninstalling record first so every process
+	// cut before or during that reconciliation remains source-bound and blocks a
+	// successor Install.
+	if err := reconcileNativeBrokerJournalBeforeAdmission(ctx, t.logger, t.userSID); err != nil {
+		return fmt.Errorf("reconcile interrupted native broker transaction after trust admission: %w", err)
+	}
+	return nil
+}
+
+func nativePackageLocalTestTrustRecordMatchesUninstall(
+	record nativePackageLocalTestTrustOwnership,
+	request nativePackageUninstallRequest,
+) bool {
+	return record.Schema == nativePackageLocalTestTrustOwnershipSchema &&
+		record.SourceRevision == request.sourceRevision &&
+		record.CertificateSHA256 == request.expectedLocalTestCertificateSHA256 &&
+		record.PackageLockSHA256 == request.expectedLocalTestPackageLockSHA256
+}
+
+func (t *windowsNativePackageUninstallTransaction) trustCut(name string) error {
+	if t.trustCutpoint == nil {
+		return nil
+	}
+	return t.trustCutpoint(name)
+}
+
+func (t *windowsNativePackageUninstallTransaction) openLocalTestTrustStores() error {
+	root, err := openNativePackageRecoveryCertificateStore("Root")
+	if err != nil {
+		return fmt.Errorf("open LocalMachine Root for local-test uninstall: %w", err)
+	}
+	publisher, err := openNativePackageRecoveryCertificateStore("TrustedPublisher")
+	if err != nil {
+		windows.CertCloseStore(root, 0) //nolint:errcheck
+		return fmt.Errorf("open LocalMachine TrustedPublisher for local-test uninstall: %w", err)
+	}
+	t.trustRootStore = root
+	t.trustPublisherStore = publisher
+	return nil
+}
+
+func (t *windowsNativePackageUninstallTransaction) inspectLocalTestTrustCounts() (
+	nativePackageRecoveryTrustCounts,
+	error,
+) {
+	if t.trustRootStore == 0 || t.trustPublisherStore == 0 || len(t.certificateDER) == 0 {
+		return nativePackageRecoveryTrustCounts{}, errors.New(
+			"local-test trust stores or source-bound certificate are unavailable",
+		)
+	}
+	counts, err := inspectNativePackageLocalTestTrust(
+		t.trustRootStore, t.trustPublisherStore, t.certificateDER,
+	)
+	if err != nil {
+		return nativePackageRecoveryTrustCounts{}, err
+	}
+	if counts.root < 0 || counts.root > 1 ||
+		counts.trustedPublisher < 0 || counts.trustedPublisher > 1 {
+		return nativePackageRecoveryTrustCounts{}, fmt.Errorf(
+			"local-test trust must contain at most one exact certificate per store; observed Root=%d TrustedPublisher=%d",
+			counts.root, counts.trustedPublisher,
+		)
+	}
+	return counts, nil
+}
+
+func (t *windowsNativePackageUninstallTransaction) prepareLocalTestTrustUninstall(
+	ctx context.Context,
+) error {
+	if t.releaseTrustLease == nil || t.releasePackageMutex == nil ||
+		t.releaseServiceMutex == nil {
+		return errors.New("local-test trust uninstall requires Trust -> Package -> Service locks")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := requireNativePackageTrustRecoveryClear(); err != nil {
+		return fmt.Errorf("revalidate failed-install trust recovery admission: %w", err)
+	}
+	paths, err := resolveNativePackageLocalTestTrustPaths()
+	if err != nil {
+		return err
+	}
+	t.trustPaths = paths
+	type observedRecord struct {
+		state  string
+		path   string
+		record nativePackageLocalTestTrustOwnership
+		bytes  []byte
+	}
+	var observed []observedRecord
+	for _, candidate := range []struct {
+		state string
+		path  string
+	}{
+		{state: "preparing", path: paths.preparing},
+		{state: "pending", path: paths.pending},
+		{state: "owned", path: paths.owned},
+		{state: "uninstalling", path: paths.uninstalling},
+		{state: "cleared", path: paths.cleared},
+	} {
+		record, contents, exists, readErr := readNativePackageLocalTestTrustRecord(candidate.path)
+		if readErr != nil {
+			return fmt.Errorf("read local-test trust %s record: %w", candidate.state, readErr)
+		}
+		if exists {
+			observed = append(observed, observedRecord{
+				state: candidate.state, path: candidate.path,
+				record: record, bytes: contents,
+			})
+		}
+	}
+	if len(observed) > 1 {
+		return errors.New("multiple local-test trust ownership states exist")
+	}
+	if !t.request.localTestTrustRequested() {
+		states := make([]string, len(observed))
+		for index := range observed {
+			states[index] = observed[index].state
+		}
+		if err := nativePackageProductionUninstallLocalTrustAdmission(states); err != nil {
+			return err
+		}
+		return nil
+	}
+	if t.certificateHandle == 0 || len(t.certificateDER) == 0 {
+		return errors.New("source-bound local-test certificate was not locked before trust admission")
+	}
+	if err := t.openLocalTestTrustStores(); err != nil {
+		return err
+	}
+	counts, err := t.inspectLocalTestTrustCounts()
+	if err != nil {
+		return err
+	}
+	if len(observed) == 0 {
+		if counts.root != 0 || counts.trustedPublisher != 0 {
+			return fmt.Errorf(
+				"exact local-test certificate exists without durable ownership; refusing cleanup (Root=%d TrustedPublisher=%d)",
+				counts.root, counts.trustedPublisher,
+			)
+		}
+		if err := proveNativePackageSettledLocalTestTopologyAbsentReadOnly(
+			ctx, t.request.driverHelper, t.request.targetUserSID,
+		); err != nil {
+			return fmt.Errorf(
+				"recordless local-test uninstall cannot settle until exact topology absence is proven: %w",
+				err,
+			)
+		}
+		return &nativePackageUninstallAlreadySettledError{state: "absent"}
+	}
+	current := observed[0]
+	if !nativePackageLocalTestTrustRecordMatchesUninstall(current.record, t.request) {
+		return errors.New("local-test trust ownership belongs to a different source-bound package")
+	}
+	t.trustRecord = current.record
+	t.trustRecordBytes = append([]byte(nil), current.bytes...)
+	t.trustState = current.state
+	if current.state == "preparing" {
+		return errors.New(
+			"local-test trust preparation is incomplete; rerun exact Install recovery before Uninstall",
+		)
+	}
+	if current.state == "cleared" {
+		if counts.root != current.record.BaselineRoot ||
+			counts.trustedPublisher != current.record.BaselineTrustedPublisher {
+			return fmt.Errorf(
+				"cleared local-test trust no longer matches its exact baseline (Root=%d/%d TrustedPublisher=%d/%d)",
+				counts.root, current.record.BaselineRoot,
+				counts.trustedPublisher, current.record.BaselineTrustedPublisher,
+			)
+		}
+		if err := proveNativePackageSettledLocalTestTopologyAbsentReadOnly(
+			ctx, t.request.driverHelper, t.request.targetUserSID,
+		); err != nil {
+			return fmt.Errorf(
+				"cleared local-test uninstall cannot settle until exact topology absence is proven: %w",
+				err,
+			)
+		}
+		return &nativePackageUninstallAlreadySettledError{state: "cleared"}
+	}
+	if !nativePackageLocalTestUninstallMayMutateTopology(current.state) {
+		return errors.New("unknown local-test trust ownership state")
+	}
+	switch current.state {
+	case "pending", "owned":
+		if err := transitionNativePackageLocalTestTrustRecord(
+			current.path, paths.uninstalling, t.trustRecordBytes,
+		); err != nil {
+			return fmt.Errorf("publish local-test trust uninstall authority: %w", err)
+		}
+		t.trustState = "uninstalling"
+		if err := t.trustCut("uninstalling-published"); err != nil {
+			return err
+		}
+	case "uninstalling":
+		// A prior process cut may have occurred at any topology-removal or
+		// certificate-baseline step. All operations below are idempotent while
+		// this exact state remains authoritative.
+	default:
+		return errors.New("unknown local-test trust ownership state")
 	}
 	return nil
 }
@@ -864,6 +1135,88 @@ func (t *windowsNativePackageUninstallTransaction) Cleanup(
 	return cleanupRebootRequired, errors.Join(cleanupErrors...)
 }
 
+func (t *windowsNativePackageUninstallTransaction) FinalizeTrust(ctx context.Context) error {
+	if !t.request.localTestTrustRequested() {
+		return nil
+	}
+	if t.releaseTrustLease == nil || t.releasePackageMutex == nil ||
+		t.releaseServiceMutex == nil {
+		return errors.New("local-test trust finalization lost Trust -> Package -> Service locks")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	counts, err := t.inspectLocalTestTrustCounts()
+	if err != nil {
+		return err
+	}
+	switch t.trustState {
+	case "absent":
+		if counts.root != 0 || counts.trustedPublisher != 0 {
+			return fmt.Errorf(
+				"unowned local-test trust appeared during uninstall (Root=%d TrustedPublisher=%d)",
+				counts.root, counts.trustedPublisher,
+			)
+		}
+		return nil
+	case "cleared":
+		if counts.root != t.trustRecord.BaselineRoot ||
+			counts.trustedPublisher != t.trustRecord.BaselineTrustedPublisher {
+			return errors.New("cleared local-test trust changed from its exact baseline")
+		}
+		return nil
+	case "uninstalling":
+		// Continue below. The durable state remains uninstalling on every error
+		// and therefore blocks a successor Install from reusing this trust.
+	default:
+		return fmt.Errorf("local-test trust is not authorized for finalization from state %q", t.trustState)
+	}
+	if t.helperHandle == 0 {
+		return errors.New("packaged driver helper was not retained through trust finalization")
+	}
+	helperHash, err := hashNativePackageHandle(t.helperHandle)
+	if err != nil {
+		return fmt.Errorf("rehash packaged driver helper before topology proof: %w", err)
+	}
+	if !strings.EqualFold(helperHash, t.request.expectedHelperSHA256) {
+		return errors.New("packaged driver helper changed before trust finalization")
+	}
+	if err := proveNativePackageLocalTestTopologyAbsent(
+		ctx, t.logger, t.request.driverHelper, t.request.targetUserSID,
+	); err != nil {
+		return fmt.Errorf("prove exact native topology absent before restoring trust baseline: %w", err)
+	}
+	if err := restoreNativePackageLocalTestTrustStores(
+		t.trustRootStore,
+		t.trustPublisherStore,
+		t.certificateDER,
+		t.trustRecord,
+		t.trustCut,
+	); err != nil {
+		return fmt.Errorf("restore exact local-test certificate baselines: %w", err)
+	}
+	if err := transitionNativePackageLocalTestTrustRecord(
+		t.trustPaths.uninstalling,
+		t.trustPaths.cleared,
+		t.trustRecordBytes,
+	); err != nil {
+		return fmt.Errorf("publish cleared local-test trust settlement: %w", err)
+	}
+	t.trustState = "cleared"
+	if err := t.trustCut("cleared-published"); err != nil {
+		return err
+	}
+	counts, err = t.inspectLocalTestTrustCounts()
+	if err != nil {
+		return err
+	}
+	if counts.root != t.trustRecord.BaselineRoot ||
+		counts.trustedPublisher != t.trustRecord.BaselineTrustedPublisher {
+		return errors.New("local-test trust baseline changed after cleared settlement")
+	}
+	return nil
+}
+
 func deleteNativePackageUninstallFileHandle(handle windows.Handle) error {
 	disposition := struct{ DeleteFile byte }{DeleteFile: 1}
 	result, _, callErr := setNativeFileInformationByHandle.Call(
@@ -1121,6 +1474,24 @@ func (t *windowsNativePackageUninstallTransaction) Close() error {
 	}
 	closeNativePackageUninstallHandles(t.managedDirectories)
 	t.managedDirectories = nil
+	if t.trustRootStore != 0 {
+		if err := windows.CertCloseStore(t.trustRootStore, 0); err != nil {
+			closeErrors = append(closeErrors, fmt.Errorf("close LocalMachine Root trust store: %w", err))
+		}
+		t.trustRootStore = 0
+	}
+	if t.trustPublisherStore != 0 {
+		if err := windows.CertCloseStore(t.trustPublisherStore, 0); err != nil {
+			closeErrors = append(closeErrors, fmt.Errorf("close LocalMachine TrustedPublisher trust store: %w", err))
+		}
+		t.trustPublisherStore = 0
+	}
+	if t.certificateHandle != 0 {
+		if err := windows.CloseHandle(t.certificateHandle); err != nil {
+			closeErrors = append(closeErrors, fmt.Errorf("close source-bound local-test certificate: %w", err))
+		}
+		t.certificateHandle = 0
+	}
 	if t.helperHandle != 0 {
 		if err := windows.CloseHandle(t.helperHandle); err != nil {
 			closeErrors = append(closeErrors, fmt.Errorf("close packaged driver helper: %w", err))
@@ -1149,6 +1520,12 @@ func (t *windowsNativePackageUninstallTransaction) Close() error {
 	if t.releasePackageMutex != nil {
 		t.releasePackageMutex()
 		t.releasePackageMutex = nil
+	}
+	if t.releaseTrustLease != nil {
+		if err := t.releaseTrustLease(); err != nil {
+			closeErrors = append(closeErrors, fmt.Errorf("release local-test trust transaction: %w", err))
+		}
+		t.releaseTrustLease = nil
 	}
 	return errors.Join(closeErrors...)
 }

@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-func TestLocalTestPackageUsesFullTransactionalNativeBackend(t *testing.T) {
+func TestLocalTestPackageUsesNativeTrustTransaction(t *testing.T) {
 	root := filepath.Join("..", "..", "..")
 	read := func(path ...string) string {
 		t.Helper()
@@ -24,21 +24,6 @@ func TestLocalTestPackageUsesFullTransactionalNativeBackend(t *testing.T) {
 	for _, required := range []string{
 		"workflow_dispatch:",
 		"New-ViiperUdeLocalTestPackage.ps1",
-		"[Security.Cryptography.X509Certificates.X509Store]::new(",
-		"ViiperNativeCertificateStore",
-		"CertAddEncodedCertificateToStore(",
-		"CertFindCertificateInStore(",
-		"CertDeleteCertificateFromStore(found)",
-		"CERT_STORE_ADD_NEW",
-		"$addedTrust += $storeName",
-		"CERT_SYSTEM_STORE_LOCAL_MACHINE",
-		"[Security.Cryptography.X509Certificates.StoreName]::Root",
-		"[Security.Cryptography.X509Certificates.StoreName]::TrustedPublisher",
-		"[Security.Cryptography.X509Certificates.StoreLocation]::LocalMachine",
-		"foreach ($storeName in $addedTrust)",
-		"$cleanupErrors.Add(",
-		"$certificate.Dispose()",
-		"-BrokerPath native/udecx/x64/Release/viiper.exe",
 		"ViiperUde-x64-local-test-${{ github.sha }}",
 		"path: native/udecx/x64/Release/ViiperUdeLocalTest/**",
 		"retention-days: 7",
@@ -47,44 +32,22 @@ func TestLocalTestPackageUsesFullTransactionalNativeBackend(t *testing.T) {
 			t.Fatalf("local-test workflow omitted %q", required)
 		}
 	}
-	for _, forbidden := range []string{
-		"native/udecx/x64/Release/**",
-		"native/udecx/driver/x64/Release/**",
-		"native/udecx/package/x64/Release/**",
-		"$store.Add($certificate)",
-		"$store.Remove($exactMatch[0])",
-		"certutil.exe",
-		"Invoke-BoundedCertUtil",
-		"CERT_SYSTEM_STORE_CURRENT_USER",
-		"[Security.Cryptography.X509Certificates.StoreLocation]::CurrentUser",
-	} {
-		if strings.Contains(workflow, forbidden) {
-			t.Fatalf("local-test workflow uploads broad build tree %q", forbidden)
-		}
-	}
 
 	composer := read("native", "udecx", "tools", "New-ViiperUdeLocalTestPackage.ps1")
 	for _, required := range []string{
 		"[string]$BrokerPath",
 		"[string]$TestCertificatePath",
-		"$certificateSha256 = Get-CertificateSha256 $expectedCertificate",
-		"Resolve-ExactInput $BrokerPath 'viiper.exe'",
-		"signingRoute = 'LocalTest'",
-		"releaseEligible = $false",
 		"testSignerCertificateSha256",
 		"installerScriptSha256",
-		"-ValidationMode LocalTest",
-		"-RequireLocalTestToolchainValidation",
 		"local-test-package.lock.json",
-		"Local test package lock SHA-256: $lockSha256",
 		"$broker native-package-install --help",
-		"$expectedBrokerFlags",
-		"$broker native-package-broker-commit --help",
-		"$expectedBrokerCommitFlags",
-		"'--expected-token-sha-256'",
-		"'--expected-broker-sha-256'",
-		"$helper verify (Join-Path $driverDirectory 'ViiperUde.inf')",
-		"result=success operation=verify changed=0 rebootRequired=0 rollback=not-needed exitCode=0",
+		"'--local-test-trust-capability'",
+		"'--expected-trust-capability-sha-256'",
+		"'--local-test-certificate-path'",
+		"'--expected-local-test-certificate-sha-256'",
+		"'--expected-local-test-package-lock-sha-256'",
+		"System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+		"-PreflightOnly",
 	} {
 		if !strings.Contains(composer, required) {
 			t.Fatalf("local-test composer omitted %q", required)
@@ -97,334 +60,194 @@ func TestLocalTestPackageUsesFullTransactionalNativeBackend(t *testing.T) {
 		"[string]$ExpectedPackageLockSHA256",
 		"$installerScriptStream",
 		"$lock.installerScriptSha256 -cne $actualInstallerScriptSha256",
-		"$lockAlgorithm.ComputeHash($lockBytes)",
-		"@(Compare-Object -ReferenceObject $wanted -DifferenceObject $actual -CaseSensitive).Count",
 		"out-of-band workflow digest",
-		"O:BAG:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)",
-		"[IO.Directory]::CreateDirectory($Path, $expectedSecurity)",
-		"$directory.SetAccessControl($expectedSecurity)",
 		"Assert-ProtectedStagingDirectory",
-		"$actualSecurity.AreAccessRulesProtected",
-		"$actualSecurity.GetOwner([Security.Principal.SecurityIdentifier])",
-		"$actualSecurity.GetAccessRules(",
-		"@('S-1-5-18', 'S-1-5-32-544')",
-		"[Security.AccessControl.FileSystemRights]::FullControl",
-		"[Security.AccessControl.InheritanceFlags]::ContainerInherit",
-		"[Security.AccessControl.InheritanceFlags]::ObjectInherit",
 		"Copy-ExactBrokerToProtectedStage",
-		"[IO.FileShare]::Read",
 		"[IO.FileOptions]::WriteThrough",
-		"$lockByPath['viiper.exe']",
-		"Remove-ProtectedStagingDirectory",
 		"Remove-PreBootProtectedStagingDirectories",
-		"public static class ViiperWindowsUptime",
-		"public static extern ulong GetTickCount64();",
-		"Get-WindowsBootBoundaryUtc",
-		"$_.LastWriteTimeUtc -lt $bootBoundaryUtc",
 		"Invoke-JoinedNativeProcess",
-		"if (-not $process.Start())",
-		"$Started.Value = $true",
 		"$process.WaitForExit()",
-		"$retainTrustOnFailure = $processStarted",
-		"'--expected-broker-sha-256', $brokerHash",
-		"'--expected-helper-sha-256', $helperHash",
-		"'--expected-manifest-sha-256', $manifestHash",
-		"'--expected-inf-sha-256', $infHash",
-		"'--expected-sys-sha-256', $sysHash",
-		"'--expected-cat-sha-256', $catHash",
-		"'--target-user-sid', $TargetUserSID",
-		"'--driver-validation-mode', 'local-test'",
+		"New-LocalTestTrustCapability",
+		"Remove-LocalTestTrustCapability",
+		"viiper.native.local-test-trust-capability/v1",
+		"parentCreationFileTime",
+		"certificatePath = [IO.Path]::GetFullPath($CertificatePath)",
+		"trustJournalSchema = 'viiper.native.local-test-trust-ownership/v1'",
+		"trustJournalDirectory = [IO.Path]::GetFullPath($TrustJournalDirectory)",
+		"'--local-test-certificate-path', $certificatePath",
+		"'--expected-local-test-certificate-sha-256', $certificateSha256",
+		"'--expected-local-test-package-lock-sha-256', $actualPackageLockSha256",
 		"-AcknowledgeDisposableTestMachine",
 		"testsigning\\s+Yes",
-		"Restart, rerun this identical install command",
 		"[switch]$PreflightOnly",
 		"operation=local-test-preflight",
-		"ViiperLocalTestCertificateStore",
-		"CertAddEncodedCertificateToStore(",
-		"CertFindCertificateInStore(",
-		"CertDeleteCertificateFromStore(found)",
-		"CERT_STORE_ADD_NEW",
-		"CRYPT_E_NOT_FOUND",
-		"Get-ExactLocalTestTrustState",
-		"$addedStores.Add($storeName)",
-		"[Security.Cryptography.X509Certificates.OpenFlags]::ReadOnly",
-		"action=verify-add result=present",
-		"action=verify-cleanup result=absent",
-		"LocalMachine\\$storeName trust cleanup failed during $cleanupAction.",
-		"ExactSpelling = true",
-		"[Parameter(Mandatory = $true)][int]$ProcessExitCode",
-		"[string]::Join([Environment]::NewLine, [string[]]$Lines)",
-		"[int]::TryParse($match.Groups['exit'].Value, [ref]$proofExitCode)",
-		"$proofExitCode -ne $ProcessExitCode",
-		"-Lines $output -ProcessExitCode $exitCode",
-		"$certificateStoreOpenMethod = [ViiperLocalTestCertificateStore].GetMethod(",
-		"$certificateStoreOpenImport.ExactSpelling",
-		"does not bind the exact CertOpenStore entry point",
+		"retained its durable trust/package authority",
 	} {
 		if !strings.Contains(installer, required) {
 			t.Fatalf("local-test installer omitted %q", required)
 		}
 	}
-	for _, required := range []string{
-		"System32\\WindowsPowerShell\\v1.0\\powershell.exe",
-		"-PreflightOnly",
-		"Windows PowerShell 5.1 local-test installer preflight failed",
-	} {
-		if !strings.Contains(composer, required) {
-			t.Fatalf("local-test composer omitted Windows PowerShell preflight contract %q", required)
-		}
-	}
 	for _, forbidden := range []string{
-		"& $helperPath install",
-		"Test-ViiperUdeSignedPackage.ps1",
-		"git.exe",
-		"status --porcelain",
-		"'--expected-broker-sha256'",
-		"'--expected-helper-sha256'",
-		"'--expected-manifest-sha256'",
-		"'--expected-inf-sha256'",
-		"'--expected-sys-sha256'",
-		"'--expected-cat-sha256'",
-		"GetSecurityDescriptorBinaryForm",
-		"BinaryLength",
+		"[Security.Cryptography.X509Certificates.X509Store]::new(",
+		"ViiperLocalTestCertificateStore",
+		"CertAddEncodedCertificateToStore(",
+		"CertDeleteCertificateFromStore(",
+		"Open-LocalTestTrustOwnershipJournal",
+		"Complete-LocalTestTrustOwnershipInstall",
+		"Restore-LocalTestTrustOwnershipBaseline",
+		"local-test-trust-preparing-v1.json",
+		"local-test-trust-pending-v1.json",
+		"local-test-trust-owned-v1.json",
+		"Enter-LocalTestTrustLease",
+		"Exit-LocalTestTrustLease",
+		"$stream.Lock(0, 1)",
+		"$stream.Unlock(0, 1)",
+		"Test-SettledLocalTestFailure",
+		"trustJournalState",
+		"trustJournalSha256",
+		"leasePath",
 		"$store.Add($certificate)",
 		"$store.Remove(",
-		"[Environment]::TickCount64",
-		"[Environment]::TickCount",
 	} {
 		if strings.Contains(installer, forbidden) {
-			t.Fatalf("local-test elevated path retained unsafe dependency %q", forbidden)
+			t.Fatalf("PowerShell retained forbidden trust ownership operation %q", forbidden)
 		}
 	}
 
-	cleanupStart := strings.Index(installer, "function Remove-NewLocalTestTrust")
-	cleanupEnd := strings.Index(installer, "function Test-SettledLocalTestFailure")
-	if cleanupStart < 0 || cleanupEnd <= cleanupStart {
-		t.Fatal("local-test installer trust cleanup function is missing or malformed")
-	}
-	cleanup := installer[cleanupStart:cleanupEnd]
-	remove := strings.Index(cleanup, "[ViiperLocalTestCertificateStore]::Remove(")
-	verify := strings.LastIndex(cleanup, "Get-ExactLocalTestTrustState -StoreName $storeName")
-	absence := strings.Index(cleanup, "if ($cleanupState.ExactCount -ne 0)")
-	if remove < 0 || verify <= remove || absence <= verify {
-		t.Fatal("local-test installer does not verify persisted exact-certificate absence after native removal")
-	}
-	if strings.Count(cleanup, "catch {") != 1 ||
-		strings.Index(cleanup, "$removalErrors.Add(") < strings.Index(cleanup, "catch {") {
-		t.Fatal("local-test installer does not independently aggregate per-store cleanup failures")
-	}
-	preflightStart := strings.Index(installer, "if ($PreflightOnly) {")
-	interopCompile := strings.Index(installer, "if (-not ('ViiperLocalTestCertificateStore' -as [type])) {")
-	interopVerify := strings.Index(installer, "$certificateStoreOpenMethod = [ViiperLocalTestCertificateStore].GetMethod(")
-	preflightSuccess := strings.Index(installer,
-		"Write-Output 'result=success operation=local-test-preflight changed=0 rebootRequired=0 rollback=not-needed exitCode=0'")
-	trustAddCall := strings.Index(installer, "[ViiperLocalTestCertificateStore]::Add(")
-	trustRemoveCall := strings.Index(installer, "[ViiperLocalTestCertificateStore]::Remove(")
-	if preflightStart < 0 || interopCompile <= preflightStart || interopVerify <= interopCompile ||
-		preflightSuccess <= interopVerify || trustAddCall <= preflightSuccess ||
-		trustRemoveCall <= preflightSuccess {
-		t.Fatal("local-test preflight can return success before compiling and inspecting the exact certificate-store interop")
-	}
-	if strings.Contains(installer[preflightStart:interopCompile], "return") {
-		t.Fatal("local-test preflight can return before compiling the exact certificate-store interop")
-	}
-	preflightCleanup := strings.Index(installer[preflightStart:preflightSuccess],
-		"Remove-PreBootProtectedStagingDirectories")
-	preflightOldAssertion := strings.Index(installer[preflightStart:preflightSuccess],
-		"Pre-boot protected staging cleanup did not remove its test directory.")
-	preflightCurrentAssertion := strings.Index(installer[preflightStart:preflightSuccess],
-		"Pre-boot protected staging cleanup removed a same-boot test directory.")
-	if preflightCleanup < 0 || preflightOldAssertion <= preflightCleanup ||
-		preflightCurrentAssertion <= preflightOldAssertion {
-		t.Fatal("local-test preflight does not execute both sides of pre-boot staging cleanup")
-	}
-	settledStart := strings.Index(installer, "function Test-SettledLocalTestFailure")
-	settledEnd := strings.Index(installer, "$trustCommitted = $false")
-	if settledStart < 0 || settledEnd <= settledStart {
-		t.Fatal("local-test installer settled-failure predicate is missing or malformed")
-	}
-	settled := installer[settledStart:settledEnd]
-	if strings.Contains(settled, "$Lines | Out-String") {
-		t.Fatal("local-test installer formats and host-wraps native settled-failure proof before parsing")
-	}
-	joinLines := strings.Index(settled, "[string]::Join([Environment]::NewLine, [string[]]$Lines)")
-	parseProof := strings.Index(settled, "[regex]::Matches($proofText, $pattern)")
-	parseExit := strings.Index(settled, "[int]::TryParse($match.Groups['exit'].Value, [ref]$proofExitCode)")
-	bindExit := strings.Index(settled, "$proofExitCode -ne $ProcessExitCode")
-	classify := strings.Index(settled, "$match.Groups['changed'].Value -ceq '0'")
-	if joinLines < 0 || parseProof <= joinLines || parseExit <= parseProof ||
-		bindExit <= parseExit || classify <= bindExit {
-		t.Fatal("local-test installer classifies settled proof before binding it to the observed child exit")
+	capabilityCreate := strings.LastIndex(installer, "$trustCapability = New-LocalTestTrustCapability")
+	transactionLaunch := strings.LastIndex(installer, "$processResult = Invoke-JoinedNativeProcess")
+	capabilityCleanup := strings.LastIndex(installer, "Remove-LocalTestTrustCapability")
+	stageCleanup := strings.LastIndex(installer, "Remove-ProtectedStagingDirectory")
+	if capabilityCreate < 0 || transactionLaunch <= capabilityCreate ||
+		capabilityCleanup <= transactionLaunch || stageCleanup <= capabilityCleanup {
+		t.Fatal("PowerShell does not hold the sealed parent capability through the joined native child")
 	}
 
 	packageCommand := read("internal", "cmd", "native_package.go")
 	packageWindows := read("internal", "cmd", "native_package_windows.go")
-	helperSource := read("native", "udecx", "tools", "ViiperUdeCtl.cpp")
 	for _, required := range []string{
-		"BuildBrokerCommitCommandLine(",
-		`L" --expected-token-sha-256 "`,
-		`L" --expected-broker-sha-256 "`,
-		`L"self-test-broker-command"`,
-	} {
-		if !strings.Contains(helperSource, required) {
-			t.Fatalf("native helper omitted nested broker command contract %q", required)
-		}
-	}
-	for _, obsolete := range []string{
-		`L" --expected-token-sha256 "`,
-		`L" --expected-broker-sha256 "`,
-	} {
-		if strings.Contains(helperSource, obsolete) {
-			t.Fatalf("native helper retained obsolete nested broker option %q", obsolete)
-		}
-	}
-	for _, required := range []string{
+		"LocalTestCertificatePath",
+		"localTestCertificatePath",
 		`default:"production" enum:"production,local-test"`,
-		`r.driverValidationMode != "production" && r.driverValidationMode != "local-test"`,
 	} {
 		if !strings.Contains(packageCommand, required) {
 			t.Fatalf("native package command omitted %q", required)
 		}
 	}
-	if !strings.Contains(packageWindows,
-		`"--validation-mode", t.request.driverValidationMode`) {
-		t.Fatal("native package transaction does not pass the validated signature route to its retained helper")
-	}
-	if !strings.Contains(helperSource,
-		`if (!SetupGetStringFieldW(&context, field, nullptr, 0, &required) ||`) {
-		t.Fatal("native helper does not honor SetupGetStringFieldW's successful size-query contract")
-	}
-	if strings.Contains(helperSource,
-		"SetupGetStringFieldW(&context, field, nullptr, 0, &required);\n"+
-			"    if (required == 0 || GetLastError() != ERROR_INSUFFICIENT_BUFFER)") {
-		t.Fatal("native helper still treats a successful SetupGetStringFieldW size query as failure")
-	}
-	if strings.Count(helperSource,
-		"code != ERROR_AUTHENTICODE_TRUSTED_PUBLISHER") != 1 {
-		t.Fatal("native helper does not retain SetupAPI's exact trusted-Authenticode classification for installed packages")
-	}
 	for _, required := range []string{
-		"bool allowUntrustedLocalTestRoot",
-		"allowUntrustedLocalTestRoot &&",
-		"status == static_cast<LONG>(CERT_E_UNTRUSTEDROOT)",
-		"VerifyDriverCatalogMember(catalogPath, infPath, true, error)",
-		"VerifyDriverCatalogMember(catalogPath, infPath, false, error)",
+		"initializeNativePackageRecoveryTrustLease",
+		"acquireNativePackageRecoveryTrustLease",
+		"prepareLocalTestTrust",
+		"commitLocalTestTrust",
+		"maybeRestoreLocalTestTrustAfterFailure",
+		"publishNativePackageLocalTestTrustPreparing",
+		"transitionNativePackageLocalTestTrustRecord",
+		"restoreNativePackageLocalTestTrustStores",
+		"proveNativePackageLocalTestTopologyAbsent",
+		"topology-success-before-owned",
+		"Trust -> Package -> Service",
 	} {
-		if !strings.Contains(helperSource, required) {
-			t.Fatalf("native helper omitted scoped pre-trust catalog policy %q", required)
+		if !strings.Contains(packageWindows, required) {
+			t.Fatalf("native trust transaction omitted %q", required)
 		}
 	}
-	if strings.Contains(helperSource,
-		"ERROR_AUTHENTICODE_TRUST_NOT_ESTABLISHED") {
-		t.Fatal("native helper accepts an Authenticode publisher that is not in TrustedPublisher")
-	}
-	if !strings.Contains(helperSource,
-		"GUID action = WINTRUST_ACTION_GENERIC_VERIFY_V2;") {
-		t.Fatal("native helper does not use Authenticode policy for exact catalog-member verification")
-	}
-	if strings.Contains(helperSource,
-		"GUID action = DRIVER_ACTION_VERIFY;") {
-		t.Fatal("native helper incorrectly uses the WHQL-only policy for test catalog membership")
+	trustAcquire := strings.Index(packageWindows, "acquireNativePackageRecoveryTrustLease(ctx, trustDeadline)")
+	packageAcquire := strings.Index(packageWindows, "acquireNamedNativePackageMutex(nativePackageMutexName")
+	serviceAcquire := strings.Index(packageWindows, "acquireNativeInstallMutex(budget)")
+	if trustAcquire < 0 || packageAcquire <= trustAcquire || serviceAcquire <= packageAcquire {
+		t.Fatal("normal native transaction does not acquire Trust -> Package -> Service")
 	}
 }
 
-func TestLocalTestSettledFailureRequiresObservedExitMatch(t *testing.T) {
+func TestLocalTestCapabilitySerializesOnWindowsPowerShellHosts(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("Windows PowerShell contract")
 	}
-
 	root := filepath.Join("..", "..", "..")
 	installer, err := filepath.Abs(filepath.Join(
 		root, "native", "udecx", "tools", "Install-ViiperUdeLocalTest.ps1"))
 	if err != nil {
 		t.Fatalf("resolve local-test installer: %v", err)
 	}
-	powerShell := filepath.Join(
-		os.Getenv("SystemRoot"), "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
-	if _, err := os.Stat(powerShell); err != nil {
-		t.Fatalf("locate Windows PowerShell: %v", err)
+	hosts := []string{filepath.Join(
+		os.Getenv("SystemRoot"), "System32", "WindowsPowerShell", "v1.0", "powershell.exe")}
+	if pwsh, err := exec.LookPath("pwsh.exe"); err == nil {
+		hosts = append(hosts, pwsh)
 	}
-
 	const behaviorContract = `
 $ErrorActionPreference = 'Stop'
+$tokens = $null
+$errors = $null
 $source = Get-Content -LiteralPath $env:VIIPER_INSTALLER_CONTRACT_PATH -Raw
+[void][Management.Automation.Language.Parser]::ParseFile(
+    $env:VIIPER_INSTALLER_CONTRACT_PATH, [ref]$tokens, [ref]$errors)
+if ($errors.Count -ne 0) { throw ($errors | ForEach-Object ToString | Out-String) }
+foreach ($forbidden in @(
+        'ViiperLocalTestCertificateStore', 'CertAddEncodedCertificateToStore',
+        'CertDeleteCertificateFromStore', 'Enter-LocalTestTrustLease',
+        'Open-LocalTestTrustOwnershipJournal', 'Test-SettledLocalTestFailure')) {
+    if ($source.Contains($forbidden)) { throw "PowerShell retained forbidden trust writer $forbidden" }
+}
 $csharpBlocks = @([regex]::Matches(
     $source, "(?s)Add-Type -Language CSharp -TypeDefinition @'\r?\n(?<source>.*?)\r?\n'@") |
     ForEach-Object { $_.Groups['source'].Value } |
-    Where-Object { $_ -match 'public static class ViiperLocalTestCertificateStore' })
-if ($csharpBlocks.Count -ne 1) { throw 'Embedded certificate-store source was not found exactly once.' }
+    Where-Object { $_ -match 'public static class ViiperLocalTestStagingNative' })
+if ($csharpBlocks.Count -ne 1) { throw 'Protected-staging native source was not found exactly once.' }
 Add-Type -Language CSharp -TypeDefinition $csharpBlocks[0]
-$openStore = [ViiperLocalTestCertificateStore].GetMethod(
-    'CertOpenStore', [Reflection.BindingFlags]'NonPublic,Static')
-$import = $openStore.GetCustomAttributes(
-    [Runtime.InteropServices.DllImportAttribute], $false)[0]
-if ($import.Value -cne 'crypt32.dll' -or -not $import.ExactSpelling -or
-    $import.CharSet -ne [Runtime.InteropServices.CharSet]::Unicode) {
-    throw 'CertOpenStore P/Invoke metadata does not name the exact native entry point.'
+$capabilityStart = $source.IndexOf('function New-LocalTestTrustCapability')
+$capabilityEnd = $source.IndexOf('function Remove-LocalTestTrustCapability', $capabilityStart)
+if ($capabilityStart -lt 0 -or $capabilityEnd -le $capabilityStart) {
+    throw 'Capability function extent was not found.'
 }
-
-$start = $source.IndexOf('function Test-SettledLocalTestFailure')
-$end = $source.IndexOf('$trustCommitted = $false', $start)
-if ($start -lt 0 -or $end -le $start) { throw 'Settled-failure predicate was not found.' }
-Invoke-Expression $source.Substring($start, $end - $start)
-$settled = @(
-    'VIIPER: error: install native driver and broker transaction: native driver helper failed with exit 1: exit status 1:',
-    ('result=error operation=install changed=1 rebootRequired=0 rollback=succeeded exitCode=1 ' +
-        'phase="broker-preflight" win32Error=1603 nestedExitCode=4 ' +
-        'message="nested broker transaction failed after proving a settled state; nested diagnostic: ' +
-        'lock package transaction token: The process cannot access the file because it is being used by another process."')
-)
-if ($settled[1].Length -le 120) {
-    throw 'Settled proof fixture does not exceed the live host width.'
+$capabilitySource = $source.Substring($capabilityStart, $capabilityEnd - $capabilityStart)
+$orderedFields = @(
+    'schema =', 'nonce =', 'parentPid =', 'parentCreationFileTime =',
+    'sourceRevision =', 'certificatePath =', 'certificateSha256 =',
+    'packageLockSha256 =', 'trustJournalSchema =', 'trustJournalDirectory =')
+$previous = -1
+foreach ($field in $orderedFields) {
+    $matches = [regex]::Matches(
+        $capabilitySource, ('(?m)^\s*' + [regex]::Escape($field)))
+    if ($matches.Count -ne 1) { throw "Capability field occurrence failed at $field" }
+    $position = $matches[0].Index
+    if ($position -le $previous) { throw "Capability field order failed at $field" }
+    $previous = $position
 }
-if (-not (Test-SettledLocalTestFailure -Lines $settled -ProcessExitCode 1)) {
-    throw 'Matching long settled proof was rejected.'
+$payload = [ordered]@{
+    schema = 'viiper.native.local-test-trust-capability/v1'
+    nonce = '01010101010101010101010101010101'
+    parentPid = [uint32]1234
+    parentCreationFileTime = [uint64]134000000000000000
+    sourceRevision = ('a' * 40)
+    certificatePath = 'C:\package\ViiperUdeTest.cer'
+    certificateSha256 = ('b' * 64)
+    packageLockSha256 = ('c' * 64)
+    trustJournalSchema = 'viiper.native.local-test-trust-ownership/v1'
+    trustJournalDirectory = 'C:\ProgramData\VIIPER-TrustManager'
 }
-$retainTrustOnFailure = $true
-if (Test-SettledLocalTestFailure -Lines $settled -ProcessExitCode 1) {
-    $retainTrustOnFailure = $false
+$json = $payload | ConvertTo-Json -Compress -Depth 2
+$roundTrip = $json | ConvertFrom-Json
+if ([string]$roundTrip.schema -cne 'viiper.native.local-test-trust-capability/v1' -or
+    [string]$roundTrip.certificatePath -cne 'C:\package\ViiperUdeTest.cer' -or
+    [string]$roundTrip.trustJournalSchema -cne 'viiper.native.local-test-trust-ownership/v1' -or
+    [string]$roundTrip.trustJournalDirectory -cne 'C:\ProgramData\VIIPER-TrustManager') {
+    throw "Capability JSON did not round-trip exactly: $json"
 }
-if ($retainTrustOnFailure) {
-    throw 'Matching long settled proof did not authorize trust removal.'
-}
-$cleanupCalls = 0
-$trustCommitted = $false
-try {
-    throw 'simulated post-process transaction failure'
-}
-catch {
-    if (-not $trustCommitted -and -not $retainTrustOnFailure) {
-        $cleanupCalls++
-    }
-}
-if ($cleanupCalls -ne 1) {
-    throw 'Settled rollback did not enter the trust-cleanup branch exactly once.'
-}
-$retainTrustOnFailure = $true
-if (Test-SettledLocalTestFailure -Lines $settled -ProcessExitCode 4) {
-    $retainTrustOnFailure = $false
-}
-if (-not $retainTrustOnFailure) {
-    throw 'Mismatched proof exit incorrectly authorized trust removal.'
-}
-$preflight = @(
-    'result=error operation=install changed=0 rebootRequired=0 rollback=not-needed exitCode=4 phase="preflight"'
-)
-if (-not (Test-SettledLocalTestFailure -Lines $preflight -ProcessExitCode 4)) {
-    throw 'Matching settled preflight proof was rejected.'
-}
-if (Test-SettledLocalTestFailure -Lines $preflight -ProcessExitCode 1) {
-    throw 'Mismatched preflight proof was accepted.'
+if ($json.IndexOf([char]13) -ge 0 -or $json.IndexOf([char]10) -ge 0) {
+    throw 'Capability JSON contains noncanonical framing.'
 }
 `
-	command := exec.Command(
-		powerShell, "-NoProfile", "-NonInteractive", "-Command", behaviorContract)
-	command.Env = append(os.Environ(), "VIIPER_INSTALLER_CONTRACT_PATH="+installer)
-	if output, err := command.CombinedOutput(); err != nil {
-		t.Fatalf("settled-failure behavior contract failed: %v\n%s", err, output)
+	for _, host := range hosts {
+		host := host
+		t.Run(filepath.Base(filepath.Dir(host))+"-"+filepath.Base(host), func(t *testing.T) {
+			command := exec.Command(host, "-NoProfile", "-NonInteractive", "-Command", behaviorContract)
+			command.Env = append(os.Environ(), "VIIPER_INSTALLER_CONTRACT_PATH="+installer)
+			if output, err := command.CombinedOutput(); err != nil {
+				t.Fatalf("capability host contract failed: %v\n%s", err, output)
+			}
+		})
 	}
 }
-
 func TestLocalTestBootBoundaryRunsOnWindowsPowerShell51(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("Windows PowerShell contract")

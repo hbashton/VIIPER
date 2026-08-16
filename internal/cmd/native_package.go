@@ -39,6 +39,11 @@ type nativePackageRebootRequiredError struct {
 	cause error
 }
 
+type nativePackageInstallExitError struct {
+	cause    error
+	exitCode int
+}
+
 type nativePackageRecoveryRetryError struct{}
 
 func (*nativePackageRecoveryRetryError) Error() string {
@@ -57,24 +62,37 @@ func (e *nativePackageRebootRequiredError) ExitCode() int {
 	return nativePackageRebootRequiredCode
 }
 
+func (e *nativePackageInstallExitError) Error() string { return e.cause.Error() }
+func (e *nativePackageInstallExitError) Unwrap() error { return e.cause }
+
+// ExitCode preserves the helper's authenticated, settled failure class for
+// the signed outer installer. Flattening (for example) a preflight exit 4 to
+// process exit 1 makes exact trust rollback impossible to classify safely.
+func (e *nativePackageInstallExitError) ExitCode() int { return e.exitCode }
+
 // NativePackageInstall is the narrow bootstrapper boundary for the native UDE
 // package. Production is the default and normal users enter through the signed
 // DS4Windows installer. The explicit local-test route retains the same hashes,
 // rollback, service, and authenticated health transaction for disposable
 // TESTSIGNING machines without relaxing the production route.
 type NativePackageInstall struct {
-	PackageDirectory       string `help:"Directory containing the exact Microsoft-returned INF, SYS, and CAT runtime files." required:""`
-	SubmissionManifest     string `help:"Source-bound HLK/WHCP submission manifest." required:""`
-	SourceRevision         string `help:"Reviewed 40- or 64-character source revision." required:""`
-	DriverHelper           string `help:"Path to the packaged ViiperUdeCtl.exe." required:""`
-	ExpectedBrokerSHA256   string `help:"Installer-embedded SHA-256 of this VIIPER executable." required:""`
-	ExpectedHelperSHA256   string `help:"Installer-embedded SHA-256 of ViiperUdeCtl.exe." required:""`
-	ExpectedManifestSHA256 string `help:"Installer-embedded SHA-256 of the reviewed HLK/WHCP manifest." required:""`
-	ExpectedInfSHA256      string `help:"Installer-embedded SHA-256 of the Microsoft-returned ViiperUde.inf." required:""`
-	ExpectedSysSHA256      string `help:"Installer-embedded SHA-256 of the Microsoft-returned ViiperUde.sys." required:""`
-	ExpectedCatSHA256      string `help:"Installer-embedded SHA-256 of the Microsoft-returned ViiperUde.cat." required:""`
-	TargetUserSID          string `help:"Interactive Windows user SID that owns legacy startup state." required:""`
-	DriverValidationMode   string `help:"Driver signature route: production or local-test." default:"production" enum:"production,local-test" hidden:""`
+	PackageDirectory                   string `help:"Directory containing the exact Microsoft-returned INF, SYS, and CAT runtime files." required:""`
+	SubmissionManifest                 string `help:"Source-bound HLK/WHCP submission manifest." required:""`
+	SourceRevision                     string `help:"Reviewed 40- or 64-character source revision." required:""`
+	DriverHelper                       string `help:"Path to the packaged ViiperUdeCtl.exe." required:""`
+	ExpectedBrokerSHA256               string `help:"Installer-embedded SHA-256 of this VIIPER executable." required:""`
+	ExpectedHelperSHA256               string `help:"Installer-embedded SHA-256 of ViiperUdeCtl.exe." required:""`
+	ExpectedManifestSHA256             string `help:"Installer-embedded SHA-256 of the reviewed HLK/WHCP manifest." required:""`
+	ExpectedInfSHA256                  string `help:"Installer-embedded SHA-256 of the Microsoft-returned ViiperUde.inf." required:""`
+	ExpectedSysSHA256                  string `help:"Installer-embedded SHA-256 of the Microsoft-returned ViiperUde.sys." required:""`
+	ExpectedCatSHA256                  string `help:"Installer-embedded SHA-256 of the Microsoft-returned ViiperUde.cat." required:""`
+	TargetUserSID                      string `help:"Interactive Windows user SID that owns legacy startup state." required:""`
+	DriverValidationMode               string `help:"Driver signature route: production or local-test." default:"production" enum:"production,local-test" hidden:""`
+	LocalTestTrustCapability           string `help:"Protected parent-bound local-test trust capability."`
+	ExpectedTrustCapabilitySHA256      string `help:"SHA-256 of the protected local-test trust capability."`
+	LocalTestCertificatePath           string `help:"Path to the exact source-bound local-test certificate."`
+	ExpectedLocalTestCertificateSHA256 string `help:"Package-lock SHA-256 of the exact local-test certificate."`
+	ExpectedLocalTestPackageLockSHA256 string `help:"Out-of-band SHA-256 of the local-test package lock."`
 }
 
 // NativePackageBrokerCommit is invoked only by ViiperUdeCtl while the signed
@@ -433,19 +451,24 @@ func (c *NativePackageInstall) Run(logger *slog.Logger) error {
 		return errors.New("cannot provision the native package from 'go run'")
 	}
 	request := nativePackageRequest{
-		brokerSource:           executable,
-		packageDirectory:       strings.TrimSpace(c.PackageDirectory),
-		submissionManifest:     strings.TrimSpace(c.SubmissionManifest),
-		sourceRevision:         strings.ToLower(strings.TrimSpace(c.SourceRevision)),
-		driverHelper:           strings.TrimSpace(c.DriverHelper),
-		expectedBrokerSHA256:   strings.ToLower(strings.TrimSpace(c.ExpectedBrokerSHA256)),
-		expectedHelperSHA256:   strings.ToLower(strings.TrimSpace(c.ExpectedHelperSHA256)),
-		expectedManifestSHA256: strings.ToLower(strings.TrimSpace(c.ExpectedManifestSHA256)),
-		expectedInfSHA256:      strings.ToLower(strings.TrimSpace(c.ExpectedInfSHA256)),
-		expectedSysSHA256:      strings.ToLower(strings.TrimSpace(c.ExpectedSysSHA256)),
-		expectedCatSHA256:      strings.ToLower(strings.TrimSpace(c.ExpectedCatSHA256)),
-		targetUserSID:          strings.TrimSpace(c.TargetUserSID),
-		driverValidationMode:   strings.ToLower(strings.TrimSpace(c.DriverValidationMode)),
+		brokerSource:                       executable,
+		packageDirectory:                   strings.TrimSpace(c.PackageDirectory),
+		submissionManifest:                 strings.TrimSpace(c.SubmissionManifest),
+		sourceRevision:                     strings.ToLower(strings.TrimSpace(c.SourceRevision)),
+		driverHelper:                       strings.TrimSpace(c.DriverHelper),
+		expectedBrokerSHA256:               strings.ToLower(strings.TrimSpace(c.ExpectedBrokerSHA256)),
+		expectedHelperSHA256:               strings.ToLower(strings.TrimSpace(c.ExpectedHelperSHA256)),
+		expectedManifestSHA256:             strings.ToLower(strings.TrimSpace(c.ExpectedManifestSHA256)),
+		expectedInfSHA256:                  strings.ToLower(strings.TrimSpace(c.ExpectedInfSHA256)),
+		expectedSysSHA256:                  strings.ToLower(strings.TrimSpace(c.ExpectedSysSHA256)),
+		expectedCatSHA256:                  strings.ToLower(strings.TrimSpace(c.ExpectedCatSHA256)),
+		targetUserSID:                      strings.TrimSpace(c.TargetUserSID),
+		driverValidationMode:               strings.ToLower(strings.TrimSpace(c.DriverValidationMode)),
+		localTestTrustCapability:           strings.TrimSpace(c.LocalTestTrustCapability),
+		expectedTrustCapabilitySHA256:      strings.ToLower(strings.TrimSpace(c.ExpectedTrustCapabilitySHA256)),
+		localTestCertificatePath:           strings.TrimSpace(c.LocalTestCertificatePath),
+		expectedLocalTestCertificateSHA256: strings.ToLower(strings.TrimSpace(c.ExpectedLocalTestCertificateSHA256)),
+		expectedLocalTestPackageLockSHA256: strings.ToLower(strings.TrimSpace(c.ExpectedLocalTestPackageLockSHA256)),
 	}
 	if err := request.validate(); err != nil {
 		return err
@@ -456,19 +479,50 @@ func (c *NativePackageInstall) Run(logger *slog.Logger) error {
 }
 
 type nativePackageRequest struct {
-	brokerSource           string
-	packageDirectory       string
-	submissionManifest     string
-	sourceRevision         string
-	driverHelper           string
-	expectedBrokerSHA256   string
-	expectedHelperSHA256   string
-	expectedManifestSHA256 string
-	expectedInfSHA256      string
-	expectedSysSHA256      string
-	expectedCatSHA256      string
-	targetUserSID          string
-	driverValidationMode   string
+	brokerSource                       string
+	packageDirectory                   string
+	submissionManifest                 string
+	sourceRevision                     string
+	driverHelper                       string
+	expectedBrokerSHA256               string
+	expectedHelperSHA256               string
+	expectedManifestSHA256             string
+	expectedInfSHA256                  string
+	expectedSysSHA256                  string
+	expectedCatSHA256                  string
+	targetUserSID                      string
+	driverValidationMode               string
+	localTestTrustCapability           string
+	expectedTrustCapabilitySHA256      string
+	localTestCertificatePath           string
+	expectedLocalTestCertificateSHA256 string
+	expectedLocalTestPackageLockSHA256 string
+}
+
+// nativePackageProductionLocalTrustAdmission classifies the machine-global
+// local-test ownership journal while Trust and Package are held, but before
+// Service can be acquired. Production may retire one validated terminal
+// settlement; every live state belongs to a local-test transaction and is a
+// hard stop rather than topology-cleanup authority.
+func nativePackageProductionLocalTrustAdmission(states []string) (bool, error) {
+	if len(states) == 0 {
+		return false, nil
+	}
+	if len(states) != 1 {
+		return false, errors.New("multiple local-test trust ownership states block production install")
+	}
+	switch states[0] {
+	case "cleared":
+		return true, nil
+	case "preparing", "pending", "owned", "uninstalling":
+		return false, fmt.Errorf(
+			"active local-test trust %s state blocks production install", states[0],
+		)
+	default:
+		return false, fmt.Errorf(
+			"unknown local-test trust %q state blocks production install", states[0],
+		)
+	}
 }
 
 func (r nativePackageRequest) validate() error {
@@ -489,6 +543,32 @@ func (r nativePackageRequest) validate() error {
 	}
 	if r.driverValidationMode != "production" && r.driverValidationMode != "local-test" {
 		return errors.New("native package driver validation mode must be production or local-test")
+	}
+	if r.driverValidationMode == "local-test" {
+		if r.localTestTrustCapability == "" ||
+			r.localTestCertificatePath == "" ||
+			!nativePackageSHA256.MatchString(r.expectedTrustCapabilitySHA256) ||
+			!nativePackageSHA256.MatchString(r.expectedLocalTestCertificateSHA256) ||
+			!nativePackageSHA256.MatchString(r.expectedLocalTestPackageLockSHA256) {
+			return errors.New("native local-test package requires an exact parent trust capability, certificate SHA-256, and package-lock SHA-256")
+		}
+		for name, path := range map[string]string{
+			"trust capability": r.localTestTrustCapability,
+			"certificate":      r.localTestCertificatePath,
+		} {
+			if strings.IndexByte(path, 0) >= 0 || !filepath.IsAbs(path) {
+				return fmt.Errorf("native local-test %s must be an absolute path without NUL", name)
+			}
+		}
+		if !strings.EqualFold(filepath.Base(r.localTestCertificatePath), "ViiperUdeTest.cer") {
+			return errors.New("native local-test certificate must be named ViiperUdeTest.cer")
+		}
+	} else if r.localTestTrustCapability != "" ||
+		r.expectedTrustCapabilitySHA256 != "" ||
+		r.localTestCertificatePath != "" ||
+		r.expectedLocalTestCertificateSHA256 != "" ||
+		r.expectedLocalTestPackageLockSHA256 != "" {
+		return errors.New("production native package requests must not carry local-test trust capability fields")
 	}
 	if !nativePackageSHA256.MatchString(r.expectedBrokerSHA256) ||
 		!nativePackageSHA256.MatchString(r.expectedHelperSHA256) ||

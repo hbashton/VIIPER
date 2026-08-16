@@ -64,11 +64,95 @@ func TestNativePackageProductionSourceContract(t *testing.T) {
 		"removeWeakExactOwnedService",
 		"restoreQuiescedPriorService", "driverHelperSettled",
 		"nativePackageRebootRequiredError",
+		"nativePackageInstallExitError",
+		"exitCode: proof.exitCode",
 		"parseNativePackageInstallProof(text, processExitCode)",
+		"initializeNativePackageRecoveryTrustLease",
+		"acquireNativePackageRecoveryTrustLease",
+		"requireNativePackageTrustRecoveryClear",
+		"verifyLocalTestTrustCapability",
+		"nativePackageParentIdentity",
+		"decodeCanonicalNativePackageLocalTestTrustOwnership",
+		"nativePackageLocalTrustPendingName",
+		"nativePackageLocalTrustOwnedName",
+		"nativePackageLocalTrustUninstallingName",
+		"nativePackageLocalTrustClearedName",
+		"publishNativePackageLocalTestTrustPreparing",
+		"transitionNativePackageLocalTestTrustRecord",
+		"restoreNativePackageLocalTestTrustStores",
+		"inspectNativePackageLocalTestTrust",
+		"countExactNativePackageLocalTestCertificateRejectingThumbprintCollisions",
+		"observedThumbprint == expectedThumbprint",
+		"different certificate with the same Windows SHA-1 thumbprint",
+		"proveNativePackageLocalTestTopologyAbsent",
+		"commitLocalTestTrust",
+		"capability.ParentPID != parentPID",
+		"capability.ParentCreationFileTime != parentCreationFileTime",
+		"capability.TrustJournalSchema != nativePackageLocalTestTrustOwnershipSchema",
 	}
 	for _, fragment := range requiredWindows {
 		if !strings.Contains(windowsSource, fragment) {
 			t.Errorf("Windows package orchestrator lost %q", fragment)
+		}
+	}
+	leaseStart := strings.Index(windowsSource,
+		"func initializeNativePackageRecoveryTrustLease() error {")
+	leaseEnd := strings.Index(windowsSource,
+		"func resolveNativePackageLocalTestTrustPaths()")
+	if leaseStart < 0 || leaseEnd <= leaseStart {
+		t.Fatal("native fixed trust-lease initializer is missing or malformed")
+	}
+	leasePublication := windowsSource[leaseStart:leaseEnd]
+	leaseWrite := strings.Index(leasePublication, "windows.WriteFile(lease, marker")
+	leaseFlush := strings.Index(leasePublication, "windows.FlushFileBuffers(lease)")
+	leaseClose := strings.Index(leasePublication,
+		"if closeErr := windows.CloseHandle(lease); closeErr != nil {")
+	leaseReopen := strings.Index(leasePublication, "lockNativePackageInput(temporary)")
+	leaseReadback := strings.Index(leasePublication,
+		"readNativePackageRecoveryFile(prepublish, 1)")
+	leasePublish := strings.Index(leasePublication,
+		"moveNativePackageFile(temporary, paths.lease, false)")
+	if leaseWrite < 0 || leaseFlush <= leaseWrite || leaseClose <= leaseFlush ||
+		leaseReopen <= leaseClose || leaseReadback <= leaseReopen ||
+		leasePublish <= leaseReadback {
+		t.Fatal("native fixed trust lease is published before protected flush, close, reopen, and exact readback")
+	}
+	for _, fragment := range []string{
+		"rand.Read(nonce[:])", "windows.CREATE_NEW", "windows.FILE_FLAG_WRITE_THROUGH",
+		"validateNativeFileLinkCount(information.NumberOfLinks)",
+		"validateNativeSecurityDescriptor(",
+		"!bytes.Equal(readback, []byte{1})",
+	} {
+		if !strings.Contains(leasePublication, fragment) {
+			t.Errorf("native fixed trust-lease publication lost %q", fragment)
+		}
+	}
+	preparingStart := strings.Index(windowsSource,
+		"func publishNativePackageLocalTestTrustPreparing(")
+	preparingEnd := strings.Index(windowsSource,
+		"func transitionNativePackageLocalTestTrustRecord(")
+	if preparingStart < 0 || preparingEnd <= preparingStart {
+		t.Fatal("native local-test preparing publication is missing or malformed")
+	}
+	preparingPublication := windowsSource[preparingStart:preparingEnd]
+	prepareScratch := strings.Index(preparingPublication,
+		"createExactNativePackageRecoveryPreparation(temporary, contents)")
+	preparePublish := strings.Index(preparingPublication,
+		"moveNativePackageFile(temporary, path, false)")
+	if prepareScratch < 0 || preparePublish <= prepareScratch ||
+		!strings.Contains(preparingPublication, "rand.Read(nonce[:])") {
+		t.Fatal("local-test preparing authority is not scratch-written and atomically no-replace published")
+	}
+	for _, fragment := range []string{
+		"LocalTestTrustCapability",
+		"ExpectedTrustCapabilitySHA256",
+		"LocalTestCertificatePath",
+		"ExpectedLocalTestCertificateSHA256",
+		"ExpectedLocalTestPackageLockSHA256",
+		"production native package requests must not carry local-test trust capability fields",
+	} {
+		if !strings.Contains(transactionSource, fragment) {
+			t.Errorf("native package command lost parent-bound local-test field %q", fragment)
 		}
 	}
 	stageStart := strings.Index(windowsSource,
@@ -1166,6 +1250,92 @@ func TestNativePackageProductionSourceContract(t *testing.T) {
 	for _, forbidden := range []string{"removeLegacy", "usbip"} {
 		if strings.Contains(windowsSource, forbidden) {
 			t.Errorf("outer package transaction must leave legacy ownership to the authenticated broker commit; found %q", forbidden)
+		}
+	}
+}
+
+func TestNativePackageCrossModeInstallAdmissionSourceContract(t *testing.T) {
+	t.Parallel()
+	windowsSource := readNativePackageContractFile(t, "native_package_windows.go")
+	preflightStart := strings.Index(windowsSource,
+		"func (t *windowsNativePackageTransaction) Preflight(ctx context.Context) error {")
+	preflightEnd := strings.Index(windowsSource,
+		"func (t *windowsNativePackageTransaction) verifyLocalTestTrustCapability() error {")
+	if preflightStart < 0 || preflightEnd <= preflightStart {
+		t.Fatal("native package outer preflight source region is missing or malformed")
+	}
+	preflight := windowsSource[preflightStart:preflightEnd]
+	trustInitialize := strings.Index(preflight, "initializeNativePackageRecoveryTrustLease()")
+	trustAcquire := strings.Index(preflight,
+		"acquireNativePackageRecoveryTrustLease(ctx, trustDeadline)")
+	packageAcquire := strings.Index(preflight,
+		"acquireNamedNativePackageMutex(nativePackageMutexName, packageBudget)")
+	recoveryAdmission := strings.Index(preflight, "requireNativePackageTrustRecoveryClear()")
+	localAdmission := strings.Index(preflight, "t.admitProductionLocalTestTrust()")
+	if trustInitialize < 0 || trustAcquire <= trustInitialize ||
+		packageAcquire <= trustAcquire || recoveryAdmission <= packageAcquire ||
+		localAdmission <= recoveryAdmission {
+		t.Fatal("outer install no longer orders Trust -> Package -> failed-recovery/local-trust admission")
+	}
+	if strings.Contains(preflight[:packageAcquire], "driverValidationMode") {
+		t.Fatal("outer install still conditions Trust or Package acquisition on driver validation mode")
+	}
+	if strings.Contains(preflight, "acquireNativeInstallMutex(") {
+		t.Fatal("outer install acquired Service before completing production local-trust admission")
+	}
+
+	admissionStart := strings.Index(windowsSource,
+		"func (t *windowsNativePackageTransaction) admitProductionLocalTestTrust() error {")
+	admissionEnd := strings.Index(windowsSource,
+		"func (t *windowsNativePackageTransaction) openLocalTestTrustStores()")
+	if admissionStart < 0 || admissionEnd <= admissionStart {
+		t.Fatal("production local-test trust admission source region is missing or malformed")
+	}
+	admission := windowsSource[admissionStart:admissionEnd]
+	for _, fragment := range []string{
+		"t.releaseTrustLease == nil || t.releaseMutex == nil",
+		"t.releaseServiceMutex != nil",
+		`{state: "preparing", path: paths.preparing}`,
+		`{state: "pending", path: paths.pending}`,
+		`{state: "owned", path: paths.owned}`,
+		`{state: "uninstalling", path: paths.uninstalling}`,
+		`{state: "cleared", path: paths.cleared}`,
+		"readNativePackageLocalTestTrustRecord(candidate.path)",
+		"nativePackageProductionLocalTrustAdmission(states)",
+		"retireNativePackageLocalTestTrustRecord(",
+	} {
+		if !strings.Contains(admission, fragment) {
+			t.Fatalf("production local-test trust admission lost %q", fragment)
+		}
+	}
+
+	readOnlyStart := strings.Index(windowsSource,
+		"func proveNativePackageSettledLocalTestTopologyAbsentReadOnly(")
+	readOnlyEnd := strings.Index(windowsSource,
+		"func proveNativePackageNormalBrokerJournalsQuiescent(")
+	if readOnlyStart < 0 || readOnlyEnd <= readOnlyStart {
+		t.Fatal("settled local-test read-only topology proof is missing or malformed")
+	}
+	readOnlyProof := windowsSource[readOnlyStart:readOnlyEnd]
+	for _, fragment := range []string{
+		"requireNativePackageRecoveryServiceAbsent(serviceName)",
+		"createOrOpenProtectedNativeBrokerJournalDirectory(root, false)",
+		"len(entries) != 0",
+		`helperPath, []string{"status"}`,
+		"validateNativePackageRecoverEmptyStatus(statusOutput, statusExitCode)",
+	} {
+		if !strings.Contains(readOnlyProof, fragment) {
+			t.Fatalf("settled local-test read-only topology proof lost %q", fragment)
+		}
+	}
+	for _, forbidden := range []string{
+		`"recover-failed-install-recordless"`,
+		"reconcileNativeBrokerJournalInactiveDirectories(",
+		"discardNativeBrokerJournalDirectory(",
+		"retireNativePackageLocalTestTrustRecord(",
+	} {
+		if strings.Contains(readOnlyProof, forbidden) {
+			t.Fatalf("settled local-test read-only topology proof retained mutator %q", forbidden)
 		}
 	}
 }

@@ -6,6 +6,11 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$SubmissionManifestPath,
 
+    [ValidateSet('Production', 'LocalTest')]
+    [string]$PackageValidationMode = 'Production',
+
+    [string]$LocalTestCertificatePath,
+
     [Parameter(Mandatory = $true)]
     [ValidatePattern('^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$')]
     [string]$ExpectedSourceRevision,
@@ -22,6 +27,22 @@ param(
 
     [ValidateRange(256, 10000)]
     [int]$Samples = 256,
+
+    [Parameter(Mandatory = $true)]
+    [ValidateSet('ABBA', 'BAAB')]
+    [string]$Orientation,
+
+    [Parameter(Mandatory = $true)]
+    [ValidatePattern('^[0-9a-fA-F]{32}$')]
+    [string]$CycleId,
+
+    [Parameter(Mandatory = $true)]
+    [ValidateRange(1, 100)]
+    [int]$CycleIndex,
+
+    [Parameter(Mandatory = $true)]
+    [ValidateRange(2, 100)]
+    [int]$CycleCount,
 
     [ValidateSet('Normal', 'High')]
     [string]$PriorityClass = 'Normal',
@@ -108,6 +129,121 @@ function Resolve-DriverImagePath {
     return Resolve-CanonicalPath -Path $path
 }
 
+function Get-ExactUSBIPFileIdentity {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [switch]$RequireValidSignature
+    )
+
+    $item = Get-Item -LiteralPath (Resolve-CanonicalPath -Path $Path) -Force -ErrorAction Stop
+    if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+        $item.Length -le 0) {
+        throw "USB/IP evidence is not a non-empty regular file: '$Path'."
+    }
+    $status = $null
+    $subject = $null
+    $thumbprint = $null
+    if ($RequireValidSignature) {
+        $signature = Get-AuthenticodeSignature -LiteralPath $item.FullName -ErrorAction Stop
+        if ([string]$signature.Status -cne 'Valid' -or $null -eq $signature.SignerCertificate -or
+            [string]$signature.SignerCertificate.Subject -notmatch '(?i)Microsoft') {
+            throw "USB/IP evidence is not validly Microsoft-signed: '$($item.FullName)'."
+        }
+        $status = [string]$signature.Status
+        $subject = [string]$signature.SignerCertificate.Subject
+        $thumbprint = ([string]$signature.SignerCertificate.Thumbprint).ToLowerInvariant()
+        if ($thumbprint -notmatch '^[0-9a-f]{40}$') {
+            throw "USB/IP evidence has a noncanonical signer thumbprint: '$($item.FullName)'."
+        }
+    }
+    return [ordered]@{
+        path = $item.FullName
+        length = [long]$item.Length
+        sha256 = (Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+        file_version = [string]$item.VersionInfo.FileVersion
+        product_version = [string]$item.VersionInfo.ProductVersion
+        signature_status = $status
+        signer_subject = $subject
+        signer_thumbprint = $thumbprint
+    }
+}
+
+function Get-ExactUSBIPRuntimeProvenance {
+    $services = [Collections.Generic.List[object]]::new()
+    foreach ($serviceName in @('usbip2_filter', 'usbip2_ude')) {
+        $service = Get-ItemProperty -LiteralPath "HKLM:\SYSTEM\CurrentControlSet\Services\$serviceName" `
+            -ErrorAction Stop
+        if ([string]::IsNullOrWhiteSpace([string]$service.ImagePath) -or
+            [string]$service.DisplayName -notmatch '^@(?<inf>oem[0-9]+\.inf),') {
+            throw "USB/IP service '$serviceName' has no exact image/published-INF identity."
+        }
+        $publishedINFName = $Matches['inf'].ToLowerInvariant()
+        $imagePath = Resolve-DriverImagePath -ImagePath ([string]$service.ImagePath)
+        $packageDirectory = Split-Path -Parent $imagePath
+        $infPath = Join-Path $packageDirectory "$serviceName.inf"
+        $catalogPath = Join-Path $packageDirectory "$serviceName.cat"
+        $publishedINFPath = Join-Path (Join-Path $env:SystemRoot 'INF') $publishedINFName
+        $image = Get-ExactUSBIPFileIdentity -Path $imagePath -RequireValidSignature
+        $inf = Get-ExactUSBIPFileIdentity -Path $infPath
+        $publishedINF = Get-ExactUSBIPFileIdentity -Path $publishedINFPath
+        $catalog = Get-ExactUSBIPFileIdentity -Path $catalogPath -RequireValidSignature
+        if ([string]$inf.sha256 -cne [string]$publishedINF.sha256 -or
+            [string]$image.signer_thumbprint -cne [string]$catalog.signer_thumbprint) {
+            throw "USB/IP service '$serviceName' package bytes or signer identity disagree."
+        }
+        $services.Add([ordered]@{
+            name = $serviceName
+            start = [uint32]$service.Start
+            type = [uint32]$service.Type
+            published_inf_name = $publishedINFName
+            image = $image
+            inf = $inf
+            published_inf = $publishedINF
+            catalog = $catalog
+        })
+    }
+
+    $udePublishedINF = [string]($services[1].published_inf_name)
+    $rootEntities = @(Get-CimInstance -ClassName Win32_PnPEntity -ErrorAction Stop |
+        Where-Object { @($_.HardwareID) -contains 'ROOT\USBIP_WIN2\UDE' } |
+        Sort-Object PNPDeviceID)
+    if ($rootEntities.Count -lt 1 -or $rootEntities.Count -gt 16) {
+        throw "Expected 1-16 exact USB/IP root controllers; found $($rootEntities.Count)."
+    }
+    $signedDrivers = @(Get-CimInstance -ClassName Win32_PnPSignedDriver -ErrorAction Stop)
+    $roots = [Collections.Generic.List[object]]::new()
+    foreach ($root in $rootEntities) {
+        $rootInstanceID = [string]($root.PNPDeviceID)
+        $matches = @($signedDrivers | Where-Object {
+            ([string]$_.DeviceID) -ieq $rootInstanceID
+        })
+        $signedDriver = $matches[0]
+        if ($matches.Count -ne 1 -or -not [bool]($signedDriver.IsSigned) -or
+            ([string]($signedDriver.Signer)) -notmatch '(?i)Microsoft' -or
+            ([string]($signedDriver.DriverProviderName)) -ine 'USBIP-WIN2' -or
+            ([string]($signedDriver.InfName)) -ine $udePublishedINF -or
+            ([string]$root.Service) -ine 'usbip2_ude') {
+            throw "USB/IP root '$rootInstanceID' lacks one exact signed package identity."
+        }
+        $roots.Add([ordered]@{
+            instance_id = $rootInstanceID.ToUpperInvariant()
+            hardware_ids = @(@($root.HardwareID | ForEach-Object { ([string]$_).ToUpperInvariant() }) |
+                Sort-Object -Unique)
+            service = [string]$root.Service
+            provider = [string]($signedDriver.DriverProviderName)
+            driver_version = [string]($signedDriver.DriverVersion)
+            published_inf = ([string]($signedDriver.InfName)).ToLowerInvariant()
+            signer = [string]($signedDriver.Signer)
+            is_signed = [bool]($signedDriver.IsSigned)
+        })
+    }
+    return [ordered]@{
+        schema = 'viiper.usbip-win2.runtime-provenance/v1'
+        services = @($services)
+        root_controllers = @($roots)
+    }
+}
+
 if ([string]::IsNullOrWhiteSpace($RepositoryRoot)) {
     $RepositoryRoot = Join-Path $PSScriptRoot '..\..\..'
 }
@@ -115,6 +251,15 @@ if (-not (Test-IsAdministrator)) {
     throw 'The source-bound latency gate and WPR capture require an elevated PowerShell session.'
 }
 $repository = Resolve-CanonicalPath -Path $RepositoryRoot
+$orientationValue = $Orientation.ToLowerInvariant()
+$cycleIdValue = $CycleId.ToLowerInvariant()
+if (($CycleCount % 2) -ne 0 -or $CycleIndex -gt $CycleCount) {
+    throw 'CycleCount must be even and CycleIndex must identify one cycle in that balanced set.'
+}
+$expectedOrientation = if (($CycleIndex % 2) -eq 1) { 'abba' } else { 'baab' }
+if ($orientationValue -cne $expectedOrientation) {
+    throw "Cycle $CycleIndex requires orientation '$expectedOrientation', not '$orientationValue'."
+}
 $gitPath = Resolve-ExactExecutablePath -Path $GitExecutable -Label 'Git executable'
 $git = [pscustomobject]@{ Source = $gitPath }
 $gitHash = (Get-FileHash -LiteralPath $gitPath -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -155,11 +300,49 @@ if (-not [string]::Equals($actualSDLHash, $SDLBinarySHA256,
 $signatureGate = Join-Path $repository 'native\udecx\tools\Test-ViiperUdeSignedPackage.ps1'
 $manifest = Resolve-CanonicalPath -Path $SubmissionManifestPath
 $manifestHashBeforeGate = (Get-FileHash -LiteralPath $manifest -Algorithm SHA256).Hash.ToLowerInvariant()
-& $signatureGate `
-    -PackageDirectory $SignedPackageDirectory `
-    -SubmissionManifestPath $manifest `
-    -ExpectedSourceRevision $ExpectedSourceRevision `
-    -ValidationMode Production
+$packageModeValue = $PackageValidationMode.ToLowerInvariant().Replace('localtest', 'local-test')
+$localTestCertificateHash = ''
+$localTestCertificateThumbprint = ''
+$signatureArguments = @{
+    PackageDirectory = $SignedPackageDirectory
+    SubmissionManifestPath = $manifest
+    ExpectedSourceRevision = $ExpectedSourceRevision
+    ValidationMode = $PackageValidationMode
+}
+if ($PackageValidationMode -eq 'LocalTest') {
+    if ([string]::IsNullOrWhiteSpace($LocalTestCertificatePath)) {
+        throw '-LocalTestCertificatePath is required with -PackageValidationMode LocalTest.'
+    }
+    $localTestCertificate = Resolve-CanonicalPath -Path $LocalTestCertificatePath
+    $localTestCertificateItem = Get-Item -LiteralPath $localTestCertificate -Force -ErrorAction Stop
+    if ($localTestCertificateItem.PSIsContainer -or
+        ($localTestCertificateItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+        $localTestCertificateItem.Length -le 0) {
+        throw "The local-test certificate is not a non-empty regular file: '$localTestCertificate'."
+    }
+    $localTestCertificateHash = (Get-FileHash -LiteralPath $localTestCertificate -Algorithm SHA256).Hash.ToLowerInvariant()
+    $certificate = [Security.Cryptography.X509Certificates.X509Certificate2]::new($localTestCertificate)
+    try {
+        $localTestCertificateThumbprint = ([string]$certificate.Thumbprint).ToLowerInvariant()
+    }
+    finally {
+        $certificate.Dispose()
+    }
+    if ($localTestCertificateThumbprint -notmatch '^[0-9a-f]{40}$') {
+        throw 'The local-test certificate has no canonical thumbprint.'
+    }
+    $signatureArguments.LocalTestCertificatePath = $localTestCertificate
+}
+elseif (-not [string]::IsNullOrWhiteSpace($LocalTestCertificatePath)) {
+    throw '-LocalTestCertificatePath is valid only with -PackageValidationMode LocalTest.'
+}
+& $signatureGate @signatureArguments
+$localTestCertificateArgument = if ([string]::IsNullOrEmpty($localTestCertificateHash)) {
+    'none'
+}
+else {
+    $localTestCertificateHash
+}
 
 $packageRoot = Resolve-CanonicalPath -Path $SignedPackageDirectory
 $packageDriver = Resolve-CanonicalPath -Path (Join-Path $packageRoot 'ViiperUde.sys')
@@ -172,6 +355,19 @@ $packageDriverHash = (Get-FileHash -LiteralPath $packageDriver -Algorithm SHA256
 $installedDriverHash = (Get-FileHash -LiteralPath $installedDriver -Algorithm SHA256).Hash.ToLowerInvariant()
 if ($packageDriverHash -ne $installedDriverHash) {
     throw "The installed VIIPER UDE service image does not match the verified package. Installed='$installedDriver'."
+}
+$installedSignature = Get-AuthenticodeSignature -LiteralPath $installedDriver -ErrorAction Stop
+if ($PackageValidationMode -eq 'Production') {
+    if ([string]$installedSignature.Status -cne 'Valid' -or
+        $null -eq $installedSignature.SignerCertificate -or
+        [string]$installedSignature.SignerCertificate.Subject -notmatch '(?i)Microsoft') {
+        throw 'The installed VIIPER UDE image is not validly Microsoft-signed.'
+    }
+}
+elseif ([string]$installedSignature.Status -cne 'Valid' -or
+    $null -eq $installedSignature.SignerCertificate -or
+    ([string]$installedSignature.SignerCertificate.Thumbprint).ToLowerInvariant() -cne $localTestCertificateThumbprint) {
+    throw 'The installed VIIPER UDE image is not signed by the exact local-test certificate.'
 }
 $ownedRootDevices = @(Get-CimInstance -ClassName Win32_PnPEntity | Where-Object {
     @($_.HardwareID) -contains 'ROOT\VIIPER\UDE'
@@ -186,8 +382,9 @@ $devnodes = @(Get-CimInstance -ClassName Win32_PnPSignedDriver | Where-Object {
 if ($devnodes.Count -ne 1) {
     throw "Expected exactly one VIIPER UDE root devnode; found $($devnodes.Count)."
 }
-if (-not [bool]$devnodes[0].IsSigned -or [string]$devnodes[0].Signer -notmatch '(?i)Microsoft') {
-    throw "The installed VIIPER UDE devnode is not backed by a Microsoft-signed driver (Signer='$($devnodes[0].Signer)')."
+if (-not [bool]$devnodes[0].IsSigned -or [string]::IsNullOrWhiteSpace([string]$devnodes[0].Signer) -or
+    ($PackageValidationMode -eq 'Production' -and [string]$devnodes[0].Signer -notmatch '(?i)Microsoft')) {
+    throw "The installed VIIPER UDE devnode is not backed by the exact validated package (Signer='$($devnodes[0].Signer)')."
 }
 $manifestHash = (Get-FileHash -LiteralPath $manifest -Algorithm SHA256).Hash.ToLowerInvariant()
 if ($manifestHash -ne $manifestHashBeforeGate) {
@@ -198,6 +395,18 @@ $driverBuildIdentity = ([string]$manifestDocument.driverBuildIdentity).Trim().To
 if ($driverBuildIdentity -notmatch '^[0-9a-f]{64}$') {
     throw 'The verified submission manifest has no canonical native driver build identity.'
 }
+$usbipRuntime = Get-ExactUSBIPRuntimeProvenance
+$usbipRuntimeJSON = ConvertTo-Json -InputObject $usbipRuntime -Depth 8 -Compress
+$usbipRuntimeBytes = [Text.UTF8Encoding]::new($false).GetBytes($usbipRuntimeJSON)
+$usbipHasher = [Security.Cryptography.SHA256]::Create()
+try {
+    $usbipRuntimeHash = -join @($usbipHasher.ComputeHash($usbipRuntimeBytes) |
+        ForEach-Object { $_.ToString('x2') })
+}
+finally {
+    $usbipHasher.Dispose()
+}
+$usbipRuntimeBase64 = [Convert]::ToBase64String($usbipRuntimeBytes)
 
 $output = Resolve-NewEvidencePath -Path $OutputPath -Repository $repository -Label 'Latency JSON output'
 $trace = Resolve-NewEvidencePath -Path $WprTracePath -Repository $repository -Label 'WPR trace output'
@@ -241,9 +450,13 @@ $environmentNames = @(
     'CGO_ENABLED', 'GOENV', 'GOFLAGS', 'GOTOOLCHAIN', 'GOWORK', 'PATH',
     'VIIPER_E2E_LIVE_LATENCY', 'VIIPER_E2E_PRODUCTION_PREFLIGHT',
     'VIIPER_E2E_LATENCY_OUTPUT', 'VIIPER_E2E_LATENCY_SAMPLES',
+    'VIIPER_E2E_LATENCY_ORIENTATION', 'VIIPER_E2E_LATENCY_CYCLE_ID',
+    'VIIPER_E2E_LATENCY_CYCLE_INDEX', 'VIIPER_E2E_LATENCY_CYCLE_COUNT',
+    'VIIPER_E2E_USBIP_RUNTIME_PROVENANCE', 'VIIPER_E2E_USBIP_RUNTIME_PROVENANCE_SHA256',
     'VIIPER_E2E_EXPECTED_SOURCE_REVISION', 'VIIPER_E2E_SDL_SOURCE_REVISION',
     'VIIPER_E2E_SDL_DLL_PATH', 'VIIPER_E2E_SDL_DLL_SHA256',
     'VIIPER_E2E_PACKAGE_MANIFEST_SHA256', 'VIIPER_E2E_NATIVE_DRIVER_SHA256',
+	'VIIPER_E2E_PACKAGE_VALIDATION_MODE', 'VIIPER_E2E_LOCAL_TEST_CERTIFICATE_SHA256',
     'VIIPER_E2E_TRACE_PROFILE_SHA256', 'VIIPER_E2E_NATIVE_DRIVER_BUILD_IDENTITY',
     'VIIPER_E2E_EXPECTED_PRIORITY_CLASS',
     'VIIPER_E2E_GIT_EXECUTABLE_PATH', 'VIIPER_E2E_GIT_EXECUTABLE_SHA256',
@@ -273,11 +486,19 @@ try {
     $env:VIIPER_E2E_PRODUCTION_PREFLIGHT = '1'
     $env:VIIPER_E2E_LATENCY_OUTPUT = $output
     $env:VIIPER_E2E_LATENCY_SAMPLES = [string]$Samples
+    $env:VIIPER_E2E_LATENCY_ORIENTATION = $orientationValue
+    $env:VIIPER_E2E_LATENCY_CYCLE_ID = $cycleIdValue
+    $env:VIIPER_E2E_LATENCY_CYCLE_INDEX = [string]$CycleIndex
+    $env:VIIPER_E2E_LATENCY_CYCLE_COUNT = [string]$CycleCount
+    $env:VIIPER_E2E_USBIP_RUNTIME_PROVENANCE = $usbipRuntimeBase64
+    $env:VIIPER_E2E_USBIP_RUNTIME_PROVENANCE_SHA256 = $usbipRuntimeHash
     $env:VIIPER_E2E_EXPECTED_SOURCE_REVISION = $headRevision
     $env:VIIPER_E2E_SDL_SOURCE_REVISION = $sdlRevision
     $env:VIIPER_E2E_SDL_DLL_PATH = $sdlDLL
     $env:VIIPER_E2E_SDL_DLL_SHA256 = $actualSDLHash
     $env:VIIPER_E2E_PACKAGE_MANIFEST_SHA256 = $manifestHash
+	$env:VIIPER_E2E_PACKAGE_VALIDATION_MODE = $packageModeValue
+	$env:VIIPER_E2E_LOCAL_TEST_CERTIFICATE_SHA256 = $localTestCertificateHash
     $env:VIIPER_E2E_NATIVE_DRIVER_SHA256 = $installedDriverHash
     $env:VIIPER_E2E_TRACE_PROFILE_SHA256 = $wprProfileHash
     $env:VIIPER_E2E_NATIVE_DRIVER_BUILD_IDENTITY = $driverBuildIdentity
@@ -373,13 +594,16 @@ if (-not (Test-Path -LiteralPath $output -PathType Leaf)) {
     throw "The latency gate exited successfully without the required JSON artifact '$output'."
 }
 $report = Get-Content -LiteralPath $output -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
-if ([string]$report.schema -cne 'viiper.controller-to-game.latency-suite/v2' -or
+if ([string]$report.schema -cne 'viiper.controller-to-game.latency-suite/v3' -or
     [string]$report.provenance.source_revision -cne $headRevision -or
     [string]$report.provenance.sdl_source_revision -cne $sdlRevision -or
     [string]$report.provenance.sdl_binary_sha256 -cne $actualSDLHash -or
     [string]$report.provenance.native_package_manifest_sha256 -cne $manifestHash -or
+	[string]$report.provenance.native_package_validation_mode -cne $packageModeValue -or
+	[string]$report.provenance.native_local_test_certificate_sha256 -cne $localTestCertificateHash -or
     [string]$report.provenance.native_driver_sha256 -cne $installedDriverHash -or
     [string]$report.provenance.native_driver_build_identity -cne $driverBuildIdentity -or
+    [string]$report.provenance.usbip_runtime.capture_sha256 -cne $usbipRuntimeHash -or
     [string]$report.provenance.git_executable_path -cne $gitPath -or
     [string]$report.provenance.git_executable_sha256 -cne $gitHash -or
     [string]$report.provenance.go_executable_path -cne $goPath -or
@@ -492,7 +716,19 @@ if ($traceMarkers.Count -ne $expectedMarkers.Count) {
     $missingMarkers = @($expectedMarkers.Keys | Where-Object { -not $traceMarkers.ContainsKey($_) })
     throw "The ETL has $($traceMarkers.Count) exact sample markers for $($expectedMarkers.Count) JSON samples; missing: $($missingMarkers -join ', ')."
 }
-$markerJSON = ConvertTo-Json -InputObject @($decodedMarkers) -Depth 3 -Compress
+$traceItem = Get-Item -LiteralPath $trace -Force -ErrorAction Stop
+if ($traceItem.PSIsContainer -or
+    ($traceItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+    $traceItem.Length -le 0) {
+    throw "The raw WPR evidence is not a non-empty regular file: '$trace'."
+}
+$markerEnvelope = [ordered]@{
+    schema = 'viiper.controller-to-game.latency-trace-markers/v1'
+    source_trace_length = [long]$traceItem.Length
+    source_trace_sha256 = (Get-FileHash -LiteralPath $traceItem.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+    markers = @($decodedMarkers)
+}
+$markerJSON = ConvertTo-Json -InputObject $markerEnvelope -Depth 4 -Compress
 $markerBytes = [Text.UTF8Encoding]::new($false).GetBytes($markerJSON)
 $markerStream = [IO.File]::Open($markers, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
 try {
@@ -513,13 +749,21 @@ try {
         ./_testing/e2e/cmd/verifylatency `
         -input $output `
         -markers $markers `
+		-trace $trace `
         -source $headRevision `
         -sdl-revision $sdlRevision `
         -sdl-sha256 $actualSDLHash `
         -manifest-sha256 $manifestHash `
+		-package-validation-mode $packageModeValue `
+		-local-test-certificate-sha256 $localTestCertificateArgument `
         -driver-sha256 $installedDriverHash `
         -driver-build-identity $driverBuildIdentity `
         -trace-profile-sha256 $wprProfileHash `
+        -usbip-runtime-sha256 $usbipRuntimeHash `
+        -orientation $orientationValue `
+        -cycle-id $cycleIdValue `
+        -cycle-index $CycleIndex `
+        -cycle-count $CycleCount `
         -samples $Samples 2>&1)
     $verifyExitCode = $LASTEXITCODE
 }
@@ -532,18 +776,28 @@ if ($verifyExitCode -ne 0) {
     throw "The strict Go evidence verifier rejected the JSON/ETL evidence pair.`n$($verifyOutput -join [Environment]::NewLine)"
 }
 $requiredControllers = @('xbox360', 'dualshock4', 'dualsensegamepadv5')
+$expectedTransports = if ($orientationValue -ceq 'abba') {
+    @('usbip', 'native-ude', 'native-ude', 'usbip')
+}
+else {
+    @('native-ude', 'usbip', 'usbip', 'native-ude')
+}
 for ($index = 0; $index -lt $requiredControllers.Count; $index++) {
     $case = $report.cases[$index]
     if ([string]$case.workload.controller_type -cne $requiredControllers[$index] -or
         [int]$case.workload.warmup_pairs -ne 16 -or
         [int]$case.workload.sample_pairs -ne $Samples -or
+        [string]$case.workload.schedule_orientation -cne $orientationValue -or
+        [string]$case.workload.cycle_id -cne $cycleIdValue -or
+        [int]$case.workload.cycle_index -ne $CycleIndex -or
+        [int]$case.workload.cycle_count -ne $CycleCount -or
         [long]$case.workload.inter_transition_delay_ns -ne 2000000 -or
         [string]$case.workload.phase_sweep_sha256 -cne '21eee9ea71984343ebd21221df8272553d6ab369a5740a1c796380cd468abcd9' -or
         @($case.runs).Count -ne 4 -or
-        [string]$case.runs[0].transport -cne 'usbip' -or
-        [string]$case.runs[1].transport -cne 'native-ude' -or
-        [string]$case.runs[2].transport -cne 'native-ude' -or
-        [string]$case.runs[3].transport -cne 'usbip' -or
+        [string]$case.runs[0].transport -cne $expectedTransports[0] -or
+        [string]$case.runs[1].transport -cne $expectedTransports[1] -or
+        [string]$case.runs[2].transport -cne $expectedTransports[2] -or
+        [string]$case.runs[3].transport -cne $expectedTransports[3] -or
         [int]$case.runs[0].order -ne 1 -or [int]$case.runs[0].transport_block -ne 1 -or
         [int]$case.runs[1].order -ne 2 -or [int]$case.runs[1].transport_block -ne 1 -or
         [int]$case.runs[2].order -ne 3 -or [int]$case.runs[2].transport_block -ne 2 -or

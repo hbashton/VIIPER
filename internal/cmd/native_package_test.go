@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -341,6 +342,53 @@ func TestNativePackageRebootRequiredPreservesInstallerExitCode(t *testing.T) {
 	}
 }
 
+func TestNativePackageSettledFailurePreservesInstallerExitCode(t *testing.T) {
+	t.Parallel()
+	for _, exitCode := range []int{1, 3, 4} {
+		exitCode := exitCode
+		t.Run(strconv.Itoa(exitCode), func(t *testing.T) {
+			t.Parallel()
+			err := &nativePackageInstallExitError{
+				cause:    errors.New("settled helper failure"),
+				exitCode: exitCode,
+			}
+			var exitCoder interface{ ExitCode() int }
+			if !errors.As(err, &exitCoder) || exitCoder.ExitCode() != exitCode {
+				t.Fatalf("settled helper error lost exit %d contract: %v", exitCode, err)
+			}
+		})
+	}
+}
+
+func TestNativePackageProductionLocalTrustAdmission(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name       string
+		states     []string
+		wantRetire bool
+		wantErr    bool
+	}{
+		{name: "absent"},
+		{name: "cleared", states: []string{"cleared"}, wantRetire: true},
+		{name: "preparing", states: []string{"preparing"}, wantErr: true},
+		{name: "pending", states: []string{"pending"}, wantErr: true},
+		{name: "owned", states: []string{"owned"}, wantErr: true},
+		{name: "uninstalling", states: []string{"uninstalling"}, wantErr: true},
+		{name: "multiple", states: []string{"cleared", "owned"}, wantErr: true},
+		{name: "unknown", states: []string{"future"}, wantErr: true},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			retire, err := nativePackageProductionLocalTrustAdmission(test.states)
+			if (err != nil) != test.wantErr || retire != test.wantRetire {
+				t.Fatalf("states=%v retire=%v error=%v wantRetire=%v wantErr=%v",
+					test.states, retire, err, test.wantRetire, test.wantErr)
+			}
+		})
+	}
+}
+
 func TestNativePackageRequestFailsClosed(t *testing.T) {
 	t.Parallel()
 	base := nativePackageRequest{
@@ -378,5 +426,30 @@ func TestNativePackageRequestFailsClosed(t *testing.T) {
 				t.Fatal("invalid request accepted")
 			}
 		})
+	}
+	localTest := base
+	localTest.driverValidationMode = "local-test"
+	localTest.localTestTrustCapability = `C:\ProgramData\VIIPER.LocalTestStage.0123456789abcdef0123456789abcdef\local-test-trust-capability.json`
+	localTest.expectedTrustCapabilitySHA256 = strings.Repeat("1", 64)
+	localTest.localTestCertificatePath = `C:\bundle\ViiperUdeTest.cer`
+	localTest.expectedLocalTestCertificateSHA256 = strings.Repeat("2", 64)
+	localTest.expectedLocalTestPackageLockSHA256 = strings.Repeat("3", 64)
+	if err := localTest.validate(); err != nil {
+		t.Fatalf("valid local-test request: %v", err)
+	}
+	missingCapability := localTest
+	missingCapability.localTestTrustCapability = ""
+	if err := missingCapability.validate(); err == nil {
+		t.Fatal("local-test request without parent-bound trust capability accepted")
+	}
+	missingCertificate := localTest
+	missingCertificate.localTestCertificatePath = ""
+	if err := missingCertificate.validate(); err == nil {
+		t.Fatal("local-test request without exact certificate path accepted")
+	}
+	productionWithCapability := localTest
+	productionWithCapability.driverValidationMode = "production"
+	if err := productionWithCapability.validate(); err == nil {
+		t.Fatal("production request carrying local-test trust authority accepted")
 	}
 }

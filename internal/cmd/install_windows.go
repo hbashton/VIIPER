@@ -146,11 +146,17 @@ func requireNativeUDEBroker() error {
 
 func uninstall(
 	logger *slog.Logger,
-	targetUserSID, driverHelper, expectedHelperSHA256 string,
+	targetUserSID, driverHelper, expectedHelperSHA256, sourceRevision,
+	localTestCertificatePath, expectedLocalTestCertificateSHA256,
+	expectedLocalTestPackageLockSHA256 string,
 ) error {
 	request := nativePackageUninstallRequest{
 		driverHelper: driverHelper, expectedHelperSHA256: expectedHelperSHA256,
-		targetUserSID: targetUserSID,
+		targetUserSID:                      targetUserSID,
+		sourceRevision:                     sourceRevision,
+		localTestCertificatePath:           localTestCertificatePath,
+		expectedLocalTestCertificateSHA256: expectedLocalTestCertificateSHA256,
+		expectedLocalTestPackageLockSHA256: expectedLocalTestPackageLockSHA256,
 	}
 	if err := request.validate(); err != nil {
 		return err

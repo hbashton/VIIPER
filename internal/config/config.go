@@ -35,5 +35,6 @@ type CLI struct {
 	Install                   cmd.Install                   `cmd:"" help:"Add the current VIIPER executable to system startup and runs it (creates a Systemd service on Linux)"`
 	Uninstall                 cmd.Uninstall                 `cmd:"" help:"Remove any VIIPER system startup configuration / Systemd service"`
 	NativePackageInstall      cmd.NativePackageInstall      `cmd:"" name:"native-package-install" help:"Install a verified native UDE package and broker transactionally" hidden:""`
+	NativePackageRecover      cmd.NativePackageRecover      `cmd:"" name:"native-package-recover" help:"Reconcile only retained native package journals" hidden:""`
 	NativePackageBrokerCommit cmd.NativePackageBrokerCommit `cmd:"" name:"native-package-broker-commit" help:"Commit the broker inside an active native package transaction" hidden:""`
 }

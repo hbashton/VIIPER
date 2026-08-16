@@ -736,17 +736,36 @@ private:
     WinHandle mutex_;
 };
 
-bool IsElevated() {
+bool QueryProcessElevation(bool* elevated, Error* error) {
+    if (elevated == nullptr) {
+        return SetError(error, L"process-elevation", ERROR_INVALID_PARAMETER);
+    }
+    *elevated = false;
     WinHandle token;
     HANDLE raw = nullptr;
     if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw)) {
-        return false;
+        return SetLastErrorDetail(error, L"process-elevation-token");
     }
     token.reset(raw);
     TOKEN_ELEVATION elevation{};
     DWORD returned = 0;
-    return GetTokenInformation(token.get(), TokenElevation, &elevation, sizeof(elevation), &returned) &&
-        elevation.TokenIsElevated != 0;
+    if (!GetTokenInformation(
+            token.get(), TokenElevation, &elevation,
+            sizeof(elevation), &returned)) {
+        return SetLastErrorDetail(error, L"process-elevation-query");
+    }
+    if (returned != sizeof(elevation)) {
+        return SetError(error, L"process-elevation-query", ERROR_INVALID_DATA,
+            L"Windows returned an unexpected TOKEN_ELEVATION record size");
+    }
+    *elevated = elevation.TokenIsElevated != 0;
+    return true;
+}
+
+bool IsElevated() {
+    bool elevated = false;
+    Error ignored;
+    return QueryProcessElevation(&elevated, &ignored) && elevated;
 }
 
 struct Version {
@@ -1529,14 +1548,74 @@ struct PackageInfo {
     std::string catSha256;
 };
 
-bool SamePackageBytes(const PackageInfo& left, const PackageInfo& right) {
-    return left.infSha256 == right.infSha256 &&
-        left.sysSha256 == right.sysSha256 &&
-        left.catSha256 == right.catSha256;
+bool CanonicalizePackageDigest(
+    std::string_view value,
+    std::string* canonical) {
+    if (canonical == nullptr) return false;
+    canonical->clear();
+    if (value.size() != 64U) return false;
+    canonical->reserve(value.size());
+    for (const unsigned char character : value) {
+        if (character >= '0' && character <= '9') {
+            canonical->push_back(static_cast<char>(character));
+        } else if (character >= 'a' && character <= 'f') {
+            canonical->push_back(static_cast<char>(character));
+        } else if (character >= 'A' && character <= 'F') {
+            canonical->push_back(
+                static_cast<char>(character + ('a' - 'A')));
+        } else {
+            canonical->clear();
+            return false;
+        }
+    }
+    return true;
+}
+
+bool SameCanonicalPackageDigest(
+    std::string_view left,
+    std::string_view right) noexcept {
+    if (left.size() != 64U || right.size() != 64U) return false;
+    const auto canonicalCharacter = [] (unsigned char character) noexcept {
+        if ((character >= '0' && character <= '9') ||
+            (character >= 'a' && character <= 'f')) {
+            return static_cast<int>(character);
+        }
+        if (character >= 'A' && character <= 'F') {
+            return static_cast<int>(character + ('a' - 'A'));
+        }
+        return -1;
+    };
+    for (size_t index = 0; index < left.size(); ++index) {
+        const int canonicalLeft = canonicalCharacter(
+            static_cast<unsigned char>(left[index]));
+        const int canonicalRight = canonicalCharacter(
+            static_cast<unsigned char>(right[index]));
+        if (canonicalLeft < 0 || canonicalRight < 0 ||
+            canonicalLeft != canonicalRight) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool SamePackageBytes(
+    const PackageInfo& left,
+    const PackageInfo& right) noexcept {
+    return SameCanonicalPackageDigest(left.infSha256, right.infSha256) &&
+        SameCanonicalPackageDigest(left.sysSha256, right.sysSha256) &&
+        SameCanonicalPackageDigest(left.catSha256, right.catSha256);
 }
 
 std::string PackageBytesKey(const PackageInfo& package) {
-    return package.infSha256 + ":" + package.sysSha256 + ":" + package.catSha256;
+    std::string inf;
+    std::string sys;
+    std::string cat;
+    if (!CanonicalizePackageDigest(package.infSha256, &inf) ||
+        !CanonicalizePackageDigest(package.sysSha256, &sys) ||
+        !CanonicalizePackageDigest(package.catSha256, &cat)) {
+        return {};
+    }
+    return inf + ":" + sys + ":" + cat;
 }
 
 bool GetDriverStoreInfPath(
@@ -2008,35 +2087,302 @@ bool LoadOwnedPackage(
 
 bool IsSafePublishedInfName(const std::wstring& value) {
     const std::filesystem::path path(value);
-    if (path.has_parent_path() || path.filename().wstring() != value || value.size() < 9) {
+    if (path.has_parent_path() || path.filename().wstring() != value ||
+        value.size() < 8U) {
         return false;
     }
-    std::wstring lower = value;
-    std::transform(lower.begin(), lower.end(), lower.begin(), [](wchar_t character) {
-        return static_cast<wchar_t>(towlower(character));
-    });
-    if (!lower.starts_with(L"oem") || !lower.ends_with(L".inf")) {
+    const auto asciiLower = [](wchar_t character) {
+        return character >= L'A' && character <= L'Z'
+            ? static_cast<wchar_t>(character + (L'a' - L'A'))
+            : character;
+    };
+    if (asciiLower(value[0]) != L'o' || asciiLower(value[1]) != L'e' ||
+        asciiLower(value[2]) != L'm' ||
+        asciiLower(value[value.size() - 4U]) != L'.' ||
+        asciiLower(value[value.size() - 3U]) != L'i' ||
+        asciiLower(value[value.size() - 2U]) != L'n' ||
+        asciiLower(value[value.size() - 1U]) != L'f') {
         return false;
     }
-    return std::all_of(lower.begin() + 3, lower.end() - 4, [](wchar_t character) {
+    return std::all_of(value.begin() + 3, value.end() - 4, [](wchar_t character) {
         return character >= L'0' && character <= L'9';
     });
 }
 
 bool GetSystemInfDirectory(std::filesystem::path* directory, Error* error) {
     std::vector<wchar_t> buffer(MAX_PATH);
-    const UINT length = GetWindowsDirectoryW(buffer.data(), static_cast<UINT>(buffer.size()));
+    const UINT length = GetSystemWindowsDirectoryW(
+        buffer.data(), static_cast<UINT>(buffer.size()));
     if (length == 0) {
-        return SetLastErrorDetail(error, L"windows-directory");
+        return SetLastErrorDetail(error, L"system-windows-directory");
     }
     if (static_cast<size_t>(length) >= buffer.size()) {
         buffer.resize(static_cast<size_t>(length) + 1);
-        const UINT retry = GetWindowsDirectoryW(buffer.data(), static_cast<UINT>(buffer.size()));
+        const UINT retry = GetSystemWindowsDirectoryW(
+            buffer.data(), static_cast<UINT>(buffer.size()));
         if (retry == 0 || static_cast<size_t>(retry) >= buffer.size()) {
-            return SetLastErrorDetail(error, L"windows-directory");
+            return SetLastErrorDetail(error, L"system-windows-directory");
         }
     }
     *directory = std::filesystem::path(buffer.data()) / L"INF";
+    return true;
+}
+
+constexpr DWORD kPublishedInfBasicUnsafeAttributes =
+    FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_OFFLINE |
+    0x00080000UL | // FILE_ATTRIBUTE_PINNED
+    0x00100000UL | // FILE_ATTRIBUTE_UNPINNED
+    0x00400000UL;  // FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS
+// 0x00040000 is FILE_ATTRIBUTE_RECALL_ON_OPEN only in directory-enumeration
+// records; in basic/handle attribute records the same bit means
+// FILE_ATTRIBUTE_EA and must not be misclassified as cloud state.
+constexpr DWORD kPublishedInfEnumerationRecallOnOpen = 0x00040000UL;
+
+bool PublishedInfBasicAttributesAreSafe(
+    DWORD attributes,
+    bool expectDirectory) noexcept {
+    if (attributes == INVALID_FILE_ATTRIBUTES ||
+        (attributes & kPublishedInfBasicUnsafeAttributes) != 0) {
+        return false;
+    }
+    const bool directory = (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+    return directory == expectDirectory;
+}
+
+bool PublishedInfEnumerationAttributesAreSafe(
+    DWORD attributes,
+    bool expectDirectory) noexcept {
+    return PublishedInfBasicAttributesAreSafe(
+            attributes, expectDirectory) &&
+        (attributes & kPublishedInfEnumerationRecallOnOpen) == 0;
+}
+
+bool OrdinalPathEqualsInsensitive(
+    std::wstring_view left,
+    std::wstring_view right) noexcept {
+    if (left.size() > static_cast<size_t>(std::numeric_limits<int>::max()) ||
+        right.size() > static_cast<size_t>(std::numeric_limits<int>::max())) {
+        return false;
+    }
+    return CompareStringOrdinal(
+        left.data(), static_cast<int>(left.size()),
+        right.data(), static_cast<int>(right.size()), TRUE) == CSTR_EQUAL;
+}
+
+bool IsDriveAbsoluteCanonicalPath(std::wstring_view value) noexcept {
+    return value.size() >= 4U &&
+        ((value[0] >= L'A' && value[0] <= L'Z') ||
+            (value[0] >= L'a' && value[0] <= L'z')) &&
+        value[1] == L':' && value[2] == L'\\' &&
+        value.find(L'/', 0) == std::wstring_view::npos &&
+        value.find(L':', 2) == std::wstring_view::npos;
+}
+
+bool NormalizePublishedInfPath(
+    std::wstring_view value,
+    const std::filesystem::path& canonicalSystemInf,
+    std::filesystem::path* normalized) {
+    if (normalized == nullptr || value.empty() || value.size() >= MAX_PATH ||
+        value.find(L'\0') != std::wstring_view::npos) {
+        return false;
+    }
+    std::wstring systemRoot = canonicalSystemInf.native();
+    while (systemRoot.size() > 3U && systemRoot.back() == L'\\') {
+        systemRoot.pop_back();
+    }
+    if (!IsDriveAbsoluteCanonicalPath(systemRoot)) {
+        return false;
+    }
+
+    std::wstring fileName;
+    if (value.find_first_of(L"\\/:") == std::wstring_view::npos) {
+        fileName.assign(value);
+    } else {
+        if (!IsDriveAbsoluteCanonicalPath(value) ||
+            value.starts_with(L"\\\\") || value.starts_with(L"\\\\?\\") ||
+            value.starts_with(L"\\\\.\\")) {
+            return false;
+        }
+        const size_t lastSeparator = value.rfind(L'\\');
+        if (lastSeparator <= 2U || lastSeparator + 1U >= value.size()) {
+            return false;
+        }
+        size_t componentStart = 3U;
+        while (componentStart < lastSeparator) {
+            const size_t separator = value.find(L'\\', componentStart);
+            const size_t componentEnd = separator == std::wstring_view::npos ||
+                    separator > lastSeparator
+                ? lastSeparator : separator;
+            const std::wstring_view component =
+                value.substr(componentStart, componentEnd - componentStart);
+            if (component.empty() || component == L"." || component == L"..") {
+                return false;
+            }
+            if (componentEnd == lastSeparator) {
+                break;
+            }
+            componentStart = componentEnd + 1U;
+        }
+        const std::wstring_view parent = value.substr(0, lastSeparator);
+        if (!OrdinalPathEqualsInsensitive(parent, systemRoot)) {
+            return false;
+        }
+        fileName.assign(value.substr(lastSeparator + 1U));
+    }
+    if (!IsSafePublishedInfName(fileName)) {
+        return false;
+    }
+    const std::filesystem::path result =
+        std::filesystem::path(systemRoot) / fileName;
+    if (result.native().size() >= MAX_PATH) {
+        return false;
+    }
+    *normalized = result;
+    return true;
+}
+
+bool DecodePublishedInfReturnBuffer(
+    const wchar_t* buffer,
+    size_t capacity,
+    DWORD required,
+    std::wstring_view* value) noexcept {
+    if (buffer == nullptr || value == nullptr || capacity == 0U ||
+        capacity > MAXDWORD || required == 0U || required > capacity) {
+        return false;
+    }
+    const size_t length = wcsnlen_s(buffer, capacity);
+    if (length == 0U || length >= capacity ||
+        required != static_cast<DWORD>(length + 1U)) {
+        return false;
+    }
+    *value = std::wstring_view(buffer, length);
+    return true;
+}
+
+bool DecodeFixedPublishedInfReturnBuffer(
+    const wchar_t* buffer,
+    size_t capacity,
+    std::wstring_view* value) noexcept {
+    if (buffer == nullptr || value == nullptr || capacity == 0U) {
+        return false;
+    }
+    const size_t length = wcsnlen_s(buffer, capacity);
+    if (length == 0U || length >= capacity) {
+        return false;
+    }
+    *value = std::wstring_view(buffer, length);
+    return true;
+}
+
+bool GetCanonicalSystemInfDirectory(
+    std::filesystem::path* canonicalSystemInf,
+    Error* error) {
+    std::filesystem::path systemInf;
+    if (!GetSystemInfDirectory(&systemInf, error)) {
+        return false;
+    }
+    const DWORD rawAttributes = GetFileAttributesW(systemInf.c_str());
+    if (!PublishedInfBasicAttributesAreSafe(rawAttributes, true)) {
+        return SetError(error, L"system-inf-directory", ERROR_REPARSE_TAG_MISMATCH,
+            L"the system INF directory must be a local non-reparse directory");
+    }
+    std::error_code canonicalError;
+    const std::filesystem::path canonical =
+        std::filesystem::canonical(systemInf, canonicalError);
+    if (canonicalError || canonical.empty() ||
+        canonical.native().size() >= MAX_PATH ||
+        !PublishedInfBasicAttributesAreSafe(
+            GetFileAttributesW(canonical.c_str()), true)) {
+        return SetError(error, L"system-inf-directory",
+            canonicalError ? static_cast<DWORD>(canonicalError.value())
+                           : ERROR_INVALID_NAME,
+            L"the canonical system INF directory is unavailable or unsafe");
+    }
+    *canonicalSystemInf = canonical;
+    return true;
+}
+
+bool ValidatePublishedInfPath(
+    const std::filesystem::path& path,
+    const std::filesystem::path& canonicalSystemInf,
+    Error* error) {
+    if (!OrdinalPathEqualsInsensitive(
+            path.parent_path().native(), canonicalSystemInf.native()) ||
+        !IsSafePublishedInfName(path.filename().wstring())) {
+        return SetError(error, L"published-inf", ERROR_INVALID_NAME,
+            L"published INF is outside the canonical system INF directory");
+    }
+    WIN32_FIND_DATAW enumeration{};
+    HANDLE rawFind = FindFirstFileW(path.c_str(), &enumeration);
+    if (rawFind == INVALID_HANDLE_VALUE) {
+        return SetLastErrorDetail(error, L"published-inf-enumeration");
+    }
+    const BOOL findClosed = FindClose(rawFind);
+    if (!findClosed) {
+        return SetLastErrorDetail(error, L"published-inf-enumeration-close");
+    }
+    if (!OrdinalPathEqualsInsensitive(
+            enumeration.cFileName, path.filename().wstring()) ||
+        !PublishedInfEnumerationAttributesAreSafe(
+            enumeration.dwFileAttributes, false)) {
+        return SetError(error, L"published-inf-enumeration",
+            ERROR_REPARSE_TAG_MISMATCH,
+            L"published INF directory receipt identifies reparse, offline, recall, or cloud state");
+    }
+    const DWORD rawAttributes = GetFileAttributesW(path.c_str());
+    if (rawAttributes == INVALID_FILE_ATTRIBUTES) {
+        return SetLastErrorDetail(error, L"published-inf-attributes");
+    }
+    if (!PublishedInfBasicAttributesAreSafe(rawAttributes, false)) {
+        return SetError(error, L"published-inf-attributes",
+            ERROR_REPARSE_TAG_MISMATCH,
+            L"published INF must be a present local non-reparse regular file");
+    }
+    WinHandle file(CreateFileW(
+        path.c_str(), FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr, OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT |
+            FILE_FLAG_OPEN_NO_RECALL,
+        nullptr));
+    if (!file) {
+        return SetLastErrorDetail(error, L"published-inf-open");
+    }
+    FILE_ATTRIBUTE_TAG_INFO attributes{};
+    if (!GetFileInformationByHandleEx(
+            file.get(), FileAttributeTagInfo, &attributes,
+            sizeof(attributes)) ||
+        !PublishedInfBasicAttributesAreSafe(
+            attributes.FileAttributes, false) ||
+        GetFileType(file.get()) != FILE_TYPE_DISK) {
+        return SetError(error, L"published-inf-open", ERROR_REPARSE_TAG_MISMATCH,
+            L"published INF must be a present local non-reparse regular file");
+    }
+    std::array<wchar_t, MAX_PATH> finalBuffer{};
+    const DWORD finalLength = GetFinalPathNameByHandleW(
+        file.get(), finalBuffer.data(), static_cast<DWORD>(finalBuffer.size()),
+        FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+    if (finalLength == 0U) {
+        return SetLastErrorDetail(error, L"published-inf-final-path");
+    }
+    if (finalLength >= finalBuffer.size()) {
+        return SetError(error, L"published-inf-final-path",
+            ERROR_FILENAME_EXCED_RANGE,
+            L"published INF final path exceeds the supported SetupAPI MAX_PATH contract");
+    }
+    std::wstring finalPath(finalBuffer.data(), finalLength);
+    if (finalPath.starts_with(L"\\\\?\\UNC\\")) {
+        return SetError(error, L"published-inf-final-path", ERROR_INVALID_NAME,
+            L"published INF resolved to a UNC path");
+    }
+    if (finalPath.starts_with(L"\\\\?\\")) {
+        finalPath.erase(0U, 4U);
+    }
+    if (!OrdinalPathEqualsInsensitive(finalPath, path.native())) {
+        return SetError(error, L"published-inf-final-path",
+            ERROR_REPARSE_TAG_MISMATCH,
+            L"published INF final path differs from the canonical system INF receipt");
+    }
     return true;
 }
 
@@ -2044,30 +2390,33 @@ bool GetPublishedInfPath(
     const std::filesystem::path& infPath,
     std::filesystem::path* publishedPath,
     Error* error) {
-    DWORD required = 0;
-    SetupGetInfPublishedNameW(infPath.c_str(), nullptr, 0, &required);
-    if (required == 0 || GetLastError() != ERROR_INSUFFICIENT_BUFFER) {
+    std::array<wchar_t, MAX_PATH> buffer{};
+    buffer.fill(static_cast<wchar_t>(0xffffU));
+    if (!SetupGetInfPublishedNameW(
+            infPath.c_str(), buffer.data(),
+            static_cast<DWORD>(buffer.size()), nullptr)) {
         return SetLastErrorDetail(error, L"published-inf");
     }
-    std::vector<wchar_t> buffer(required);
-    if (!SetupGetInfPublishedNameW(infPath.c_str(), buffer.data(), required, nullptr)) {
-        return SetLastErrorDetail(error, L"published-inf");
+    std::wstring_view returned;
+    if (!DecodeFixedPublishedInfReturnBuffer(
+            buffer.data(), buffer.size(), &returned)) {
+        return SetError(error, L"published-inf", ERROR_INVALID_DATA,
+            L"SetupAPI returned an empty or unterminated published INF path");
     }
-    const std::filesystem::path result(buffer.data());
-    std::filesystem::path systemInf;
-    if (!GetSystemInfDirectory(&systemInf, error)) {
+    std::filesystem::path canonicalSystemInf;
+    if (!GetCanonicalSystemInfDirectory(&canonicalSystemInf, error)) {
         return false;
     }
-    std::error_code parentError;
-    std::error_code systemError;
-    const std::filesystem::path canonicalParent = std::filesystem::canonical(result.parent_path(), parentError);
-    const std::filesystem::path canonicalSystemInf = std::filesystem::canonical(systemInf, systemError);
-    if (parentError || systemError || !IsSafePublishedInfName(result.filename().wstring()) ||
-        _wcsicmp(canonicalParent.c_str(), canonicalSystemInf.c_str()) != 0) {
+    std::filesystem::path normalized;
+    if (!NormalizePublishedInfPath(
+            returned, canonicalSystemInf, &normalized)) {
         return SetError(error, L"published-inf", ERROR_INVALID_NAME,
-            L"SetupAPI returned a published INF outside the system INF directory");
+            L"SetupAPI returned a noncanonical published INF path");
     }
-    *publishedPath = result;
+    if (!ValidatePublishedInfPath(normalized, canonicalSystemInf, error)) {
+        return false;
+    }
+    *publishedPath = std::move(normalized);
     return true;
 }
 
@@ -2076,23 +2425,36 @@ bool GetDriverStoreInfPath(
     std::filesystem::path* storePath,
     Error* error) {
     DWORD required = 0;
-    SetupGetInfDriverStoreLocationW(publishedPath.c_str(), nullptr, nullptr, nullptr, 0, &required);
-    if (required == 0 || GetLastError() != ERROR_INSUFFICIENT_BUFFER) {
+    SetLastError(ERROR_SUCCESS);
+    const BOOL sized = SetupGetInfDriverStoreLocationW(
+        publishedPath.c_str(), nullptr, nullptr, nullptr, 0, &required);
+    const DWORD sizeError = GetLastError();
+    if (sized || sizeError != ERROR_INSUFFICIENT_BUFFER ||
+        required == 0U || required > MAX_PATH) {
+        SetLastError(sizeError == ERROR_SUCCESS ? ERROR_INVALID_DATA : sizeError);
         return SetLastErrorDetail(error, L"driver-store-inf");
     }
-    std::vector<wchar_t> buffer(required);
+    std::vector<wchar_t> buffer(required, static_cast<wchar_t>(0xffffU));
+    DWORD observedRequired = 0;
     if (!SetupGetInfDriverStoreLocationW(
-            publishedPath.c_str(), nullptr, nullptr, buffer.data(), required, nullptr)) {
+            publishedPath.c_str(), nullptr, nullptr, buffer.data(), required,
+            &observedRequired)) {
         return SetLastErrorDetail(error, L"driver-store-inf");
     }
-    *storePath = buffer.data();
+    std::wstring_view returned;
+    if (!DecodePublishedInfReturnBuffer(
+            buffer.data(), buffer.size(), observedRequired, &returned)) {
+        return SetError(error, L"driver-store-inf", ERROR_INVALID_DATA,
+            L"SetupAPI returned an empty, unterminated, or length-inconsistent Driver Store INF path");
+    }
+    *storePath = std::filesystem::path(returned);
     return true;
 }
 
 bool EnumerateOwnedPackages(std::vector<PackageInfo>* packages, Error* error) {
     packages->clear();
     std::filesystem::path infDirectory;
-    if (!GetSystemInfDirectory(&infDirectory, error)) {
+    if (!GetCanonicalSystemInfDirectory(&infDirectory, error)) {
         return false;
     }
     const std::wstring pattern = (infDirectory / L"oem*.inf").wstring();
@@ -2105,17 +2467,28 @@ bool EnumerateOwnedPackages(std::vector<PackageInfo>* packages, Error* error) {
         return SetLastErrorDetail(error, L"enumerate-published-inf");
     }
     do {
-        if ((data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0 ||
-            !IsSafePublishedInfName(data.cFileName)) {
+        if (!IsSafePublishedInfName(data.cFileName)) {
             continue;
+        }
+        if (!PublishedInfEnumerationAttributesAreSafe(
+                data.dwFileAttributes, false)) {
+            FindClose(rawFind);
+            return SetError(error, L"enumerate-published-inf",
+                ERROR_REPARSE_TAG_MISMATCH,
+                L"an OEM INF directory receipt identifies reparse, offline, recall, or cloud state");
+        }
+        const std::filesystem::path publishedInf =
+            infDirectory / data.cFileName;
+        if (!ValidatePublishedInfPath(
+                publishedInf, infDirectory, error)) {
+            FindClose(rawFind);
+            return false;
         }
         PackageInfo package;
         bool owned = false;
-        Error packageError;
-        if (!LoadOwnedPackage(infDirectory / data.cFileName, false, false,
-                &package, &owned, &packageError)) {
+        if (!LoadOwnedPackage(publishedInf, false, false,
+                &package, &owned, error)) {
             FindClose(rawFind);
-            *error = std::move(packageError);
             return false;
         }
         if (owned) {
@@ -2153,6 +2526,167 @@ bool FindPublishedCandidate(
         return SetError(error, L"published-candidate",
             matches == 0 ? ERROR_NOT_FOUND : ERROR_DUPLICATE_SERVICE_NAME,
             L"driver store must contain exactly one published copy of the candidate package");
+    }
+    return true;
+}
+
+bool RunPublishedInfNormalizationSelfTest(Error* error) {
+    const std::filesystem::path canonicalSystemInf =
+        LR"(C:\Windows\INF)";
+    struct PositiveCase {
+        std::wstring value;
+        std::wstring fileName;
+    };
+    for (const PositiveCase& test : {
+            PositiveCase{L"oem0.inf", L"oem0.inf"},
+            PositiveCase{L"OEM1.INF", L"OEM1.INF"},
+            PositiveCase{L"oem9.inf", L"oem9.inf"},
+            PositiveCase{L"oem123456.inf", L"oem123456.inf"},
+            PositiveCase{LR"(C:\Windows\INF\oem1.inf)", L"oem1.inf"},
+            PositiveCase{LR"(c:\windows\inf\OEM9.INF)", L"OEM9.INF"}}) {
+        std::filesystem::path normalized;
+        if (!NormalizePublishedInfPath(
+                test.value, canonicalSystemInf, &normalized) ||
+            !OrdinalPathEqualsInsensitive(
+                normalized.native(),
+                (canonicalSystemInf / test.fileName).native())) {
+            return SetError(error, L"self-test-published-inf-normalization",
+                ERROR_INVALID_DATA,
+                L"a valid bare or absolute system-INF published name was rejected");
+        }
+    }
+    for (const std::wstring& value : std::vector<std::wstring>{
+            std::wstring{}, L"oem.inf", L"oem-1.inf", L"oem1.in",
+            L"oem1.inf.bak", LR"(.\oem1.inf)", LR"(..\oem1.inf)",
+            LR"(sub\oem1.inf)", L"C:oem1.inf",
+            LR"(\Windows\INF\oem1.inf)",
+            LR"(\\server\share\oem1.inf)",
+            LR"(\\?\C:\Windows\INF\oem1.inf)",
+            LR"(\\.\C:\Windows\INF\oem1.inf)",
+            LR"(C:\Windows\INF\..\Temp\oem1.inf)",
+            LR"(C:\Windows\INF\.\oem1.inf)",
+            LR"(C:\Temp\oem1.inf)", L"oem1.inf:stream",
+            LR"(C:\Windows\INF\oem1.inf:stream)",
+            L"C:/Windows/INF/oem1.inf"}) {
+        std::filesystem::path normalized;
+        if (NormalizePublishedInfPath(
+                value, canonicalSystemInf, &normalized)) {
+            return SetError(error, L"self-test-published-inf-normalization",
+                ERROR_INVALID_DATA,
+                L"an ambiguous, escaping, device, UNC, ADS, or malformed published path was admitted");
+        }
+    }
+    std::wstring embeddedNul = L"oem1.inf";
+    embeddedNul.push_back(L'\0');
+    embeddedNul.append(L".bak");
+    std::filesystem::path normalized;
+    if (NormalizePublishedInfPath(
+            embeddedNul, canonicalSystemInf, &normalized)) {
+        return SetError(error, L"self-test-published-inf-normalization",
+            ERROR_INVALID_DATA,
+            L"an embedded-NUL published name was admitted");
+    }
+
+    std::array<wchar_t, 16> receipt{};
+    receipt.fill(static_cast<wchar_t>(0xffffU));
+    constexpr std::wstring_view validReceipt = L"oem1.inf";
+    std::copy(validReceipt.begin(), validReceipt.end(), receipt.begin());
+    receipt[validReceipt.size()] = L'\0';
+    std::wstring_view decoded;
+    std::array<wchar_t, 8> unterminated{};
+    unterminated.fill(L'x');
+    if (!DecodeFixedPublishedInfReturnBuffer(
+            receipt.data(), receipt.size(), &decoded) ||
+        decoded != validReceipt ||
+        DecodeFixedPublishedInfReturnBuffer(
+            unterminated.data(), unterminated.size(), &decoded) ||
+        !DecodePublishedInfReturnBuffer(
+            receipt.data(), receipt.size(),
+            static_cast<DWORD>(validReceipt.size() + 1U), &decoded) ||
+        decoded != validReceipt ||
+        DecodePublishedInfReturnBuffer(
+            receipt.data(), receipt.size(),
+            static_cast<DWORD>(validReceipt.size()), &decoded) ||
+        DecodePublishedInfReturnBuffer(
+            receipt.data(), receipt.size(), 0U, &decoded) ||
+        DecodePublishedInfReturnBuffer(
+            unterminated.data(), unterminated.size(),
+            static_cast<DWORD>(unterminated.size()), &decoded)) {
+        return SetError(error, L"self-test-published-inf-normalization",
+            ERROR_INVALID_DATA,
+            L"published INF receipt length or termination validation is not exact");
+    }
+    if (!PublishedInfBasicAttributesAreSafe(
+            FILE_ATTRIBUTE_NORMAL, false) ||
+        !PublishedInfBasicAttributesAreSafe(
+            FILE_ATTRIBUTE_DIRECTORY, true) ||
+        PublishedInfBasicAttributesAreSafe(
+            FILE_ATTRIBUTE_DIRECTORY, false) ||
+        PublishedInfBasicAttributesAreSafe(
+            FILE_ATTRIBUTE_NORMAL, true) ||
+        !PublishedInfBasicAttributesAreSafe(
+            FILE_ATTRIBUTE_NORMAL | kPublishedInfEnumerationRecallOnOpen,
+            false) ||
+        PublishedInfEnumerationAttributesAreSafe(
+            FILE_ATTRIBUTE_NORMAL | kPublishedInfEnumerationRecallOnOpen,
+            false)) {
+        return SetError(error, L"self-test-published-inf-normalization",
+            ERROR_INVALID_DATA,
+            L"published INF file/directory attribute classification is not exact");
+    }
+    for (const DWORD unsafeAttribute : std::array<DWORD, 5>{
+            static_cast<DWORD>(FILE_ATTRIBUTE_REPARSE_POINT),
+            static_cast<DWORD>(FILE_ATTRIBUTE_OFFLINE),
+            0x00080000UL, 0x00100000UL, 0x00400000UL}) {
+        if (PublishedInfBasicAttributesAreSafe(
+                FILE_ATTRIBUTE_NORMAL | unsafeAttribute, false) ||
+            PublishedInfEnumerationAttributesAreSafe(
+                FILE_ATTRIBUTE_NORMAL | unsafeAttribute, false)) {
+            return SetError(error, L"self-test-published-inf-normalization",
+                ERROR_INVALID_DATA,
+                L"a reparse, offline, recall, pinned, or unpinned published INF was admitted");
+        }
+    }
+    return true;
+}
+
+bool RunPublishedInfRoundTripLiveSelfTest(Error* error) {
+    bool elevated = false;
+    if (!QueryProcessElevation(&elevated, error)) return false;
+    if (!elevated) return true;
+    std::vector<PackageInfo> packages;
+    if (!EnumerateOwnedPackages(&packages, error)) return false;
+    if (packages.empty()) return true;
+    for (const PackageInfo& package : packages) {
+        std::filesystem::path driverStoreInf;
+        std::filesystem::path fromDriverStore;
+        std::filesystem::path fromBareName;
+        PackageInfo unique;
+        if (!GetDriverStoreInfPath(
+                package.infPath, &driverStoreInf, error) ||
+            !GetPublishedInfPath(
+                driverStoreInf, &fromDriverStore, error) ||
+            !GetPublishedInfPath(
+                std::filesystem::path(package.publishedName),
+                &fromBareName, error) ||
+            !FindPublishedCandidate(package, &unique, error)) {
+            return false;
+        }
+        if (!OrdinalPathEqualsInsensitive(
+                fromDriverStore.native(), package.infPath.native()) ||
+            !OrdinalPathEqualsInsensitive(
+                fromBareName.native(), package.infPath.native()) ||
+            !OrdinalPathEqualsInsensitive(
+                unique.infPath.native(), package.infPath.native()) ||
+            !OrdinalPathEqualsInsensitive(
+                unique.publishedName, package.publishedName) ||
+            unique.version != package.version ||
+            !SamePackageBytes(unique, package)) {
+            return SetError(error,
+                L"self-test-published-inf-live-roundtrip",
+                ERROR_REVISION_MISMATCH,
+                L"an exact installed VIIPER package did not round-trip from system INF through Driver Store and back");
+        }
     }
     return true;
 }
@@ -2670,21 +3204,16 @@ bool StageCandidatePackage(
             L"transaction-deadline-before-driver-stage", error)) {
         return false;
     }
-    std::filesystem::path systemInf;
-    if (!GetSystemInfDirectory(&systemInf, error)) {
+    std::filesystem::path canonicalSystemInf;
+    if (!GetCanonicalSystemInfDirectory(&canonicalSystemInf, error)) {
+        error->phase = L"stage-system-inf-directory";
         return false;
-    }
-    std::error_code systemInfError;
-    const std::filesystem::path canonicalSystemInf =
-        std::filesystem::canonical(systemInf, systemInfError);
-    if (systemInfError) {
-        return SetError(error, L"stage-system-inf-directory",
-            static_cast<DWORD>(systemInfError.value()),
-            L"the canonical system INF directory could not be captured before staging");
     }
 
     std::array<wchar_t, MAX_PATH> destination{};
+    destination.fill(static_cast<wchar_t>(0xffffU));
     DWORD required = 0;
+    PWSTR destinationComponent = nullptr;
     // SetupCopyOEMInf can publish bytes before returning or before subsequent
     // receipt validation. Mark the protected transaction as potentially
     // mutated before the API boundary; stagedHere remains success-only so
@@ -2700,7 +3229,7 @@ bool StageCandidatePackage(
             return SetupCopyOEMInfW(
                 sourcePath.c_str(), nullptr, SPOST_PATH, SP_COPY_NOOVERWRITE,
                 destination.data(), static_cast<DWORD>(destination.size()),
-                &required, nullptr);
+                &required, &destinationComponent);
         });
     const DWORD copyError = copied ? ERROR_SUCCESS : GetLastError();
     Error journalReturnError;
@@ -2729,20 +3258,30 @@ bool StageCandidatePackage(
             L"add-only candidate import into the Driver Store failed");
     }
 
+    std::wstring_view destinationValue;
     const size_t destinationLength =
         wcsnlen_s(destination.data(), destination.size());
-    bool receiptValid = destinationLength != 0 &&
+    bool receiptValid = destinationLength != 0U &&
         destinationLength < destination.size() &&
-        required == destinationLength + 1;
+        DecodePublishedInfReturnBuffer(
+            destination.data(), destination.size(), required,
+            &destinationValue);
     std::filesystem::path destinationPath;
     if (receiptValid) {
-        destinationPath = destination.data();
-        std::error_code parentError;
-        const std::filesystem::path canonicalParent =
-            std::filesystem::canonical(destinationPath.parent_path(), parentError);
-        receiptValid = !parentError &&
-            IsSafePublishedInfName(destinationPath.filename().wstring()) &&
-            _wcsicmp(canonicalParent.c_str(), canonicalSystemInf.c_str()) == 0;
+        receiptValid = NormalizePublishedInfPath(
+            destinationValue, canonicalSystemInf, &destinationPath) &&
+            ValidatePublishedInfPath(
+                destinationPath, canonicalSystemInf, error);
+    }
+    if (receiptValid) {
+        const std::wstring fileName = destinationPath.filename().wstring();
+        const size_t componentOffset =
+            destinationValue.size() - fileName.size();
+        receiptValid = componentOffset < destinationValue.size() &&
+            destinationComponent == destination.data() + componentOffset &&
+            OrdinalPathEqualsInsensitive(
+                std::wstring_view(destinationComponent, fileName.size()),
+                fileName);
     }
     if (receiptValid) {
         // Preserve the API's exact, safe published-name receipt immediately.
@@ -2761,14 +3300,22 @@ bool StageCandidatePackage(
         return SetError(error, L"stage-published-inf", ERROR_INVALID_DATA,
             L"SetupCopyOEMInf returned a malformed published INF identity");
     }
+    std::filesystem::path driverStoreInfPath;
     std::filesystem::path resolvedPublishedPath;
     PackageInfo verifiedPublished;
-    if (!GetPublishedInfPath(candidate.infPath, &resolvedPublishedPath, error) ||
-        _wcsicmp(resolvedPublishedPath.c_str(), destinationPath.c_str()) != 0 ||
+    if (!GetDriverStoreInfPath(
+            destinationPath, &driverStoreInfPath, error) ||
+        !GetPublishedInfPath(
+            driverStoreInfPath, &resolvedPublishedPath, error) ||
+        !OrdinalPathEqualsInsensitive(
+            resolvedPublishedPath.native(), destinationPath.native()) ||
         !FindPublishedCandidate(candidate, &verifiedPublished, error) ||
-        _wcsicmp(verifiedPublished.infPath.c_str(), resolvedPublishedPath.c_str()) != 0 ||
-        _wcsicmp(verifiedPublished.publishedName.c_str(),
-            resolvedPublishedPath.filename().c_str()) != 0) {
+        !OrdinalPathEqualsInsensitive(
+            verifiedPublished.infPath.native(),
+            resolvedPublishedPath.native()) ||
+        !OrdinalPathEqualsInsensitive(
+            verifiedPublished.publishedName,
+            resolvedPublishedPath.filename().wstring())) {
         if (error->code == ERROR_SUCCESS) {
             SetError(error, L"stage-published-inf", ERROR_REVISION_MISMATCH,
                 L"add-only staging did not resolve to the unique exact candidate package");
@@ -3012,14 +3559,12 @@ bool RegisterRootDevice(
 bool DriverInfoUsesPublishedPackage(
     const std::filesystem::path& driverInfPath,
     const std::wstring& expectedPublishedName) {
-    if (IsSafePublishedInfName(driverInfPath.filename().wstring())) {
-        return _wcsicmp(
-            driverInfPath.filename().c_str(), expectedPublishedName.c_str()) == 0;
-    }
+    if (!IsSafePublishedInfName(expectedPublishedName)) return false;
     std::filesystem::path publishedPath;
     Error ignored;
     return GetPublishedInfPath(driverInfPath, &publishedPath, &ignored) &&
-        _wcsicmp(publishedPath.filename().c_str(), expectedPublishedName.c_str()) == 0;
+        OrdinalPathEqualsInsensitive(
+            publishedPath.filename().wstring(), expectedPublishedName);
 }
 
 struct PreparedDriverBinding {
@@ -4606,6 +5151,28 @@ bool IsCanonicalLowerHex(std::string_view value, size_t length) noexcept {
             return (character >= '0' && character <= '9') ||
                 (character >= 'a' && character <= 'f');
         });
+}
+
+bool SameCanonicalSha256Digest(
+    std::string_view observed,
+    std::string_view expected) noexcept {
+    // Sha256Handle uses the CryptoAPI display convention with uppercase A-F,
+    // while durable package and journal identities are canonical lowercase.
+    if (!IsCanonicalLowerHex(expected, 64U) || observed.size() != expected.size()) {
+        return false;
+    }
+    for (size_t index = 0; index < observed.size(); ++index) {
+        const unsigned char character =
+            static_cast<unsigned char>(observed[index]);
+        const unsigned char canonical =
+            character >= 'A' && character <= 'F'
+                ? static_cast<unsigned char>(character + ('a' - 'A'))
+                : character;
+        if (canonical != static_cast<unsigned char>(expected[index])) {
+            return false;
+        }
+    }
+    return true;
 }
 
 bool ParseBrokerJournalProofLine(
@@ -7602,7 +8169,7 @@ bool LockProtectedBrokerImage(
         error->phase = L"install-journal-broker-image-hash";
         return false;
     }
-    if (observed != expectedSha256) {
+    if (!SameCanonicalSha256Digest(observed, expectedSha256)) {
         return SetError(error, L"install-journal-broker-image-hash",
             ERROR_CRC,
             L"protected broker evidence differs from its immutable digest");
@@ -8309,6 +8876,7 @@ bool InstallJournal::RetireAfterPriorValidation(
         return false;
     }
     impl_->candidateLocks.clear();
+    impl_->brokerLock.reset();
     impl_->priorBackups.clear();
     if (!RetireInstallRecoveryActiveDirectory(
             &impl_->directory, impl_->state.transactionId,
@@ -15802,6 +16370,83 @@ Outcome Recover(uint64_t transactionDeadlineUnixMs) {
     return outcome;
 }
 
+bool VerifyRecordlessRecoveryActivePathAbsent(
+    const std::filesystem::path& active,
+    const wchar_t* phase,
+    Error* error) {
+    const DWORD attributes = GetFileAttributesW(active.c_str());
+    if (attributes != INVALID_FILE_ATTRIBUTES) {
+        return SetError(error, phase, ERROR_BUSY,
+            L"an active journal exists; recordless failed-install verification has no mutation authority");
+    }
+    const DWORD code = GetLastError();
+    if (code != ERROR_FILE_NOT_FOUND && code != ERROR_PATH_NOT_FOUND) {
+        return SetError(error, phase, code,
+            L"active-journal absence could not be proven");
+    }
+    return true;
+}
+
+// RecoverFailedInstallRecordless is intentionally verify-only. The exact R4
+// digest cut happened before the first durable install record and its
+// destructor already removed active-v2. Parent VIIPER/UdeCx skeletons may
+// remain, but this operation never retires a directory, calls Reconcile*, or
+// mutates services, devices, packages, or trust. Any active install/remove
+// journal belongs to a different/current transaction and is a hard stop.
+Outcome RecoverFailedInstallRecordless(uint64_t transactionDeadlineUnixMs) {
+    Outcome outcome;
+    if (!ValidateTransactionDeadlineBudget(
+            transactionDeadlineUnixMs, &outcome.error)) {
+        outcome.exitCode = ExitCode::PreflightRejected;
+        return outcome;
+    }
+    if (!IsElevated()) {
+        SetError(&outcome.error, L"elevation", ERROR_ELEVATION_REQUIRED);
+        outcome.exitCode = ExitCode::PreflightRejected;
+        return outcome;
+    }
+    TransactionMutex mutex;
+    if (!mutex.Acquire(&outcome.error)) {
+        outcome.exitCode = ExitCode::PreflightRejected;
+        return outcome;
+    }
+    InstallRecoveryDirectory installDirectory;
+    bool installActive = false;
+    if (!installDirectory.OpenChain(
+            false, nullptr, &installActive, &outcome.error)) {
+        outcome.exitCode = ExitCode::PreflightRejected;
+        return outcome;
+    }
+    RemoveRecoveryDirectory removeDirectory;
+    bool removeActive = false;
+    if (!removeDirectory.OpenChain(false, &removeActive, &outcome.error)) {
+        outcome.exitCode = ExitCode::PreflightRejected;
+        return outcome;
+    }
+    if (installActive || removeActive) {
+        SetError(&outcome.error, L"failed-install-recordless-active-journal",
+            ERROR_BUSY,
+            L"an active install/remove journal is outside the exact recordless R4 failure authority");
+        outcome.exitCode = ExitCode::PreflightRejected;
+        return outcome;
+    }
+    if (!VerifyRecordlessRecoveryActivePathAbsent(
+            installDirectory.active,
+            L"failed-install-recordless-install-postcheck", &outcome.error) ||
+        !VerifyRecordlessRecoveryActivePathAbsent(
+            removeDirectory.active,
+            L"failed-install-recordless-remove-postcheck", &outcome.error)) {
+        outcome.exitCode = ExitCode::PreflightRejected;
+        return outcome;
+    }
+    outcome.success = true;
+    outcome.changed = false;
+    outcome.rebootRequired = false;
+    outcome.rollback = L"not-needed";
+    outcome.exitCode = ExitCode::Success;
+    return outcome;
+}
+
 enum class InstallJournalRecoveryModelAction {
     RetirePrior,
     RetireForward,
@@ -15883,7 +16528,90 @@ InstallJournalRecoveryModelAction ClassifyInstallJournalRecoveryModel(
     return InstallJournalRecoveryModelAction::RollbackPrior;
 }
 
+bool RunInstallJournalBrokerLockRetirementSelfTest(Error* error) {
+    std::string rootIdentity;
+    if (!GenerateInstallTransactionId(&rootIdentity, error)) return false;
+    std::error_code pathError;
+    const std::filesystem::path temporary =
+        std::filesystem::temp_directory_path(pathError);
+    if (pathError) {
+        return SetError(error,
+            L"self-test-install-journal-prior-retire-temp",
+            static_cast<DWORD>(pathError.value()));
+    }
+    const std::filesystem::path testRoot = temporary /
+        (L"VIIPER-UdeCx-install-prior-retire-" +
+            std::wstring(rootIdentity.begin(), rootIdentity.end()));
+    const std::filesystem::path active =
+        testRoot / kInstallRecoveryActiveDirectory;
+    const std::filesystem::path brokerDirectory =
+        active / kInstallRecoveryBrokerDirectory;
+    const std::filesystem::path brokerImage =
+        brokerDirectory / L"broker-cut.bin";
+    const std::filesystem::path settled = testRoot /
+        (std::wstring(kInstallRecoverySettledPrefix) +
+            std::wstring(rootIdentity.begin(), rootIdentity.end()));
+    if (!std::filesystem::create_directories(brokerDirectory, pathError) ||
+        pathError) {
+        return SetError(error,
+            L"self-test-install-journal-prior-retire-root",
+            pathError ? static_cast<DWORD>(pathError.value())
+                      : ERROR_ALREADY_EXISTS);
+    }
+    struct Cleanup final {
+        std::filesystem::path root;
+        ~Cleanup() {
+            std::error_code ignored;
+            std::filesystem::remove_all(root, ignored);
+        }
+    } cleanup{testRoot};
+
+    WinHandle brokerLock(CreateFileW(
+        brokerImage.c_str(), GENERIC_READ, FILE_SHARE_READ,
+        nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr));
+    if (!brokerLock) {
+        return SetLastErrorDetail(error,
+            L"self-test-install-journal-prior-retire-broker-lock");
+    }
+    if (MoveFileExW(active.c_str(), settled.c_str(), MOVEFILE_WRITE_THROUGH)) {
+        return SetError(error,
+            L"self-test-install-journal-prior-retire-broker-lock-cut",
+            ERROR_INVALID_DATA,
+            L"install retirement unexpectedly bypassed a broker image handle without delete sharing");
+    }
+    const DWORD blockedError = GetLastError();
+    if (blockedError != ERROR_SHARING_VIOLATION &&
+        blockedError != ERROR_ACCESS_DENIED &&
+        blockedError != ERROR_LOCK_VIOLATION) {
+        return SetError(error,
+            L"self-test-install-journal-prior-retire-broker-lock-cut",
+            blockedError,
+            L"install retirement failed for an unexpected reason at the broker-lock cut");
+    }
+    brokerLock.reset();
+    if (!MoveFileExW(active.c_str(), settled.c_str(), MOVEFILE_WRITE_THROUGH)) {
+        return SetLastErrorDetail(error,
+            L"self-test-install-journal-prior-retire-broker-lock-release");
+    }
+    const DWORD activeAttributes = GetFileAttributesW(active.c_str());
+    const DWORD activeError = activeAttributes == INVALID_FILE_ATTRIBUTES
+        ? GetLastError() : ERROR_SUCCESS;
+    const DWORD settledAttributes = GetFileAttributesW(settled.c_str());
+    if (activeAttributes != INVALID_FILE_ATTRIBUTES ||
+        (activeError != ERROR_FILE_NOT_FOUND &&
+            activeError != ERROR_PATH_NOT_FOUND) ||
+        settledAttributes == INVALID_FILE_ATTRIBUTES ||
+        (settledAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0) {
+        return SetError(error,
+            L"self-test-install-journal-prior-retire-broker-lock-release",
+            ERROR_INVALID_DATA,
+            L"releasing the broker image lock did not admit exactly one write-through terminal rename");
+    }
+    return true;
+}
+
 bool RunInstallJournalModelSelfTest(Error* error) {
+    if (!RunInstallJournalBrokerLockRetirementSelfTest(error)) return false;
     const std::wstring modelTargetUserSid =
         L"S-1-5-21-1-2-3-1001";
     std::wstring modelProductSecurity;
@@ -17656,7 +18384,26 @@ Outcome Status() {
 Outcome SelfTest() {
     Outcome outcome;
     if (!RunInstallJournalModelSelfTest(&outcome.error) ||
-        !RunRemoveJournalModelSelfTest(&outcome.error)) {
+        !RunRemoveJournalModelSelfTest(&outcome.error) ||
+        !RunPublishedInfNormalizationSelfTest(&outcome.error) ||
+        !RunPublishedInfRoundTripLiveSelfTest(&outcome.error)) {
+        return outcome;
+    }
+    const std::string canonicalSha256 =
+        "0123456789abcdef0123456789abcdef"
+        "0123456789abcdef0123456789abcdef";
+    const std::string uppercaseSha256 =
+        "0123456789ABCDEF0123456789ABCDEF"
+        "0123456789ABCDEF0123456789ABCDEF";
+    std::string differentSha256 = canonicalSha256;
+    differentSha256.back() = '0';
+    if (!SameCanonicalSha256Digest(canonicalSha256, canonicalSha256) ||
+        !SameCanonicalSha256Digest(uppercaseSha256, canonicalSha256) ||
+        SameCanonicalSha256Digest(differentSha256, canonicalSha256) ||
+        SameCanonicalSha256Digest(canonicalSha256, uppercaseSha256)) {
+        SetError(&outcome.error, L"self-test-canonical-sha256",
+            ERROR_INVALID_DATA,
+            L"protected evidence hashes do not use exact canonical SHA-256 comparison");
         return outcome;
     }
     InstallOptions brokerCommandOptions;
@@ -17684,9 +18431,38 @@ Outcome SelfTest() {
     }
     PackageInfo candidate;
     candidate.version = two;
-    candidate.infSha256 = "candidate-inf";
-    candidate.sysSha256 = "candidate-sys";
-    candidate.catSha256 = "candidate-cat";
+    candidate.infSha256 = canonicalSha256;
+    candidate.sysSha256 = std::string(64, 'b');
+    candidate.catSha256 = std::string(64, 'c');
+    PackageInfo mixedCaseCandidate = candidate;
+    const auto mixDigestCase = [] (std::string* digest) {
+        for (size_t index = 0; index < digest->size(); index += 2U) {
+            char& character = (*digest)[index];
+            if (character >= 'a' && character <= 'f') {
+                character = static_cast<char>(character - ('a' - 'A'));
+            }
+        }
+    };
+    mixDigestCase(&mixedCaseCandidate.infSha256);
+    mixDigestCase(&mixedCaseCandidate.sysSha256);
+    mixDigestCase(&mixedCaseCandidate.catSha256);
+    PackageInfo mismatchedCandidate = mixedCaseCandidate;
+    mismatchedCandidate.catSha256.back() =
+        mismatchedCandidate.catSha256.back() == 'd' ? 'e' : 'd';
+    PackageInfo malformedCandidate = candidate;
+    malformedCandidate.infSha256.back() = 'z';
+    if (!SamePackageBytes(candidate, mixedCaseCandidate) ||
+        PackageBytesKey(candidate).empty() ||
+        PackageBytesKey(candidate) != PackageBytesKey(mixedCaseCandidate) ||
+        SamePackageBytes(candidate, mismatchedCandidate) ||
+        SamePackageBytes(candidate, malformedCandidate) ||
+        !PackageBytesKey(malformedCandidate).empty()) {
+        SetError(&outcome.error,
+            L"self-test-package-digest-canonicalization",
+            ERROR_INVALID_DATA,
+            L"package byte identity is not case-insensitive, canonical, and mismatch-exact");
+        return outcome;
+    }
     CandidateDisposition disposition = CandidateDisposition::Exact;
     bool downgrade = true;
     Error classificationError;
@@ -17724,7 +18500,8 @@ Outcome SelfTest() {
         return outcome;
     }
     PackageInfo conflict = candidate;
-    conflict.infSha256 = "different-inf";
+    conflict.infSha256.back() =
+        conflict.infSha256.back() == 'e' ? 'd' : 'e';
     classificationError = {};
     if (ClassifyCandidatePackage(
             candidate, {conflict}, std::nullopt,
@@ -17735,7 +18512,8 @@ Outcome SelfTest() {
         return outcome;
     }
     conflict = candidate;
-    conflict.sysSha256 = "different-sys";
+    conflict.sysSha256.back() =
+        conflict.sysSha256.back() == 'd' ? 'e' : 'd';
     classificationError = {};
     if (ClassifyCandidatePackage(
             candidate, {conflict}, std::nullopt,
@@ -17746,7 +18524,8 @@ Outcome SelfTest() {
         return outcome;
     }
     conflict = candidate;
-    conflict.catSha256 = "different-cat";
+    conflict.catSha256.back() =
+        conflict.catSha256.back() == 'd' ? 'e' : 'd';
     classificationError = {};
     if (ClassifyCandidatePackage(
             candidate, {conflict}, std::nullopt,
@@ -17982,13 +18761,21 @@ Outcome SelfTest() {
     }
     PackageInfo priorPackage;
     priorPackage.publishedName = L"OEM7.INF";
+    priorPackage.infSha256 = std::string(64, 'a');
+    priorPackage.sysSha256 = std::string(64, 'b');
+    priorPackage.catSha256 = std::string(64, 'c');
     PackageInfo preservedPackage;
     preservedPackage.publishedName = L"oem7.inf";
+    preservedPackage.infSha256 = std::string(64, 'A');
+    preservedPackage.sysSha256 = std::string(64, 'B');
+    preservedPackage.catSha256 = std::string(64, 'C');
     PackageInfo newPackage;
     newPackage.publishedName = L"oem9.inf";
-    newPackage.sysSha256 = "new-sys";
+    newPackage.infSha256 = std::string(64, 'd');
+    newPackage.sysSha256 = std::string(64, 'e');
+    newPackage.catSha256 = std::string(64, 'f');
     PackageInfo changedPackage = preservedPackage;
-    changedPackage.sysSha256 = "changed";
+    changedPackage.sysSha256.back() = 'd';
     if (!SamePackageInventory({priorPackage}, {preservedPackage}) ||
         SamePackageInventory({priorPackage}, {preservedPackage, newPackage}) ||
         SamePackageInventory({priorPackage}, {changedPackage}) ||
@@ -18006,9 +18793,6 @@ Outcome SelfTest() {
     capturedRoot.publishedInf = L"oem7.inf";
     capturedRoot.version = one;
     capturedRoot.package = priorPackage;
-    capturedRoot.package.infSha256 = "prior-inf";
-    capturedRoot.package.sysSha256 = "prior-sys";
-    capturedRoot.package.catSha256 = "prior-cat";
     Snapshot capturedRootSnapshot;
     capturedRootSnapshot.devices.push_back(capturedRoot);
     Snapshot observedRootSnapshot = capturedRootSnapshot;
@@ -18766,6 +19550,7 @@ void Usage() {
            L"--transaction-deadline-unix-ms <positive integer>\n"
         << L"  ViiperUdeCtl.exe remove [--transaction-deadline-unix-ms <positive integer>]\n"
         << L"  ViiperUdeCtl.exe recover [--transaction-deadline-unix-ms <positive integer>]\n"
+        << L"  ViiperUdeCtl.exe recover-failed-install-recordless [--transaction-deadline-unix-ms <positive integer>]\n"
         << L"  ViiperUdeCtl.exe broker-settlement-ack --request <protected-json> --request-sha256 <64 hex> --transaction-deadline-unix-ms <positive integer>\n"
         << L"  ViiperUdeCtl.exe broker-settlement-discard --broker-transaction-id <32 hex> --broker-settled-digest <64 hex> --driver-transaction-id <64 hex> --driver-settled-digest <64 hex> --settlement-nonce <64 hex> --request-sha256 <64 hex> --broker-final-receipt <protected-json> --broker-final-receipt-sha256 <64 hex> --transaction-deadline-unix-ms <positive integer>\n"
         << L"  ViiperUdeCtl.exe status\n"
@@ -18890,6 +19675,23 @@ int RunViiperUdeCtl(int argc, wchar_t** argv) {
         EmitOutcome(L"recover", outcome);
         return static_cast<int>(outcome.exitCode);
     }
+    if (argc >= 2 &&
+        _wcsicmp(argv[1], L"recover-failed-install-recordless") == 0) {
+        RemoveOptions options;
+        Error argumentError;
+        if (!ParseRemoveOptions(argc, argv, &options, &argumentError)) {
+            Usage();
+            Outcome outcome;
+            outcome.error = std::move(argumentError);
+            outcome.exitCode = ExitCode::Usage;
+            EmitOutcome(L"recover-failed-install-recordless", outcome);
+            return static_cast<int>(outcome.exitCode);
+        }
+        Outcome outcome = RecoverFailedInstallRecordless(
+            options.transactionDeadlineUnixMs);
+        EmitOutcome(L"recover-failed-install-recordless", outcome);
+        return static_cast<int>(outcome.exitCode);
+    }
     if (argc == 2 && _wcsicmp(argv[1], L"status") == 0) {
         Outcome outcome = Status();
         EmitOutcome(L"status", outcome);
@@ -18915,7 +19717,8 @@ const wchar_t* ExceptionOperation(int argc, wchar_t** argv) noexcept {
     for (const wchar_t* operation :
             {L"install", L"verify", L"remove", L"recover", L"status",
                 L"self-test", L"broker-settlement-ack",
-                L"broker-settlement-discard"}) {
+                L"broker-settlement-discard",
+                L"recover-failed-install-recordless"}) {
         if (_wcsicmp(argv[1], operation) == 0) {
             return operation;
         }

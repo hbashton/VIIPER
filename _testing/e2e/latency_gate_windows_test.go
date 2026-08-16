@@ -3,9 +3,11 @@
 package e2e_bench_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -44,11 +46,19 @@ const (
 	liveLatencyPreflight         = "VIIPER_E2E_PRODUCTION_PREFLIGHT"
 	liveLatencyOutput            = "VIIPER_E2E_LATENCY_OUTPUT"
 	liveLatencySamples           = "VIIPER_E2E_LATENCY_SAMPLES"
+	liveLatencyUSBIPRuntime      = "VIIPER_E2E_USBIP_RUNTIME_PROVENANCE"
+	liveLatencyUSBIPRuntimeSHA   = "VIIPER_E2E_USBIP_RUNTIME_PROVENANCE_SHA256"
+	liveLatencyOrientation       = "VIIPER_E2E_LATENCY_ORIENTATION"
+	liveLatencyCycleID           = "VIIPER_E2E_LATENCY_CYCLE_ID"
+	liveLatencyCycleIndex        = "VIIPER_E2E_LATENCY_CYCLE_INDEX"
+	liveLatencyCycleCount        = "VIIPER_E2E_LATENCY_CYCLE_COUNT"
 	liveLatencyExpectedRevision  = "VIIPER_E2E_EXPECTED_SOURCE_REVISION"
 	liveLatencySDLRevision       = "VIIPER_E2E_SDL_SOURCE_REVISION"
 	liveLatencySDLDLL            = "VIIPER_E2E_SDL_DLL_PATH"
 	liveLatencySDLSHA256         = "VIIPER_E2E_SDL_DLL_SHA256"
 	liveLatencyPackageManifest   = "VIIPER_E2E_PACKAGE_MANIFEST_SHA256"
+	liveLatencyPackageMode       = "VIIPER_E2E_PACKAGE_VALIDATION_MODE"
+	liveLatencyLocalTestCertSHA  = "VIIPER_E2E_LOCAL_TEST_CERTIFICATE_SHA256"
 	liveLatencyDriverSHA256      = "VIIPER_E2E_NATIVE_DRIVER_SHA256"
 	liveLatencyTraceProfileSHA   = "VIIPER_E2E_TRACE_PROFILE_SHA256"
 	liveLatencyDriverBuildID     = "VIIPER_E2E_NATIVE_DRIVER_BUILD_IDENTITY"
@@ -72,11 +82,18 @@ const (
 type liveLatencyConfig struct {
 	outputPath          string
 	samplePairs         int
+	scheduleOrientation string
+	cycleID             string
+	cycleIndex          int
+	cycleCount          int
+	usbipRuntime        latency.USBIPRuntimeProvenance
 	expectedRevision    string
 	sdlRevision         string
 	sdlDLLPath          string
 	sdlDLLSHA256        string
 	packageManifestSHA  string
+	packageMode         string
+	localTestCertSHA    string
 	driverSHA256        string
 	traceProfileSHA256  string
 	driverBuildIdentity string
@@ -215,32 +232,35 @@ func TestLiveControllerToGameLatencyGate(t *testing.T) {
 
 	generatedAt := time.Now().UTC()
 	provenance := latency.Provenance{
-		SourceRevision:              config.expectedRevision,
-		SDLSourceRevision:           config.sdlRevision,
-		SDLBinaryPath:               loadedSDL,
-		SDLBinarySHA256:             loadedHash,
-		NativePackageManifestSHA256: config.packageManifestSHA,
-		NativeDriverSHA256:          config.driverSHA256,
-		NativeDriverBuildIdentity:   config.driverBuildIdentity,
-		QPCFrequency:                qpcFrequency,
-		TraceProviderName:           latency.TraceProviderName,
-		TraceProviderGUID:           latency.TraceProviderGUID,
-		TraceProfileSHA256:          config.traceProfileSHA256,
-		USBIPBaselineMode:           latency.USBIPBaselineMode,
-		USBIPBaselineVersion:        latency.USBIPBaselineVersion,
-		GoVersion:                   runtime.Version(),
-		GOOS:                        runtime.GOOS,
-		GOARCH:                      runtime.GOARCH,
-		GitExecutablePath:           config.gitPath,
-		GitExecutableSHA256:         config.gitSHA256,
-		GoExecutablePath:            config.goPath,
-		GoExecutableSHA256:          config.goSHA256,
-		WPRExecutablePath:           config.wprPath,
-		WPRExecutableSHA256:         config.wprSHA256,
-		Machine:                     machine,
+		SourceRevision:                   config.expectedRevision,
+		SDLSourceRevision:                config.sdlRevision,
+		SDLBinaryPath:                    loadedSDL,
+		SDLBinarySHA256:                  loadedHash,
+		NativePackageManifestSHA256:      config.packageManifestSHA,
+		NativePackageValidationMode:      config.packageMode,
+		NativeLocalTestCertificateSHA256: config.localTestCertSHA,
+		NativeDriverSHA256:               config.driverSHA256,
+		NativeDriverBuildIdentity:        config.driverBuildIdentity,
+		QPCFrequency:                     qpcFrequency,
+		TraceProviderName:                latency.TraceProviderName,
+		TraceProviderGUID:                latency.TraceProviderGUID,
+		TraceProfileSHA256:               config.traceProfileSHA256,
+		USBIPBaselineMode:                latency.USBIPBaselineMode,
+		USBIPBaselineVersion:             latency.USBIPBaselineVersion,
+		USBIPRuntime:                     config.usbipRuntime,
+		GoVersion:                        runtime.Version(),
+		GOOS:                             runtime.GOOS,
+		GOARCH:                           runtime.GOARCH,
+		GitExecutablePath:                config.gitPath,
+		GitExecutableSHA256:              config.gitSHA256,
+		GoExecutablePath:                 config.goPath,
+		GoExecutableSHA256:               config.goSHA256,
+		WPRExecutablePath:                config.wprPath,
+		WPRExecutableSHA256:              config.wprSHA256,
+		Machine:                          machine,
 	}
 	suite := &latency.SuiteReport{
-		Schema: latency.SuiteSchemaV2, GeneratedAt: generatedAt, Provenance: provenance,
+		Schema: latency.SuiteSchemaV3, GeneratedAt: generatedAt, Provenance: provenance,
 	}
 
 	gateCtx, cancelGate := context.WithTimeout(context.Background(), 18*time.Minute)
@@ -248,7 +268,7 @@ func TestLiveControllerToGameLatencyGate(t *testing.T) {
 	for _, controller := range liveControllerWorkloads() {
 		phaseSweepOffsets := latency.ProductionPhaseSweepOffsetsNS()
 		report := latency.Report{
-			Schema: latency.SchemaV2, GeneratedAt: generatedAt, Provenance: provenance,
+			Schema: latency.SchemaV3, GeneratedAt: generatedAt, Provenance: provenance,
 			Workload: latency.Workload{
 				APIAddress: liveLatencyAPIAddress, USBIPAddress: liveLatencyUSBIPAddress,
 				ControllerType:    controller.apiType,
@@ -262,6 +282,10 @@ func TestLiveControllerToGameLatencyGate(t *testing.T) {
 				PhaseSweepOffsetsNS:    phaseSweepOffsets,
 				PhaseSweepSHA256:       latency.PhaseSweepScheduleSHA256(phaseSweepOffsets),
 				Authentication:         latency.AuthenticationMode,
+				ScheduleOrientation:    config.scheduleOrientation,
+				CycleID:                config.cycleID,
+				CycleIndex:             config.cycleIndex,
+				CycleCount:             config.cycleCount,
 			},
 			Policy: latency.Policy{
 				MinimumSamplePairs:      latency.MinimumProductionSamplePairs,
@@ -273,10 +297,12 @@ func TestLiveControllerToGameLatencyGate(t *testing.T) {
 				NativeMaxOverUSBIPNS:    latency.DefaultNativeMaxOverUSBIPNS,
 			},
 		}
-		for _, block := range latency.ProductionBlockSchedule(config.samplePairs) {
+		for _, block := range latency.ProductionBlockScheduleForOrientation(
+			config.samplePairs, config.scheduleOrientation) {
 			report.Runs = append(report.Runs,
 				runLiveLatencyTransport(gateCtx, block, controller, traceProvider,
-					qpcFrequency, config.driverBuildIdentity))
+					qpcFrequency, config.driverBuildIdentity,
+					config.cycleID, config.cycleIndex))
 		}
 		if err = latency.Finalize(&report); err != nil {
 			t.Fatalf("finalize %s source-bound latency report: %v", controller.apiType, err)
@@ -326,11 +352,15 @@ func loadLiveLatencyConfig() (liveLatencyConfig, error) {
 	}
 	config := liveLatencyConfig{
 		outputPath:          strings.TrimSpace(os.Getenv(liveLatencyOutput)),
+		scheduleOrientation: strings.ToLower(strings.TrimSpace(os.Getenv(liveLatencyOrientation))),
+		cycleID:             strings.ToLower(strings.TrimSpace(os.Getenv(liveLatencyCycleID))),
 		expectedRevision:    strings.ToLower(strings.TrimSpace(os.Getenv(liveLatencyExpectedRevision))),
 		sdlRevision:         strings.ToLower(strings.TrimSpace(os.Getenv(liveLatencySDLRevision))),
 		sdlDLLPath:          strings.TrimSpace(os.Getenv(liveLatencySDLDLL)),
 		sdlDLLSHA256:        strings.ToLower(strings.TrimSpace(os.Getenv(liveLatencySDLSHA256))),
 		packageManifestSHA:  strings.ToLower(strings.TrimSpace(os.Getenv(liveLatencyPackageManifest))),
+		packageMode:         strings.ToLower(strings.TrimSpace(os.Getenv(liveLatencyPackageMode))),
+		localTestCertSHA:    strings.ToLower(strings.TrimSpace(os.Getenv(liveLatencyLocalTestCertSHA))),
 		driverSHA256:        strings.ToLower(strings.TrimSpace(os.Getenv(liveLatencyDriverSHA256))),
 		traceProfileSHA256:  strings.ToLower(strings.TrimSpace(os.Getenv(liveLatencyTraceProfileSHA))),
 		driverBuildIdentity: strings.ToLower(strings.TrimSpace(os.Getenv(liveLatencyDriverBuildID))),
@@ -342,6 +372,36 @@ func loadLiveLatencyConfig() (liveLatencyConfig, error) {
 		wprPath:             strings.TrimSpace(os.Getenv(liveLatencyWPRPath)),
 		wprSHA256:           strings.ToLower(strings.TrimSpace(os.Getenv(liveLatencyWPRSHA256))),
 	}
+	encodedUSBIPRuntime := strings.TrimSpace(os.Getenv(liveLatencyUSBIPRuntime))
+	expectedUSBIPRuntimeSHA := strings.ToLower(strings.TrimSpace(
+		os.Getenv(liveLatencyUSBIPRuntimeSHA)))
+	if len(encodedUSBIPRuntime) == 0 || len(encodedUSBIPRuntime) > 128*1024 ||
+		len(expectedUSBIPRuntimeSHA) != 64 {
+		return liveLatencyConfig{}, errors.New("exact USB/IP runtime provenance environment is incomplete")
+	}
+	rawUSBIPRuntime, err := base64.StdEncoding.Strict().DecodeString(encodedUSBIPRuntime)
+	if err != nil || len(rawUSBIPRuntime) == 0 || len(rawUSBIPRuntime) > 96*1024 {
+		return liveLatencyConfig{}, errors.New("exact USB/IP runtime provenance is not canonical bounded base64")
+	}
+	runtimeDigest := sha256.Sum256(rawUSBIPRuntime)
+	if actual := hex.EncodeToString(runtimeDigest[:]); actual != expectedUSBIPRuntimeSHA {
+		return liveLatencyConfig{}, fmt.Errorf("USB/IP runtime provenance SHA-256 %s does not match %s",
+			actual, expectedUSBIPRuntimeSHA)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(rawUSBIPRuntime))
+	decoder.DisallowUnknownFields()
+	if err = decoder.Decode(&config.usbipRuntime); err != nil {
+		return liveLatencyConfig{}, fmt.Errorf("decode exact USB/IP runtime provenance: %w", err)
+	}
+	var trailing any
+	if err = decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return liveLatencyConfig{}, errors.New("exact USB/IP runtime provenance contains trailing JSON")
+	}
+	config.usbipRuntime.CaptureSHA256 = expectedUSBIPRuntimeSHA
+	config.usbipRuntime.CaptureBase64 = encodedUSBIPRuntime
+	if err = latency.ValidateUSBIPRuntimeProvenance(config.usbipRuntime); err != nil {
+		return liveLatencyConfig{}, err
+	}
 	if config.outputPath == "" || config.expectedRevision == "" || config.sdlRevision == "" ||
 		config.sdlDLLPath == "" || config.sdlDLLSHA256 == "" ||
 		config.packageManifestSHA == "" || config.driverSHA256 == "" ||
@@ -352,6 +412,34 @@ func loadLiveLatencyConfig() (liveLatencyConfig, error) {
 		config.wprPath == "" || config.wprSHA256 == "" {
 		return liveLatencyConfig{}, errors.New("production latency provenance environment is incomplete")
 	}
+	if (config.packageMode != latency.PackageValidationProduction || config.localTestCertSHA != "") &&
+		(config.packageMode != latency.PackageValidationLocalTest || len(config.localTestCertSHA) != 64) {
+		return liveLatencyConfig{}, errors.New("package validation mode or local-test certificate SHA-256 is invalid")
+	}
+	if config.localTestCertSHA != "" {
+		if _, err := hex.DecodeString(config.localTestCertSHA); err != nil {
+			return liveLatencyConfig{}, errors.New("local-test certificate SHA-256 is not lowercase hexadecimal")
+		}
+	}
+	cycleIndex, cycleIndexErr := strconv.Atoi(strings.TrimSpace(os.Getenv(liveLatencyCycleIndex)))
+	cycleCount, cycleCountErr := strconv.Atoi(strings.TrimSpace(os.Getenv(liveLatencyCycleCount)))
+	if cycleIndexErr != nil || cycleCountErr != nil || cycleCount < 2 ||
+		cycleCount%2 != 0 || cycleIndex < 1 || cycleIndex > cycleCount ||
+		len(config.cycleID) != 32 {
+		return liveLatencyConfig{}, errors.New(
+			"balanced latency cycle identity, index, and even cycle count are invalid")
+	}
+	if _, err := hex.DecodeString(config.cycleID); err != nil {
+		return liveLatencyConfig{}, errors.New("latency cycle ID must be 32 lowercase hexadecimal characters")
+	}
+	wantOrientation := latency.ScheduleOrientationForCycle(cycleIndex)
+	if config.scheduleOrientation != wantOrientation {
+		return liveLatencyConfig{}, fmt.Errorf(
+			"latency cycle %d requires %s orientation, got %s",
+			cycleIndex, wantOrientation, config.scheduleOrientation)
+	}
+	config.cycleIndex = cycleIndex
+	config.cycleCount = cycleCount
 	if !filepath.IsAbs(config.outputPath) || !filepath.IsAbs(config.sdlDLLPath) {
 		return liveLatencyConfig{}, errors.New("latency output and SDL DLL paths must be absolute")
 	}
@@ -569,6 +657,8 @@ func runLiveLatencyTransport(
 	traceProvider *latencytrace.Provider,
 	qpcFrequency int64,
 	expectedDriverBuildIdentity string,
+	cycleID string,
+	cycleIndex int,
 ) (result latency.Run) {
 	transport := block.Transport
 	result.Order = block.Order
@@ -598,7 +688,6 @@ func runLiveLatencyTransport(
 	}
 	var (
 		busCreated         bool
-		deviceID           string
 		deviceRegistration *viipertypes.Device
 		gamepadID          sdl.GamepadID
 		gamepad            *sdl.Gamepad
@@ -704,7 +793,6 @@ func runLiveLatencyTransport(
 		result.Failure = fmt.Sprintf("native DeviceAdd returned contradictory USB/IP port %d", device.USBIPPort)
 		return result
 	}
-	deviceID = device.DevID
 	deviceRegistration = device
 	result.Device = latency.DeviceProof{
 		BusID: 1, DeviceID: device.DevID, Type: device.Type,
@@ -762,7 +850,8 @@ func runLiveLatencyTransport(
 		lastEventTimestamp, err = measureTransition(
 			gamepad, stream, sequence, latency.TransitionPress, true,
 			controller.state(true), &observedDown, lastEventTimestamp, &result,
-			controller.apiType, transport, block.TransportBlock, traceProvider, qpcFrequency)
+			controller.apiType, transport, block.TransportBlock, traceProvider, qpcFrequency,
+			cycleID, cycleIndex)
 		if err != nil {
 			result.Failure = err.Error()
 			return result
@@ -776,7 +865,8 @@ func runLiveLatencyTransport(
 		lastEventTimestamp, err = measureTransition(
 			gamepad, stream, sequence, latency.TransitionRelease, false,
 			controller.state(false), &observedDown, lastEventTimestamp, &result,
-			controller.apiType, transport, block.TransportBlock, traceProvider, qpcFrequency)
+			controller.apiType, transport, block.TransportBlock, traceProvider, qpcFrequency,
+			cycleID, cycleIndex)
 		if err != nil {
 			result.Failure = err.Error()
 			return result
@@ -1103,7 +1193,7 @@ func warmControllerPath(
 		lastTimestamp, err = measureTransition(
 			gamepad, stream, sequence, latency.TransitionPress, true,
 			controller.state(true), &observedDown, lastTimestamp, &warmup,
-			"", "", 0, nil, qpcFrequency)
+			"", "", 0, nil, qpcFrequency, "", 0)
 		if err != nil {
 			return lastTimestamp, err
 		}
@@ -1115,7 +1205,7 @@ func warmControllerPath(
 		lastTimestamp, err = measureTransition(
 			gamepad, stream, sequence, latency.TransitionRelease, false,
 			controller.state(false), &observedDown, lastTimestamp, &warmup,
-			"", "", 0, nil, qpcFrequency)
+			"", "", 0, nil, qpcFrequency, "", 0)
 		if err != nil {
 			return lastTimestamp, err
 		}
@@ -1188,6 +1278,8 @@ func measureTransition(
 	transportBlock int,
 	traceProvider *latencytrace.Provider,
 	qpcFrequency int64,
+	cycleID string,
+	cycleIndex int,
 ) (uint64, error) {
 	if *observedDown == wantDown {
 		return lastTimestamp, fmt.Errorf("%s sample %d started from the wrong observed state", transition, sequence)
@@ -1280,7 +1372,8 @@ func measureTransition(
 			StartQPCTicks: startQPC, EndQPCTicks: endQPC,
 		}
 		if traceProvider != nil {
-			sample.MarkerID = latency.SampleMarkerID(controllerType, transport, transportBlock, sequence, transition)
+			sample.MarkerID = latency.SampleMarkerID(cycleID, cycleIndex, controllerType,
+				transport, transportBlock, sequence, transition)
 			sample.MarkerQPCTicks, err = latencytrace.Counter()
 			if err != nil {
 				return lastTimestamp, fmt.Errorf("%s sample %d query pre-marker QPC: %w", transition, sequence, err)

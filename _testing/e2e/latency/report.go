@@ -1,7 +1,9 @@
 package latency
 
 import (
+	"bytes"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -27,15 +29,20 @@ var productionPhaseSweepOffsetsNS = [...]int64{
 }
 
 const (
-	SchemaV2                               = "viiper.controller-to-game.latency/v2"
-	SuiteSchemaV2                          = "viiper.controller-to-game.latency-suite/v2"
+	SchemaV3                               = "viiper.controller-to-game.latency/v3"
+	SuiteSchemaV3                          = "viiper.controller-to-game.latency-suite/v3"
 	TransportUSBIP                         = "usbip"
 	TransportNativeUDE                     = "native-ude"
 	AuthenticationMode                     = "password-authenticated-encrypted-stream"
 	TraceProviderName                      = "VIIPER-LatencyGate"
 	TraceProviderGUID                      = "{e1726ef8-c2e6-4dad-bbf7-2d871b953ab1}"
-	USBIPBaselineMode                      = "version-probed-functional-baseline-not-source-bound"
+	USBIPBaselineMode                      = "exact-installed-usbip-win2-runtime-and-source-bound-server"
 	USBIPBaselineVersion                   = "0.9.7.7"
+	USBIPRuntimeSchemaV1                   = "viiper.usbip-win2.runtime-provenance/v1"
+	PackageValidationProduction            = "production"
+	PackageValidationLocalTest             = "local-test"
+	ScheduleOrientationABBA                = "abba"
+	ScheduleOrientationBAAB                = "baab"
 	MinimumProductionSamplePairs           = 256
 	MaximumProductionSamplePairs           = 10_000
 	ProductionWarmupPairs                  = 16
@@ -68,21 +75,44 @@ type BlockSpec struct {
 	SamplePairs    int
 }
 
-// ProductionBlockSchedule splits the declared samples as evenly as possible
-// across USB/IP, native UDE, native UDE, then USB/IP. The ABBA order controls
-// first/last-run drift without discarding the identity proof for either block.
+// ProductionBlockSchedule preserves the original ABBA schedule for callers
+// which do not yet select an orientation explicitly.
 func ProductionBlockSchedule(samplePairs int) []BlockSpec {
+	return ProductionBlockScheduleForOrientation(samplePairs,
+		ScheduleOrientationABBA)
+}
+
+// ScheduleOrientationForCycle deterministically alternates the two balanced
+// orders. An even cycle count therefore contains the same number of ABBA and
+// BAAB runs, and a report cannot relabel an observed order after collection.
+func ScheduleOrientationForCycle(cycleIndex int) string {
+	if cycleIndex%2 == 0 {
+		return ScheduleOrientationBAAB
+	}
+	return ScheduleOrientationABBA
+}
+
+// ProductionBlockScheduleForOrientation splits the declared samples as evenly
+// as possible across two blocks per transport. ABBA and BAAB are paired in the
+// production superiority matrix so first/last-run and nonlinear carryover do
+// not always favor the same transport.
+func ProductionBlockScheduleForOrientation(samplePairs int,
+	orientation string) []BlockSpec {
 	firstBlockPairs := samplePairs / ProductionTransportBlocks
 	secondBlockPairs := samplePairs - firstBlockPairs
 	secondFirstSequence := firstBlockPairs + 1
+	first, second := TransportUSBIP, TransportNativeUDE
+	if orientation == ScheduleOrientationBAAB {
+		first, second = TransportNativeUDE, TransportUSBIP
+	}
 	return []BlockSpec{
-		{Order: 1, Transport: TransportUSBIP, TransportBlock: 1,
+		{Order: 1, Transport: first, TransportBlock: 1,
 			FirstSequence: 1, SamplePairs: firstBlockPairs},
-		{Order: 2, Transport: TransportNativeUDE, TransportBlock: 1,
+		{Order: 2, Transport: second, TransportBlock: 1,
 			FirstSequence: 1, SamplePairs: firstBlockPairs},
-		{Order: 3, Transport: TransportNativeUDE, TransportBlock: 2,
+		{Order: 3, Transport: second, TransportBlock: 2,
 			FirstSequence: secondFirstSequence, SamplePairs: secondBlockPairs},
-		{Order: 4, Transport: TransportUSBIP, TransportBlock: 2,
+		{Order: 4, Transport: first, TransportBlock: 2,
 			FirstSequence: secondFirstSequence, SamplePairs: secondBlockPairs},
 	}
 }
@@ -239,6 +269,10 @@ type Workload struct {
 	PhaseSweepOffsetsNS    []int64 `json:"phase_sweep_offsets_ns"`
 	PhaseSweepSHA256       string  `json:"phase_sweep_sha256"`
 	Authentication         string  `json:"authentication"`
+	ScheduleOrientation    string  `json:"schedule_orientation"`
+	CycleID                string  `json:"cycle_id"`
+	CycleIndex             int     `json:"cycle_index"`
+	CycleCount             int     `json:"cycle_count"`
 }
 
 type MachineProvenance struct {
@@ -252,36 +286,82 @@ type MachineProvenance struct {
 	ProcessElevated      bool   `json:"process_elevated"`
 }
 
+type USBIPFileIdentity struct {
+	Path             string `json:"path"`
+	Length           int64  `json:"length"`
+	SHA256           string `json:"sha256"`
+	FileVersion      string `json:"file_version,omitempty"`
+	ProductVersion   string `json:"product_version,omitempty"`
+	SignatureStatus  string `json:"signature_status,omitempty"`
+	SignerSubject    string `json:"signer_subject,omitempty"`
+	SignerThumbprint string `json:"signer_thumbprint,omitempty"`
+}
+
+type USBIPServiceProvenance struct {
+	Name             string            `json:"name"`
+	Start            uint32            `json:"start"`
+	Type             uint32            `json:"type"`
+	PublishedINFName string            `json:"published_inf_name"`
+	Image            USBIPFileIdentity `json:"image"`
+	INF              USBIPFileIdentity `json:"inf"`
+	PublishedINF     USBIPFileIdentity `json:"published_inf"`
+	Catalog          USBIPFileIdentity `json:"catalog"`
+}
+
+type USBIPRootControllerProvenance struct {
+	InstanceID    string   `json:"instance_id"`
+	HardwareIDs   []string `json:"hardware_ids"`
+	Service       string   `json:"service"`
+	Provider      string   `json:"provider"`
+	DriverVersion string   `json:"driver_version"`
+	PublishedINF  string   `json:"published_inf"`
+	Signer        string   `json:"signer"`
+	IsSigned      bool     `json:"is_signed"`
+}
+
+type USBIPRuntimeProvenance struct {
+	Schema          string                          `json:"schema"`
+	CaptureSHA256   string                          `json:"capture_sha256,omitempty"`
+	CaptureBase64   string                          `json:"capture_base64,omitempty"`
+	Services        []USBIPServiceProvenance        `json:"services"`
+	RootControllers []USBIPRootControllerProvenance `json:"root_controllers"`
+}
+
 type Provenance struct {
-	SourceRevision              string            `json:"source_revision"`
-	SDLSourceRevision           string            `json:"sdl_source_revision"`
-	SDLBinaryPath               string            `json:"sdl_binary_path"`
-	SDLBinarySHA256             string            `json:"sdl_binary_sha256"`
-	NativePackageManifestSHA256 string            `json:"native_package_manifest_sha256"`
-	NativeDriverSHA256          string            `json:"native_driver_sha256"`
-	NativeDriverBuildIdentity   string            `json:"native_driver_build_identity"`
-	QPCFrequency                int64             `json:"qpc_frequency"`
-	TraceProviderName           string            `json:"trace_provider_name"`
-	TraceProviderGUID           string            `json:"trace_provider_guid"`
-	TraceProfileSHA256          string            `json:"trace_profile_sha256"`
-	USBIPBaselineMode           string            `json:"usbip_baseline_mode"`
-	USBIPBaselineVersion        string            `json:"usbip_baseline_version"`
-	GoVersion                   string            `json:"go_version"`
-	GOOS                        string            `json:"goos"`
-	GOARCH                      string            `json:"goarch"`
-	GitExecutablePath           string            `json:"git_executable_path"`
-	GitExecutableSHA256         string            `json:"git_executable_sha256"`
-	GoExecutablePath            string            `json:"go_executable_path"`
-	GoExecutableSHA256          string            `json:"go_executable_sha256"`
-	WPRExecutablePath           string            `json:"wpr_executable_path"`
-	WPRExecutableSHA256         string            `json:"wpr_executable_sha256"`
-	Machine                     MachineProvenance `json:"machine"`
+	SourceRevision                   string                 `json:"source_revision"`
+	SDLSourceRevision                string                 `json:"sdl_source_revision"`
+	SDLBinaryPath                    string                 `json:"sdl_binary_path"`
+	SDLBinarySHA256                  string                 `json:"sdl_binary_sha256"`
+	NativePackageManifestSHA256      string                 `json:"native_package_manifest_sha256"`
+	NativePackageValidationMode      string                 `json:"native_package_validation_mode"`
+	NativeLocalTestCertificateSHA256 string                 `json:"native_local_test_certificate_sha256,omitempty"`
+	NativeDriverSHA256               string                 `json:"native_driver_sha256"`
+	NativeDriverBuildIdentity        string                 `json:"native_driver_build_identity"`
+	QPCFrequency                     int64                  `json:"qpc_frequency"`
+	TraceProviderName                string                 `json:"trace_provider_name"`
+	TraceProviderGUID                string                 `json:"trace_provider_guid"`
+	TraceProfileSHA256               string                 `json:"trace_profile_sha256"`
+	USBIPBaselineMode                string                 `json:"usbip_baseline_mode"`
+	USBIPBaselineVersion             string                 `json:"usbip_baseline_version"`
+	USBIPRuntime                     USBIPRuntimeProvenance `json:"usbip_runtime"`
+	GoVersion                        string                 `json:"go_version"`
+	GOOS                             string                 `json:"goos"`
+	GOARCH                           string                 `json:"goarch"`
+	GitExecutablePath                string                 `json:"git_executable_path"`
+	GitExecutableSHA256              string                 `json:"git_executable_sha256"`
+	GoExecutablePath                 string                 `json:"go_executable_path"`
+	GoExecutableSHA256               string                 `json:"go_executable_sha256"`
+	WPRExecutablePath                string                 `json:"wpr_executable_path"`
+	WPRExecutableSHA256              string                 `json:"wpr_executable_sha256"`
+	Machine                          MachineProvenance      `json:"machine"`
 }
 
 // SampleMarkerID is the canonical cross-artifact identity shared by JSON and
 // the TraceLogging marker emitted after the SDL edge is observed.
-func SampleMarkerID(controller, transport string, block, sequence int, transition Transition) string {
-	return fmt.Sprintf("%s:%s:%d:%d:%s", controller, transport, block, sequence, transition)
+func SampleMarkerID(cycleID string, cycleIndex int, controller, transport string,
+	block, sequence int, transition Transition) string {
+	return fmt.Sprintf("%s:%d:%s:%s:%d:%d:%s", cycleID, cycleIndex,
+		controller, transport, block, sequence, transition)
 }
 
 // QPCIntervalNS converts a bounded raw QueryPerformanceCounter interval to
@@ -367,9 +447,12 @@ type SuiteReport struct {
 }
 
 var (
-	revisionPattern  = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
-	hashPattern      = regexp.MustCompile(`^[0-9a-f]{64}$`)
-	containerPattern = regexp.MustCompile(
+	revisionPattern     = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
+	hashPattern         = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	thumbprintPattern   = regexp.MustCompile(`^[0-9a-f]{40}$`)
+	cycleIDPattern      = regexp.MustCompile(`^[0-9a-f]{32}$`)
+	publishedINFPattern = regexp.MustCompile(`^oem[0-9]+\.inf$`)
+	containerPattern    = regexp.MustCompile(
 		`(?i)^\{[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\}$`)
 )
 
@@ -616,7 +699,7 @@ func compareMetric(usbip, native float64) MetricComparison {
 }
 
 func validateBase(report *Report) error {
-	if report.Schema != SchemaV2 {
+	if report.Schema != SchemaV3 {
 		return fmt.Errorf("unsupported report schema %q", report.Schema)
 	}
 	if report.GeneratedAt.IsZero() {
@@ -637,6 +720,12 @@ func validateBase(report *Report) error {
 		!hashPattern.MatchString(report.Provenance.NativeDriverBuildIdentity) {
 		return errors.New("source-bound native package manifest and installed driver hashes are required")
 	}
+	if (report.Provenance.NativePackageValidationMode != PackageValidationProduction ||
+		report.Provenance.NativeLocalTestCertificateSHA256 != "") &&
+		(report.Provenance.NativePackageValidationMode != PackageValidationLocalTest ||
+			!hashPattern.MatchString(report.Provenance.NativeLocalTestCertificateSHA256)) {
+		return errors.New("native package validation mode or local-test certificate identity is invalid")
+	}
 	if report.Provenance.QPCFrequency <= 0 ||
 		report.Provenance.TraceProviderName != TraceProviderName ||
 		report.Provenance.TraceProviderGUID != TraceProviderGUID ||
@@ -645,7 +734,10 @@ func validateBase(report *Report) error {
 	}
 	if report.Provenance.USBIPBaselineMode != USBIPBaselineMode ||
 		report.Provenance.USBIPBaselineVersion != USBIPBaselineVersion {
-		return errors.New("USB/IP comparison must be explicitly labeled as the exact version-probed, non-source-bound baseline")
+		return errors.New("USB/IP comparison is not the exact installed comparator")
+	}
+	if err := ValidateUSBIPRuntimeProvenance(report.Provenance.USBIPRuntime); err != nil {
+		return err
 	}
 	if report.Provenance.GoVersion == "" || report.Provenance.GOOS != "windows" ||
 		report.Provenance.GOARCH == "" {
@@ -671,6 +763,16 @@ func validateBase(report *Report) error {
 		report.Workload.Button != "south/A" ||
 		report.Workload.Authentication != AuthenticationMode {
 		return errors.New("workload identity is incomplete or unsupported")
+	}
+	if (report.Workload.ScheduleOrientation != ScheduleOrientationABBA &&
+		report.Workload.ScheduleOrientation != ScheduleOrientationBAAB) ||
+		!cycleIDPattern.MatchString(report.Workload.CycleID) ||
+		report.Workload.CycleCount < 2 || report.Workload.CycleCount%2 != 0 ||
+		report.Workload.CycleIndex < 1 ||
+		report.Workload.CycleIndex > report.Workload.CycleCount ||
+		report.Workload.ScheduleOrientation !=
+			ScheduleOrientationForCycle(report.Workload.CycleIndex) {
+		return errors.New("balanced schedule orientation and canonical cycle identity are required")
 	}
 	if err := validateControllerWorkload(report.Workload); err != nil {
 		return err
@@ -705,9 +807,10 @@ func validateBase(report *Report) error {
 		report.Policy.NativeMaxOverUSBIPNS > DefaultNativeMaxOverUSBIPNS {
 		return errors.New("native latency policy is absent or weaker than the reviewed release limits")
 	}
-	schedule := ProductionBlockSchedule(report.Workload.SamplePairs)
+	schedule := ProductionBlockScheduleForOrientation(
+		report.Workload.SamplePairs, report.Workload.ScheduleOrientation)
 	if len(report.Runs) != len(schedule) {
-		return errors.New("report must contain exactly the four ABBA transport blocks")
+		return errors.New("report must contain exactly four balanced transport blocks")
 	}
 
 	for index := range report.Runs {
@@ -723,7 +826,7 @@ func validateBase(report *Report) error {
 		if len(run.Samples) != 0 {
 			firstTimestamp := run.Samples[0].EventTimestampNS
 			if priorEventTimestamp != 0 && firstTimestamp < priorEventTimestamp {
-				return errors.New("SDL event clock regressed between ABBA transport blocks")
+				return errors.New("SDL event clock regressed between balanced transport blocks")
 			}
 			priorEventTimestamp = run.Samples[len(run.Samples)-1].EventTimestampNS
 		}
@@ -743,7 +846,7 @@ func validateRun(run *Run, workload Workload, provenance Provenance, block Block
 	if run.Order != block.Order || run.Transport != block.Transport ||
 		run.TransportBlock != block.TransportBlock ||
 		run.FirstSequence != block.FirstSequence || run.SamplePairs != block.SamplePairs {
-		return fmt.Errorf("block metadata does not match the production ABBA schedule: %+v", block)
+		return fmt.Errorf("block metadata does not match the production balanced schedule: %+v", block)
 	}
 	if run.Authentication != AuthenticationMode {
 		return errors.New("API/controller stream is not authenticated identically")
@@ -767,8 +870,9 @@ func validateRun(run *Run, workload Workload, provenance Provenance, block Block
 			return fmt.Errorf("sample %d is %d/%s, want %d/%s", index,
 				sample.Sequence, sample.Transition, wantSequence, wantTransition)
 		}
-		wantMarkerID := SampleMarkerID(workload.ControllerType, run.Transport,
-			run.TransportBlock, sample.Sequence, sample.Transition)
+		wantMarkerID := SampleMarkerID(workload.CycleID, workload.CycleIndex,
+			workload.ControllerType, run.Transport, run.TransportBlock,
+			sample.Sequence, sample.Transition)
 		qpcLatencyNS, qpcErr := QPCIntervalNS(sample.StartQPCTicks,
 			sample.EndQPCTicks, provenance.QPCFrequency)
 		if qpcErr != nil || sample.LatencyNS != qpcLatencyNS || sample.EventTimestampNS == 0 ||
@@ -923,6 +1027,106 @@ func containsFold(values []string, want string) bool {
 	return false
 }
 
+func ValidateUSBIPRuntimeProvenance(proof USBIPRuntimeProvenance) error {
+	if proof.Schema != USBIPRuntimeSchemaV1 || !hashPattern.MatchString(proof.CaptureSHA256) {
+		return errors.New("USB/IP runtime provenance schema or capture hash is invalid")
+	}
+	rawCapture, err := base64.StdEncoding.DecodeString(proof.CaptureBase64)
+	if err != nil || len(rawCapture) == 0 || len(rawCapture) > 64*1024 ||
+		base64.StdEncoding.EncodeToString(rawCapture) != proof.CaptureBase64 {
+		return errors.New("USB/IP runtime provenance has no canonical bounded raw capture")
+	}
+	digest := sha256.Sum256(rawCapture)
+	if fmt.Sprintf("%x", digest[:]) != proof.CaptureSHA256 {
+		return errors.New("USB/IP runtime raw capture does not match its SHA-256")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(rawCapture))
+	decoder.DisallowUnknownFields()
+	var captured USBIPRuntimeProvenance
+	if err = decoder.Decode(&captured); err != nil {
+		return fmt.Errorf("decode USB/IP raw capture: %w", err)
+	}
+	var trailing any
+	if err = decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return errors.New("USB/IP raw capture contains trailing JSON")
+	}
+	if captured.CaptureSHA256 != "" || captured.CaptureBase64 != "" ||
+		captured.Schema != proof.Schema ||
+		!reflect.DeepEqual(captured.Services, proof.Services) ||
+		!reflect.DeepEqual(captured.RootControllers, proof.RootControllers) {
+		return errors.New("USB/IP structured provenance does not exactly match its raw capture")
+	}
+	expectedServices := []string{"usbip2_filter", "usbip2_ude"}
+	if len(proof.Services) != len(expectedServices) {
+		return fmt.Errorf("USB/IP runtime has %d exact driver services, want %d",
+			len(proof.Services), len(expectedServices))
+	}
+	servicePublishedINF := make(map[string]string, len(proof.Services))
+	for index, service := range proof.Services {
+		if service.Name != expectedServices[index] || service.Type != 1 || service.Start > 4 ||
+			!publishedINFPattern.MatchString(service.PublishedINFName) {
+			return fmt.Errorf("USB/IP service %d registry identity is invalid", index)
+		}
+		if err := validateUSBIPFileIdentity(service.Image, true); err != nil {
+			return fmt.Errorf("USB/IP %s image: %w", service.Name, err)
+		}
+		if err := validateUSBIPFileIdentity(service.Catalog, true); err != nil {
+			return fmt.Errorf("USB/IP %s catalog: %w", service.Name, err)
+		}
+		if err := validateUSBIPFileIdentity(service.INF, false); err != nil {
+			return fmt.Errorf("USB/IP %s INF: %w", service.Name, err)
+		}
+		if err := validateUSBIPFileIdentity(service.PublishedINF, false); err != nil {
+			return fmt.Errorf("USB/IP %s published INF: %w", service.Name, err)
+		}
+		if service.INF.SHA256 != service.PublishedINF.SHA256 ||
+			service.Image.SignerThumbprint != service.Catalog.SignerThumbprint ||
+			!strings.Contains(strings.ToLower(service.Image.SignerSubject), "microsoft") ||
+			!strings.Contains(strings.ToLower(service.Catalog.SignerSubject), "microsoft") {
+			return fmt.Errorf("USB/IP %s package bytes or Microsoft signature identity disagree", service.Name)
+		}
+		servicePublishedINF[service.Name] = service.PublishedINFName
+	}
+	if len(proof.RootControllers) < 1 || len(proof.RootControllers) > 16 {
+		return fmt.Errorf("USB/IP runtime has %d root controllers", len(proof.RootControllers))
+	}
+	seenRoots := make(map[string]bool, len(proof.RootControllers))
+	priorInstance := ""
+	for index, controller := range proof.RootControllers {
+		canonicalInstance := strings.ToUpper(controller.InstanceID)
+		if canonicalInstance == "" || seenRoots[canonicalInstance] ||
+			(index != 0 && canonicalInstance <= priorInstance) ||
+			!strings.HasPrefix(canonicalInstance, `ROOT\USB\`) ||
+			!containsFold(controller.HardwareIDs, `ROOT\USBIP_WIN2\UDE`) ||
+			!strings.EqualFold(controller.Service, "usbip2_ude") ||
+			!strings.EqualFold(controller.Provider, "USBIP-WIN2") ||
+			controller.DriverVersion == "" ||
+			!strings.EqualFold(controller.PublishedINF, servicePublishedINF["usbip2_ude"]) ||
+			!controller.IsSigned || !strings.Contains(strings.ToLower(controller.Signer), "microsoft") {
+			return fmt.Errorf("USB/IP root controller %d identity is invalid or ambiguous", index)
+		}
+		seenRoots[canonicalInstance] = true
+		priorInstance = canonicalInstance
+	}
+	return nil
+}
+
+func validateUSBIPFileIdentity(identity USBIPFileIdentity, signed bool) error {
+	if identity.Path == "" || identity.Length <= 0 || !hashPattern.MatchString(identity.SHA256) {
+		return errors.New("path, length, or SHA-256 is invalid")
+	}
+	if signed {
+		if identity.SignatureStatus != "Valid" || identity.SignerSubject == "" ||
+			!thumbprintPattern.MatchString(identity.SignerThumbprint) {
+			return errors.New("valid Authenticode signer identity is required")
+		}
+	} else if identity.SignatureStatus != "" || identity.SignerSubject != "" ||
+		identity.SignerThumbprint != "" {
+		return errors.New("unsigned byte identity contains contradictory signature fields")
+	}
+	return nil
+}
+
 func expectedSDLRealType(controllerType string) int32 {
 	switch controllerType {
 	case "xbox360":
@@ -1017,7 +1221,7 @@ func FinalizeSuite(suite *SuiteReport) error {
 	if suite == nil {
 		return errors.New("nil latency suite")
 	}
-	if suite.Schema != SuiteSchemaV2 {
+	if suite.Schema != SuiteSchemaV3 {
 		return fmt.Errorf("unsupported latency suite schema %q", suite.Schema)
 	}
 	if suite.GeneratedAt.IsZero() {
@@ -1087,6 +1291,10 @@ func sameWorkloadPolicy(left, right *Report) bool {
 		reflect.DeepEqual(left.Workload.PhaseSweepOffsetsNS, right.Workload.PhaseSweepOffsetsNS) &&
 		left.Workload.PhaseSweepSHA256 == right.Workload.PhaseSweepSHA256 &&
 		left.Workload.Authentication == right.Workload.Authentication &&
+		left.Workload.ScheduleOrientation == right.Workload.ScheduleOrientation &&
+		left.Workload.CycleID == right.Workload.CycleID &&
+		left.Workload.CycleIndex == right.Workload.CycleIndex &&
+		left.Workload.CycleCount == right.Workload.CycleCount &&
 		reflect.DeepEqual(left.Policy, right.Policy)
 }
 

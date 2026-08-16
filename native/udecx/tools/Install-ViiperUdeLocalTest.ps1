@@ -83,6 +83,24 @@ function Assert-ExactDirectoryEntries {
     }
 }
 
+function Get-LocalTestFileSystemSecurity {
+    param(
+        [Parameter(Mandatory = $true)][IO.FileSystemInfo]$Item,
+        [Parameter(Mandatory = $true)]
+        [Security.AccessControl.AccessControlSections]$Sections
+    )
+
+    if ($null -ne $Item.PSObject.Methods['GetAccessControl']) {
+        return $Item.GetAccessControl($Sections)
+    }
+    if ($Item -is [IO.DirectoryInfo]) {
+        return [IO.FileSystemAclExtensions]::GetAccessControl(
+            [IO.DirectoryInfo]$Item, $Sections)
+    }
+    return [IO.FileSystemAclExtensions]::GetAccessControl(
+        [IO.FileInfo]$Item, $Sections)
+}
+
 function Assert-ProtectedStagingDirectory {
     param([Parameter(Mandatory = $true)][string]$Path)
 
@@ -91,7 +109,7 @@ function Assert-ProtectedStagingDirectory {
         ($directory.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
         throw "Local-test staging directory is missing, not a directory, or a reparse point: '$Path'."
     }
-    $actualSecurity = $directory.GetAccessControl(
+    $actualSecurity = Get-LocalTestFileSystemSecurity -Item $directory -Sections (
         [Security.AccessControl.AccessControlSections]::Owner -bor
         [Security.AccessControl.AccessControlSections]::Access)
     if (-not $actualSecurity.AreAccessRulesProtected) {
@@ -124,6 +142,403 @@ function Assert-ProtectedStagingDirectory {
             $rule.PropagationFlags -ne [Security.AccessControl.PropagationFlags]::None) {
             throw "Local-test staging directory has an unexpected access rule for '$Path'."
         }
+    }
+}
+
+if (-not ('ViiperLocalTestStagingNative' -as [type])) {
+    Add-Type -Language CSharp -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+
+public sealed class ViiperLocalTestProtectedFile
+{
+    public SafeFileHandle Handle { get; private set; }
+    public bool Created { get; private set; }
+
+    public ViiperLocalTestProtectedFile(SafeFileHandle handle, bool created)
+    {
+        Handle = handle;
+        Created = created;
+    }
+}
+
+public static class ViiperLocalTestStagingNative
+{
+    private const uint SDDL_REVISION_1 = 1;
+    private const int ERROR_FILE_EXISTS = 80;
+    private const int ERROR_ALREADY_EXISTS = 183;
+    private const uint GENERIC_READ = 0x80000000;
+    private const uint GENERIC_WRITE = 0x40000000;
+    private const uint READ_CONTROL = 0x00020000;
+    private const uint FILE_READ_ATTRIBUTES = 0x00000080;
+    private const uint FILE_SHARE_READ = 0x00000001;
+    private const uint FILE_SHARE_WRITE = 0x00000002;
+    private const uint CREATE_NEW = 1;
+    private const uint OPEN_EXISTING = 3;
+    private const uint FILE_ATTRIBUTE_NORMAL = 0x00000080;
+    private const uint FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000;
+    private const uint FILE_FLAG_BACKUP_SEMANTICS = 0x02000000;
+    private const uint FILE_FLAG_WRITE_THROUGH = 0x80000000;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct SecurityAttributes
+    {
+        public int Length;
+        public IntPtr SecurityDescriptor;
+        [MarshalAs(UnmanagedType.Bool)] public bool InheritHandle;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct FileTime
+    {
+        public uint Low;
+        public uint High;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct ByHandleFileInformation
+    {
+        public uint FileAttributes;
+        public FileTime CreationTime;
+        public FileTime LastAccessTime;
+        public FileTime LastWriteTime;
+        public uint VolumeSerialNumber;
+        public uint FileSizeHigh;
+        public uint FileSizeLow;
+        public uint NumberOfLinks;
+        public uint FileIndexHigh;
+        public uint FileIndexLow;
+    }
+
+    [DllImport("advapi32.dll", EntryPoint = "ConvertStringSecurityDescriptorToSecurityDescriptorW",
+        CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool ConvertStringSecurityDescriptorToSecurityDescriptor(
+        string securityDescriptor, uint revision, out IntPtr descriptor, out uint descriptorLength);
+
+    [DllImport("kernel32.dll", EntryPoint = "CreateDirectoryW", CharSet = CharSet.Unicode,
+        ExactSpelling = true, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CreateDirectory(string path, ref SecurityAttributes attributes);
+
+    [DllImport("kernel32.dll", EntryPoint = "CreateFileW", CharSet = CharSet.Unicode,
+        ExactSpelling = true, SetLastError = true)]
+    private static extern SafeFileHandle CreateFileWithSecurity(
+        string path, uint desiredAccess, uint shareMode, ref SecurityAttributes attributes,
+        uint creationDisposition, uint flagsAndAttributes, IntPtr templateFile);
+
+    [DllImport("kernel32.dll", EntryPoint = "CreateFileW", CharSet = CharSet.Unicode,
+        ExactSpelling = true, SetLastError = true)]
+    private static extern SafeFileHandle CreateFileWithoutSecurity(
+        string path, uint desiredAccess, uint shareMode, IntPtr attributes,
+        uint creationDisposition, uint flagsAndAttributes, IntPtr templateFile);
+
+    [DllImport("kernel32.dll", ExactSpelling = true, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetFileInformationByHandle(
+        SafeFileHandle handle, out ByHandleFileInformation information);
+
+    [DllImport("kernel32.dll", ExactSpelling = true)]
+    private static extern IntPtr LocalFree(IntPtr memory);
+
+    private static SecurityAttributes ConvertSecurityDescriptor(string sddl, out IntPtr descriptor)
+    {
+        uint descriptorLength;
+        if (!ConvertStringSecurityDescriptorToSecurityDescriptor(
+                sddl, SDDL_REVISION_1, out descriptor, out descriptorLength))
+            throw new Win32Exception(Marshal.GetLastWin32Error(),
+                "ConvertStringSecurityDescriptorToSecurityDescriptorW");
+        return new SecurityAttributes {
+            Length = Marshal.SizeOf(typeof(SecurityAttributes)),
+            SecurityDescriptor = descriptor,
+            InheritHandle = false
+        };
+    }
+
+    public static bool CreateDirectoryExact(string path, string sddl)
+    {
+        IntPtr descriptor = IntPtr.Zero;
+        try
+        {
+            SecurityAttributes attributes = ConvertSecurityDescriptor(sddl, out descriptor);
+            if (CreateDirectory(path, ref attributes)) return true;
+            int error = Marshal.GetLastWin32Error();
+            if (error == ERROR_ALREADY_EXISTS) return false;
+            throw new Win32Exception(error, "CreateDirectoryW");
+        }
+        finally
+        {
+            if (descriptor != IntPtr.Zero) LocalFree(descriptor);
+        }
+    }
+
+    public static SafeFileHandle OpenDirectory(string path)
+    {
+        SafeFileHandle handle = CreateFileWithoutSecurity(
+            path, READ_CONTROL | FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE,
+            IntPtr.Zero, OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, IntPtr.Zero);
+        if (handle.IsInvalid)
+        {
+            int error = Marshal.GetLastWin32Error();
+            handle.Dispose();
+            throw new Win32Exception(error, "CreateFileW(directory)");
+        }
+        return handle;
+    }
+
+    public static ViiperLocalTestProtectedFile OpenOrCreateFileExact(
+        string path, string sddl)
+    {
+        IntPtr descriptor = IntPtr.Zero;
+        try
+        {
+            SecurityAttributes attributes = ConvertSecurityDescriptor(sddl, out descriptor);
+            SafeFileHandle handle = CreateFileWithSecurity(
+                path, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                ref attributes, CREATE_NEW,
+                FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_WRITE_THROUGH,
+                IntPtr.Zero);
+            if (!handle.IsInvalid) return new ViiperLocalTestProtectedFile(handle, true);
+            int error = Marshal.GetLastWin32Error();
+            handle.Dispose();
+            if (error != ERROR_FILE_EXISTS && error != ERROR_ALREADY_EXISTS)
+                throw new Win32Exception(error, "CreateFileW(CREATE_NEW)");
+
+            handle = CreateFileWithoutSecurity(
+                path, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                IntPtr.Zero, OPEN_EXISTING,
+                FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_WRITE_THROUGH,
+                IntPtr.Zero);
+            if (handle.IsInvalid)
+            {
+                error = Marshal.GetLastWin32Error();
+                handle.Dispose();
+                throw new Win32Exception(error, "CreateFileW(OPEN_EXISTING)");
+            }
+            return new ViiperLocalTestProtectedFile(handle, false);
+        }
+        finally
+        {
+            if (descriptor != IntPtr.Zero) LocalFree(descriptor);
+        }
+    }
+
+    public static SafeFileHandle OpenFileReadOnly(string path)
+    {
+        SafeFileHandle handle = CreateFileWithoutSecurity(
+            path, GENERIC_READ | READ_CONTROL, FILE_SHARE_READ,
+            IntPtr.Zero, OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, IntPtr.Zero);
+        if (handle.IsInvalid)
+        {
+            int error = Marshal.GetLastWin32Error();
+            handle.Dispose();
+            throw new Win32Exception(error, "CreateFileW(read-only)");
+        }
+        return handle;
+    }
+
+    public static uint LinkCount(SafeFileHandle handle)
+    {
+        ByHandleFileInformation information;
+        if (!GetFileInformationByHandle(handle, out information))
+            throw new Win32Exception(Marshal.GetLastWin32Error(),
+                "GetFileInformationByHandle");
+        return information.NumberOfLinks;
+    }
+
+}
+'@
+}
+
+function Assert-ExactLocalTestStagingSecurity {
+    param(
+        [Parameter(Mandatory = $true)][IO.FileSystemInfo]$Item,
+        [Parameter(Mandatory = $true)][bool]$Directory
+    )
+
+    if ($Item.PSIsContainer -ne $Directory -or
+        ($Item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "The local-test protected staging path has an unsafe object type: '$($Item.FullName)'."
+    }
+    $security = Get-LocalTestFileSystemSecurity -Item $Item -Sections (
+        [Security.AccessControl.AccessControlSections]::Owner -bor
+        [Security.AccessControl.AccessControlSections]::Group -bor
+        [Security.AccessControl.AccessControlSections]::Access)
+    if (-not $security.AreAccessRulesProtected -or
+        $security.GetOwner([Security.Principal.SecurityIdentifier]).Value -cne 'S-1-5-32-544' -or
+        $security.GetGroup([Security.Principal.SecurityIdentifier]).Value -cne 'S-1-5-32-544') {
+        throw "The local-test protected staging object has an unsafe owner, group, or inherited DACL: '$($Item.FullName)'."
+    }
+    $rules = @($security.GetAccessRules(
+        $true, $true, [Security.Principal.SecurityIdentifier]))
+    if ($rules.Count -ne 2) {
+        throw "The local-test protected staging object has an unexpected access-rule count: '$($Item.FullName)'."
+    }
+    $expectedInheritance = if ($Directory) {
+        [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
+            [Security.AccessControl.InheritanceFlags]::ObjectInherit
+    }
+    else {
+        [Security.AccessControl.InheritanceFlags]::None
+    }
+    foreach ($expectedSID in @('S-1-5-18', 'S-1-5-32-544')) {
+        $matches = @($rules | Where-Object {
+            $_.IdentityReference.Value -ceq $expectedSID
+        })
+        if ($matches.Count -ne 1) {
+            throw "The local-test protected staging object is missing an exact protected principal: '$($Item.FullName)'."
+        }
+        $rule = $matches[0]
+        if ($rule.IsInherited -or
+            $rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
+            $rule.FileSystemRights -ne [Security.AccessControl.FileSystemRights]::FullControl -or
+            $rule.InheritanceFlags -ne $expectedInheritance -or
+            $rule.PropagationFlags -ne [Security.AccessControl.PropagationFlags]::None) {
+            throw "The local-test protected staging object has an unexpected access rule: '$($Item.FullName)'."
+        }
+    }
+}
+
+function New-LocalTestTrustCapability {
+    param(
+        [Parameter(Mandatory = $true)][string]$StageDirectory,
+        [Parameter(Mandatory = $true)][string]$SourceRevision,
+        [Parameter(Mandatory = $true)][string]$CertificatePath,
+        [Parameter(Mandatory = $true)][string]$CertificateSHA256,
+        [Parameter(Mandatory = $true)][string]$PackageLockSHA256,
+        [Parameter(Mandatory = $true)][string]$TrustJournalDirectory
+    )
+
+    $path = Join-Path $StageDirectory 'local-test-trust-capability.json'
+    if ([IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($path)) -cne
+        [IO.Path]::GetFullPath($StageDirectory).TrimEnd(
+            [IO.Path]::DirectorySeparatorChar)) {
+        throw 'The local-test trust capability escaped its protected broker stage.'
+    }
+    $nonceBytes = [byte[]]::new(16)
+    $random = [Security.Cryptography.RandomNumberGenerator]::Create()
+    try {
+        $random.GetBytes($nonceBytes)
+        $nonce = ([BitConverter]::ToString($nonceBytes)).Replace('-', '').ToLowerInvariant()
+    }
+    finally {
+        $random.Dispose()
+        [Array]::Clear($nonceBytes, 0, $nonceBytes.Length)
+    }
+    $currentProcess = [Diagnostics.Process]::GetCurrentProcess()
+    try {
+        $parentPID = [uint32]$currentProcess.Id
+        $parentCreationFileTime = [uint64]$currentProcess.StartTime.ToUniversalTime().ToFileTimeUtc()
+    }
+    finally {
+        $currentProcess.Dispose()
+    }
+    $payload = [ordered]@{
+        schema = 'viiper.native.local-test-trust-capability/v1'
+        nonce = $nonce
+        parentPid = $parentPID
+        parentCreationFileTime = $parentCreationFileTime
+        sourceRevision = $SourceRevision
+        certificatePath = [IO.Path]::GetFullPath($CertificatePath)
+        certificateSha256 = $CertificateSHA256
+        packageLockSha256 = $PackageLockSHA256
+        trustJournalSchema = 'viiper.native.local-test-trust-ownership/v1'
+        trustJournalDirectory = [IO.Path]::GetFullPath($TrustJournalDirectory)
+    }
+    $json = $payload | ConvertTo-Json -Compress -Depth 2
+    if ($json.IndexOf("`r") -ge 0 -or $json.IndexOf("`n") -ge 0) {
+        throw 'The local-test trust capability serializer emitted noncanonical framing.'
+    }
+    $bytes = [Text.UTF8Encoding]::new($false, $true).GetBytes($json)
+    if ($bytes.Length -eq 0 -or $bytes.Length -gt 4096) {
+        throw 'The local-test trust capability exceeds its exact size bound.'
+    }
+    $opened = [ViiperLocalTestStagingNative]::OpenOrCreateFileExact(
+        $path, 'O:BAG:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)')
+    if (-not $opened.Created) {
+        $opened.Handle.Dispose()
+        throw 'Refusing to reuse a local-test trust capability file.'
+    }
+    $writeStream = $null
+    try {
+        $writeStream = [IO.FileStream]::new(
+            $opened.Handle, [IO.FileAccess]::ReadWrite, 4096, $false)
+        $writeStream.Write($bytes, 0, $bytes.Length)
+        $writeStream.Flush($true)
+    }
+    finally {
+        if ($null -ne $writeStream) {
+            $writeStream.Dispose()
+        }
+        else {
+            $opened.Handle.Dispose()
+        }
+    }
+
+    $readHandle = $null
+    $readStream = $null
+    try {
+        $readHandle = [ViiperLocalTestStagingNative]::OpenFileReadOnly($path)
+        $readStream = [IO.FileStream]::new(
+            $readHandle, [IO.FileAccess]::Read, 4096, $false)
+        $item = Get-Item -LiteralPath $path -Force -ErrorAction Stop
+        Assert-ExactLocalTestStagingSecurity -Item $item -Directory $false
+        if ([ViiperLocalTestStagingNative]::LinkCount($readHandle) -ne 1 -or
+            $readStream.Length -ne $bytes.Length) {
+            throw 'The sealed local-test trust capability has an invalid identity or length.'
+        }
+        $algorithm = [Security.Cryptography.SHA256]::Create()
+        try {
+            $sha256 = ([BitConverter]::ToString(
+                $algorithm.ComputeHash($readStream))).Replace('-', '').ToLowerInvariant()
+        }
+        finally {
+            $algorithm.Dispose()
+        }
+        $readStream.Position = 0
+        return [pscustomobject]@{
+            Path = $path
+            SHA256 = $sha256
+            Stream = $readStream
+        }
+    }
+    catch {
+        if ($null -ne $readStream) {
+            $readStream.Dispose()
+        }
+        elseif ($null -ne $readHandle) {
+            $readHandle.Dispose()
+        }
+        try { [IO.File]::Delete($path) } catch { }
+        throw
+    }
+}
+
+function Remove-LocalTestTrustCapability {
+    param(
+        [Parameter(Mandatory = $true)]$Capability,
+        [Parameter(Mandatory = $true)][string]$StageDirectory
+    )
+
+    if ($null -ne $Capability.Stream) {
+        $Capability.Stream.Dispose()
+        $Capability.Stream = $null
+    }
+    $path = [IO.Path]::GetFullPath([string]$Capability.Path)
+    if ([IO.Path]::GetDirectoryName($path) -cne
+            [IO.Path]::GetFullPath($StageDirectory).TrimEnd(
+                [IO.Path]::DirectorySeparatorChar) -or
+        [IO.Path]::GetFileName($path) -cne 'local-test-trust-capability.json') {
+        throw 'Refusing unsafe local-test trust capability cleanup.'
+    }
+    if (Test-Path -LiteralPath $path) {
+        $item = Get-Item -LiteralPath $path -Force -ErrorAction Stop
+        Assert-ExactLocalTestStagingSecurity -Item $item -Directory $false
+        [IO.File]::Delete($path)
     }
 }
 
@@ -216,14 +631,16 @@ function Remove-ProtectedStagingDirectory {
     }
     Assert-ProtectedStagingDirectory -Path $fullPath
     $children = @(Get-ChildItem -LiteralPath $fullPath -Force)
-    if ($children.Count -gt 1 -or
-        ($children.Count -eq 1 -and
-            ($children[0].Name -cne 'viiper.exe' -or $children[0].PSIsContainer -or
-                ($children[0].Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0))) {
+    $allowedChildren = @('viiper.exe', 'local-test-trust-capability.json')
+    if ($children.Count -gt $allowedChildren.Count -or
+        @($children | Where-Object {
+            $allowedChildren -cnotcontains $_.Name -or $_.PSIsContainer -or
+                ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0
+        }).Count -ne 0) {
         throw "Refusing local-test staging cleanup with unexpected entries in '$Path'."
     }
-    if ($children.Count -eq 1) {
-        [IO.File]::Delete($children[0].FullName)
+    foreach ($child in $children) {
+        [IO.File]::Delete($child.FullName)
     }
     [IO.Directory]::Delete($fullPath, $false)
 }
@@ -533,294 +950,39 @@ if ($PreflightOnly) {
     }
 }
 
-$certificateThumbprint = $certificate.Thumbprint
-$expectedCertificateBytes = [Convert]::ToBase64String($certificate.RawData)
-if (-not ('ViiperLocalTestCertificateStore' -as [type])) {
-    Add-Type -Language CSharp -TypeDefinition @'
-using System;
-using System.ComponentModel;
-using System.Runtime.InteropServices;
-
-public static class ViiperLocalTestCertificateStore
-{
-    private const int CERT_STORE_PROV_SYSTEM_W = 10;
-    private const uint CERT_SYSTEM_STORE_LOCAL_MACHINE = 0x00020000;
-    private const uint CERT_STORE_OPEN_EXISTING_FLAG = 0x00004000;
-    private const uint CERT_STORE_MAXIMUM_ALLOWED_FLAG = 0x00001000;
-    private const uint CERT_ENCODING = 0x00010001;
-    private const uint CERT_STORE_ADD_NEW = 1;
-    private const uint CERT_FIND_EXISTING = 0x000d0000;
-    private const int CRYPT_E_NOT_FOUND = unchecked((int)0x80092004);
-
-    [DllImport("crypt32.dll", CharSet = CharSet.Unicode, SetLastError = true,
-        ExactSpelling = true)]
-    private static extern IntPtr CertOpenStore(
-        IntPtr provider, uint encoding, IntPtr cryptProvider,
-        uint flags, string storeName);
-
-    [DllImport("crypt32.dll", SetLastError = true)]
-    private static extern bool CertAddEncodedCertificateToStore(
-        IntPtr store, uint encoding, byte[] certificate, uint length,
-        uint disposition, out IntPtr context);
-
-    [DllImport("crypt32.dll", SetLastError = true)]
-    private static extern IntPtr CertCreateCertificateContext(
-        uint encoding, byte[] certificate, uint length);
-
-    [DllImport("crypt32.dll", SetLastError = true)]
-    private static extern IntPtr CertFindCertificateInStore(
-        IntPtr store, uint encoding, uint findFlags, uint findType,
-        IntPtr findParameter, IntPtr previousContext);
-
-    [DllImport("crypt32.dll", SetLastError = true)]
-    private static extern bool CertDeleteCertificateFromStore(IntPtr context);
-
-    [DllImport("crypt32.dll")]
-    private static extern bool CertFreeCertificateContext(IntPtr context);
-
-    [DllImport("crypt32.dll", SetLastError = true)]
-    private static extern bool CertCloseStore(IntPtr store, uint flags);
-
-    private static IntPtr Open(string storeName)
-    {
-        IntPtr store = CertOpenStore(
-            new IntPtr(CERT_STORE_PROV_SYSTEM_W), 0, IntPtr.Zero,
-            CERT_SYSTEM_STORE_LOCAL_MACHINE | CERT_STORE_OPEN_EXISTING_FLAG |
-                CERT_STORE_MAXIMUM_ALLOWED_FLAG,
-            storeName);
-        if (store == IntPtr.Zero)
-            throw new Win32Exception(Marshal.GetLastWin32Error(), "CertOpenStore");
-        return store;
-    }
-
-    public static void Add(string storeName, byte[] certificate)
-    {
-        IntPtr store = Open(storeName);
-        IntPtr context = IntPtr.Zero;
-        try
-        {
-            if (!CertAddEncodedCertificateToStore(
-                    store, CERT_ENCODING, certificate, (uint)certificate.Length,
-                    CERT_STORE_ADD_NEW, out context))
-                throw new Win32Exception(
-                    Marshal.GetLastWin32Error(), "CertAddEncodedCertificateToStore");
-        }
-        finally
-        {
-            if (context != IntPtr.Zero) CertFreeCertificateContext(context);
-            CertCloseStore(store, 0);
-        }
-    }
-
-    public static bool Remove(string storeName, byte[] certificate)
-    {
-        IntPtr store = Open(storeName);
-        IntPtr search = IntPtr.Zero;
-        try
-        {
-            search = CertCreateCertificateContext(
-                CERT_ENCODING, certificate, (uint)certificate.Length);
-            if (search == IntPtr.Zero)
-                throw new Win32Exception(
-                    Marshal.GetLastWin32Error(), "CertCreateCertificateContext");
-            IntPtr found = CertFindCertificateInStore(
-                store, CERT_ENCODING, 0, CERT_FIND_EXISTING, search, IntPtr.Zero);
-            if (found == IntPtr.Zero)
-            {
-                int error = Marshal.GetLastWin32Error();
-                if (error == CRYPT_E_NOT_FOUND) return false;
-                throw new Win32Exception(error, "CertFindCertificateInStore");
-            }
-            if (!CertDeleteCertificateFromStore(found))
-                throw new Win32Exception(
-                    Marshal.GetLastWin32Error(), "CertDeleteCertificateFromStore");
-            return true;
-        }
-        finally
-        {
-            if (search != IntPtr.Zero) CertFreeCertificateContext(search);
-            CertCloseStore(store, 0);
-        }
-    }
-}
-'@
-}
-
-$certificateStoreOpenMethod = [ViiperLocalTestCertificateStore].GetMethod(
-    'CertOpenStore', [Reflection.BindingFlags]'NonPublic,Static')
-$certificateStoreOpenImport = $certificateStoreOpenMethod.GetCustomAttributes(
-    [Runtime.InteropServices.DllImportAttribute], $false)[0]
-if ($certificateStoreOpenImport.Value -cne 'crypt32.dll' -or
-    -not $certificateStoreOpenImport.ExactSpelling -or
-    $certificateStoreOpenImport.CharSet -ne [Runtime.InteropServices.CharSet]::Unicode) {
-    throw 'The local-test certificate-store interop does not bind the exact CertOpenStore entry point.'
-}
-
 if ($PreflightOnly) {
+    $certificate.Dispose()
     Write-Output 'result=success operation=local-test-preflight changed=0 rebootRequired=0 rollback=not-needed exitCode=0'
     return
 }
 
-function Get-ExactLocalTestTrustState {
-    param([Parameter(Mandatory = $true)][string]$StoreName)
-
-    $store = [Security.Cryptography.X509Certificates.X509Store]::new(
-        $StoreName, [Security.Cryptography.X509Certificates.StoreLocation]::LocalMachine)
-    $matches = $null
-    try {
-        # Reopening the store read-only makes every verification a persisted-state
-        # postcondition rather than an observation through the mutating handle.
-        $store.Open([Security.Cryptography.X509Certificates.OpenFlags]::ReadOnly)
-        $matches = $store.Certificates.Find(
-            [Security.Cryptography.X509Certificates.X509FindType]::FindByThumbprint,
-            $certificateThumbprint, $false)
-        $exactMatches = @($matches | Where-Object {
-            [Convert]::ToBase64String($_.RawData) -ceq $expectedCertificateBytes
-        })
-        if ($matches.Count -ne $exactMatches.Count -or $exactMatches.Count -gt 1) {
-            throw "Certificate collision in LocalMachine\$StoreName."
-        }
-        return [pscustomobject]@{ ExactCount = [int]$exactMatches.Count }
-    }
-    finally {
-        if ($null -ne $matches) {
-            foreach ($match in $matches) {
-                $match.Dispose()
-            }
-        }
-        $store.Close()
+foreach ($name in @('ViiperUde.inf', 'ViiperUde.sys', 'ViiperUde.cat')) {
+    $runtime = Join-Path $driverDirectory $name
+    $evidence = Join-Path $signedPackage $name
+    if ((Get-FileHash -LiteralPath $runtime -Algorithm SHA256).Hash -cne
+        (Get-FileHash -LiteralPath $evidence -Algorithm SHA256).Hash) {
+        throw "Runtime driver file '$name' differs from its validated evidence copy."
     }
 }
 
-$addedStores = [Collections.Generic.List[string]]::new()
-function Remove-NewLocalTestTrust {
-    $removalErrors = [Collections.Generic.List[Exception]]::new()
-    foreach ($storeName in $addedStores) {
-        $cleanupAction = 'inspect-cleanup'
-        try {
-            $cleanupState = Get-ExactLocalTestTrustState -StoreName $storeName
-            $cleanupAction = 'remove'
-            if ($cleanupState.ExactCount -eq 1) {
-                $removed = [ViiperLocalTestCertificateStore]::Remove(
-                    $storeName, $certificate.RawData)
-                $removeResult = if ($removed) { 'removed' } else { 'already-absent' }
-            }
-            else {
-                $removeResult = 'already-absent'
-            }
-            Write-Host "local-test-trust store=$storeName action=remove result=$removeResult"
+$manifestHash = [string]($lockByPath['submission-manifest.json'].sha256)
+$infHash = [string]($lockByPath['driver/ViiperUde.inf'].sha256)
+$sysHash = [string]($lockByPath['driver/ViiperUde.sys'].sha256)
+$catHash = [string]($lockByPath['driver/ViiperUde.cat'].sha256)
+$brokerEntry = $lockByPath['viiper.exe']
+$brokerHash = [string]$brokerEntry.sha256
+$helperHash = [string]($lockByPath['ViiperUdeCtl.exe'].sha256)
 
-            $cleanupAction = 'verify-cleanup'
-            $cleanupState = Get-ExactLocalTestTrustState -StoreName $storeName
-            if ($cleanupState.ExactCount -ne 0) {
-                throw "Exact local-test certificate remained in LocalMachine\$storeName."
-            }
-            Write-Host "local-test-trust store=$storeName action=verify-cleanup result=absent"
-        }
-        catch {
-            Write-Host "local-test-trust store=$storeName action=$cleanupAction result=error"
-            $removalErrors.Add([InvalidOperationException]::new(
-                "LocalMachine\$storeName trust cleanup failed during $cleanupAction.",
-                $_.Exception))
-        }
-    }
-    if ($removalErrors.Count -ne 0) {
-        throw [AggregateException]::new(
-            'Failed to remove one or more local-test trust anchors after a settled failure.',
-            [Exception[]]$removalErrors.ToArray())
-    }
+$programDataRoot = (Resolve-Path -LiteralPath $env:ProgramData -ErrorAction Stop).Path
+$programDataItem = Get-Item -LiteralPath $programDataRoot -Force -ErrorAction Stop
+if (-not $programDataItem.PSIsContainer -or
+    ($programDataItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw "ProgramData is not a safe staging parent: '$programDataRoot'."
 }
-
-function Test-SettledLocalTestFailure {
-    param(
-        [Parameter(Mandatory = $true)][object[]]$Lines,
-        [Parameter(Mandatory = $true)][int]$ProcessExitCode
-    )
-
-    $pattern = '(?m)^result=error operation=install changed=(?<changed>[01]) ' +
-        'rebootRequired=(?<reboot>[01]) rollback=(?<rollback>not-needed|succeeded|failed) ' +
-        'exitCode=(?<exit>[0-9]+)(?: .*)?\r?$'
-    # Out-String formats through the host and wraps long native proof lines at
-    # the current console width. Preserve the already-delimited child output
-    # byte-for-line instead: diagnostics may make the canonical proof much
-    # wider than the host while the rollback fields remain authoritative.
-    $proofText = [string]::Join([Environment]::NewLine, [string[]]$Lines)
-    $matches = [regex]::Matches($proofText, $pattern)
-    if ($matches.Count -ne 1) {
-        return $false
-    }
-    $match = $matches[0]
-    $proofExitCode = 0
-    if (-not [int]::TryParse($match.Groups['exit'].Value, [ref]$proofExitCode) -or
-        $proofExitCode -ne $ProcessExitCode) {
-        return $false
-    }
-    return ($match.Groups['changed'].Value -ceq '0' -and
-            $match.Groups['reboot'].Value -ceq '0' -and
-            $match.Groups['rollback'].Value -ceq 'not-needed' -and
-            $proofExitCode -in @(1, 4)) -or
-        ($match.Groups['changed'].Value -ceq '1' -and
-            $match.Groups['reboot'].Value -ceq '0' -and
-            $match.Groups['rollback'].Value -ceq 'succeeded' -and
-            $proofExitCode -eq 1)
-}
-
-$trustCommitted = $false
-$retainTrustOnFailure = $false
+$trustJournalDirectory = Join-Path $programDataRoot 'VIIPER-TrustManager'
 $stageDirectory = $null
-$programDataRoot = $null
+$trustCapability = $null
 try {
-    foreach ($storeName in @('Root', 'TrustedPublisher')) {
-        $trustAction = 'inspect-add'
-        try {
-            $trustState = Get-ExactLocalTestTrustState -StoreName $storeName
-            if ($trustState.ExactCount -eq 0) {
-                $trustAction = 'add'
-                [ViiperLocalTestCertificateStore]::Add(
-                    $storeName, $certificate.RawData)
-                $addedStores.Add($storeName)
-                Write-Host "local-test-trust store=$storeName action=add result=added"
-
-                $trustAction = 'verify-add'
-                $trustState = Get-ExactLocalTestTrustState -StoreName $storeName
-                if ($trustState.ExactCount -ne 1) {
-                    throw "Exact local-test certificate was not installed in LocalMachine\$storeName."
-                }
-                Write-Host "local-test-trust store=$storeName action=verify-add result=present"
-            }
-            else {
-                Write-Host "local-test-trust store=$storeName action=add result=preexisting"
-            }
-        }
-        catch {
-            Write-Host "local-test-trust store=$storeName action=$trustAction result=error"
-            throw
-        }
-    }
-
-    foreach ($name in @('ViiperUde.inf', 'ViiperUde.sys', 'ViiperUde.cat')) {
-        $runtime = Join-Path $driverDirectory $name
-        $evidence = Join-Path $signedPackage $name
-        if ((Get-FileHash -LiteralPath $runtime -Algorithm SHA256).Hash -cne
-            (Get-FileHash -LiteralPath $evidence -Algorithm SHA256).Hash) {
-            throw "Runtime driver file '$name' differs from its validated evidence copy."
-        }
-    }
-
-    $manifestHash = [string]($lockByPath['submission-manifest.json'].sha256)
-    $infHash = [string]($lockByPath['driver/ViiperUde.inf'].sha256)
-    $sysHash = [string]($lockByPath['driver/ViiperUde.sys'].sha256)
-    $catHash = [string]($lockByPath['driver/ViiperUde.cat'].sha256)
-    $brokerEntry = $lockByPath['viiper.exe']
-    $brokerHash = [string]$brokerEntry.sha256
-    $helperHash = [string]($lockByPath['ViiperUdeCtl.exe'].sha256)
-
-    $programDataRoot = (Resolve-Path -LiteralPath $env:ProgramData -ErrorAction Stop).Path
-    $programDataItem = Get-Item -LiteralPath $programDataRoot -Force -ErrorAction Stop
-    if (-not $programDataItem.PSIsContainer -or
-        ($programDataItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-        throw "ProgramData is not a safe staging parent: '$programDataRoot'."
-    }
     Remove-PreBootProtectedStagingDirectories -ProgramDataRoot $programDataRoot
     $stageDirectory = Join-Path $programDataRoot (
         'VIIPER.LocalTestStage.' + [Guid]::NewGuid().ToString('N'))
@@ -828,10 +990,12 @@ try {
     $brokerPath = Copy-ExactBrokerToProtectedStage `
         -SourcePath $packageBrokerPath -DestinationDirectory $stageDirectory `
         -ExpectedLength ([long]$brokerEntry.length) -ExpectedSHA256 $brokerHash
+    $trustCapability = New-LocalTestTrustCapability `
+        -StageDirectory $stageDirectory -SourceRevision $source `
+        -CertificatePath $certificatePath -CertificateSHA256 $certificateSha256 `
+        -PackageLockSHA256 $actualPackageLockSha256 `
+        -TrustJournalDirectory $trustJournalDirectory
 
-    $output = @()
-    $exitCode = $null
-    $launchError = $null
     $processStarted = $false
     $brokerArguments = @(
         'native-package-install',
@@ -846,66 +1010,66 @@ try {
         '--expected-sys-sha-256', $sysHash,
         '--expected-cat-sha-256', $catHash,
         '--target-user-sid', $TargetUserSID,
-        '--driver-validation-mode', 'local-test'
+        '--driver-validation-mode', 'local-test',
+        '--local-test-trust-capability', $trustCapability.Path,
+        '--expected-trust-capability-sha-256', $trustCapability.SHA256,
+        '--local-test-certificate-path', $certificatePath,
+        '--expected-local-test-certificate-sha-256', $certificateSha256,
+        '--expected-local-test-package-lock-sha-256', $actualPackageLockSha256
     )
-    try {
-        $processResult = Invoke-JoinedNativeProcess `
-            -FileName $brokerPath -Arguments $brokerArguments `
-            -WorkingDirectory $stageDirectory -Started ([ref]$processStarted)
-        $retainTrustOnFailure = $processStarted
-        $exitCode = [int]$processResult.ExitCode
-        $output = @($processResult.Output)
-    }
-    catch {
-        $retainTrustOnFailure = $processStarted
-        $launchError = $_
-    }
-    $output | ForEach-Object { Write-Host $_ }
-    if ($null -ne $exitCode) {
-        if ($exitCode -in @(0, 3010)) {
-            $trustCommitted = $true
-        }
-        elseif (Test-SettledLocalTestFailure `
-            -Lines $output -ProcessExitCode $exitCode) {
-            $retainTrustOnFailure = $false
-        }
-    }
+    $processResult = Invoke-JoinedNativeProcess `
+        -FileName $brokerPath -Arguments $brokerArguments `
+        -WorkingDirectory $stageDirectory -Started ([ref]$processStarted)
+    $processResult.Output | ForEach-Object { Write-Host $_ }
+    $exitCode = [int]$processResult.ExitCode
+
+    Remove-LocalTestTrustCapability `
+        -Capability $trustCapability -StageDirectory $stageDirectory
+    $trustCapability = $null
     Remove-ProtectedStagingDirectory `
         -Path $stageDirectory -ProgramDataRoot $programDataRoot
     $stageDirectory = $null
-    if ($null -ne $launchError) {
-        throw $launchError
-    }
+
     if ($exitCode -notin @(0, 3010)) {
         throw "Local VIIPER driver transaction failed with exit code $exitCode."
     }
     if ($exitCode -eq 3010) {
-        Write-Warning 'The native transaction stopped at a safe reboot boundary before mutation or after successful rollback. Restart, rerun this identical install command before creating another virtual device, and proceed to live validation only after it returns exit 0.'
+        Write-Warning 'The native transaction retained its durable trust/package authority at a reboot or indeterminate boundary. Restart and rerun this identical install command; do not remove certificates or journal files manually.'
         exit 3010
     }
 }
 catch {
     $failure = $_
-    $cleanupFailure = $null
-    if ($null -ne $stageDirectory -and $null -ne $programDataRoot) {
+    $cleanupFailures = [Collections.Generic.List[Exception]]::new()
+    if ($null -ne $trustCapability -and $null -ne $stageDirectory) {
+        try {
+            Remove-LocalTestTrustCapability `
+                -Capability $trustCapability -StageDirectory $stageDirectory
+            $trustCapability = $null
+        }
+        catch {
+            $cleanupFailures.Add($_.Exception)
+        }
+    }
+    if ($null -ne $stageDirectory) {
         try {
             Remove-ProtectedStagingDirectory `
                 -Path $stageDirectory -ProgramDataRoot $programDataRoot
             $stageDirectory = $null
         }
         catch {
-            $cleanupFailure = $_
+            $cleanupFailures.Add($_.Exception)
         }
     }
-    if (-not $trustCommitted -and -not $retainTrustOnFailure) {
-        Remove-NewLocalTestTrust
-    }
-    if ($null -ne $cleanupFailure) {
+    if ($cleanupFailures.Count -ne 0) {
         throw [AggregateException]::new(
             'Local VIIPER installation failed and protected staging cleanup also failed.',
-            [Exception[]]@($failure.Exception, $cleanupFailure.Exception))
+            [Exception[]](@($failure.Exception) + $cleanupFailures.ToArray()))
     }
     throw $failure
+}
+finally {
+    $certificate.Dispose()
 }
 
 Write-Host 'The exact local test-signed VIIPER UdeCx driver and native broker are installed, authenticated, and ready.'
