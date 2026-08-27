@@ -1722,7 +1722,7 @@ kernel module on Linux. Most distributions include it but do not load
 it automatically.</p>
 </div>
 <h4 id="one-time-setup">One-time setup</h4>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="nb">echo</span><span class="w"> </span><span class="s2">&quot;vhci-hcd&quot;</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>sudo<span class="w"> </span>tee<span class="w"> </span>/etc/modules-load.d/vhci-hcd.conf
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="nb">echo</span><span class="w"> </span><span class="s2">"vhci-hcd"</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>sudo<span class="w"> </span>tee<span class="w"> </span>/etc/modules-load.d/vhci-hcd.conf
 <a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>sudo<span class="w"> </span>modprobe<span class="w"> </span>vhci-hcd
 </code></pre></div>
 <h4 id="manual-loading">Manual loading</h4>

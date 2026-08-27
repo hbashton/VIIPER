@@ -1264,6 +1264,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Input state">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#raw-input-extension" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Raw-input extension
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -1587,6 +1604,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Input state">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#raw-input-extension" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Raw-input extension
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -1811,6 +1845,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Input state">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#raw-input-extension" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Raw-input extension
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -1849,32 +1900,101 @@
 including controls, touch, motion, adaptive triggers, lightbar, speaker,
 advanced haptics, and microphone endpoints.</p>
 <h2 id="supported-device-types">Supported device types</h2>
-<p>VIIPER 0.1.0 exposes only the production V5 contracts:</p>
+<p>The registry exposes only production V5 contracts. Input size is negotiated by
+the exact device type; there is no per-frame downgrade:</p>
 <table>
 <thead>
 <tr>
 <th>Device type</th>
+<th>Input</th>
+<th>Output event <code>0x85</code></th>
 <th>USB functions</th>
 </tr>
 </thead>
 <tbody>
 <tr>
 <td><code>dualsensecombinedaudioduplexv5</code></td>
+<td>33 bytes</td>
+<td>No</td>
 <td>DualSense HID, speaker/haptics OUT, microphone IN</td>
 </tr>
 <tr>
 <td><code>dualsenseaudioonlyduplexv5</code></td>
-<td>DualSense speaker/haptics OUT and microphone IN sidecar</td>
+<td>33 bytes</td>
+<td>No</td>
+<td>DualSense audio sidecar</td>
+</tr>
+<tr>
+<td><code>dualsensegamepadv5</code></td>
+<td>33 bytes</td>
+<td>No</td>
+<td>DualSense HID only</td>
+</tr>
+<tr>
+<td><code>dualsensecombinedaudioduplexv5events</code></td>
+<td>33 bytes</td>
+<td>Yes</td>
+<td>DualSense HID and audio</td>
+</tr>
+<tr>
+<td><code>dualsenseaudioonlyduplexv5events</code></td>
+<td>33 bytes</td>
+<td>Yes</td>
+<td>DualSense audio sidecar</td>
+</tr>
+<tr>
+<td><code>dualsensecombinedaudioduplexv5rawinputevents</code></td>
+<td>53 bytes</td>
+<td>Yes</td>
+<td>DualSense HID and audio</td>
+</tr>
+<tr>
+<td><code>dualsenseaudioonlyduplexv5rawinputevents</code></td>
+<td>53 bytes</td>
+<td>Yes</td>
+<td>DualSense audio sidecar</td>
+</tr>
+<tr>
+<td><code>dualsensegamepadv5rawinput</code></td>
+<td>53 bytes</td>
+<td>No</td>
+<td>DualSense HID only</td>
 </tr>
 <tr>
 <td><code>dualsenseedgecombinedaudioduplexv5</code></td>
-<td>DualSense Edge HID, speaker/haptics OUT, microphone IN</td>
+<td>33 bytes</td>
+<td>No</td>
+<td>DualSense Edge HID and audio</td>
+</tr>
+<tr>
+<td><code>dualsenseedgegamepadv5</code></td>
+<td>33 bytes</td>
+<td>No</td>
+<td>DualSense Edge HID only</td>
+</tr>
+<tr>
+<td><code>dualsenseedgecombinedaudioduplexv5events</code></td>
+<td>33 bytes</td>
+<td>Yes</td>
+<td>DualSense Edge HID and audio</td>
+</tr>
+<tr>
+<td><code>dualsenseedgecombinedaudioduplexv5rawinputevents</code></td>
+<td>53 bytes</td>
+<td>Yes</td>
+<td>DualSense Edge HID and audio</td>
+</tr>
+<tr>
+<td><code>dualsenseedgegamepadv5rawinput</code></td>
+<td>53 bytes</td>
+<td>No</td>
+<td>DualSense Edge HID only</td>
 </tr>
 </tbody>
 </table>
-<p>The old raw, extended, V1, V2, V3, and V4 names are intentionally not
-registered. Clients must use V5; VIIPER does not silently negotiate an older
-header or split audio/state transport.</p>
+<p>Deprecated pre-V5 raw, extended, V1, V2, V3, and V4 names are intentionally
+not registered. Clients must use an exact V5 alias; VIIPER does not silently
+negotiate an older header or split audio/state transport.</p>
 <h2 id="v5-stream-contract">V5 stream contract</h2>
 <p>Every packet uses a 16-byte header followed by its payload:</p>
 <table>
@@ -1934,7 +2054,7 @@ closes the stream instead of changing protocols.</p>
 <tr>
 <td>Client to VIIPER</td>
 <td><code>0x01</code></td>
-<td>33-byte controller input state</td>
+<td>Exact 33- or 53-byte controller input state selected by device alias</td>
 </tr>
 <tr>
 <td>Client to VIIPER</td>
@@ -1951,6 +2071,11 @@ closes the stream instead of changing protocols.</p>
 <td><code>0x83</code></td>
 <td>Atomic feedback plus the matching 1,920-byte speaker PCM generation</td>
 </tr>
+<tr>
+<td>VIIPER to client</td>
+<td><code>0x85</code></td>
+<td>Microphone-interface active byte plus 64-bit stream generation, event aliases only</td>
+</tr>
 </tbody>
 </table>
 <p>An atomic <code>0x83</code> payload begins with a little-endian 16-bit feedback length,
@@ -1965,7 +2090,7 @@ data are serialized by one V5 writer. Media backpressure is bounded and
 newest-wins; interface resets form a hard generation boundary so stale audio
 cannot cross a stop/reconnect.</p>
 <h2 id="input-state">Input state</h2>
-<p>The 33-byte input payload is little endian:</p>
+<p>Every input payload begins with the same 33-byte little-endian mapped state:</p>
 <ul>
 <li>Sticks: LX, LY, RX, RY as signed 8-bit values.</li>
 <li>Buttons: 32-bit bitfield.</li>
@@ -2038,6 +2163,60 @@ cannot cross a stop/reconnect.</p>
 </tbody>
 </table>
 <p>D-pad bits are Up <code>0x01</code>, Down <code>0x02</code>, Left <code>0x04</code>, and Right <code>0x08</code>.</p>
+<h3 id="raw-input-extension">Raw-input extension</h3>
+<p>Only exact <code>...v5rawinput...</code> aliases require the 53-byte payload. Existing
+legacy aliases and <code>...v5events</code> aliases remain exactly 33 bytes; the events
+suffix negotiates output lifecycle events, not enhanced input.</p>
+<table>
+<thead>
+<tr>
+<th>Payload bytes</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>0:33</code></td>
+<td>mapped state described above</td>
+</tr>
+<tr>
+<td><code>33</code></td>
+<td>flags: bit 0 physical metadata valid; bit 1 physical source uses Edge layout</td>
+</tr>
+<tr>
+<td><code>34:38</code></td>
+<td>physical input report bytes <code>28:32</code>, normalized from USB or Bluetooth</td>
+</tr>
+<tr>
+<td><code>38:53</code></td>
+<td>physical input report bytes <code>41:56</code>, normalized from USB or Bluetooth</td>
+</tr>
+</tbody>
+</table>
+<p>Bit 1 is valid only together with bit 0; unknown bits close the framed stream.
+Legacy decode explicitly clears the extension fields to prevent stale metadata
+after reconnect or alias changes.</p>
+<p>Valid metadata supplies the physical sensor timestamp, trigger mechanism and
+effect status, host timestamp echo, battery, and common headset/filter status.
+VIIPER copies physical report
+bytes 49 through 52 only when the physical source and virtual target both use
+the same base or Edge layout. On a mismatch it synthesizes the target layout:
+base uses its generated device clock, while Edge uses <code>80 00 00 00</code>. The
+virtual connection byte <code>54</code> is always USB-wired <code>0x08</code> even when the source
+report arrived over Bluetooth. Without valid metadata, trigger status is the
+confirmed physical off/no-load value <code>09 09</code>, effect status is <code>00</code>, and the
+clock/profile and battery use VIIPER's generated state.</p>
+<p>Physical report bytes 56 through 63 are an eight-byte AES-CMAC. They are
+deliberately excluded: remapping controls and replacing virtual
+counters/connect state invalidates the physical authentication tag, and
+VIIPER cannot recompute it without the controller key. The corresponding
+virtual report tail stays zero.</p>
+<p>Physical metadata is continuous latest-state data and never creates an ordered
+queue entry by itself. A real button, D-pad, touch-contact/ID, or trigger
+zero-crossing transition carries its complete metadata snapshot. In a trigger
+epoch, peak strengthening couples only that trigger's status byte and effect
+nibble; equal-analog settling such as L2 <code>28</code> to <code>29</code> is preserved before
+release without turning normal mechanical progression into a stale FIFO.</p>
 <h2 id="feedback-state">Feedback state</h2>
 <p>The 474-byte V5 feedback object contains:</p>
 <ul>
