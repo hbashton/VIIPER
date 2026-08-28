@@ -5,8 +5,69 @@ package sdl
 
 #include <stdlib.h>
 
+#include <SDL3/SDL.h>
+#include <SDL3/SDL_events.h>
 #include <SDL3/SDL_gamepad.h>
 #include <SDL3/SDL_sensor.h>
+
+static inline int wait_gamepad_button_transition(
+    SDL_JoystickID which,
+    SDL_GamepadButton button,
+    Sint32 timeout_ms,
+    bool *down,
+    Uint64 *timestamp_ns)
+{
+    Uint64 deadline = timeout_ms < 0 ? 0 : SDL_GetTicks() + (Uint64)timeout_ms;
+
+    for (;;) {
+        Sint32 remaining = timeout_ms;
+        if (timeout_ms >= 0) {
+            Uint64 now = SDL_GetTicks();
+            if (now >= deadline) {
+                return 0;
+            }
+            Uint64 delta = deadline - now;
+            remaining = delta > 0x7fffffffULL ? 0x7fffffff : (Sint32)delta;
+        }
+
+        SDL_ClearError();
+        SDL_Event event;
+        if (!SDL_WaitEventTimeout(&event, remaining)) {
+            const char *error = SDL_GetError();
+            return error != NULL && error[0] != '\0' ? -1 : 0;
+        }
+        if ((event.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN ||
+             event.type == SDL_EVENT_GAMEPAD_BUTTON_UP) &&
+            event.gbutton.which == which &&
+            event.gbutton.button == (Uint8)button) {
+            *down = event.gbutton.down;
+            *timestamp_ns = event.gbutton.timestamp;
+            return 1;
+        }
+    }
+}
+
+static inline int poll_gamepad_button_transition(
+    SDL_JoystickID which,
+    SDL_GamepadButton button,
+    bool *down,
+    Uint64 *timestamp_ns)
+{
+    SDL_ClearError();
+    SDL_Event event;
+    while (SDL_PollEvent(&event)) {
+        if ((event.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN ||
+             event.type == SDL_EVENT_GAMEPAD_BUTTON_UP) &&
+            event.gbutton.which == which &&
+            event.gbutton.button == (Uint8)button) {
+            *down = event.gbutton.down;
+            *timestamp_ns = event.gbutton.timestamp;
+            return 1;
+        }
+    }
+    const char *error = SDL_GetError();
+    return error != NULL && error[0] != '\0' ? -1 : 0;
+}
 
 static inline int gamepad_binding_input_button(const SDL_GamepadBinding *b)
 {
@@ -75,6 +136,13 @@ type GamepadButton int32
 
 // GamepadButtonLabel the set of gamepad button labels.
 type GamepadButtonLabel int32
+
+// GamepadButtonEvent is one SDL transition from an exact opened gamepad.
+// TimestampNS is SDL's monotonic event timestamp, not QPC.
+type GamepadButtonEvent struct {
+	Down        bool
+	TimestampNS uint64
+}
 
 // GamepadBindingType describes the type of a gamepad control binding.
 type GamepadBindingType int32
@@ -340,6 +408,68 @@ func (g *Gamepad) GetButton(button GamepadButton) bool {
 	}
 	return bool(C.SDL_GetGamepadButton(g.cGamepad, C.SDL_GamepadButton(button)))
 }
+
+// WaitButtonTransition blocks on SDL's event queue until this exact gamepad
+// and button produces either edge. It returns (event, false, nil) on timeout.
+// SDL requires the caller to own the event queue on its initialization thread;
+// unrelated events are consumed while this method searches for the edge.
+func (g *Gamepad) WaitButtonTransition(
+	button GamepadButton,
+	timeoutMS int32,
+) (GamepadButtonEvent, bool, error) {
+	if g == nil || g.cGamepad == nil {
+		return GamepadButtonEvent{}, false, &SDLError{eStr: "invalid gamepad handle"}
+	}
+	var down C.bool
+	var timestampNS C.Uint64
+	result := C.wait_gamepad_button_transition(
+		C.SDL_GetGamepadID(g.cGamepad),
+		C.SDL_GamepadButton(button),
+		C.Sint32(timeoutMS),
+		&down,
+		&timestampNS,
+	)
+	if result < 0 {
+		return GamepadButtonEvent{}, false, GetError()
+	}
+	if result == 0 {
+		return GamepadButtonEvent{}, false, nil
+	}
+	return GamepadButtonEvent{
+		Down: bool(down), TimestampNS: uint64(timestampNS),
+	}, true, nil
+}
+
+// PollButtonTransition drains SDL's queued events and returns an exact edge
+// for this gamepad/button without waiting. Unrelated events are consumed, so
+// callers must give the observer exclusive ownership of SDL's event queue.
+func (g *Gamepad) PollButtonTransition(
+	button GamepadButton,
+) (GamepadButtonEvent, bool, error) {
+	if g == nil || g.cGamepad == nil {
+		return GamepadButtonEvent{}, false, &SDLError{eStr: "invalid gamepad handle"}
+	}
+	var down C.bool
+	var timestampNS C.Uint64
+	result := C.poll_gamepad_button_transition(
+		C.SDL_GetGamepadID(g.cGamepad),
+		C.SDL_GamepadButton(button),
+		&down,
+		&timestampNS,
+	)
+	if result < 0 {
+		return GamepadButtonEvent{}, false, GetError()
+	}
+	if result == 0 {
+		return GamepadButtonEvent{}, false, nil
+	}
+	return GamepadButtonEvent{
+		Down: bool(down), TimestampNS: uint64(timestampNS),
+	}, true, nil
+}
+
+// TicksNS returns SDL's monotonic clock used by gamepad event timestamps.
+func TicksNS() uint64 { return uint64(C.SDL_GetTicksNS()) }
 
 // GetButtonLabel gets the label of a button on a gamepad.
 func (g *Gamepad) GetButtonLabel(button GamepadButton) GamepadButtonLabel {

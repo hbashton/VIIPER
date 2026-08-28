@@ -4,6 +4,8 @@ import (
 	"encoding/binary"
 	"sync"
 	"time"
+
+	"github.com/Alia5/VIIPER/internal/inputpresentation"
 )
 
 const (
@@ -103,13 +105,18 @@ type dualSenseInputScheduler struct {
 
 	edge bool // immutable report-layout variant selected at construction
 
-	transitions [dualSenseInputTransitionCapacity]scheduledInputState
-	head        int
-	count       int
-	latest      scheduledInputState
-	hasLatest   bool
-	retry       scheduledInputState
-	hasRetry    bool
+	transitions                 [dualSenseInputTransitionCapacity]scheduledInputState
+	head                        int
+	count                       int
+	latest                      scheduledInputState
+	hasLatest                   bool
+	retry                       scheduledInputState
+	hasRetry                    bool
+	retryReport                 [InputReportSize]byte
+	retrySequence               uint8
+	retryPacketSequence         uint32
+	retryPresentationGeneration uint64
+	hasRetryReport              bool
 
 	claimed               scheduledInputState
 	claimedReport         [InputReportSize]byte
@@ -119,10 +126,11 @@ type dualSenseInputScheduler struct {
 	// an uncommitted continuous claim to represent a trigger peak. The claim
 	// remains immutable, but a failed send is then recovered ahead of that
 	// transition exactly like ordered work.
-	claimRequiresOrderedRecovery bool
-	claimToken                   uint64
-	nextClaimToken               uint64
-	hasClaim                     bool
+	claimRequiresOrderedRecovery  bool
+	claimToken                    uint64
+	nextClaimToken                uint64
+	claimedPresentationGeneration uint64
+	hasClaim                      bool
 
 	previous      InputState
 	hasPrevious   bool
@@ -147,12 +155,13 @@ type dualSenseInputScheduler struct {
 	maximumSelectionAge time.Duration
 	selectionAgeBuckets [len(inputQueueAgeBucketLimits) + 1]uint64
 
-	sequence            uint8
-	packetSequence      uint32
-	timestampBase       time.Time
-	lastReport          [InputReportSize]byte
-	presentationVersion uint64
-	corruptReports      uint64
+	sequence               uint8
+	packetSequence         uint32
+	timestampBase          time.Time
+	lastReport             [InputReportSize]byte
+	presentationVersion    uint64
+	presentationGeneration uint64
+	corruptReports         uint64
 }
 
 func neutralInputState() InputState {
@@ -164,10 +173,11 @@ func newDualSenseInputScheduler(battery byte, edge bool) *dualSenseInputSchedule
 	now := time.Now()
 	neutral := neutralInputState()
 	s := &dualSenseInputScheduler{
-		edge:                edge,
-		generation:          1,
-		presentationVersion: 1,
-		timestampBase:       now,
+		edge:                   edge,
+		generation:             1,
+		presentationVersion:    1,
+		presentationGeneration: 1,
+		timestampBase:          now,
 		lastSelected: scheduledInputState{
 			state: neutral, receivedAt: now, generation: 1,
 		},
@@ -673,13 +683,25 @@ func (s *dualSenseInputScheduler) beginClaim(now time.Time, battery byte,
 	if len(destination) < InputReportSize || s.hasClaim {
 		return 0, 0
 	}
+	retryingSerializedReport := s.hasRetry && s.hasRetryReport
 	selected := s.selectState(now)
 	sequence := s.sequence + 1
 	packetSequence := s.packetSequence + 1
-	timestamp := dualSenseTimestampTicks(s.timestampBase, now)
-	if !encodeUSBInputReportInto(&selected.state, battery, sequence,
-		packetSequence, timestamp, s.edge, s.claimedReport[:]) {
-		s.corruptReports++
+	if retryingSerializedReport {
+		sequence = s.retrySequence
+		packetSequence = s.retryPacketSequence
+		copy(s.claimedReport[:], s.retryReport[:])
+		clear(s.retryReport[:])
+		s.retrySequence = 0
+		s.retryPacketSequence = 0
+		s.retryPresentationGeneration = 0
+		s.hasRetryReport = false
+	} else {
+		timestamp := dualSenseTimestampTicks(s.timestampBase, now)
+		if !encodeUSBInputReportInto(&selected.state, battery, sequence,
+			packetSequence, timestamp, s.edge, s.claimedReport[:]) {
+			s.corruptReports++
+		}
 	}
 	s.nextClaimToken++
 	if s.nextClaimToken == 0 {
@@ -689,6 +711,7 @@ func (s *dualSenseInputScheduler) beginClaim(now time.Time, battery byte,
 	s.claimedSequence = sequence
 	s.claimedPacketSequence = packetSequence
 	s.claimToken = s.nextClaimToken
+	s.claimedPresentationGeneration = s.presentationGeneration
 	s.hasClaim = true
 	copy(destination[:InputReportSize], s.claimedReport[:])
 	return InputReportSize, s.claimToken
@@ -709,11 +732,23 @@ func dualSenseTimestampTicks(base, now time.Time) uint32 {
 
 func (s *dualSenseInputScheduler) completeClaimAt(token uint64, presented bool,
 	completedAt time.Time) {
-	if !s.hasClaim || token == 0 || token != s.claimToken {
-		return
+	outcome := inputpresentation.OutcomeDefer
+	if presented {
+		outcome = inputpresentation.OutcomeCommit
+	}
+	s.resolveClaimAt(token, s.claimedPresentationGeneration, outcome, completedAt)
+}
+
+func (s *dualSenseInputScheduler) resolveClaimAt(token, generation uint64,
+	outcome inputpresentation.Outcome, completedAt time.Time) bool {
+	if !outcome.Valid() || !s.hasClaim || token == 0 ||
+		token != s.claimToken || generation == 0 ||
+		generation != s.claimedPresentationGeneration ||
+		generation != s.presentationGeneration {
+		return false
 	}
 	claimed := s.claimed
-	if presented {
+	if outcome == inputpresentation.OutcomeCommit {
 		s.sequence = s.claimedSequence
 		s.packetSequence = s.claimedPacketSequence
 		s.lastPresented = claimed
@@ -742,25 +777,72 @@ func (s *dualSenseInputScheduler) completeClaimAt(token uint64, presented bool,
 		if claimed.sampleQueueAge {
 			s.recordPresentedQueueAge(completedAt, claimed.receivedAt)
 		}
-	} else if claimed.ordered || s.claimRequiresOrderedRecovery {
+	} else if outcome == inputpresentation.OutcomeDefer &&
+		(claimed.ordered || s.claimRequiresOrderedRecovery) {
 		// Failed ordered work has a dedicated immutable recovery lane ahead of
 		// every subsequently accepted transition. The ring may have refilled
 		// while the response waited for send ownership, so it cannot safely be
 		// pushed back into that ring.
 		s.retry = claimed
 		s.hasRetry = true
-	} else if !s.hasRetry && s.count == 0 && !s.hasLatest {
+		copy(s.retryReport[:], s.claimedReport[:])
+		s.retrySequence = s.claimedSequence
+		s.retryPacketSequence = s.claimedPacketSequence
+		s.retryPresentationGeneration = generation
+		s.hasRetryReport = true
+	} else if outcome == inputpresentation.OutcomeDefer &&
+		!s.hasRetry && s.count == 0 && !s.hasLatest {
 		// Continuous work is replaceable. Restore it only when no newer state or
-		// contradictory ordered boundary arrived while it was claimed.
-		s.latest = claimed
-		s.hasLatest = true
+		// contradictory ordered boundary arrived while it was claimed. Use the
+		// retry lane so a retained claim is serialized byte-for-byte identically.
+		s.retry = claimed
+		s.hasRetry = true
+		copy(s.retryReport[:], s.claimedReport[:])
+		s.retrySequence = s.claimedSequence
+		s.retryPacketSequence = s.claimedPacketSequence
+		s.retryPresentationGeneration = generation
+		s.hasRetryReport = true
 	}
 	s.claimed = scheduledInputState{}
 	s.claimedSequence = 0
 	s.claimedPacketSequence = 0
 	s.claimRequiresOrderedRecovery = false
 	s.claimToken = 0
+	s.claimedPresentationGeneration = 0
 	s.hasClaim = false
+	if outcome == inputpresentation.OutcomeRetire {
+		s.advancePresentationGeneration()
+	}
+	return true
+}
+
+func (s *dualSenseInputScheduler) retirePresentationGeneration(
+	generation uint64, retiredAt time.Time) bool {
+	if generation == 0 || generation != s.presentationGeneration {
+		return false
+	}
+	if s.hasClaim && s.claimedPresentationGeneration == generation {
+		return s.resolveClaimAt(s.claimToken, generation,
+			inputpresentation.OutcomeRetire, retiredAt)
+	}
+	if s.hasRetry && s.retryPresentationGeneration == generation {
+		s.retry = scheduledInputState{}
+		s.hasRetry = false
+		clear(s.retryReport[:])
+		s.retrySequence = 0
+		s.retryPacketSequence = 0
+		s.retryPresentationGeneration = 0
+		s.hasRetryReport = false
+	}
+	s.advancePresentationGeneration()
+	return true
+}
+
+func (s *dualSenseInputScheduler) advancePresentationGeneration() {
+	s.presentationGeneration++
+	if s.presentationGeneration == 0 {
+		s.presentationGeneration = 1
+	}
 }
 
 func (s *dualSenseInputScheduler) recordSelectedQueueAge(selectedAt,

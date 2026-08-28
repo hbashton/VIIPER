@@ -279,11 +279,21 @@ func readDualSenseV5InputStreamGeneration(conn net.Conn, dse *DualSense,
 		if _, err := io.ReadFull(conn, payload); err != nil {
 			return fmt.Errorf("read framed packet type 0x%02X: %w", frameType, err)
 		}
+		var inputReceivedAt time.Time
+		var brokerReceivedTicks int64
+		if frameType == StreamFrameInputState {
+			// This is the first boundary at which the broker owns the complete
+			// authenticated V5 frame. Reuse this timestamp as the scheduler's
+			// ReceivedAt identity so an opt-in latency recorder can correlate the
+			// later terminal transport commit without adding wire metadata.
+			inputReceivedAt = time.Now()
+			brokerReceivedTicks = inputLatencyCounter()
+		}
 		measureInput := frameType == StreamFrameInputState &&
 			dse.inputTelemetryEnabled.Load()
 		var frameReadCompleted time.Time
 		if measureInput {
-			frameReadCompleted = time.Now()
+			frameReadCompleted = inputReceivedAt
 		}
 
 		sequence := binary.LittleEndian.Uint32(header[8:12])
@@ -318,7 +328,14 @@ func readDualSenseV5InputStreamGeneration(conn net.Conn, dse *DualSense,
 				dse.inputTransportTelemetry.frameReadToDecode.record(
 					decodeCompleted.Sub(frameReadCompleted))
 			}
-			dse.updateInputStateForGeneration(streamGeneration, &state)
+			// Register the already-captured broker boundary before publishing the
+			// state to the scheduler. An interrupt worker may otherwise commit the
+			// report between updateAt returning and recorder registration, losing
+			// the only truthful transport-admission correlation.
+			traceInputBrokerReceived(
+				dse, sequence, inputReceivedAt, brokerReceivedTicks)
+			dse.updateInputStateForGenerationAt(
+				streamGeneration, &state, inputReceivedAt)
 			if measureInput {
 				dse.inputTransportTelemetry.decodeToPublish.record(
 					time.Since(decodeCompleted))

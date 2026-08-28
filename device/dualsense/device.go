@@ -14,6 +14,7 @@ import (
 
 	"github.com/Alia5/VIIPER/device"
 	"github.com/Alia5/VIIPER/device/internal/microphonebuffer"
+	"github.com/Alia5/VIIPER/internal/inputpresentation"
 	"github.com/Alia5/VIIPER/usb"
 	"github.com/Alia5/VIIPER/usbip"
 )
@@ -29,6 +30,8 @@ type microphoneInterfaceEvent struct {
 	active     bool
 	generation uint64
 }
+
+var _ inputpresentation.Source = (*DualSense)(nil)
 
 // A DualSense output report is a set of field updates, not a complete state
 // replacement. Games commonly send trigger, LED, rumble, and audio changes in
@@ -426,6 +429,11 @@ func (d *DualSense) updateInputStateForGeneration(generation uint64,
 	return d.input.update(state, generation)
 }
 
+func (d *DualSense) updateInputStateForGenerationAt(generation uint64,
+	state *InputState, receivedAt time.Time) bool {
+	return d.input.updateAt(state, generation, receivedAt)
+}
+
 func (d *DualSense) beginInputStreamGeneration() uint64 {
 	return d.input.beginReceiveGeneration()
 }
@@ -707,15 +715,8 @@ func (d *DualSense) BuildInputReportInto(destination []byte) int {
 // it as presented. The endpoint worker owns the returned token until USB/IP
 // send ownership is won or cancellation returns the claim for recovery.
 func (d *DualSense) ClaimInputReport(destination []byte) (int, uint64) {
-	battery := byte(d.inputBattery.Load())
-	d.input.mu.Lock()
-	// Selection happens only after endpoint service owns the input scheduler.
-	// Timestamp here so any input-lock contention remains visible rather than
-	// being omitted from receive-to-selection telemetry.
-	now := time.Now()
-	n, token := d.input.beginClaim(now, battery, destination)
-	d.input.mu.Unlock()
-	return n, token
+	claim := d.ClaimInputPresentation(destination, time.Now())
+	return claim.Size, claim.Token
 }
 
 // CompleteInputReport commits encoder sequence, last report, and trigger peak
@@ -730,6 +731,66 @@ func (d *DualSense) CompleteInputReport(token uint64, presented bool) {
 	d.input.mu.Lock()
 	d.input.completeClaimAt(token, presented, completedAt)
 	d.input.mu.Unlock()
+}
+
+// ClaimInputPresentation is the transport-neutral input hand-off. The caller
+// owns destination; the returned claim carries only identity and timing
+// metadata, so the hot path remains allocation-free.
+func (d *DualSense) ClaimInputPresentation(destination []byte,
+	selectedAt time.Time) inputpresentation.Claim {
+	if selectedAt.IsZero() {
+		selectedAt = time.Now()
+	}
+	battery := byte(d.inputBattery.Load())
+	d.input.mu.Lock()
+	n, token := d.input.beginClaim(selectedAt, battery, destination)
+	claim := inputpresentation.Claim{}
+	if token != 0 {
+		claim = inputpresentation.Claim{
+			Token: token, Generation: d.input.claimedPresentationGeneration,
+			Size: n, ReceivedAt: d.input.claimed.receivedAt,
+			SelectedAt: selectedAt, Ordered: d.input.claimed.ordered,
+		}
+	}
+	d.input.mu.Unlock()
+	return claim
+}
+
+// ResolveInputPresentation terminally commits, defers, or retires one claim.
+// Token and generation are validated together, making duplicate completions
+// and completions from a retired backend fail closed.
+func (d *DualSense) ResolveInputPresentation(claim inputpresentation.Claim,
+	outcome inputpresentation.Outcome, completedAt time.Time) bool {
+	// A successful commit is the transport-neutral admission boundary. USB/IP
+	// calls this only after the complete response write; a future UdeCx backend
+	// must call it only after the driver has copied/admitted the report. Capture
+	// QPC before scheduler-lock contention, but publish evidence only if the
+	// token/generation/outcome resolution succeeds.
+	admittedTicks := inputLatencyCounter()
+	if completedAt.IsZero() {
+		completedAt = time.Now()
+	}
+	d.input.mu.Lock()
+	resolved := d.input.resolveClaimAt(
+		claim.Token, claim.Generation, outcome, completedAt)
+	d.input.mu.Unlock()
+	if resolved && outcome == inputpresentation.OutcomeCommit {
+		traceInputTransportAdmitted(d, claim, admittedTicks)
+	}
+	return resolved
+}
+
+// RetireInputPresentationGeneration establishes a hard backend-lifecycle
+// boundary. An active claim is dropped, not retried into the successor.
+func (d *DualSense) RetireInputPresentationGeneration(generation uint64,
+	retiredAt time.Time) bool {
+	if retiredAt.IsZero() {
+		retiredAt = time.Now()
+	}
+	d.input.mu.Lock()
+	retired := d.input.retirePresentationGeneration(generation, retiredAt)
+	d.input.mu.Unlock()
+	return retired
 }
 
 // SnapshotInputReportInto copies the last successfully presented interrupt

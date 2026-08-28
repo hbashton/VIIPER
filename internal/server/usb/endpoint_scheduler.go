@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Alia5/VIIPER/internal/inputpresentation"
 	usbdesc "github.com/Alia5/VIIPER/usb"
 	"github.com/Alia5/VIIPER/usbip"
 )
@@ -85,12 +86,9 @@ type interruptInBuilder interface {
 	BuildInputReportInto(destination []byte) int
 }
 
-// interruptInClaimer lets the device keep an ordered input state claimed but
-// uncommitted until this endpoint has won serialized response ownership. A
-// cancellation or reset before that hand-off returns the state to the device's
-// recovery order. The claim commits only after writeFull succeeds; socket
-// failure also retries the state, preferring a possible reconnect duplicate
-// over an erased contradictory transition.
+// interruptInClaimer is the legacy USB/IP-only claim seam. New schedulers use
+// inputpresentation.Source so the same immutable claim can be consumed by any
+// backend. Keep this fallback while non-DualSense devices migrate.
 type interruptInClaimer interface {
 	ClaimInputReport(destination []byte) (n int, token uint64)
 	CompleteInputReport(token uint64, presented bool)
@@ -751,9 +749,26 @@ func (w *endpointWorker) processInterruptIn(timer *time.Timer, idx int) bool {
 	w.telemetry.queueAge.record(w.clock.Now().Sub(queuedAt))
 
 	var response []byte
-	claimer, claimed := w.dev.(interruptInClaimer)
+	presenter, presentationClaimed := w.dev.(inputpresentation.Source)
+	claimer, legacyClaimed := w.dev.(interruptInClaimer)
+	var presentationClaim inputpresentation.Claim
+	var presentationClaimFits bool
 	var claimToken uint64
-	if claimed {
+	if presentationClaimed {
+		destination := w.reportBuffer
+		if xferLen < len(destination) {
+			destination = destination[:xferLen]
+		}
+		presentationClaim = presenter.ClaimInputPresentation(
+			destination, time.Now())
+		n := presentationClaim.Size
+		presentationClaimFits = presentationClaim.Valid() &&
+			n <= len(destination)
+		if !presentationClaimFits {
+			n = 0
+		}
+		response = destination[:n]
+	} else if legacyClaimed {
 		destination := w.reportBuffer
 		if xferLen < len(destination) {
 			destination = destination[:xferLen]
@@ -804,7 +819,14 @@ func (w *endpointWorker) processInterruptIn(timer *time.Timer, idx int) bool {
 		w.responseBuffer, true, readyAt,
 		func() bool { return w.markResponseStarted(idx) },
 		func(success bool) {
-			if claimed {
+			if presentationClaimed && presentationClaim.Valid() {
+				outcome := inputpresentation.OutcomeDefer
+				if success && presentationClaimFits {
+					outcome = inputpresentation.OutcomeCommit
+				}
+				presenter.ResolveInputPresentation(
+					presentationClaim, outcome, time.Now())
+			} else if legacyClaimed {
 				claimer.CompleteInputReport(claimToken, success)
 			}
 		},
