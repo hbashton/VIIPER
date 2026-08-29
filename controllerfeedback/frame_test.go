@@ -179,7 +179,7 @@ func TestUnmarshalRejectsMalformedFramesAndClearsReceiver(t *testing.T) {
 		{"command unknown", mutate(valid, 9, 4), ErrInvalidCommand},
 		{"actuators empty", mutate(valid, 10, 0), ErrInvalidActuators},
 		{"actuators unknown", mutate(valid, 10, 0x10), ErrInvalidActuators},
-		{"out of mask amplitude", mutate(valid, 10, byte(ActuatorBodyLow)), ErrInvalidAmplitude},
+		{"partial actuator snapshot", mutate(valid, 10, byte(ActuatorBodyLow)), ErrInvalidActuators},
 		{"apply is all zero", zeroAmplitudes(valid), ErrInvalidAmplitude},
 		{"neutral is nonzero", mutate(valid, 9, byte(CommandNeutral)), ErrInvalidAmplitude},
 		{"stop is nonzero", mutate(valid, 9, byte(CommandStop)), ErrInvalidAmplitude},
@@ -235,9 +235,14 @@ func TestExpiryUsesInclusiveBoundaryWithoutOverflow(t *testing.T) {
 	if frame.ExpiredAt(999) || frame.ExpiredAt(1_249) || !frame.ExpiredAt(1_250) {
 		t.Fatal("ordinary expiry boundary is incorrect")
 	}
+	frame.TimestampMicroseconds = 10_000
+	if frame.ExpiredAt(5_000) || !frame.ExpiredAt(4_999) {
+		t.Fatal("future timestamp skew boundary is incorrect")
+	}
 	frame.TimestampMicroseconds = ^uint64(0) - 20
 	frame.TimeToLiveMicroseconds = 10
-	if frame.ExpiredAt(5) || frame.ExpiredAt(^uint64(0)-11) ||
+	if !frame.ExpiredAt(5) || frame.ExpiredAt(^uint64(0)-21) ||
+		frame.ExpiredAt(^uint64(0)-11) ||
 		!frame.ExpiredAt(^uint64(0)-10) {
 		t.Fatal("near-limit expiry wrapped")
 	}
@@ -246,13 +251,12 @@ func TestExpiryUsesInclusiveBoundaryWithoutOverflow(t *testing.T) {
 func TestFrameRoundTripProperties(t *testing.T) {
 	random := rand.New(rand.NewSource(0xCFB1))
 	for iteration := 0; iteration < 10_000; iteration++ {
-		mask := ActuatorMask(random.Intn(int(ActuatorAll)) + 1)
 		command := Command(random.Intn(int(CommandStop)) + 1)
 		frame := Frame{
 			Version:                Version1,
 			Source:                 Source(random.Intn(int(SourceDualShock4VirtualDevice)) + 1),
 			Command:                command,
-			Actuators:              mask,
+			Actuators:              ActuatorAll,
 			Sequence:               random.Uint64() | 1,
 			DeviceGeneration:       random.Uint64() | 1,
 			TransportGeneration:    random.Uint64() | 1,
@@ -261,10 +265,10 @@ func TestFrameRoundTripProperties(t *testing.T) {
 			TimeToLiveMicroseconds: random.Uint64() | 1,
 		}
 		if command == CommandApply {
-			frame.BodyLow = randomAmplitude(random, mask, ActuatorBodyLow)
-			frame.BodyHigh = randomAmplitude(random, mask, ActuatorBodyHigh)
-			frame.LeftTrigger = randomAmplitude(random, mask, ActuatorLeftTrigger)
-			frame.RightTrigger = randomAmplitude(random, mask, ActuatorRightTrigger)
+			frame.BodyLow = randomAmplitude(random)
+			frame.BodyHigh = randomAmplitude(random)
+			frame.LeftTrigger = randomAmplitude(random)
+			frame.RightTrigger = randomAmplitude(random)
 		}
 
 		var encoded [FrameSize]byte
@@ -282,10 +286,7 @@ func TestFrameRoundTripProperties(t *testing.T) {
 	}
 }
 
-func randomAmplitude(random *rand.Rand, mask, actuator ActuatorMask) uint16 {
-	if mask&actuator == 0 {
-		return 0
-	}
+func randomAmplitude(random *rand.Rand) uint16 {
 	return uint16(random.Uint32()) | 1
 }
 

@@ -108,21 +108,30 @@ func TestMailboxStopIsTerminalUntilReplacementOwnershipEpoch(t *testing.T) {
 	}
 }
 
-func TestMailboxFreshClaimDoesNotExposeExpiredStateOrConsumeRevision(t *testing.T) {
+func TestMailboxClaimEmitsOneReleaseWhenAppliedRevisionExpires(t *testing.T) {
 	var mailbox Mailbox
-	var claimedRevision uint64
+	var cursor ClaimCursor
 	first := testFrame()
 	first.TimestampMicroseconds = 1_000
 	first.TimeToLiveMicroseconds = 50
 	if !mailbox.Publish(first) {
 		t.Fatal("initial publish failed")
 	}
-	claimed, ok := mailbox.ClaimFresh(1_049, &claimedRevision)
-	if !ok || claimed.Sequence != 1 || claimedRevision != 1 {
-		t.Fatalf("claim=%+v revision=%d ok=%t", claimed, claimedRevision, ok)
+	claimed, disposition := mailbox.Claim(1_049, &cursor)
+	if disposition != ClaimFrame || claimed.Sequence != 1 ||
+		cursor.Revision != 1 || cursor.ReleaseRevision != 0 {
+		t.Fatalf("claim=%+v cursor=%+v disposition=%d", claimed, cursor, disposition)
 	}
-	if duplicate, ok := mailbox.ClaimFresh(1_049, &claimedRevision); ok || duplicate != (Frame{}) {
+	if duplicate, disposition := mailbox.Claim(1_049, &cursor); disposition != ClaimNone || duplicate != (Frame{}) {
 		t.Fatal("same revision was claimed twice")
+	}
+	if released, disposition := mailbox.Claim(1_050, &cursor); disposition != ClaimRelease || released != (Frame{}) ||
+		cursor.Revision != 1 || cursor.ReleaseRevision != 1 {
+		t.Fatalf("expiry release=%+v cursor=%+v disposition=%d",
+			released, cursor, disposition)
+	}
+	if duplicate, disposition := mailbox.Claim(2_000, &cursor); disposition != ClaimNone || duplicate != (Frame{}) {
+		t.Fatal("same expiry released twice")
 	}
 
 	expired := first
@@ -131,8 +140,9 @@ func TestMailboxFreshClaimDoesNotExposeExpiredStateOrConsumeRevision(t *testing.
 	if !mailbox.Publish(expired) {
 		t.Fatal("second publish failed")
 	}
-	if got, ok := mailbox.ClaimFresh(1_100, &claimedRevision); ok || got != (Frame{}) || claimedRevision != 1 {
-		t.Fatalf("expired claim=%+v revision=%d ok=%t", got, claimedRevision, ok)
+	if got, disposition := mailbox.Claim(1_100, &cursor); disposition != ClaimRelease || got != (Frame{}) ||
+		cursor.Revision != 2 || cursor.ReleaseRevision != 2 {
+		t.Fatalf("expired claim=%+v cursor=%+v disposition=%d", got, cursor, disposition)
 	}
 	if got, revision, ok := mailbox.ReadFresh(1_100); ok || got != (Frame{}) || revision != 2 {
 		t.Fatalf("expired read=%+v revision=%d ok=%t", got, revision, ok)
@@ -148,8 +158,24 @@ func TestMailboxFreshClaimDoesNotExposeExpiredStateOrConsumeRevision(t *testing.
 	if !mailbox.Publish(recovered) {
 		t.Fatal("fresh successor failed")
 	}
-	if got, ok := mailbox.ClaimFresh(1_100, &claimedRevision); !ok || got != recovered || claimedRevision != 3 {
-		t.Fatalf("recovery claim=%+v revision=%d ok=%t", got, claimedRevision, ok)
+	if got, disposition := mailbox.Claim(1_100, &cursor); disposition != ClaimFrame || got != recovered || cursor.Revision != 3 {
+		t.Fatalf("recovery claim=%+v cursor=%+v disposition=%d", got, cursor, disposition)
+	}
+}
+
+func TestMailboxClaimRejectsFarFutureFrameWithOneRelease(t *testing.T) {
+	var mailbox Mailbox
+	var cursor ClaimCursor
+	frame := testFrame()
+	frame.TimestampMicroseconds = 10_001
+	if !mailbox.Publish(frame) {
+		t.Fatal("publish failed")
+	}
+	if got, disposition := mailbox.Claim(5_000, &cursor); disposition != ClaimRelease || got != (Frame{}) {
+		t.Fatalf("far-future claim=%+v disposition=%d", got, disposition)
+	}
+	if got, disposition := mailbox.Claim(5_000, &cursor); disposition != ClaimNone || got != (Frame{}) {
+		t.Fatal("far-future revision released more than once")
 	}
 }
 
@@ -190,7 +216,7 @@ func TestMailboxConcurrentPublicationNeverExposesHybridSnapshot(t *testing.T) {
 
 func TestMailboxAndCodecHotPathDoesNotAllocate(t *testing.T) {
 	var mailbox Mailbox
-	var claimedRevision uint64
+	var cursor ClaimCursor
 	var sequence uint64
 	var encoded [FrameSize]byte
 	var decoded Frame
@@ -206,8 +232,8 @@ func TestMailboxAndCodecHotPathDoesNotAllocate(t *testing.T) {
 		if !mailbox.Publish(decoded) {
 			panic("publish failed")
 		}
-		if _, ok := mailbox.ClaimFresh(frame.TimestampMicroseconds,
-			&claimedRevision); !ok {
+		if _, disposition := mailbox.Claim(frame.TimestampMicroseconds,
+			&cursor); disposition != ClaimFrame {
 			panic("claim failed")
 		}
 		if _, _, ok := mailbox.ReadLatest(); !ok {
@@ -230,14 +256,14 @@ func TestNilMailboxAndNilClaimRevisionFailClosed(t *testing.T) {
 	if got, revision, ok := mailbox.ReadFresh(0); ok || revision != 0 || got != (Frame{}) {
 		t.Fatal("nil mailbox returned fresh state")
 	}
-	if got, ok := mailbox.ClaimFresh(0, nil); ok || got != (Frame{}) {
+	if got, disposition := mailbox.Claim(0, nil); disposition != ClaimNone || got != (Frame{}) {
 		t.Fatal("nil mailbox returned claimed state")
 	}
 	var live Mailbox
 	if !live.Publish(testFrame()) {
 		t.Fatal("live mailbox publish failed")
 	}
-	if got, ok := live.ClaimFresh(1_000, nil); ok || got != (Frame{}) {
+	if got, disposition := live.Claim(1_000, nil); disposition != ClaimNone || got != (Frame{}) {
 		t.Fatal("nil claim revision returned state")
 	}
 }

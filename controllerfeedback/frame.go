@@ -13,6 +13,10 @@ const (
 	Version1 uint16 = 1
 	// FrameSize is the exact encoded size of one CFBK v1 frame.
 	FrameSize = 72
+	// MaxFutureSkewMicroseconds bounds producer/consumer sampling races in the
+	// shared host-monotonic clock domain. A timestamp farther in the future is
+	// invalid for application and must drive the same logical release as expiry.
+	MaxFutureSkewMicroseconds uint64 = 5_000
 
 	wireMagic uint32 = 0x4B424643 // Little-endian bytes spell "CFBK".
 )
@@ -55,7 +59,9 @@ func (command Command) Valid() bool {
 	return command >= CommandApply && command <= CommandStop
 }
 
-// ActuatorMask declares which canonical Xbox-semantic channels are meaningful.
+// ActuatorMask names the canonical Xbox-semantic channels. CFBK v1 is a full
+// four-channel snapshot contract, so every valid frame carries ActuatorAll;
+// zero amplitudes represent unsupported or inactive source channels.
 type ActuatorMask uint8
 
 const (
@@ -67,9 +73,9 @@ const (
 	ActuatorAll          ActuatorMask = 0x0F
 )
 
-// Valid reports whether mask is a non-empty subset of the v1 actuator set.
+// Valid reports whether mask declares the required complete v1 snapshot.
 func (mask ActuatorMask) Valid() bool {
-	return mask != ActuatorNone && mask&^ActuatorAll == 0
+	return mask == ActuatorAll
 }
 
 var (
@@ -89,8 +95,8 @@ var (
 
 // Frame is one complete CFBK v1 feedback snapshot. Amplitudes are normalized
 // unsigned 0..65535 values; protocol-specific adapters scale only at their
-// device boundary. TimestampMicroseconds and TimeToLiveMicroseconds use the
-// shared monotonic microsecond domain selected by the transport.
+// device boundary. TimestampMicroseconds uses ClockDomainWindowsQPCV1;
+// TimeToLiveMicroseconds uses the same converted microsecond unit.
 type Frame struct {
 	Version                uint16
 	Source                 Source
@@ -163,12 +169,22 @@ func (frame Frame) IsNeutral() bool { return frame.Command == CommandNeutral }
 // IsStop reports whether this frame explicitly retires its ownership lease.
 func (frame Frame) IsStop() bool { return frame.Command == CommandStop }
 
-// ExpiredAt reports expiry at the inclusive timestamp-plus-TTL boundary. The
-// ordered subtraction avoids overflow for timestamps near math.MaxUint64.
+// FreshAt reports whether a frame may be applied at now. Expiry is inclusive at
+// timestamp-plus-TTL. A bounded future timestamp tolerates only the small race
+// between producer and consumer clock samples; a farther-future timestamp is
+// rejected so it cannot remain fresh indefinitely.
+func (frame Frame) FreshAt(nowMicroseconds uint64) bool {
+	if frame.TimestampMicroseconds > nowMicroseconds {
+		return frame.TimestampMicroseconds-nowMicroseconds <=
+			MaxFutureSkewMicroseconds
+	}
+	return nowMicroseconds-frame.TimestampMicroseconds <
+		frame.TimeToLiveMicroseconds
+}
+
+// ExpiredAt reports both ordinary expiry and an invalid far-future timestamp.
 func (frame Frame) ExpiredAt(nowMicroseconds uint64) bool {
-	return nowMicroseconds >= frame.TimestampMicroseconds &&
-		nowMicroseconds-frame.TimestampMicroseconds >=
-			frame.TimeToLiveMicroseconds
+	return !frame.FreshAt(nowMicroseconds)
 }
 
 // MarshalTo writes one complete CFBK v1 frame into the first FrameSize bytes
