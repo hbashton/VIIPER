@@ -17,6 +17,10 @@ const (
 	// shared host-monotonic clock domain. A timestamp farther in the future is
 	// invalid for application and must drive the same logical release as expiry.
 	MaxFutureSkewMicroseconds uint64 = 5_000
+	// MaxTimeToLiveMicroseconds bounds a producer's actuator lease. Producers
+	// must refresh unchanged effects; an unbounded TTL would defeat fail-safe
+	// release after producer failure.
+	MaxTimeToLiveMicroseconds uint64 = 250_000
 
 	wireMagic uint32 = 0x4B424643 // Little-endian bytes spell "CFBK".
 )
@@ -141,7 +145,8 @@ func (frame Frame) Validate() error {
 		frame.OwnershipEpoch == 0 {
 		return ErrInvalidGeneration
 	}
-	if frame.TimeToLiveMicroseconds == 0 {
+	if frame.TimeToLiveMicroseconds == 0 ||
+		frame.TimeToLiveMicroseconds > MaxTimeToLiveMicroseconds {
 		return ErrInvalidTTL
 	}
 	if frame.Actuators&ActuatorBodyLow == 0 && frame.BodyLow != 0 ||

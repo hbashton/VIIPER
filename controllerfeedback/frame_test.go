@@ -188,6 +188,7 @@ func TestUnmarshalRejectsMalformedFramesAndClearsReceiver(t *testing.T) {
 		{"transport generation zero", zeroRange(valid, 40, 48), ErrInvalidGeneration},
 		{"ownership epoch zero", zeroRange(valid, 48, 56), ErrInvalidGeneration},
 		{"ttl zero", zeroRange(valid, 64, 72), ErrInvalidTTL},
+		{"ttl above maximum", putUint64(valid, 64, MaxTimeToLiveMicroseconds+1), ErrInvalidTTL},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -226,6 +227,11 @@ func TestFrameValidationInvariants(t *testing.T) {
 	if (Frame{}).Valid() {
 		t.Fatal("zero frame is valid")
 	}
+	maximumLease := testFrame()
+	maximumLease.TimeToLiveMicroseconds = MaxTimeToLiveMicroseconds
+	if err := maximumLease.Validate(); err != nil {
+		t.Fatalf("maximum TTL rejected: %v", err)
+	}
 }
 
 func TestExpiryUsesInclusiveBoundaryWithoutOverflow(t *testing.T) {
@@ -253,16 +259,17 @@ func TestFrameRoundTripProperties(t *testing.T) {
 	for iteration := 0; iteration < 10_000; iteration++ {
 		command := Command(random.Intn(int(CommandStop)) + 1)
 		frame := Frame{
-			Version:                Version1,
-			Source:                 Source(random.Intn(int(SourceDualShock4VirtualDevice)) + 1),
-			Command:                command,
-			Actuators:              ActuatorAll,
-			Sequence:               random.Uint64() | 1,
-			DeviceGeneration:       random.Uint64() | 1,
-			TransportGeneration:    random.Uint64() | 1,
-			OwnershipEpoch:         random.Uint64() | 1,
-			TimestampMicroseconds:  random.Uint64(),
-			TimeToLiveMicroseconds: random.Uint64() | 1,
+			Version:               Version1,
+			Source:                Source(random.Intn(int(SourceDualShock4VirtualDevice)) + 1),
+			Command:               command,
+			Actuators:             ActuatorAll,
+			Sequence:              random.Uint64() | 1,
+			DeviceGeneration:      random.Uint64() | 1,
+			TransportGeneration:   random.Uint64() | 1,
+			OwnershipEpoch:        random.Uint64() | 1,
+			TimestampMicroseconds: random.Uint64(),
+			TimeToLiveMicroseconds: uint64(random.Intn(
+				int(MaxTimeToLiveMicroseconds))) + 1,
 		}
 		if command == CommandApply {
 			frame.BodyLow = randomAmplitude(random)
@@ -369,4 +376,10 @@ func zeroRange(source [FrameSize]byte, start, end int) []byte {
 
 func zeroAmplitudes(source [FrameSize]byte) []byte {
 	return zeroRange(source, 12, 20)
+}
+
+func putUint64(source [FrameSize]byte, offset int, value uint64) []byte {
+	result := append([]byte(nil), source[:]...)
+	binary.LittleEndian.PutUint64(result[offset:offset+8], value)
+	return result
 }
