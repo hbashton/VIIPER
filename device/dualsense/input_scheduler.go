@@ -793,15 +793,12 @@ func (s *dualSenseInputScheduler) resolveClaimAt(token, generation uint64,
 	} else if outcome == inputpresentation.OutcomeDefer &&
 		!s.hasRetry && s.count == 0 && !s.hasLatest {
 		// Continuous work is replaceable. Restore it only when no newer state or
-		// contradictory ordered boundary arrived while it was claimed. Use the
-		// retry lane so a retained claim is serialized byte-for-byte identically.
-		s.retry = claimed
-		s.hasRetry = true
-		copy(s.retryReport[:], s.claimedReport[:])
-		s.retrySequence = s.claimedSequence
-		s.retryPacketSequence = s.claimedPacketSequence
-		s.retryPresentationGeneration = generation
-		s.hasRetryReport = true
+		// contradictory ordered boundary arrived while it was claimed. Keep it
+		// replaceable: a later edge must supersede this stale state instead of
+		// waiting behind it for another downstream interrupt request. Only
+		// ordered work belongs in the byte-exact retry lane above.
+		s.latest = claimed
+		s.hasLatest = true
 	}
 	s.claimed = scheduledInputState{}
 	s.claimedSequence = 0

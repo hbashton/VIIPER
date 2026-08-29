@@ -215,6 +215,104 @@ func TestInputPresentationDeferralRetriesExactBytesAheadOfLaterTransition(
 	}
 }
 
+func TestInputPresentationDeferredContinuousIsSupersededByLaterOrderedEdge(
+	t *testing.T,
+) {
+	dev := newInputPresentationTestDevice(t)
+	base := dev.input.timestampBase.Add(25 * time.Millisecond)
+	neutral := neutralInputState()
+	dev.input.updateAt(&neutral, 0, base)
+
+	var report [InputReportSize]byte
+	baseline := dev.ClaimInputPresentation(report[:], base.Add(time.Millisecond))
+	if !baseline.Valid() || !dev.ResolveInputPresentation(
+		baseline, inputpresentation.OutcomeCommit, base.Add(2*time.Millisecond)) {
+		t.Fatal("neutral baseline was not committed")
+	}
+
+	motion := neutral
+	motion.LX = 17
+	dev.input.updateAt(&motion, 0, base.Add(3*time.Millisecond))
+	continuous := dev.ClaimInputPresentation(
+		report[:], base.Add(4*time.Millisecond))
+	if !continuous.Valid() || continuous.Ordered {
+		t.Fatalf("continuous claim=%+v", continuous)
+	}
+	if !dev.ResolveInputPresentation(
+		continuous, inputpresentation.OutcomeDefer,
+		base.Add(5*time.Millisecond)) {
+		t.Fatal("continuous deferral was rejected")
+	}
+
+	// The deferred motion was replaceable. A contradictory edge accepted after
+	// the deferral must invalidate it exactly as it invalidates the latest lane;
+	// otherwise the next HID opportunity presents known-stale controls.
+	press := motion
+	press.LX = 63
+	press.Buttons = ButtonCross
+	dev.input.updateAt(&press, 0, base.Add(6*time.Millisecond))
+
+	next := dev.ClaimInputPresentation(report[:], base.Add(7*time.Millisecond))
+	if !next.Valid() || !next.Ordered {
+		t.Fatalf("later edge was delayed by deferred continuous claim: %+v report=% x",
+			next, report[:11])
+	}
+	if report[1] != uint8(int16(press.LX)+128) ||
+		report[8]&byte(ButtonCross) == 0 {
+		t.Fatalf("next report is stale motion, want later press: % x", report[:11])
+	}
+}
+
+func TestInputPresentationRepeatedContinuousDeferralsDoNotDelayFreshEdges(
+	t *testing.T,
+) {
+	dev := newInputPresentationTestDevice(t)
+	base := dev.input.timestampBase.Add(28 * time.Millisecond)
+	state := neutralInputState()
+	dev.input.updateAt(&state, 0, base)
+
+	var report [InputReportSize]byte
+	baseline := dev.ClaimInputPresentation(report[:], base.Add(time.Millisecond))
+	if !baseline.Valid() || !dev.ResolveInputPresentation(
+		baseline, inputpresentation.OutcomeCommit, base.Add(2*time.Millisecond)) {
+		t.Fatal("neutral baseline was not committed")
+	}
+
+	for iteration := 0; iteration < 64; iteration++ {
+		step := base.Add(time.Duration(3+iteration*6) * time.Millisecond)
+		state.LX = int8((iteration % 63) + 1)
+		dev.input.updateAt(&state, 0, step)
+		continuous := dev.ClaimInputPresentation(report[:], step.Add(time.Millisecond))
+		if !continuous.Valid() || continuous.Ordered {
+			t.Fatalf("iteration %d continuous claim=%+v", iteration, continuous)
+		}
+		if !dev.ResolveInputPresentation(
+			continuous, inputpresentation.OutcomeDefer,
+			step.Add(2*time.Millisecond)) {
+			t.Fatalf("iteration %d continuous deferral was rejected", iteration)
+		}
+
+		state.Buttons ^= ButtonCross
+		dev.input.updateAt(&state, 0, step.Add(3*time.Millisecond))
+		edge := dev.ClaimInputPresentation(report[:], step.Add(4*time.Millisecond))
+		if !edge.Valid() || !edge.Ordered {
+			t.Fatalf("iteration %d edge was delayed by stale retry: %+v report=% x",
+				iteration, edge, report[:11])
+		}
+		crossDown := report[8]&byte(ButtonCross) != 0
+		wantCrossDown := state.Buttons&ButtonCross != 0
+		if report[1] != uint8(int16(state.LX)+128) || crossDown != wantCrossDown {
+			t.Fatalf("iteration %d stale report=% x want LX=%d cross=%v",
+				iteration, report[:11], state.LX, wantCrossDown)
+		}
+		if !dev.ResolveInputPresentation(
+			edge, inputpresentation.OutcomeCommit,
+			step.Add(5*time.Millisecond)) {
+			t.Fatalf("iteration %d edge commit was rejected", iteration)
+		}
+	}
+}
+
 func TestInputPresentationRetirementDoesNotLeakClaimIntoNextGeneration(
 	t *testing.T,
 ) {
