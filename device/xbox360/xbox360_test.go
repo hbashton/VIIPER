@@ -8,6 +8,7 @@ import (
 
 	viiperTesting "github.com/Alia5/VIIPER/_testing"
 	"github.com/Alia5/VIIPER/device/xbox360"
+	"github.com/Alia5/VIIPER/internal/inputpresentation"
 	"github.com/Alia5/VIIPER/internal/server/api"
 	"github.com/Alia5/VIIPER/internal/server/api/handler"
 	"github.com/Alia5/VIIPER/usbip"
@@ -577,4 +578,70 @@ func TestAllReservedInputBytesReachUsbReport(t *testing.T) {
 	var decoded xbox360.InputState
 	require.NoError(t, decoded.UnmarshalBinary(encoded))
 	require.Equal(t, state, decoded)
+}
+
+func TestInputPresentationPreservesTriggerPeakBeforeRelease(t *testing.T) {
+	dev, err := xbox360.New(nil)
+	require.NoError(t, err)
+
+	states := []xbox360.InputState{
+		{Buttons: xbox360.ButtonA, LT: 10},
+		{Buttons: xbox360.ButtonA, LT: 255},
+		{},
+	}
+	for _, state := range states {
+		require.True(t, dev.UpdateInputState(state))
+	}
+
+	var report [20]byte
+	for index, state := range states {
+		claim := dev.ClaimInputPresentation(report[:], time.Now())
+		require.True(t, claim.Valid(), "claim %d", index)
+		require.True(t, claim.Ordered, "claim %d", index)
+		require.Equal(t, state.BuildReport(), report[:], "claim %d", index)
+		require.True(t, dev.ResolveInputPresentation(
+			claim, inputpresentation.OutcomeCommit, time.Now()))
+	}
+}
+
+func TestInputPresentationOrderedDeferIsByteExact(t *testing.T) {
+	dev, err := xbox360.New(nil)
+	require.NoError(t, err)
+	require.True(t, dev.UpdateInputState(xbox360.InputState{
+		Buttons: xbox360.ButtonA, LX: 1234,
+	}))
+
+	var first, retry [20]byte
+	claim := dev.ClaimInputPresentation(first[:], time.Now())
+	require.True(t, claim.Valid())
+	require.True(t, dev.ResolveInputPresentation(
+		claim, inputpresentation.OutcomeDefer, time.Now()))
+	require.True(t, dev.UpdateInputState(xbox360.InputState{
+		Buttons: xbox360.ButtonA, LX: -2345,
+	}))
+	retryClaim := dev.ClaimInputPresentation(retry[:], time.Now())
+	require.True(t, retryClaim.Valid())
+	require.NotEqual(t, claim.Token, retryClaim.Token)
+	require.Equal(t, first, retry)
+	require.True(t, dev.ResolveInputPresentation(
+		retryClaim, inputpresentation.OutcomeCommit, time.Now()))
+}
+
+func TestInputPresentationHotPathAllocatesZero(t *testing.T) {
+	dev, err := xbox360.New(nil)
+	require.NoError(t, err)
+	var report [20]byte
+	state := xbox360.InputState{LX: 1}
+	allocations := testing.AllocsPerRun(1000, func() {
+		state.LX = -state.LX
+		if !dev.UpdateInputState(state) {
+			panic("publish failed")
+		}
+		claim := dev.ClaimInputPresentation(report[:], time.Now())
+		if !claim.Valid() || !dev.ResolveInputPresentation(
+			claim, inputpresentation.OutcomeCommit, time.Now()) {
+			panic("claim cycle failed")
+		}
+	})
+	require.Zero(t, allocations)
 }

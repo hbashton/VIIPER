@@ -56,6 +56,18 @@ type GuitarHeroDrumsInputState struct {
 //	14-19: Reserved / zero
 func (x *InputState) BuildReport() []byte {
 	b := make([]byte, 20)
+	x.BuildReportInto(b)
+	return b
+}
+
+// BuildReportInto encodes a complete wired USB input report without allocating.
+// It returns zero when destination cannot hold the fixed-size report.
+func (x *InputState) BuildReportInto(b []byte) int {
+	if len(b) < 20 {
+		return 0
+	}
+	b = b[:20]
+	clear(b)
 	b[0] = 0x00
 	b[1] = 0x14
 	binary.LittleEndian.PutUint16(b[2:4], uint16(x.Buttons&0xffff))
@@ -66,7 +78,7 @@ func (x *InputState) BuildReport() []byte {
 	binary.LittleEndian.PutUint16(b[10:12], uint16(x.RX))
 	binary.LittleEndian.PutUint16(b[12:14], uint16(x.RY))
 	copy(b[14:20], x.Reserved[:])
-	return b
+	return len(b)
 }
 
 // MarshalBinary encodes InputState to 20 bytes.

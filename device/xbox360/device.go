@@ -7,15 +7,16 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/Alia5/VIIPER/device"
+	"github.com/Alia5/VIIPER/internal/inputpresentation"
 	"github.com/Alia5/VIIPER/usb"
 	"github.com/Alia5/VIIPER/usbip"
 )
 
 type Xbox360 struct {
-	inputMu          sync.RWMutex
-	inputState       InputState
+	input            *inputpresentation.FixedReportScheduler[InputState]
 	inputSignal      chan struct{}
 	rumbleDispatchMu sync.Mutex
 	rumbleMu         sync.Mutex
@@ -25,14 +26,26 @@ type Xbox360 struct {
 	descriptor       usb.Descriptor
 }
 
+var _ inputpresentation.Source = (*Xbox360)(nil)
+
 type Xbox360CreateOptions struct {
 	SubType *uint8 `json:"subType"`
 }
 
 // New returns a new Xbox360 device.
 func New(o *device.CreateOptions) (*Xbox360, error) {
+	neutral := *NewInputState()
+	input, err := inputpresentation.NewFixedReportScheduler(
+		20, neutral,
+		func(state *InputState, destination []byte) int {
+			return state.BuildReportInto(destination)
+		}, xbox360InputTransition, time.Now())
+	if err != nil {
+		return nil, fmt.Errorf("create input scheduler: %w", err)
+	}
 	d := &Xbox360{
 		descriptor: MakeDescriptor(),
+		input:      input,
 	}
 	if o != nil {
 		if o.IDVendor != nil {
@@ -52,7 +65,6 @@ func New(o *device.CreateOptions) (*Xbox360, error) {
 			}
 		}
 	}
-	d.inputState = *NewInputState()
 	d.inputSignal = make(chan struct{}, 1)
 	d.inputSignal <- struct{}{}
 	return d, nil
@@ -75,14 +87,16 @@ func (x *Xbox360) SetRumbleCallback(f func(XRumbleState)) {
 }
 
 // UpdateInputState updates the device's current input state (thread-safe).
-func (x *Xbox360) UpdateInputState(state InputState) {
-	x.inputMu.Lock()
-	x.inputState = state
-	x.inputMu.Unlock()
+func (x *Xbox360) UpdateInputState(state InputState) bool {
+	accepted := x.input.Publish(state, time.Now())
+	if !accepted {
+		return false
+	}
 	select {
 	case x.inputSignal <- struct{}{}:
 	default:
 	}
+	return true
 }
 
 // HandleTransfer implements interrupt IN/OUT for Xbox360.
@@ -98,14 +112,7 @@ func (x *Xbox360) HandleTransfer(ctx context.Context, ep uint32, dir uint32, out
 			case <-x.inputSignal:
 			}
 
-			// A fresh feeder state completes the current host poll immediately.
-			// When the physical producer is idle, the bounded USB service-window
-			// timeout returns the persistent snapshot instead of spinning or
-			// stalling XInput. This keeps input adaptive with a 1000 Hz ceiling.
-			x.inputMu.RLock()
-			st := x.inputState
-			x.inputMu.RUnlock()
-			return st.BuildReport()
+			return x.buildInputReport()
 		default:
 			return nil
 		}
@@ -124,6 +131,51 @@ func (x *Xbox360) HandleTransfer(ctx context.Context, ep uint32, dir uint32, out
 		}
 	}
 	return nil
+}
+
+func xbox360InputTransition(previous, next InputState) bool {
+	return previous.Buttons != next.Buttons ||
+		(previous.LT == 0) != (next.LT == 0) ||
+		(previous.RT == 0) != (next.RT == 0)
+}
+
+func (x *Xbox360) buildInputReport() []byte {
+	report := make([]byte, 20)
+	claim := x.ClaimInputPresentation(report, time.Now())
+	if claim.Valid() {
+		x.ResolveInputPresentation(claim, inputpresentation.OutcomeCommit, time.Now())
+	}
+	return report
+}
+
+// BuildInputReportInto is the allocation-free compatibility surface used by
+// tests and non-claiming transports. Production USB/IP uses Source directly.
+func (x *Xbox360) BuildInputReportInto(destination []byte) int {
+	claim := x.ClaimInputPresentation(destination, time.Now())
+	if !claim.Valid() {
+		return 0
+	}
+	x.ResolveInputPresentation(claim, inputpresentation.OutcomeCommit, time.Now())
+	return claim.Size
+}
+
+func (x *Xbox360) ClaimInputPresentation(destination []byte,
+	selectedAt time.Time) inputpresentation.Claim {
+	return x.input.ClaimInputPresentation(destination, selectedAt)
+}
+
+func (x *Xbox360) ResolveInputPresentation(claim inputpresentation.Claim,
+	outcome inputpresentation.Outcome, completedAt time.Time) bool {
+	return x.input.ResolveInputPresentation(claim, outcome, completedAt)
+}
+
+func (x *Xbox360) RetireInputPresentationGeneration(generation uint64,
+	retiredAt time.Time) bool {
+	return x.input.RetireInputPresentationGeneration(generation, retiredAt)
+}
+
+func (x *Xbox360) InputSchedulerSnapshot() inputpresentation.FixedReportSchedulerSnapshot {
+	return x.input.Snapshot()
 }
 
 func (x *Xbox360) emitRumble(rumble XRumbleState) {

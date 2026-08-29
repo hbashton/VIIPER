@@ -54,7 +54,9 @@ func (h *handler) StreamHandler() api.StreamHandlerFunc {
 			if err := state.UnmarshalBinary(buf); err != nil {
 				return fmt.Errorf("unmarshal input state: %w", err)
 			}
-			xdev.UpdateInputState(state)
+			if !xdev.UpdateInputState(state) {
+				return fmt.Errorf("xbox360 input transition journal overflow")
+			}
 		}
 	}
 }

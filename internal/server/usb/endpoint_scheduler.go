@@ -1053,6 +1053,7 @@ func (s *endpointSchedulers) precreateFastPathWorkers() {
 	}
 	_, claimsInterrupt := s.dev.(interruptInClaimer)
 	_, buildsInterrupt := s.dev.(interruptInBuilder)
+	_, presentsInterrupt := s.dev.(inputpresentation.Source)
 	_, readsMicrophone := s.dev.(microphonePacketReader)
 	_, handlesIsoOutGeneration := s.dev.(isoOutGenerationDevice)
 	seen := make(map[endpointWorkerKey]struct{}, 3)
@@ -1072,7 +1073,8 @@ func (s *endpointSchedulers) precreateFastPathWorkers() {
 			switch endpoint.BMAttributes & 0x03 {
 			case 0x03:
 				kind = interruptInWorker
-				fast = dir == usbip.DirIn && (claimsInterrupt || buildsInterrupt)
+				fast = dir == usbip.DirIn &&
+					(claimsInterrupt || buildsInterrupt || presentsInterrupt)
 			case 0x01:
 				if dir == usbip.DirIn {
 					kind = isoInWorker
