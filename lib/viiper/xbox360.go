@@ -174,9 +174,7 @@ func SetXbox360DeviceState(handle C.Xbox360DeviceHandle, state C.Xbox360DeviceSt
 		deviceState.Reserved[i] = byte(v)
 	}
 
-	xbox360device.UpdateInputState(deviceState)
-
-	return true
+	return xbox360device.UpdateInputState(deviceState)
 }
 
 // RemoveXbox360Device removes the Xbox360 device associated with the given handle from the server.
