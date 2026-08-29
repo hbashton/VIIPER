@@ -32,7 +32,7 @@ func (a serverProcessPriorityAttempt) failure() error {
 	case a.verifyErr != nil:
 		return a.verifyErr
 	case a.effective != a.requested:
-		return fmt.Errorf("Windows reported priority class %#x after requesting %#x", a.effective, a.requested)
+		return fmt.Errorf("windows reported priority class %#x after requesting %#x", a.effective, a.requested)
 	default:
 		return nil
 	}
