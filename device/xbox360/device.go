@@ -164,6 +164,17 @@ func (x *Xbox360) ClaimInputPresentation(destination []byte,
 	return x.input.ClaimInputPresentation(destination, selectedAt)
 }
 
+// OwnsInputPresentationEndpoint confines the semantic input journal to the
+// controller's main 0x81 endpoint. Auxiliary 0x82/0x83/0x84 endpoints have
+// independent protocols and must not consume controller transitions.
+func (x *Xbox360) OwnsInputPresentationEndpoint(endpoint uint8) bool {
+	return endpoint == 1
+}
+
+func (x *Xbox360) InputPresentationGeneration() uint64 {
+	return x.input.Generation()
+}
+
 func (x *Xbox360) ResolveInputPresentation(claim inputpresentation.Claim,
 	outcome inputpresentation.Outcome, completedAt time.Time) bool {
 	return x.input.ResolveInputPresentation(claim, outcome, completedAt)

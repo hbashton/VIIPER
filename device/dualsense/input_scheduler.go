@@ -747,6 +747,10 @@ func (s *dualSenseInputScheduler) resolveClaimAt(token, generation uint64,
 		generation != s.presentationGeneration {
 		return false
 	}
+	if outcome == inputpresentation.OutcomeRetire {
+		s.collapsePresentationGeneration(completedAt)
+		return true
+	}
 	claimed := s.claimed
 	if outcome == inputpresentation.OutcomeCommit {
 		s.sequence = s.claimedSequence
@@ -807,9 +811,6 @@ func (s *dualSenseInputScheduler) resolveClaimAt(token, generation uint64,
 	s.claimToken = 0
 	s.claimedPresentationGeneration = 0
 	s.hasClaim = false
-	if outcome == inputpresentation.OutcomeRetire {
-		s.advancePresentationGeneration()
-	}
 	return true
 }
 
@@ -818,21 +819,78 @@ func (s *dualSenseInputScheduler) retirePresentationGeneration(
 	if generation == 0 || generation != s.presentationGeneration {
 		return false
 	}
-	if s.hasClaim && s.claimedPresentationGeneration == generation {
-		return s.resolveClaimAt(s.claimToken, generation,
-			inputpresentation.OutcomeRetire, retiredAt)
-	}
-	if s.hasRetry && s.retryPresentationGeneration == generation {
-		s.retry = scheduledInputState{}
-		s.hasRetry = false
-		clear(s.retryReport[:])
-		s.retrySequence = 0
-		s.retryPacketSequence = 0
-		s.retryPresentationGeneration = 0
-		s.hasRetryReport = false
-	}
-	s.advancePresentationGeneration()
+	s.collapsePresentationGeneration(retiredAt)
 	return true
+}
+
+// collapsePresentationGeneration discards the retiring transport's historical
+// edges and immutable bytes, then carries only the newest complete semantic
+// state into the successor. A queued press+release therefore becomes one
+// current released snapshot instead of a phantom tap after reattach.
+func (s *dualSenseInputScheduler) collapsePresentationGeneration(
+	retiredAt time.Time,
+) {
+	if retiredAt.IsZero() {
+		retiredAt = time.Now()
+	}
+	clear(s.transitions[:])
+	s.head = 0
+	s.count = 0
+	s.retry = scheduledInputState{}
+	s.hasRetry = false
+	clear(s.retryReport[:])
+	s.retrySequence = 0
+	s.retryPacketSequence = 0
+	s.retryPresentationGeneration = 0
+	s.hasRetryReport = false
+
+	s.claimed = scheduledInputState{}
+	clear(s.claimedReport[:])
+	s.claimedSequence = 0
+	s.claimedPacketSequence = 0
+	s.claimRequiresOrderedRecovery = false
+	s.claimToken = 0
+	s.claimedPresentationGeneration = 0
+	s.hasClaim = false
+
+	current := neutralInputState()
+	if s.hasPrevious {
+		current = s.previous
+	}
+	s.receiveOrdinal++
+	if s.receiveOrdinal == 0 {
+		s.receiveOrdinal = 1
+	}
+	snapshot := scheduledInputState{
+		state: current, receivedAt: retiredAt, generation: s.generation,
+	}
+	snapshot.l2Epoch = s.restartPresentationTriggerEpoch(
+		&s.l2, current.L2, current, retiredAt)
+	snapshot.r2Epoch = s.restartPresentationTriggerEpoch(
+		&s.r2, current.R2, current, retiredAt)
+	s.latest = snapshot
+	s.hasLatest = true
+	s.advancePresentationGeneration()
+}
+
+func (s *dualSenseInputScheduler) restartPresentationTriggerEpoch(
+	epoch *inputTriggerEpoch, value uint8, state InputState,
+	receivedAt time.Time,
+) uint64 {
+	id := epoch.id + 1
+	if id == 0 {
+		id = 1
+	}
+	*epoch = inputTriggerEpoch{id: id}
+	if value == 0 {
+		return 0
+	}
+	epoch.active = true
+	epoch.peak = value
+	epoch.peakState = state
+	epoch.peakReceivedAt = receivedAt
+	epoch.peakReceiveOrdinal = s.receiveOrdinal
+	return id
 }
 
 func (s *dualSenseInputScheduler) advancePresentationGeneration() {

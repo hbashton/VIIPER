@@ -3,6 +3,7 @@ package usb
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -20,19 +21,21 @@ type presentationResolution struct {
 
 type presentationTestDevice struct {
 	*schedulerTestDevice
-	generation   uint64
-	token        atomic.Uint64
-	claimReady   chan struct{}
-	resolution   chan presentationResolution
-	legacyClaims atomic.Uint64
+	presentationEndpoint uint8
+	generation           uint64
+	token                atomic.Uint64
+	claimReady           chan struct{}
+	resolution           chan presentationResolution
+	legacyClaims         atomic.Uint64
 }
 
 func newPresentationTestDevice() *presentationTestDevice {
 	return &presentationTestDevice{
-		schedulerTestDevice: &schedulerTestDevice{desc: testCompositeDescriptor()},
-		generation:          1,
-		claimReady:          make(chan struct{}, 1),
-		resolution:          make(chan presentationResolution, 2),
+		schedulerTestDevice:  &schedulerTestDevice{desc: testCompositeDescriptor()},
+		presentationEndpoint: 4,
+		generation:           1,
+		claimReady:           make(chan struct{}, 1),
+		resolution:           make(chan presentationResolution, 2),
 	}
 }
 
@@ -52,6 +55,16 @@ func (device *presentationTestDevice) ClaimInputPresentation(
 		Token: token, Generation: device.generation, Size: 1,
 		ReceivedAt: selectedAt, SelectedAt: selectedAt, Ordered: true,
 	}
+}
+
+func (device *presentationTestDevice) OwnsInputPresentationEndpoint(
+	endpoint uint8,
+) bool {
+	return endpoint == device.presentationEndpoint
+}
+
+func (device *presentationTestDevice) InputPresentationGeneration() uint64 {
+	return device.generation
 }
 
 func (device *presentationTestDevice) ResolveInputPresentation(
@@ -227,6 +240,60 @@ func TestInterruptPresentationContractDefersWhenCancellationWinsBeforeSend(
 	}
 }
 
+func TestModernPresentationSourceDoesNotConsumeAuxiliaryInterruptEndpoints(
+	t *testing.T,
+) {
+	for _, endpoint := range []uint32{2, 3, 4} {
+		t.Run(fmt.Sprintf("endpoint-%d", endpoint), func(t *testing.T) {
+			device := newPresentationTestDevice()
+			device.presentationEndpoint = 1
+			recorder := newRecordingWriter()
+			ctx, cancel := context.WithCancel(context.Background())
+			worker := newEndpointWorker(
+				ctx, device, endpoint, usbip.DirIn, interruptInWorker,
+				time.Millisecond, 64, newResponseWriter(recorder, nil),
+				func(error) {},
+			)
+
+			require.True(t, worker.enqueue(
+				uint32(800+endpoint), 64, nil, nil, time.Now()))
+			recorder.waitForWrites(t, 1)
+			require.Zero(t, device.token.Load(),
+				"auxiliary endpoint consumed the main presentation journal")
+			device.schedulerTestDevice.mu.Lock()
+			require.Zero(t, device.schedulerTestDevice.inputBuilds,
+				"auxiliary endpoint fell back to the endpoint-agnostic builder")
+			device.schedulerTestDevice.mu.Unlock()
+			select {
+			case resolution := <-device.resolution:
+				t.Fatalf("auxiliary endpoint resolved a main claim: %+v", resolution)
+			default:
+			}
+
+			cancel()
+			worker.signal()
+			<-worker.done
+		})
+	}
+}
+
+func TestUSBIPConnectionCloseRetiresTheGenerationCapturedAtAttach(t *testing.T) {
+	device := newPresentationTestDevice()
+	ctx, cancel := context.WithCancel(context.Background())
+	schedulers := newEndpointSchedulers(
+		ctx, device, newResponseWriter(discardResponseWriter{}, nil), nil,
+	)
+	require.Equal(t, uint64(1), schedulers.presentationGeneration)
+
+	schedulers.close()
+	require.Equal(t, uint64(2), device.generation)
+	// Close can be reached through more than one cleanup path. Retirement is
+	// exactly once and cannot accidentally retire the successor generation.
+	schedulers.close()
+	require.Equal(t, uint64(2), device.generation)
+	cancel()
+}
+
 type allocationFreePresentationDevice struct {
 	*schedulerTestDevice
 	token     uint64
@@ -244,6 +311,16 @@ func (device *allocationFreePresentationDevice) ClaimInputPresentation(
 		Token: device.token, Generation: 1, Size: min(1, len(destination)),
 		ReceivedAt: selectedAt, SelectedAt: selectedAt,
 	}
+}
+
+func (*allocationFreePresentationDevice) OwnsInputPresentationEndpoint(
+	endpoint uint8,
+) bool {
+	return endpoint == 4
+}
+
+func (*allocationFreePresentationDevice) InputPresentationGeneration() uint64 {
+	return 1
 }
 
 func (device *allocationFreePresentationDevice) ResolveInputPresentation(

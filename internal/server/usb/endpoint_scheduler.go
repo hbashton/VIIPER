@@ -749,8 +749,15 @@ func (w *endpointWorker) processInterruptIn(timer *time.Timer, idx int) bool {
 	w.telemetry.queueAge.record(w.clock.Now().Sub(queuedAt))
 
 	var response []byte
-	presenter, presentationClaimed := w.dev.(inputpresentation.Source)
+	presenter, hasPresentationSource := w.dev.(inputpresentation.Source)
+	presentationClaimed := hasPresentationSource &&
+		presenter.OwnsInputPresentationEndpoint(uint8(w.ep))
 	claimer, legacyClaimed := w.dev.(interruptInClaimer)
+	// A modern Source owns endpoint routing for the whole composite device.
+	// Falling back to its legacy, endpoint-agnostic compatibility methods on an
+	// auxiliary endpoint would recreate the exact cross-endpoint consumption
+	// that the Source contract prevents.
+	legacyClaimed = legacyClaimed && !hasPresentationSource
 	var presentationClaim inputpresentation.Claim
 	var presentationClaimFits bool
 	var claimToken uint64
@@ -780,7 +787,8 @@ func (w *endpointWorker) processInterruptIn(timer *time.Timer, idx int) bool {
 		}
 		n = min(n, len(destination))
 		response = destination[:n]
-	} else if builder, ok := w.dev.(interruptInBuilder); ok {
+	} else if builder, ok := w.dev.(interruptInBuilder); ok &&
+		!hasPresentationSource {
 		destination := w.reportBuffer
 		if xferLen < len(destination) {
 			destination = destination[:xferLen]
@@ -1016,11 +1024,14 @@ type endpointSchedulers struct {
 	// once the schedulers are published to the command reader. Descriptor-known
 	// DualSense/Edge admission therefore never takes the connection-wide map
 	// lock used only by legacy lazy creation, lifecycle, and diagnostics.
-	fastInterruptIn [16]*endpointWorker
-	fastIsoIn       [16]*endpointWorker
-	fastIsoOut      [16]*endpointWorker
-	failOnce        sync.Once
-	failErr         atomic.Pointer[error]
+	fastInterruptIn        [16]*endpointWorker
+	fastIsoIn              [16]*endpointWorker
+	fastIsoOut             [16]*endpointWorker
+	presentationSource     inputpresentation.Source
+	presentationGeneration uint64
+	presentationRetireOnce sync.Once
+	failOnce               sync.Once
+	failErr                atomic.Pointer[error]
 }
 
 func newEndpointSchedulers(
@@ -1039,6 +1050,11 @@ func newEndpointSchedulers(
 		conn:      conn,
 		workers:   make(map[endpointWorkerKey]*endpointWorker),
 	}
+	if source, ok := dev.(inputpresentation.Source); ok {
+		schedulers.presentationSource = source
+		schedulers.presentationGeneration =
+			source.InputPresentationGeneration()
+	}
 	// DualSense and DualSense Edge expose explicit nonblocking endpoint APIs.
 	// Pre-create every descriptor-known fast-path plane before command ingestion
 	// so the first real URB does not allocate buffers/channels or start a worker.
@@ -1053,7 +1069,7 @@ func (s *endpointSchedulers) precreateFastPathWorkers() {
 	}
 	_, claimsInterrupt := s.dev.(interruptInClaimer)
 	_, buildsInterrupt := s.dev.(interruptInBuilder)
-	_, presentsInterrupt := s.dev.(inputpresentation.Source)
+	presenter, presentsInterrupt := s.dev.(inputpresentation.Source)
 	_, readsMicrophone := s.dev.(microphonePacketReader)
 	_, handlesIsoOutGeneration := s.dev.(isoOutGenerationDevice)
 	seen := make(map[endpointWorkerKey]struct{}, 3)
@@ -1073,8 +1089,14 @@ func (s *endpointSchedulers) precreateFastPathWorkers() {
 			switch endpoint.BMAttributes & 0x03 {
 			case 0x03:
 				kind = interruptInWorker
-				fast = dir == usbip.DirIn &&
-					(claimsInterrupt || buildsInterrupt || presentsInterrupt)
+				if dir == usbip.DirIn {
+					if presentsInterrupt {
+						fast = presenter.OwnsInputPresentationEndpoint(
+							uint8(ep))
+					} else {
+						fast = claimsInterrupt || buildsInterrupt
+					}
+				}
 			case 0x01:
 				if dir == usbip.DirIn {
 					kind = isoInWorker
@@ -1285,6 +1307,12 @@ func (s *endpointSchedulers) close() {
 	for _, worker := range workers {
 		<-worker.done
 	}
+	s.presentationRetireOnce.Do(func() {
+		if s.presentationSource != nil && s.presentationGeneration != 0 {
+			s.presentationSource.RetireInputPresentationGeneration(
+				s.presentationGeneration, time.Now())
+		}
+	})
 }
 
 func findEndpointDescriptor(

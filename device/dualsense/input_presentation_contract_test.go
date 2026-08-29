@@ -326,6 +326,8 @@ func TestInputPresentationRetirementDoesNotLeakClaimIntoNextGeneration(
 	if !ok {
 		t.Fatal("press was not claimed")
 	}
+	release := neutralInputState()
+	dev.input.updateAt(&release, 0, base.Add(1500*time.Microsecond))
 	transport.Advance(time.Millisecond)
 	if !transport.RetireGeneration(dev, retiredClaim.Generation) {
 		t.Fatal("active generation retirement was rejected")
@@ -375,6 +377,8 @@ func TestInputPresentationRetirementDiscardsDeferredClaim(t *testing.T) {
 		dev, inputpresentation.OutcomeDefer); !accepted {
 		t.Fatal("press deferral was rejected")
 	}
+	release := neutralInputState()
+	dev.input.updateAt(&release, 0, base.Add(1500*time.Microsecond))
 	if !transport.RetireGeneration(dev, deferred.Generation) {
 		t.Fatal("generation with deferred work was not retired")
 	}
@@ -387,6 +391,33 @@ func TestInputPresentationRetirementDiscardsDeferredClaim(t *testing.T) {
 	if !accepted || record.Report[8]&byte(ButtonCross) != 0 {
 		t.Fatalf("deferred retired press leaked into successor: %+v % x",
 			record, record.Report)
+	}
+}
+
+func TestInputPresentationRetirementCarriesHeldStateWithoutHistoricalEdges(
+	t *testing.T,
+) {
+	dev := newInputPresentationTestDevice(t)
+	base := dev.input.timestampBase.Add(38 * time.Millisecond)
+	held := neutralInputState()
+	held.Buttons = ButtonCross
+	dev.input.updateAt(&held, 0, base)
+	generation := dev.InputPresentationGeneration()
+	if !dev.RetireInputPresentationGeneration(
+		generation, base.Add(time.Millisecond)) {
+		t.Fatal("generation retirement was rejected")
+	}
+
+	transport := presentationfake.New(
+		InputReportSize, base.Add(2*time.Millisecond))
+	claim, ok := transport.Claim(dev)
+	if !ok || claim.Ordered {
+		t.Fatalf("successor current-state claim = %+v", claim)
+	}
+	record, accepted := transport.Resolve(dev, inputpresentation.OutcomeCommit)
+	if !accepted || record.Report[8]&byte(ButtonCross) == 0 {
+		t.Fatalf("held current state was not carried: %+v % x",
+			record, record.Report[:11])
 	}
 }
 

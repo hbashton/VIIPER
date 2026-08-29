@@ -288,7 +288,7 @@ func (s *FixedReportScheduler[T]) restoreFailedSelection() {
 // ResolveInputPresentation applies the one terminal outcome for claim. A
 // deferred ordered claim is recovered byte-for-byte ahead of all newer work.
 func (s *FixedReportScheduler[T]) ResolveInputPresentation(claim Claim,
-	outcome Outcome, _ time.Time) bool {
+	outcome Outcome, completedAt time.Time) bool {
 	if s == nil || !outcome.Valid() {
 		return false
 	}
@@ -315,7 +315,8 @@ func (s *FixedReportScheduler[T]) ResolveInputPresentation(claim Claim,
 			s.hasLatest = true
 		}
 	case OutcomeRetire:
-		s.advanceGeneration()
+		s.retireCurrentGeneration(completedAt)
+		return true
 	}
 	s.clearClaim()
 	return true
@@ -330,9 +331,11 @@ func (s *FixedReportScheduler[T]) clearClaim() {
 	s.hasClaim = false
 }
 
-// RetireInputPresentationGeneration drops in-flight/retry ownership from the
-// retiring backend generation. Pending semantic states remain eligible for the
-// successor; serialized bytes from the old generation never do.
+// RetireInputPresentationGeneration collapses the retiring generation to one
+// current semantic snapshot. Historical transitions, retry bytes, and an
+// in-flight claim are discarded so a successor cannot replay a phantom tap.
+// The newest complete producer state remains eligible as non-ordered current
+// state for the successor.
 func (s *FixedReportScheduler[T]) RetireInputPresentationGeneration(
 	generation uint64, retiredAt time.Time) bool {
 	if s == nil || generation == 0 {
@@ -343,14 +346,42 @@ func (s *FixedReportScheduler[T]) RetireInputPresentationGeneration(
 	if generation != s.generation {
 		return false
 	}
+	s.retireCurrentGeneration(retiredAt)
+	return true
+}
+
+func (s *FixedReportScheduler[T]) retireCurrentGeneration(retiredAt time.Time) {
+	if retiredAt.IsZero() {
+		retiredAt = time.Now()
+	}
 	if s.hasClaim {
 		s.clearClaim()
 	}
+	clear(s.journal[:])
+	s.head = 0
+	s.count = 0
 	s.retry = fixedReportEntry[T]{}
 	clear(s.retryData[:s.reportSize])
 	s.hasRetry = false
+
+	s.nextOrdinal++
+	if s.nextOrdinal == 0 {
+		s.nextOrdinal = 1
+	}
+	current := fixedReportEntry[T]{
+		state: s.previous, receivedAt: retiredAt, ordinal: s.nextOrdinal,
+	}
+	s.latest = current
+	s.hasLatest = true
+	s.last = current
+	clear(s.lastData[:s.reportSize])
+	// Encoding was validated at construction. If a state-specific encoder
+	// nevertheless fails, leaving an all-zero idle buffer is fail-closed; the
+	// current snapshot remains pending and its later claim will fail as well.
+	if n := s.encode(&s.last.state, s.lastData[:s.reportSize]); n != s.reportSize {
+		clear(s.lastData[:s.reportSize])
+	}
 	s.advanceGeneration()
-	return true
 }
 
 func (s *FixedReportScheduler[T]) advanceGeneration() {

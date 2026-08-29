@@ -122,6 +122,35 @@ func TestFixedReportSchedulerRetireRejectsStaleCompletion(t *testing.T) {
 	}
 }
 
+func TestFixedReportSchedulerRetireCollapsesHistoryToCurrentState(t *testing.T) {
+	s := newTestScheduler(t)
+	base := time.Unix(5, 0)
+	if !s.Publish(schedulerTestState{buttons: 1, axis: 10}, base) ||
+		!s.Publish(schedulerTestState{buttons: 1, axis: 200},
+			base.Add(time.Microsecond)) ||
+		!s.Publish(schedulerTestState{axis: 30},
+			base.Add(2*time.Microsecond)) {
+		t.Fatal("publish failed")
+	}
+	retiredGeneration := s.Generation()
+	if !s.RetireInputPresentationGeneration(
+		retiredGeneration, base.Add(time.Millisecond)) {
+		t.Fatal("retire failed")
+	}
+
+	report, claim := claimAndResolve(t, s, OutcomeCommit,
+		base.Add(2*time.Millisecond))
+	if !bytes.Equal(report, []byte{0, 30}) {
+		t.Fatalf("successor report = %v, want current release state", report)
+	}
+	if claim.Ordered {
+		t.Fatal("collapsed successor snapshot must not replay as a transition")
+	}
+	if snapshot := s.Snapshot(); snapshot.TransitionDepth != 0 {
+		t.Fatalf("retired transition history survived: %+v", snapshot)
+	}
+}
+
 func TestFixedReportSchedulerRejectsOverflowWithoutCorruptingJournal(t *testing.T) {
 	s := newTestScheduler(t)
 	base := time.Unix(6, 0)

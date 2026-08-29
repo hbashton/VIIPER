@@ -756,6 +756,20 @@ func (d *DualSense) ClaimInputPresentation(destination []byte,
 	return claim
 }
 
+// OwnsInputPresentationEndpoint confines controller state to the HID
+// interrupt-IN endpoint. The composite device's microphone and other endpoint
+// planes must never claim or advance controller input state.
+func (d *DualSense) OwnsInputPresentationEndpoint(endpoint uint8) bool {
+	return endpoint == EndpointIn&0x0f
+}
+
+func (d *DualSense) InputPresentationGeneration() uint64 {
+	d.input.mu.Lock()
+	generation := d.input.presentationGeneration
+	d.input.mu.Unlock()
+	return generation
+}
+
 // ResolveInputPresentation terminally commits, defers, or retires one claim.
 // Token and generation are validated together, making duplicate completions
 // and completions from a retired backend fail closed.

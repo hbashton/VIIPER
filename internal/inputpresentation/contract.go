@@ -61,10 +61,20 @@ func (claim Claim) AgeAt(boundary time.Time) time.Duration {
 // claim. RetireGeneration advances an otherwise-idle generation and terminally
 // retires an active claim from that generation when one exists.
 //
+// OwnsInputPresentationEndpoint makes the semantic source explicitly
+// endpoint-scoped. A composite USB device can expose several interrupt-IN
+// endpoints; polling an auxiliary endpoint must never consume the main
+// controller report journal.
+// InputPresentationGeneration lets a backend capture the generation it owns
+// when the transport connection is created, then retire exactly that
+// generation at its lifecycle boundary without guessing from an active claim.
+//
 // selectedAt is the transport's report-selection boundary. completedAt is the
 // downstream acceptance/failure boundary. Callers should capture each before
 // acquiring scheduler locks so contention remains visible in diagnostics.
 type Source interface {
+	OwnsInputPresentationEndpoint(endpoint uint8) bool
+	InputPresentationGeneration() uint64
 	ClaimInputPresentation(destination []byte, selectedAt time.Time) Claim
 	ResolveInputPresentation(claim Claim, outcome Outcome, completedAt time.Time) bool
 	RetireInputPresentationGeneration(generation uint64, retiredAt time.Time) bool
