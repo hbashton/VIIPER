@@ -1,0 +1,18 @@
+{
+  "contract": "CFBK",
+  "version": 1,
+  "source": 2,
+  "command": 1,
+  "actuators": 15,
+  "body_low": 4386,
+  "body_high": 13124,
+  "left_trigger": 21862,
+  "right_trigger": 30600,
+  "sequence": "0x0102030405060708",
+  "device_generation": "0x1112131415161718",
+  "transport_generation": "0x2122232425262728",
+  "ownership_epoch": "0x3132333435363738",
+  "timestamp_microseconds": "0x4142434445464748",
+  "time_to_live_microseconds": "0x5152535455565758",
+  "wire_hex": "4346424b0100480002010f00221144336655887700000000080706050403020118171615141312112827262524232221383736353433323148474645444342415857565554535251"
+}
