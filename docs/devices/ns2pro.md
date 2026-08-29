@@ -20,12 +20,16 @@ gyro/accelerometer data, and HD rumble output.
 
     ### Input State
 
-    - 27-byte packets, little-endian layout:
+    - 24-byte packets, little-endian layout:
         - Buttons: `uint32` bitfield
         - Sticks: `LX`, `LY`, `RX`, `RY` as raw `uint16` values, clamped to `0..4095`
         - Accelerometer: `AccelX`, `AccelY`, `AccelZ` as raw `int16` report values
         - Gyroscope: `GyroX`, `GyroY`, `GyroZ` as raw `int16` report values
-        - Battery: `BatteryLevel` (`0..9`), `Charging`, `ExternalPower`
+
+    Battery and power values are creation-time `MetaState` fields, not part of
+    the 24-byte streaming input packet. A future runtime battery update requires
+    a separately versioned status contract; clients must not append fields to
+    this fixed-size stream.
 
     ### Feedback
 

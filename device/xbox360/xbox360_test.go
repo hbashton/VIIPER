@@ -573,4 +573,8 @@ func TestAllReservedInputBytesReachUsbReport(t *testing.T) {
 	encoded, err := state.MarshalBinary()
 	require.NoError(t, err)
 	require.Equal(t, []byte{1, 2, 3, 4, 5, 6}, encoded[14:20])
+
+	var decoded xbox360.InputState
+	require.NoError(t, decoded.UnmarshalBinary(encoded))
+	require.Equal(t, state, decoded)
 }

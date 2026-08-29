@@ -95,7 +95,7 @@ func (x *InputState) UnmarshalBinary(data []byte) error {
 	x.LY = int16(binary.LittleEndian.Uint16(data[8:10]))
 	x.RX = int16(binary.LittleEndian.Uint16(data[10:12]))
 	x.RY = int16(binary.LittleEndian.Uint16(data[12:14]))
-	copy(x.Reserved[:], data[14:19])
+	copy(x.Reserved[:], data[14:20])
 	return nil
 }
 
