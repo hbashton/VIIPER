@@ -440,6 +440,16 @@ type ImportDevice interface {
 	RetainedUSBImportOwner() ImportOwner
 }
 
+// PrimaryGIPIdentityDevice exposes the immutable primary Hello DeviceID from
+// the authorized persona, not the retained import lease ID or USB serial. The
+// server uses this additional constraint to prevent two Windows GIP devices
+// sharing a driver lookup key. It grants no registration/import authority.
+// The read must be pure, bounded, nonblocking and perform no I/O.
+type PrimaryGIPIdentityDevice interface {
+	ImportDevice
+	RetainedUSBPrimaryGIPDeviceID() uint64
+}
+
 // OneShotImportDevice marks a retained device whose local executor and
 // authorization are terminal after one Safe disconnect. The server removes
 // the exact device from its owning virtual bus only after the retained session

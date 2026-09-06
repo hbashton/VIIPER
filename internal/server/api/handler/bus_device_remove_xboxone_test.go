@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -21,10 +22,11 @@ import (
 )
 
 type xboxRemovalFactoryFixture struct {
-	server *serverusb.Server
-	api    *api.Server
-	busID  uint32
-	logger *slog.Logger
+	server          *serverusb.Server
+	api             *api.Server
+	busID           uint32
+	logger          *slog.Logger
+	nextGIPIdentity atomic.Uint32
 }
 
 func newXboxRemovalFactoryFixture(t *testing.T, busID uint32, connectionTimeout ...time.Duration) *xboxRemovalFactoryFixture {
@@ -58,13 +60,14 @@ func (fixture *xboxRemovalFactoryFixture) create(t *testing.T, importID uint64) 
 	var request viipertypes.XboxOneAuthorizedCreateRequestV1
 	request.Version, request.IdentityAuthorizationGranted = 1, true
 	request.Identity.VendorID, request.Identity.ProductID = 0xf00d, 0xbeef
-	request.Identity.DeviceReleaseBCD, request.Identity.DeviceID = 0x0102, 0x0000fffb01020304
+	request.Identity.DeviceReleaseBCD, request.Identity.DeviceID = 0x0102,
+		0x0000fffb00000000|uint64(fixture.nextGIPIdentity.Add(1))
 	request.Identity.FirmwareMajor, request.Identity.FirmwareMinor = 1, 2
 	request.Identity.FirmwareBuild, request.Identity.FirmwareRevision = 3, 4
 	request.Identity.HardwareMajor, request.Identity.HardwareMinor = 5, 6
 	request.USB.MaxPower2mA, request.USB.OUTIntervalMS, request.USB.INIntervalMS = 0x32, 4, 4
 	request.Strings.Manufacturer, request.Strings.Product = "VIIPER test", "Exact removal test pad"
-	request.Strings.Serial = "0000fffb01020304a1b2c3d4e5f60708"
+	request.Strings.Serial = fmt.Sprintf("%016xa1b2c3d4e5f60708", request.Identity.DeviceID)
 	request.Feedback.Source = uint8(controllerfeedback.SourceXboxOneVirtualDevice)
 	request.Feedback.PersonaGeneration, request.Feedback.DeviceGeneration = 1, 2
 	request.Feedback.TransportGeneration, request.Feedback.OwnershipEpoch = 3, 4

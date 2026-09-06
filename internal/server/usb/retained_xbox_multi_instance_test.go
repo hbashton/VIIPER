@@ -19,12 +19,13 @@ import (
 
 // Real production personas and retained USB/IP streams, with independent
 // synthetic broker/USB peers. No Windows driver or physical controller is used.
-// The common GIP model identity deliberately differs from each import lease ID.
+// Every primary GIP identity is distinct, and differs from its import lease ID.
 type productionMultiXboxPad struct {
 	server       *Server
 	registration virtualbus.DeviceMeta
 	alias        string
 	importID     uint64
+	gipID        uint64
 	broker       net.Conn
 	usb          net.Conn
 	usbDone      chan error
@@ -35,16 +36,17 @@ type productionMultiXboxPad struct {
 
 func newProductionMultiXboxPad(t *testing.T, server *Server, authority, importID uint64, busID uint32) *productionMultiXboxPad {
 	t.Helper()
+	gipID := uint64(0x0000fffb00000000) | uint64(busID)
 	preparation, err := xboxone.PrepareProductionRetainedUSBDevice(xboxone.ProductionRetainedUSBDeviceOptions{
 		Identity: xboxone.ControllerIdentity{
 			VendorID: 0xf00d, ProductID: 0xbeef, DeviceReleaseBCD: 0x0102,
-			DeviceID: 0x0000fffb01020304,
+			DeviceID: gipID,
 			Firmware: xboxone.FirmwareVersion{Major: 1},
 		},
 		USB: xboxone.ControllerUSBConfig{MaxPower2mA: 50, OUTIntervalMS: 4, INIntervalMS: 4},
 		Strings: xboxone.ControllerUSBIdentityStrings{
 			Manufacturer: "Synthetic test", Product: "Independent Xbox pad",
-			Serial: fmt.Sprintf("0000fffb01020304%016x", busID),
+			Serial: fmt.Sprintf("%016x%016x", gipID, busID),
 		},
 		IdentityAuthorization: xboxone.ControllerIdentityAuthorizationGranted,
 		FeedbackBinding: xboxone.ControllerPersonaFeedbackBindingV1{
@@ -87,7 +89,7 @@ func newProductionMultiXboxPad(t *testing.T, server *Server, authority, importID
 	kind, _, _ := readRetirementBrokerFrame(t, brokerClient)
 	require.Equal(t, byte(0x81), kind)
 	return &productionMultiXboxPad{server: server, registration: registration,
-		alias: alias, importID: importID, broker: brokerClient, revision: 1}
+		alias: alias, importID: importID, gipID: gipID, broker: brokerClient, revision: 1}
 }
 
 func (pad *productionMultiXboxPad) submit(t *testing.T, direction, endpoint, length uint32, setup [8]byte, payload []byte) {
@@ -111,8 +113,9 @@ func (pad *productionMultiXboxPad) importAndStart(t *testing.T) {
 	pad.submit(t, usbip.DirIn, 1, 64, [8]byte{}, nil)
 	_, status, _, hello := readRetainedSubmitResponse(t, usbClient)
 	require.Zero(t, status)
-	_, err := xboxone.DecodeHelloMessage(hello)
+	decodedHello, err := xboxone.DecodeHelloMessage(hello)
 	require.NoError(t, err)
+	require.Equal(t, pad.gipID, decodedHello.DeviceID)
 	start := []byte{0x05, 0x20, 0x02, 0x01, byte(xboxone.SetDeviceStateStart)}
 	pad.submit(t, usbip.DirOut, 1, uint32(len(start)), [8]byte{}, start)
 	_, status, _, _ = readRetainedSubmitResponseForDirection(t, usbClient, usbip.DirOut)
@@ -215,6 +218,7 @@ func TestProductionXboxIndependentImportIDsKeepBothPadsLiveAndIsolateExactRemova
 	first := newProductionMultiXboxPad(t, server, authority, 0x978101, 978)
 	second := newProductionMultiXboxPad(t, server, authority, 0x978102, 979)
 	require.NotEqual(t, first.alias, second.alias)
+	require.NotEqual(t, first.gipID, second.gipID)
 	first.importAndStart(t)
 	second.importAndStart(t)
 	server.retainedImports.mu.Lock()

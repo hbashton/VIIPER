@@ -347,12 +347,16 @@ func applyControlLifecycleToSchedulers(
 }
 
 type Server struct {
-	config      *ServerConfig
-	logger      *slog.Logger
-	rawLogger   log.RawLogger
-	busses      map[uint32]*virtualbus.VirtualBus
-	busesMu     sync.Mutex
-	busRemovals map[uint32]*serverBusRemoval
+	config    *ServerConfig
+	logger    *slog.Logger
+	rawLogger log.RawLogger
+	busses    map[uint32]*virtualbus.VirtualBus
+	busesMu   sync.Mutex
+	// Server-lifetime, bounded GIP identity reservations, protected by busesMu.
+	// USB/IP drain/removal is not proof Windows has removed its old PDO; never
+	// recycle its Hello lookup key when a bus or registration is removed.
+	usedPrimaryGIPDeviceIDs map[uint64]struct{}
+	busRemovals             map[uint32]*serverBusRemoval
 	// beforeBusRemovalComplete is nil in production and lets package tests
 	// pause after device/admission drain but before duplicate RemoveBus callers
 	// are released.
@@ -577,6 +581,11 @@ func (s *Server) addRetainedDeviceRegistration(
 	if _, retained := dev.(retainedusb.ImportDevice); !retained {
 		return virtualbus.DeviceMeta{}, errRetainedImportInvalid
 	}
+	// Callback reads stay outside global locks, including for rejected inputs.
+	gipID, err := retainedPrimaryGIPIdentity(dev, alias != "")
+	if err != nil {
+		return virtualbus.DeviceMeta{}, err
+	}
 
 	s.busesMu.Lock()
 	s.serverLifecycleMu.Lock()
@@ -586,6 +595,13 @@ func (s *Server) addRetainedDeviceRegistration(
 		s.serverLifecycleMu.Unlock()
 		s.busesMu.Unlock()
 		return virtualbus.DeviceMeta{}, err
+	}
+	if gipID != 0 {
+		if err := s.validateUnusedPrimaryGIPIdentityLocked(gipID); err != nil {
+			s.serverLifecycleMu.Unlock()
+			s.busesMu.Unlock()
+			return virtualbus.DeviceMeta{}, err
+		}
 	}
 	var registration virtualbus.DeviceMeta
 	if alias == "" {
@@ -606,6 +622,15 @@ func (s *Server) addRetainedDeviceRegistration(
 		s.serverLifecycleMu.Unlock()
 		s.busesMu.Unlock()
 		return virtualbus.DeviceMeta{}, err
+	}
+	if gipID != 0 {
+		if s.usedPrimaryGIPDeviceIDs == nil {
+			s.usedPrimaryGIPDeviceIDs = make(map[uint64]struct{})
+		}
+		// Reserve before dropping the locks for descriptor admission, so even
+		// another unpublished registration cannot race this identity. Retain
+		// failed provisional IDs too: this is intentionally fail-closed.
+		s.usedPrimaryGIPDeviceIDs[gipID] = struct{}{}
 	}
 	s.watchRetainedDeviceRegistration(registration)
 	s.serverLifecycleMu.Unlock()

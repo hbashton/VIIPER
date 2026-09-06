@@ -110,7 +110,7 @@ func TestProductionAliasCannotSelectAddressBusOrServerSuccessor(t *testing.T) {
 			require.NoError(t, err)
 			require.NoError(t, server.AddBus(bus))
 		}
-		device := newProductionRetirementIntegrationDevice(t, authority, 0x0000fffb01020304)
+		device := newProductionRetirementIntegrationDevice(t, authority, 0x0000fffb01020304+uint64(round))
 		registration, err := server.AddProductionXboxOneRetainedDeviceRegistration(busID, authority, device)
 		require.NoError(t, err)
 		require.Equal(t, uint32(1), registration.Meta.DevID)

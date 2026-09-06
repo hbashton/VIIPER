@@ -3,6 +3,7 @@ package usb
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -50,16 +51,22 @@ func readRetirementBrokerFrame(t *testing.T, conn net.Conn) (byte, uint64, []byt
 
 func newProductionRetirementIntegrationDevice(t *testing.T, authority, deviceID uint64) *xboxone.AuthorizedDormantRetainedUSBDevice {
 	t.Helper()
+	return newProductionRetirementIntegrationIdentityDevice(t, authority, deviceID, deviceID,
+		fmt.Sprintf("%016XA1B2C3D4E5F60708", deviceID))
+}
+
+func newProductionRetirementIntegrationIdentityDevice(t *testing.T, authority, deviceID, importID uint64, serial string) *xboxone.AuthorizedDormantRetainedUSBDevice {
+	t.Helper()
 	preparation, err := xboxone.PrepareProductionRetainedUSBDevice(xboxone.ProductionRetainedUSBDeviceOptions{
 		Identity: xboxone.ControllerIdentity{
 			VendorID: 0xf00d, ProductID: 0xbeef, DeviceReleaseBCD: 0x0102, DeviceID: deviceID,
 			Firmware: xboxone.FirmwareVersion{Major: 1, Minor: 2, Build: 3, Revision: 4}, HardwareMajor: 5, HardwareMinor: 6,
 		},
 		USB:                   xboxone.ControllerUSBConfig{MaxPower2mA: 0x32, OUTIntervalMS: 4, INIntervalMS: 4},
-		Strings:               xboxone.ControllerUSBIdentityStrings{Manufacturer: "Test Vendor", Product: "Retirement Test Pad", Serial: "0000FFFB01020304A1B2C3D4E5F60708"},
+		Strings:               xboxone.ControllerUSBIdentityStrings{Manufacturer: "Test Vendor", Product: "Retirement Test Pad", Serial: serial},
 		IdentityAuthorization: xboxone.ControllerIdentityAuthorizationGranted,
 		FeedbackBinding:       xboxone.ControllerPersonaFeedbackBindingV1{Source: controllerfeedback.SourceXboxOneVirtualDevice, PersonaGeneration: 1, DeviceGeneration: 2, TransportGeneration: 3, OwnershipEpoch: 4, TimeToLiveMicroseconds: 250_000},
-		ProtocolTimeMS:        10, AuthorityID: authority, ImportDeviceID: deviceID, LocalTimeout: time.Second,
+		ProtocolTimeMS:        10, AuthorityID: authority, ImportDeviceID: importID, LocalTimeout: time.Second,
 	})
 	require.NoError(t, err)
 	authorization, now, authorityID, importID, executor, timeout, ok := preparation.AuthorizedConstructionInputs()

@@ -20,9 +20,10 @@ var errAuthorizedRetainedUSBLegacyDispatch = errors.New(
 // stack. It remains absent from the generic API device registry; the explicit
 // internal broker factory is its only production construction site.
 type AuthorizedDormantRetainedUSBDevice struct {
-	adapter    *DormantRetainedUSBAdapter
-	descriptor usb.Descriptor
-	deviceID   uint64
+	adapter            *DormantRetainedUSBAdapter
+	descriptor         usb.Descriptor
+	deviceID           uint64
+	primaryGIPDeviceID uint64
 
 	brokerMu            sync.Mutex
 	brokerStreamToken   uint64
@@ -71,7 +72,15 @@ func NewAuthorizedDormantRetainedUSBDevice(
 	}
 	return &AuthorizedDormantRetainedUSBDevice{
 		adapter: adapter, descriptor: descriptor, deviceID: expectedDeviceID,
+		primaryGIPDeviceID: adapter.coordinator.engine.profile.identity.DeviceID,
 	}, nil
+}
+
+func (device *AuthorizedDormantRetainedUSBDevice) RetainedUSBPrimaryGIPDeviceID() uint64 {
+	if device == nil {
+		return 0
+	}
+	return device.primaryGIPDeviceID
 }
 
 func makeAuthorizedRetainedUSBDescriptor(

@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"fmt"
 	"log/slog"
 	"testing"
 	"time"
@@ -12,7 +13,10 @@ import (
 
 func TestProductionFactoryIssuesAliasWhileDormantAuthorizedFactoryStaysNumeric(t *testing.T) {
 	server, _ := registryTestUSBServer(t, 62010, registryTestAuthorityID)
-	production, err := RegisterProductionXboxOneRetainedUSB(server, registryTestProductionXboxRequest(62010, registryTestAuthorityID))
+	request := registryTestProductionXboxRequest(62010, registryTestAuthorityID)
+	request.Options.Identity.DeviceID++
+	request.Options.Strings.Serial = fmt.Sprintf("%016xa1b2c3d4e5f60708", request.Options.Identity.DeviceID)
+	production, err := RegisterProductionXboxOneRetainedUSB(server, request)
 	require.NoError(t, err)
 	productionMeta, ok := production.DeviceMeta()
 	require.True(t, ok)
