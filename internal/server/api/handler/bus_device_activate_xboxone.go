@@ -85,7 +85,7 @@ func BusDeviceActivateAuthorizedXboxOne(
 			}
 		}()
 		result, err := attachLocalhostClientWithResult(
-			activationCtx, &meta, s.GetListenPort(),
+			api.WithXboxOneRetryCleanup(activationCtx, apiSrv, admission.Registration()), &meta, s.GetListenPort(),
 			apiSrv.Config().AutoAttachWindowsNative, logger)
 		if activationCtx.Err() != nil {
 			return apierror.ErrConflict("Xbox One activation canceled")

@@ -32,6 +32,7 @@ type Server struct {
 	router        *Router
 	config        *ServerConfig
 	deviceStreams deviceStreamCoordinator
+	xboxRetries   *xboxOneRetryCleanup
 }
 
 // microphonePCMResetter is implemented by audio-capable virtual controllers.
@@ -57,6 +58,8 @@ func New(s *usb.Server, addr string, config ServerConfig, logger *slog.Logger) *
 		config: &cfg,
 	}
 	a.router = NewRouter()
+	a.xboxRetries = newXboxOneRetryCleanup(logger)
+	s.SetFailedImportObserver(a.xboxRetries.observe)
 	return a
 }
 

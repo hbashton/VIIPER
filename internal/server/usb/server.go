@@ -347,11 +347,13 @@ func applyControlLifecycleToSchedulers(
 }
 
 type Server struct {
-	config    *ServerConfig
-	logger    *slog.Logger
-	rawLogger log.RawLogger
-	busses    map[uint32]*virtualbus.VirtualBus
-	busesMu   sync.Mutex
+	failedImportObserverMu sync.RWMutex
+	failedImportObserver   func(string)
+	config                 *ServerConfig
+	logger                 *slog.Logger
+	rawLogger              log.RawLogger
+	busses                 map[uint32]*virtualbus.VirtualBus
+	busesMu                sync.Mutex
 	// Server-lifetime, bounded GIP identity reservations, protected by busesMu.
 	// USB/IP drain/removal is not proof Windows has removed its old PDO; never
 	// recycle its Hello lookup key when a bus or registration is removed.
@@ -1472,6 +1474,7 @@ func (s *Server) readImportSelection(conn net.Conn) (importSelection, error) {
 	s.logger.Info("Import request", "busid", reqBus)
 	chosen, err := s.lookupUSBIPImportRegistration(reqBus)
 	if err != nil {
+		s.observeFailedImport(reqBus)
 		_ = writeImportFailure(conn)
 		return importSelection{}, err
 	}

@@ -73,3 +73,34 @@ five test-owned retry locations were stopped through the supported per-location
 CLI, without numeric detach or stop-all. Automatic production retry cleanup
 remains open and needs an exact retirement-bound lifecycle integration; a
 single early cancellation before native teardown finishes is not sufficient.
+
+## b80: production retry cleanup
+
+The above open item is implemented at the production attach boundary. An
+authenticated, exact registration arms a cleanup record before native attach;
+the record cannot run until registration retirement AND native operation
+completion. Request cancellation or a returned numeric port does not grant
+cleanup authority. Failed/cancelled activation and stream-triggered retirement
+use the same registration cancellation signal.
+
+The native operation is the documented usbip-win2 0.9.7.7
+`STOP_ATTACH_ATTEMPTS` (0x0022e014): a 1,104-byte request/response with the exact
+`localhost`, server TCP port and never-reused production export alias. It is
+not a port detach, stop-all, persistent-settings change or driver patch. The
+driver internally hashes this location; this API is not an atomic owner-token
+detach guarantee. Command-mode initial attach also requests `--once`.
+
+An off-input-path sweep handles delayed enqueue. A zero count is not proof
+that native retirement has finished: a compact server-lifetime tombstone
+also recognizes later failed imports of that same retired alias and schedules
+another coalesced cleanup. Unknown aliases and live registrations cannot arm
+or trigger native cleanup. Tombstones are capped at 65,536 and retain export
+metadata and a cancellation channel, not whole retired devices/buffers.
+Errors remain warnings; native cancellation always joins actual operation
+completion before releasing pinned memory or its handle.
+
+Tests cover exact-location ABI, forbidden empty/numeric targets, native
+completion/cancellation ordering, active/stale registration rejection and a
+retry arriving after an earlier zero-count sweep. Full Go and race suites pass.
+This service-lifetime cleanup cannot survive force-killing the broker itself;
+it does not claim orphan cleanup across process crashes or Windows reboot.

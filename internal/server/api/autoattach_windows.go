@@ -185,6 +185,9 @@ func attachViaCommand(ctx context.Context, deviceExportMeta *usbip.ExportMeta, u
 	if err != nil {
 		return AutoAttachResult{}, err
 	}
+	if alias, aliasErr := usbip.ExportBusID(*deviceExportMeta); aliasErr == nil && usbip.ValidProductionXboxOneBusID(alias) {
+		arguments = append(arguments, "--once")
+	}
 	logger.Info("Auto-attaching localhost client", "busID", deviceExportMeta.BusID, "deviceID", deviceExportMeta.DevID)
 
 	cmd := exec.CommandContext(ctx, resolveUsbipExecutable(), arguments...)
