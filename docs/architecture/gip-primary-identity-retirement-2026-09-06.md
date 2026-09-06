@@ -104,3 +104,14 @@ completion/cancellation ordering, active/stale registration rejection and a
 retry arriving after an earlier zero-count sweep. Full Go and race suites pass.
 This service-lifetime cleanup cannot survive force-killing the broker itself;
 it does not claim orphan cleanup across process crashes or Windows reboot.
+
+The b80 Windows acceptance run passed five native create/remove cycles,
+including two simultaneous WGI pads. The installed 0.9.7.7 driver returned one
+cancelled retry for each of the five production cleanup operations. After 79
+seconds beyond the final removal, the log contained exactly five initial
+imports, five cleanup completions, no later re-import and no warning/error;
+Config Manager reported no present test pad. No manual retry-stop command was
+used in this run. The mapper and broker were then restarted portably with
+ordinary info-level logging. Installed binaries and driver settings were not
+changed. This validates this bounded native lifecycle, not physical-controller
+or game feedback acceptance.
