@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -15,10 +16,13 @@ import (
 )
 
 const (
-	HandshakeMagic = "eVI1\x00"
+	HandshakeMagic = "eVI2\x00"
 	NonceSize      = 32
-	authContext    = "VIIPER-Auth-v1"
+	authContext    = "VIIPER-Auth-v2"
 )
+
+// V1 reused AEAD nonces between directions. Never reinterpret or downgrade it.
+var ErrUnsupportedAuthVersion = errors.New("VIIPER authenticated protocol v2 required; update the client and server together")
 
 // ReadClientNonce reads client nonce from handshake
 // Expects handshake magic already consumed, reads only the 32-byte nonce
@@ -42,7 +46,7 @@ func WriteServerHandshake(w io.Writer) (serverNonce []byte, err error) {
 	}
 
 	response := append([]byte("OK\x00"), serverNonce...)
-	if _, err = w.Write(response); err != nil {
+	if err = writeFull(w, response); err != nil {
 		return nil, fmt.Errorf("write response: %w", err)
 	}
 
@@ -51,11 +55,20 @@ func WriteServerHandshake(w io.Writer) (serverNonce []byte, err error) {
 
 // IsAuthHandshake checks if the next bytes in reader match the handshake magic
 func IsAuthHandshake(r *bufio.Reader) (bool, error) {
+	if r == nil {
+		return false, fmt.Errorf("handshake: nil reader")
+	}
 	b, err := r.Peek(len(HandshakeMagic))
 	if err != nil {
 		return false, err
 	}
-	return string(b) == HandshakeMagic, nil
+	if string(b) == HandshakeMagic {
+		return true, nil
+	}
+	if string(b[:3]) == "eVI" {
+		return false, ErrUnsupportedAuthVersion
+	}
+	return false, nil
 }
 
 // HandleAuthHandshake performs the authentication handshake
@@ -83,7 +96,7 @@ func HandleAuthHandshake(r *bufio.Reader, w io.Writer, key []byte, isClient bool
 
 		msg := append([]byte(HandshakeMagic), clientNonce...)
 		msg = append(msg, clientAuth...)
-		if _, err := w.Write(msg); err != nil {
+		if err := writeFull(w, msg); err != nil {
 			return nil, nil, fmt.Errorf("write handshake: %w", err)
 		}
 
@@ -92,7 +105,7 @@ func HandleAuthHandshake(r *bufio.Reader, w io.Writer, key []byte, isClient bool
 			return nil, nil, fmt.Errorf("read handshake response: %w", err)
 		}
 		if string(respPrefix) != "OK\x00" {
-			rest, _ := io.ReadAll(r)
+			rest, _ := io.ReadAll(io.LimitReader(r, 4096))
 			raw := append(respPrefix, rest...)
 			line := strings.TrimSuffix(string(raw), "\n")
 
@@ -110,6 +123,13 @@ func HandleAuthHandshake(r *bufio.Reader, w io.Writer, key []byte, isClient bool
 		return clientNonce, serverNonce, nil
 	}
 
+	matched, err := IsAuthHandshake(r)
+	if err != nil {
+		return nil, nil, fmt.Errorf("read handshake magic: %w", err)
+	}
+	if !matched {
+		return nil, nil, ErrUnsupportedAuthVersion
+	}
 	_, err = r.Discard(len(HandshakeMagic))
 	if err != nil {
 		return nil, nil, fmt.Errorf("discard handshake magic: %w", err)

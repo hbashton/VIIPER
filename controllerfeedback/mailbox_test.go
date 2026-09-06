@@ -108,7 +108,7 @@ func TestMailboxStopIsTerminalUntilReplacementOwnershipEpoch(t *testing.T) {
 	}
 }
 
-func TestMailboxClaimEmitsOneReleaseWhenAppliedRevisionExpires(t *testing.T) {
+func TestMailboxClaimAdvancesOnlyAfterSuccessfulCompletionAndRetriesFailure(t *testing.T) {
 	var mailbox Mailbox
 	var cursor ClaimCursor
 	first := testFrame()
@@ -117,21 +117,82 @@ func TestMailboxClaimEmitsOneReleaseWhenAppliedRevisionExpires(t *testing.T) {
 	if !mailbox.Publish(first) {
 		t.Fatal("initial publish failed")
 	}
-	claimed, disposition := mailbox.Claim(1_049, &cursor)
+	claimed, disposition, firstToken := mailbox.Claim(1_049, &cursor)
 	if disposition != ClaimFrame || claimed.Sequence != 1 ||
-		cursor.Revision != 1 || cursor.ReleaseRevision != 0 {
+		firstToken == 0 || cursor.AppliedRevision != 0 ||
+		cursor.ReleasedRevision != 0 {
 		t.Fatalf("claim=%+v cursor=%+v disposition=%d", claimed, cursor, disposition)
 	}
-	if duplicate, disposition := mailbox.Claim(1_049, &cursor); disposition != ClaimNone || duplicate != (Frame{}) {
-		t.Fatal("same revision was claimed twice")
+	if duplicate, disposition, token := mailbox.Claim(1_049, &cursor); disposition != ClaimNone || duplicate != (Frame{}) || token != 0 {
+		t.Fatal("an in-flight claim did not block a second claim")
 	}
-	if released, disposition := mailbox.Claim(1_050, &cursor); disposition != ClaimRelease || released != (Frame{}) ||
-		cursor.Revision != 1 || cursor.ReleaseRevision != 1 {
-		t.Fatalf("expiry release=%+v cursor=%+v disposition=%d",
-			released, cursor, disposition)
+	var wrongMailbox Mailbox
+	if !wrongMailbox.Publish(testFrame()) {
+		t.Fatal("wrong-mailbox setup publish failed")
 	}
-	if duplicate, disposition := mailbox.Claim(2_000, &cursor); disposition != ClaimNone || duplicate != (Frame{}) {
-		t.Fatal("same expiry released twice")
+	if wrongMailbox.Complete(&cursor, firstToken, true) {
+		t.Fatal("another mailbox completed the claim")
+	}
+	if _, disposition, _ := wrongMailbox.Claim(1_000, &cursor); disposition != ClaimNone {
+		t.Fatal("cursor was silently reused by another mailbox")
+	}
+	var wrongMailboxCursor ClaimCursor
+	if _, disposition, token := wrongMailbox.Claim(1_000, &wrongMailboxCursor); disposition != ClaimFrame ||
+		token == 0 || !wrongMailbox.Complete(&wrongMailboxCursor, token, true) {
+		t.Fatal("fresh cursor could not claim from second mailbox")
+	}
+	if mailbox.Complete(&cursor, firstToken+1, true) {
+		t.Fatal("a stale token disturbed the in-flight claim")
+	}
+	if _, disposition, _ := mailbox.Claim(1_049, &cursor); disposition != ClaimNone {
+		t.Fatal("an invalid completion cleared the in-flight claim")
+	}
+	if !mailbox.Complete(&cursor, firstToken, false) ||
+		cursor.AppliedRevision != 0 {
+		t.Fatal("failed delivery advanced the application watermark")
+	}
+	retried, disposition, retryToken := mailbox.Claim(1_049, &cursor)
+	if disposition != ClaimFrame || retried != first ||
+		retryToken == 0 || retryToken == firstToken {
+		t.Fatalf("retry=%+v disposition=%d token=%d", retried, disposition, retryToken)
+	}
+	if mailbox.Complete(&cursor, firstToken, true) {
+		t.Fatal("the first token completed an active retry claim")
+	}
+	if _, disposition, _ := mailbox.Claim(1_049, &cursor); disposition != ClaimNone {
+		t.Fatal("a stale token disturbed the active retry claim")
+	}
+	if !mailbox.Complete(&cursor, retryToken, true) ||
+		cursor.AppliedRevision != 1 || cursor.ReleasedRevision != 0 {
+		t.Fatalf("successful frame completion did not advance cursor: %+v", cursor)
+	}
+	if mailbox.Complete(&cursor, retryToken, true) {
+		t.Fatal("duplicate completion was accepted")
+	}
+	if duplicate, disposition, token := mailbox.Claim(1_049, &cursor); disposition != ClaimNone || duplicate != (Frame{}) || token != 0 {
+		t.Fatal("completed frame was claimed twice")
+	}
+
+	released, disposition, releaseToken := mailbox.Claim(1_050, &cursor)
+	if disposition != ClaimRelease || released != (Frame{}) || releaseToken == 0 {
+		t.Fatalf("expiry release=%+v disposition=%d token=%d",
+			released, disposition, releaseToken)
+	}
+	if !mailbox.Complete(&cursor, releaseToken, false) ||
+		cursor.ReleasedRevision != 0 {
+		t.Fatal("failed release advanced the release watermark")
+	}
+	_, disposition, releaseRetryToken := mailbox.Claim(1_050, &cursor)
+	if disposition != ClaimRelease || releaseRetryToken == 0 ||
+		releaseRetryToken == releaseToken {
+		t.Fatal("failed release was not retried with a new token")
+	}
+	if !mailbox.Complete(&cursor, releaseRetryToken, true) ||
+		cursor.ReleasedRevision != 1 {
+		t.Fatalf("release completion did not advance cursor: %+v", cursor)
+	}
+	if duplicate, disposition, token := mailbox.Claim(2_000, &cursor); disposition != ClaimNone || duplicate != (Frame{}) || token != 0 {
+		t.Fatal("completed expiry released twice")
 	}
 
 	expired := first
@@ -140,8 +201,9 @@ func TestMailboxClaimEmitsOneReleaseWhenAppliedRevisionExpires(t *testing.T) {
 	if !mailbox.Publish(expired) {
 		t.Fatal("second publish failed")
 	}
-	if got, disposition := mailbox.Claim(1_100, &cursor); disposition != ClaimRelease || got != (Frame{}) ||
-		cursor.Revision != 2 || cursor.ReleaseRevision != 2 {
+	if got, disposition, token := mailbox.Claim(1_100, &cursor); disposition != ClaimRelease || got != (Frame{}) ||
+		token == 0 || !mailbox.Complete(&cursor, token, true) ||
+		cursor.AppliedRevision != 2 || cursor.ReleasedRevision != 2 {
 		t.Fatalf("expired claim=%+v cursor=%+v disposition=%d", got, cursor, disposition)
 	}
 	if got, revision, ok := mailbox.ReadFresh(1_100); ok || got != (Frame{}) || revision != 2 {
@@ -158,8 +220,327 @@ func TestMailboxClaimEmitsOneReleaseWhenAppliedRevisionExpires(t *testing.T) {
 	if !mailbox.Publish(recovered) {
 		t.Fatal("fresh successor failed")
 	}
-	if got, disposition := mailbox.Claim(1_100, &cursor); disposition != ClaimFrame || got != recovered || cursor.Revision != 3 {
+	if got, disposition, token := mailbox.Claim(1_100, &cursor); disposition != ClaimFrame || got != recovered ||
+		token == 0 || !mailbox.Complete(&cursor, token, true) ||
+		cursor.AppliedRevision != 3 {
 		t.Fatalf("recovery claim=%+v cursor=%+v disposition=%d", got, cursor, disposition)
+	}
+}
+
+func TestMailboxBindsAnEmptyCursorPermanently(t *testing.T) {
+	var empty Mailbox
+	var other Mailbox
+	var cursor ClaimCursor
+	if got, disposition, token := empty.Claim(1_000, &cursor); disposition != ClaimNone || got != (Frame{}) || token != 0 {
+		t.Fatal("empty mailbox returned a claim")
+	}
+	if cursor.ownerMailbox != &empty || cursor.self != &cursor {
+		t.Fatal("empty mailbox did not bind cursor identity")
+	}
+	if !other.Publish(testFrame()) {
+		t.Fatal("other mailbox setup failed")
+	}
+	if _, disposition, _ := other.Claim(1_000, &cursor); disposition != ClaimNone {
+		t.Fatal("bound cursor moved to another mailbox")
+	}
+	var otherCursor ClaimCursor
+	if _, disposition, token := other.Claim(1_000, &otherCursor); disposition != ClaimFrame || token == 0 ||
+		!other.Complete(&otherCursor, token, true) {
+		t.Fatal("fresh cursor could not complete other mailbox claim")
+	}
+	if _, disposition, _ := empty.Claim(1_000, &otherCursor); disposition != ClaimNone {
+		t.Fatal("completed cursor changed mailbox ownership")
+	}
+}
+
+func TestMailboxNewerPublicationSupersedesInFlightRevision(t *testing.T) {
+	first := testFrame()
+	second := first
+	second.Sequence = 2
+
+	t.Run("successful older delivery", func(t *testing.T) {
+		var mailbox Mailbox
+		var cursor ClaimCursor
+		if !mailbox.Publish(first) {
+			t.Fatal("first publish failed")
+		}
+		_, disposition, firstToken := mailbox.Claim(1_000, &cursor)
+		if disposition != ClaimFrame || firstToken == 0 ||
+			!mailbox.Publish(second) ||
+			!mailbox.Complete(&cursor, firstToken, true) {
+			t.Fatal("older delivery setup failed")
+		}
+		if cursor.AppliedRevision != 1 {
+			t.Fatalf("older completion=%+v", cursor)
+		}
+		newest, disposition, newestToken := mailbox.Claim(1_000, &cursor)
+		if disposition != ClaimFrame || newest != second || newestToken == 0 ||
+			!mailbox.Complete(&cursor, newestToken, true) ||
+			cursor.AppliedRevision != 2 {
+			t.Fatalf("newest=%+v disposition=%d cursor=%+v", newest,
+				disposition, cursor)
+		}
+	})
+
+	t.Run("failed older delivery", func(t *testing.T) {
+		var mailbox Mailbox
+		var cursor ClaimCursor
+		if !mailbox.Publish(first) {
+			t.Fatal("first publish failed")
+		}
+		_, disposition, firstToken := mailbox.Claim(1_000, &cursor)
+		if disposition != ClaimFrame || firstToken == 0 ||
+			!mailbox.Publish(second) ||
+			!mailbox.Complete(&cursor, firstToken, false) {
+			t.Fatal("failed older delivery setup failed")
+		}
+		newest, disposition, newestToken := mailbox.Claim(1_000, &cursor)
+		if disposition != ClaimFrame || newest != second || newestToken == 0 ||
+			!mailbox.Complete(&cursor, newestToken, true) {
+			t.Fatalf("newest=%+v disposition=%d cursor=%+v", newest,
+				disposition, cursor)
+		}
+	})
+}
+
+func TestMailboxPreAdmissionRevalidationPreventsStaleActuation(t *testing.T) {
+	apply := testFrame()
+	apply.TimestampMicroseconds = 1_000
+	apply.TimeToLiveMicroseconds = 50
+	stop := apply
+	stop.Command = CommandStop
+	stop.BodyLow = 0
+	stop.BodyHigh = 0
+	stop.LeftTrigger = 0
+	stop.RightTrigger = 0
+	stop.Sequence = 2
+	stop.TimestampMicroseconds = 1_001
+
+	t.Run("already admitted apply is followed by stop", func(t *testing.T) {
+		var mailbox Mailbox
+		var cursor ClaimCursor
+		if !mailbox.Publish(apply) {
+			t.Fatal("apply publish failed")
+		}
+		_, disposition, applyToken := mailbox.Claim(1_000, &cursor)
+		if disposition != ClaimFrame ||
+			!mailbox.CanDeliver(&cursor, applyToken, 1_000) ||
+			!mailbox.Publish(stop) ||
+			!mailbox.Complete(&cursor, applyToken, true) {
+			t.Fatal("already-admitted setup failed")
+		}
+		claimedStop, disposition, stopToken := mailbox.Claim(1_001, &cursor)
+		if disposition != ClaimFrame || claimedStop.Command != CommandStop ||
+			!mailbox.CanDeliver(&cursor, stopToken, 1_001) ||
+			!mailbox.Complete(&cursor, stopToken, true) {
+			t.Fatal("stop did not follow admitted apply")
+		}
+		if _, disposition, _ := mailbox.Claim(1_051, &cursor); disposition != ClaimNone {
+			t.Fatal("completed stop produced duplicate expiry release")
+		}
+	})
+
+	t.Run("new stop invalidates unadmitted apply", func(t *testing.T) {
+		var mailbox Mailbox
+		var cursor ClaimCursor
+		if !mailbox.Publish(apply) {
+			t.Fatal("apply publish failed")
+		}
+		_, disposition, applyToken := mailbox.Claim(1_000, &cursor)
+		if disposition != ClaimFrame || !mailbox.Publish(stop) {
+			t.Fatal("stop setup failed")
+		}
+		if mailbox.CanDeliver(&cursor, applyToken, 1_001) {
+			t.Fatal("superseded apply remained eligible for admission")
+		}
+		if !mailbox.Complete(&cursor, applyToken, false) {
+			t.Fatal("stale apply cleanup failed")
+		}
+		claimedStop, disposition, stopToken := mailbox.Claim(1_001, &cursor)
+		if disposition != ClaimFrame || claimedStop.Command != CommandStop ||
+			!mailbox.CanDeliver(&cursor, stopToken, 1_001) ||
+			!mailbox.Complete(&cursor, stopToken, true) {
+			t.Fatal("stop was not delivered directly")
+		}
+	})
+
+	t.Run("expired apply becomes one release", func(t *testing.T) {
+		var mailbox Mailbox
+		var cursor ClaimCursor
+		if !mailbox.Publish(apply) {
+			t.Fatal("apply publish failed")
+		}
+		_, disposition, applyToken := mailbox.Claim(1_049, &cursor)
+		if disposition != ClaimFrame {
+			t.Fatal("apply claim failed")
+		}
+		if mailbox.CanDeliver(&cursor, applyToken, 1_050) {
+			t.Fatal("expired apply remained eligible for admission")
+		}
+		if !mailbox.Complete(&cursor, applyToken, false) {
+			t.Fatal("expired apply cleanup failed")
+		}
+		_, disposition, releaseToken := mailbox.Claim(1_050, &cursor)
+		if disposition != ClaimRelease ||
+			!mailbox.CanDeliver(&cursor, releaseToken, 1_050) ||
+			!mailbox.Complete(&cursor, releaseToken, true) {
+			t.Fatal("expired apply did not become release")
+		}
+		if _, disposition, _ := mailbox.Claim(2_000, &cursor); disposition != ClaimNone {
+			t.Fatal("expiry release was delivered more than once")
+		}
+	})
+}
+
+func TestMailboxPreAdmissionRevalidationRejectsInvalidClaimIdentity(t *testing.T) {
+	var mailbox Mailbox
+	var other Mailbox
+	var cursor ClaimCursor
+	if !mailbox.Publish(testFrame()) {
+		t.Fatal("publish failed")
+	}
+	_, disposition, token := mailbox.Claim(1_000, &cursor)
+	if disposition != ClaimFrame || token == 0 {
+		t.Fatal("claim failed")
+	}
+
+	copyOfCursor := cursor
+	checks := []struct {
+		name    string
+		mailbox *Mailbox
+		cursor  *ClaimCursor
+		token   uint64
+	}{
+		{name: "zero token", mailbox: &mailbox, cursor: &cursor},
+		{name: "wrong token", mailbox: &mailbox, cursor: &cursor, token: token + 1},
+		{name: "wrong mailbox", mailbox: &other, cursor: &cursor, token: token},
+		{name: "copied cursor", mailbox: &mailbox, cursor: &copyOfCursor, token: token},
+	}
+	for _, check := range checks {
+		t.Run(check.name, func(t *testing.T) {
+			if check.mailbox.CanDeliver(check.cursor, check.token, 1_000) {
+				t.Fatal("invalid claim identity was admitted")
+			}
+		})
+	}
+
+	if !mailbox.CanDeliver(&cursor, token, 1_000) ||
+		!mailbox.Complete(&cursor, token, false) {
+		t.Fatal("invalid checks disturbed the original claim")
+	}
+	_, disposition, retryToken := mailbox.Claim(1_000, &cursor)
+	if disposition != ClaimFrame || retryToken == 0 || retryToken == token {
+		t.Fatal("retry claim failed")
+	}
+	if mailbox.CanDeliver(&cursor, token, 1_000) {
+		t.Fatal("stale token admitted retry claim")
+	}
+	if !mailbox.CanDeliver(&cursor, retryToken, 1_000) ||
+		!mailbox.Complete(&cursor, retryToken, true) {
+		t.Fatal("valid retry claim was not admitted")
+	}
+	if mailbox.CanDeliver(&cursor, retryToken, 1_000) {
+		t.Fatal("completed token remained admissible")
+	}
+}
+
+func TestMailboxTokenWrapAndBoundCursorCopyFailClosed(t *testing.T) {
+	var mailbox Mailbox
+	var cursor ClaimCursor
+	cursor.nextToken = ^uint64(0)
+	if !mailbox.Publish(testFrame()) {
+		t.Fatal("publish failed")
+	}
+	_, disposition, token := mailbox.Claim(1_000, &cursor)
+	if disposition != ClaimFrame || token != 1 {
+		t.Fatalf("wrapped token=%d disposition=%d", token, disposition)
+	}
+	copyOfCursor := cursor
+	if mailbox.Complete(&copyOfCursor, token, true) {
+		t.Fatal("copied cursor completed original claim")
+	}
+	if _, copyDisposition, copyToken := mailbox.Claim(1_000, &copyOfCursor); copyDisposition != ClaimNone || copyToken != 0 {
+		t.Fatal("copied cursor claimed from its apparent mailbox")
+	}
+	if !mailbox.Complete(&cursor, token, true) {
+		t.Fatal("copied cursor disturbed original claim")
+	}
+}
+
+func TestMailboxFailedDeliveryDeferMakesClaimRetryable(t *testing.T) {
+	var mailbox Mailbox
+	var cursor ClaimCursor
+	if !mailbox.Publish(testFrame()) {
+		t.Fatal("publish failed")
+	}
+	var firstToken uint64
+	func() {
+		delivered := false
+		_, disposition, token := mailbox.Claim(1_000, &cursor)
+		firstToken = token
+		if disposition != ClaimFrame || token == 0 {
+			t.Fatal("claim failed")
+		}
+		defer func() {
+			if !mailbox.Complete(&cursor, token, delivered) {
+				t.Fatal("deferred failed-delivery completion failed")
+			}
+		}()
+		// A transport write returns or panics before delivered becomes true.
+	}()
+	_, disposition, retryToken := mailbox.Claim(1_000, &cursor)
+	if disposition != ClaimFrame || retryToken == 0 ||
+		retryToken == firstToken ||
+		!mailbox.Complete(&cursor, retryToken, true) {
+		t.Fatal("deferred cleanup did not make the claim retryable")
+	}
+}
+
+func TestMailboxCompletedStopSuppressesExpiryReleaseButNeutralDoesNot(t *testing.T) {
+	stop := testFrame()
+	stop.Command = CommandStop
+	stop.BodyLow = 0
+	stop.BodyHigh = 0
+	stop.LeftTrigger = 0
+	stop.RightTrigger = 0
+	stop.TimestampMicroseconds = 1_000
+	stop.TimeToLiveMicroseconds = 50
+	var stopMailbox Mailbox
+	var stopCursor ClaimCursor
+	if !stopMailbox.Publish(stop) {
+		t.Fatal("stop publish failed")
+	}
+	claimed, disposition, token := stopMailbox.Claim(1_000, &stopCursor)
+	if disposition != ClaimFrame || claimed != stop || token == 0 ||
+		!stopMailbox.Complete(&stopCursor, token, true) {
+		t.Fatal("stop completion failed")
+	}
+	if stopCursor.AppliedRevision != 1 || stopCursor.ReleasedRevision != 1 {
+		t.Fatalf("stop did not complete both watermarks: %+v", stopCursor)
+	}
+	if _, disposition, _ := stopMailbox.Claim(1_050, &stopCursor); disposition != ClaimNone {
+		t.Fatal("completed stop produced a redundant expiry release")
+	}
+
+	neutral := stop
+	neutral.Command = CommandNeutral
+	var neutralMailbox Mailbox
+	var neutralCursor ClaimCursor
+	if !neutralMailbox.Publish(neutral) {
+		t.Fatal("neutral publish failed")
+	}
+	_, disposition, token = neutralMailbox.Claim(1_000, &neutralCursor)
+	if disposition != ClaimFrame || token == 0 ||
+		!neutralMailbox.Complete(&neutralCursor, token, true) {
+		t.Fatal("neutral completion failed")
+	}
+	if neutralCursor.AppliedRevision != 1 || neutralCursor.ReleasedRevision != 0 {
+		t.Fatalf("neutral incorrectly retired the lease: %+v", neutralCursor)
+	}
+	_, disposition, token = neutralMailbox.Claim(1_050, &neutralCursor)
+	if disposition != ClaimRelease || token == 0 ||
+		!neutralMailbox.Complete(&neutralCursor, token, true) {
+		t.Fatal("neutral lease did not release on expiry")
 	}
 }
 
@@ -171,10 +552,11 @@ func TestMailboxClaimRejectsFarFutureFrameWithOneRelease(t *testing.T) {
 	if !mailbox.Publish(frame) {
 		t.Fatal("publish failed")
 	}
-	if got, disposition := mailbox.Claim(5_000, &cursor); disposition != ClaimRelease || got != (Frame{}) {
+	if got, disposition, token := mailbox.Claim(5_000, &cursor); disposition != ClaimRelease || got != (Frame{}) ||
+		token == 0 || !mailbox.Complete(&cursor, token, true) {
 		t.Fatalf("far-future claim=%+v disposition=%d", got, disposition)
 	}
-	if got, disposition := mailbox.Claim(5_000, &cursor); disposition != ClaimNone || got != (Frame{}) {
+	if got, disposition, token := mailbox.Claim(5_000, &cursor); disposition != ClaimNone || got != (Frame{}) || token != 0 {
 		t.Fatal("far-future revision released more than once")
 	}
 }
@@ -232,8 +614,9 @@ func TestMailboxAndCodecHotPathDoesNotAllocate(t *testing.T) {
 		if !mailbox.Publish(decoded) {
 			panic("publish failed")
 		}
-		if _, disposition := mailbox.Claim(frame.TimestampMicroseconds,
-			&cursor); disposition != ClaimFrame {
+		if _, disposition, token := mailbox.Claim(frame.TimestampMicroseconds,
+			&cursor); disposition != ClaimFrame || token == 0 ||
+			!mailbox.Complete(&cursor, token, true) {
 			panic("claim failed")
 		}
 		if _, _, ok := mailbox.ReadLatest(); !ok {
@@ -256,15 +639,21 @@ func TestNilMailboxAndNilClaimRevisionFailClosed(t *testing.T) {
 	if got, revision, ok := mailbox.ReadFresh(0); ok || revision != 0 || got != (Frame{}) {
 		t.Fatal("nil mailbox returned fresh state")
 	}
-	if got, disposition := mailbox.Claim(0, nil); disposition != ClaimNone || got != (Frame{}) {
+	if got, disposition, token := mailbox.Claim(0, nil); disposition != ClaimNone || got != (Frame{}) || token != 0 {
 		t.Fatal("nil mailbox returned claimed state")
+	}
+	if mailbox.Complete(nil, 1, true) {
+		t.Fatal("nil mailbox completed a claim")
 	}
 	var live Mailbox
 	if !live.Publish(testFrame()) {
 		t.Fatal("live mailbox publish failed")
 	}
-	if got, disposition := live.Claim(1_000, nil); disposition != ClaimNone || got != (Frame{}) {
+	if got, disposition, token := live.Claim(1_000, nil); disposition != ClaimNone || got != (Frame{}) || token != 0 {
 		t.Fatal("nil claim revision returned state")
+	}
+	if live.Complete(nil, 1, true) {
+		t.Fatal("nil cursor completed a claim")
 	}
 }
 

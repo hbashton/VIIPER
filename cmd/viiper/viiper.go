@@ -10,35 +10,37 @@ import (
 	"time"
 
 	"github.com/Alia5/VIIPER/internal/config"
-	"github.com/Alia5/VIIPER/internal/configpaths"
 	"github.com/Alia5/VIIPER/internal/log"
 	"github.com/Alia5/VIIPER/internal/updater"
 
-	_ "github.com/Alia5/VIIPER/internal/registry" // Register all device handlers
+	_ "github.com/Alia5/VIIPER/internal/devicecatalog" // Register all device handlers
 
 	"github.com/alecthomas/kong"
-	kongtoml "github.com/alecthomas/kong-toml"
-	kongyaml "github.com/alecthomas/kong-yaml"
 	"golang.org/x/term"
 )
 
 func main() {
 	handlePlainHelpFlag()
 
-	userCfg := findUserConfig(os.Args[1:])
-	jsonPaths, yamlPaths, tomlPaths := configpaths.ConfigCandidatePaths(userCfg)
+	configuration, configOnly, err := configurationOptions(os.Args[1:])
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "failed to load configuration:", err)
+		os.Exit(2)
+	}
 
 	var cli config.CLI
-	ctx := kong.Parse(&cli,
+	options := []kong.Option{
 		kong.Name("VIIPER"),
 		kong.Description(Description()),
 		kong.UsageOnError(),
 		kong.Help(helpWithASCIIArt),
-		// Load configuration from JSON/YAML/TOML in priority order; flags/env override config values.
-		kong.Configuration(kong.JSON, jsonPaths...),
-		kong.Configuration(kongyaml.Loader, yamlPaths...),
-		kong.Configuration(kongtoml.Loader, tomlPaths...),
-	)
+	}
+	options = append(options, configuration...)
+	ctx := kong.Parse(&cli, options...)
+	if cli.ConfigOnly != configOnly {
+		fmt.Fprintln(os.Stderr, "--config-only must be selected explicitly on the command line")
+		os.Exit(2)
+	}
 
 	logger, closeFiles, err := log.SetupLogger(cli.Log.Level, cli.Log.File) // nolint
 	if err != nil {

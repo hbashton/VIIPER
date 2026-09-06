@@ -149,6 +149,54 @@ func (c *Client) DeviceRemoveCtx(ctx context.Context, busID uint32, devID string
 	return parse[viipertypes.DeviceRemoveResponse](raw)
 }
 
+// UpdateNS2ProRuntimeStatusV1 replaces the exact mutable power snapshot for
+// one virtual Switch 2 Pro controller. It is intentionally separate from
+// DeviceAdd metadata and streaming input state.
+func (c *Client) UpdateNS2ProRuntimeStatusV1(busID uint32, devID string,
+	status viipertypes.NS2ProRuntimeStatusV1,
+) (*viipertypes.NS2ProRuntimeStatusUpdateResponseV1, error) {
+	return c.UpdateNS2ProRuntimeStatusV1Ctx(context.Background(), busID,
+		devID, status)
+}
+
+func (c *Client) UpdateNS2ProRuntimeStatusV1Ctx(ctx context.Context,
+	busID uint32, devID string, status viipertypes.NS2ProRuntimeStatusV1,
+) (*viipertypes.NS2ProRuntimeStatusUpdateResponseV1, error) {
+	if status.Version != 1 {
+		return nil, fmt.Errorf("ns2pro runtime status version must be 1")
+	}
+	if status.BatteryLevel > 9 {
+		return nil, fmt.Errorf("ns2pro battery level must be in 0..9")
+	}
+	if status.BatteryVolts < 2500 || status.BatteryVolts > 5000 {
+		return nil, fmt.Errorf("ns2pro battery voltage must be in 2500..5000 mV")
+	}
+	if devID == "" {
+		return nil, fmt.Errorf("ns2pro device ID is required")
+	}
+	payload, err := json.Marshal(status)
+	if err != nil {
+		return nil, fmt.Errorf("marshal ns2pro runtime status v1: %w", err)
+	}
+	const path = "bus/{busId}/{devId}/ns2pro-status-v1"
+	pathParams := map[string]string{
+		"busId": fmt.Sprintf("%d", busID),
+		"devId": devID,
+	}
+	raw, err := c.transport.DoCtx(ctx, path, string(payload), pathParams)
+	if err != nil {
+		return nil, err
+	}
+	response, err := parse[viipertypes.NS2ProRuntimeStatusUpdateResponseV1](raw)
+	if err != nil {
+		return nil, err
+	}
+	if response.Version != 1 || !response.Updated {
+		return nil, fmt.Errorf("invalid ns2pro runtime status v1 acknowledgement")
+	}
+	return response, nil
+}
+
 // DevicesList retrieves a list of all devices attached to the specified bus.
 // Each device entry includes bus ID, device ID, VID, PID, and device type.
 func (c *Client) DevicesList(busID uint32) (*viipertypes.DevicesListResponse, error) {

@@ -129,7 +129,7 @@ func (t *Transport) DoCtx(ctx context.Context, path string, payload any, pathPar
 			return "", err
 		}
 		sessionKey := auth.DeriveSessionKey(key, serverNonce, clientNonce)
-		conn, err = auth.WrapConn(conn, sessionKey)
+		conn, err = auth.WrapConn(conn, sessionKey, auth.Client)
 		if err != nil {
 			conn.Close() // nolint
 			return "", err

@@ -11,9 +11,10 @@ import (
 
 // Request contains route parameters and additional args from the command.
 type Request struct {
-	Ctx     context.Context
-	Params  map[string]string
-	Payload string
+	Ctx           context.Context
+	Params        map[string]string
+	Payload       string
+	Authenticated bool
 }
 
 // Response holds the JSON string to return to the client.

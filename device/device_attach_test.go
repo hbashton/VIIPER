@@ -15,7 +15,7 @@ import (
 
 	viiperTesting "github.com/Alia5/VIIPER/_testing"
 
-	_ "github.com/Alia5/VIIPER/internal/registry" // Register devices
+	_ "github.com/Alia5/VIIPER/internal/devicecatalog" // Register devices
 )
 
 func TestDualSenseRegistryOnlyExposesV5Contract(t *testing.T) {

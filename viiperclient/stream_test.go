@@ -215,7 +215,7 @@ func TestEncryptedStream(t *testing.T) {
 		}
 
 		sessionKey := auth.DeriveSessionKey(key, serverNonce, clientNonce)
-		secureConn, err := auth.WrapConn(conn, sessionKey)
+		secureConn, err := auth.WrapConn(conn, sessionKey, auth.Server)
 		assert.NoError(t, err)
 
 		rr := bufio.NewReader(secureConn)

@@ -11,7 +11,7 @@ const InputStateVersion uint16 = 1
 //
 // Guide and Share are explicit so callers cannot accidentally lose them while
 // translating from a physical controller. They are not members of the pinned
-// 14-byte base input body; EncodeBaseInputBodyInto rejects them rather than
+// standard 14-byte input payload; EncodeBaseInputBodyInto rejects them rather than
 // silently discarding them.
 type InputStateV1 struct {
 	Menu bool
@@ -45,13 +45,15 @@ type InputStateV1 struct {
 	RightStickY int16
 }
 
-// Validate rejects semantic states that cannot represent one physical D-pad.
+// Validate enforces constraints from MS-GIPUSB 1.0 section 3.1.5.6.1.1. All
+// four D-pad bits are independent wire facts; opposing directions are valid at
+// this boundary and any SOCD policy belongs in profile mapping.
 func (state InputStateV1) Validate() error {
-	if state.DPadUp && state.DPadDown {
-		return fmt.Errorf("%w: up and down", ErrConflictingDPad)
+	if state.LeftTrigger > 1023 {
+		return fmt.Errorf("%w: left=%d", ErrTriggerOutOfRange, state.LeftTrigger)
 	}
-	if state.DPadLeft && state.DPadRight {
-		return fmt.Errorf("%w: left and right", ErrConflictingDPad)
+	if state.RightTrigger > 1023 {
+		return fmt.Errorf("%w: right=%d", ErrTriggerOutOfRange, state.RightTrigger)
 	}
 	return nil
 }
@@ -63,7 +65,7 @@ func (state InputStateV1) ValidateBaseInputBody() error {
 		return err
 	}
 	if state.Guide {
-		return ErrGuideRequiresVirtualKey
+		return ErrGuideRequiresStatusMessage
 	}
 	if state.Share {
 		return ErrShareRequiresExtension

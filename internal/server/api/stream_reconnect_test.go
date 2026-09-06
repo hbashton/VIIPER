@@ -12,8 +12,8 @@ import (
 
 	"github.com/Alia5/VIIPER/device/dualsense"
 	"github.com/Alia5/VIIPER/device/dualshock4"
+	_ "github.com/Alia5/VIIPER/internal/devicecatalog" // Register devices.
 	"github.com/Alia5/VIIPER/internal/log"
-	_ "github.com/Alia5/VIIPER/internal/registry" // Register devices.
 	"github.com/Alia5/VIIPER/internal/server/api"
 	"github.com/Alia5/VIIPER/internal/server/api/handler"
 	srvusb "github.com/Alia5/VIIPER/internal/server/usb"

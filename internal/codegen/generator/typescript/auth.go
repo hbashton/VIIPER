@@ -14,12 +14,14 @@ import { Socket } from 'net';
 import { createCipheriv, createDecipheriv, pbkdf2Sync, randomBytes, createHash, createHmac } from 'crypto';
 import { Duplex } from 'stream';
 
-const HANDSHAKE_MAGIC = 'eVI1\x00';
+const HANDSHAKE_MAGIC = 'eVI2\x00';
 const NONCE_SIZE = 32;
-const AUTH_CONTEXT = 'VIIPER-Auth-v1';
-const SESSION_CONTEXT = 'VIIPER-Session-v1';
+const AUTH_CONTEXT = 'VIIPER-Auth-v2';
+const SESSION_CONTEXT = 'VIIPER-Session-v2';
 const PBKDF2_ITERATIONS = 100000;
 const PBKDF2_SALT = 'VIIPER-Key-v1';
+const MAX_PACKET_SIZE = 2 * 1024 * 1024;
+const MAX_COUNTER = BigInt('18446744073709551615');
 
 /**
  * Derive a 32-byte key from password using PBKDF2-SHA256
@@ -66,14 +68,8 @@ export async function performAuthHandshake(socket: Socket, password: string): Pr
 	
 	const prefix = response.slice(0, 3).toString();
 	if (prefix !== 'OK\x00') {
-		const remaining = await readUntilEnd(socket);
-		const fullResponse = Buffer.concat([response, remaining]).toString().trim();
-		try {
-			const error = JSON.parse(fullResponse);
-			throw new Error(` + "`${error.status} ${error.title}: ${error.detail}`" + `);
-		} catch {
-			throw new Error(` + "`Invalid handshake response: ${fullResponse}`" + `);
-		}
+		socket.destroy();
+		throw new Error('Authentication rejected; the client and server must both support VIIPER auth v2');
 	}
 	
 	const serverNonce = response.slice(3);
@@ -88,49 +84,29 @@ export async function performAuthHandshake(socket: Socket, password: string): Pr
  */
 function readExactly(socket: Socket, length: number): Promise<Buffer> {
 	return new Promise((resolve, reject) => {
-		const chunks: Buffer[] = [];
-		let received = 0;
-		
-		const onData = (chunk: Buffer) => {
-			chunks.push(chunk);
-			received += chunk.length;
-			
-			if (received >= length) {
-				socket.removeListener('data', onData);
-				socket.removeListener('error', onError);
-				socket.removeListener('end', onEnd);
-				
-				const buffer = Buffer.concat(chunks);
-				resolve(buffer.slice(0, length));
+		// Read only the handshake bytes; a coalesced first record stays buffered.
+		socket.pause();
+		const cleanup = () => {
+			socket.removeListener('readable', onReadable);
+			socket.removeListener('error', onError);
+			socket.removeListener('end', onEnd);
+			socket.removeListener('close', onEnd);
+		};
+		const onReadable = () => {
+			const data = socket.read(length) as Buffer | null;
+			if (data !== null) {
+				cleanup();
+				if (data.length !== length) reject(new Error('Truncated handshake response'));
+				else resolve(data);
 			}
 		};
-		
-		const onError = (err: Error) => {
-			socket.removeListener('data', onData);
-			socket.removeListener('end', onEnd);
-			reject(err);
-		};
-		
-		const onEnd = () => {
-			socket.removeListener('data', onData);
-			socket.removeListener('error', onError);
-			reject(new Error('Connection closed before receiving full response'));
-		};
-		
-		socket.on('data', onData);
+		const onError = (err: Error) => { cleanup(); reject(err); };
+		const onEnd = () => onError(new Error('Connection closed before receiving full response'));
+		socket.on('readable', onReadable);
 		socket.on('error', onError);
 		socket.on('end', onEnd);
-	});
-}
-
-/**
- * Read until socket closes
- */
-function readUntilEnd(socket: Socket): Promise<Buffer> {
-	return new Promise((resolve) => {
-		const chunks: Buffer[] = [];
-		socket.on('data', (chunk: Buffer) => chunks.push(chunk));
-		socket.on('end', () => resolve(Buffer.concat(chunks)));
+		socket.on('close', onEnd);
+		onReadable();
 	});
 }
 
@@ -140,24 +116,37 @@ function readUntilEnd(socket: Socket): Promise<Buffer> {
 class EncryptedSocket extends Duplex {
 	private socket: Socket;
 	private sessionKey: Buffer;
-	private sendCounter: number = 0;
+	private sendCounter: bigint = BigInt(0);
+	private recvCounter: bigint = BigInt(0);
 	private recvBuffer: Buffer = Buffer.alloc(0);
+	private socketEnded = false;
 	
 	constructor(socket: Socket, sessionKey: Buffer) {
 		super();
 		this.socket = socket;
-		this.sessionKey = sessionKey;
+		if (sessionKey.length !== 32) throw new Error('Session key must be 32 bytes');
+		this.sessionKey = Buffer.from(sessionKey);
 		
 		socket.on('data', (chunk: Buffer) => this.handleIncomingData(chunk));
-		socket.on('error', (err: Error) => this.emit('error', err));
-		socket.on('end', () => this.emit('end'));
-		socket.on('close', () => this.emit('close'));
+		socket.on('error', (err: Error) => this.destroy(err));
+		socket.on('end', () => {
+			this.socketEnded = true;
+			this.handleIncomingData(Buffer.alloc(0));
+		});
+		socket.on('close', () => {
+			if (!this.socketEnded) this.destroy(new Error('Encrypted transport closed unexpectedly'));
+		});
+		socket.resume();
 	}
 	
 	_write(chunk: Buffer, encoding: string, callback: (error?: Error | null) => void): void {
 		try {
+			if (chunk.length === 0) { callback(); return; }
+			if (chunk.length > MAX_PACKET_SIZE - 28 || this.sendCounter === MAX_COUNTER)
+				throw new Error('Invalid encrypted record length or exhausted counter');
 			const nonce = Buffer.alloc(12);
-			nonce.writeBigUInt64BE(BigInt(this.sendCounter), 4);
+			// Client direction domain is zero; server uses one.
+			nonce.writeBigUInt64BE(this.sendCounter, 4);
 			this.sendCounter++;
 			
 			const cipher = createCipheriv('chacha20-poly1305', this.sessionKey, nonce, {
@@ -177,14 +166,19 @@ class EncryptedSocket extends Duplex {
 	}
 	
 	_read(size: number): void {
-		// Called when consumer wants to read, but we push data in handleIncomingData
+		if (this.handleIncomingData(Buffer.alloc(0))) this.socket.resume();
 	}
 	
-	private handleIncomingData(chunk: Buffer): void {
+	private handleIncomingData(chunk: Buffer): boolean {
+		if (this.destroyed) return false;
 		this.recvBuffer = Buffer.concat([this.recvBuffer, chunk]);
 		
 		while (this.recvBuffer.length >= 4) {
 			const packetLength = this.recvBuffer.readUInt32BE(0);
+			if (packetLength < 28 || packetLength > MAX_PACKET_SIZE) {
+				this.destroy(new Error('Invalid encrypted record length'));
+				return false;
+			}
 			
 			if (this.recvBuffer.length < 4 + packetLength) {
 				break;
@@ -195,6 +189,9 @@ class EncryptedSocket extends Duplex {
 			
 			try {
 				const nonce = packet.slice(0, 12);
+				if (this.recvCounter === MAX_COUNTER || nonce.readUInt32BE(0) !== 1 ||
+					nonce.readBigUInt64BE(4) !== this.recvCounter)
+					throw new Error('Invalid encrypted record sequence or direction');
 				const ciphertext = packet.slice(12, packet.length - 16);
 				const authTag = packet.slice(packet.length - 16);
 				
@@ -204,12 +201,21 @@ class EncryptedSocket extends Duplex {
 				decipher.setAuthTag(authTag);
 				
 				const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
-				
-				this.push(plaintext);
+				this.recvCounter++;
+				if (plaintext.length > 0 && !this.push(plaintext)) {
+					this.socket.pause();
+					return false;
+				}
 			} catch (err) {
-				this.emit('error', new Error(` + "`Decryption failed: ${(err as Error).message}`" + `));
+				this.destroy(new Error('Invalid encrypted record'));
+				return false;
 			}
 		}
+		if (this.socketEnded) {
+			if (this.recvBuffer.length !== 0) this.destroy(new Error('Truncated encrypted record'));
+			else this.push(null);
+		}
+		return true;
 	}
 	
 	setNoDelay(noDelay: boolean): this {
@@ -217,13 +223,15 @@ class EncryptedSocket extends Duplex {
 		return this;
 	}
 	
-	end(callback?: () => void): this {
+	_final(callback: (error?: Error | null) => void): void {
 		this.socket.end(callback);
-		return this;
 	}
-	
-	on(event: string | symbol, listener: (...args: any[]) => void): this {
-		return super.on(event, listener);
+
+	_destroy(error: Error | null, callback: (error?: Error | null) => void): void {
+		this.socket.destroy();
+		this.sessionKey.fill(0);
+		this.recvBuffer = Buffer.alloc(0);
+		callback(error);
 	}
 }
 

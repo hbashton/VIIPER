@@ -58,7 +58,7 @@ func (c *Client) OpenStream(ctx context.Context, busID uint32, devID string) (*D
 			return nil, err
 		}
 		sessionKey := auth.DeriveSessionKey(key, serverNonce, clientNonce)
-		conn, err = auth.WrapConn(conn, sessionKey)
+		conn, err = auth.WrapConn(conn, sessionKey, auth.Client)
 		if err != nil {
 			conn.Close() // nolint
 			return nil, err

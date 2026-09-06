@@ -50,6 +50,6 @@ func DeriveSessionKey(key, serverNonce, clientNonce []byte) []byte {
 	h.Write(key)
 	h.Write(serverNonce)
 	h.Write(clientNonce)
-	h.Write([]byte("VIIPER-Session-v1"))
+	h.Write([]byte("VIIPER-Session-v2"))
 	return h.Sum(nil)
 }

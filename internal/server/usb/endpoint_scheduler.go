@@ -31,9 +31,21 @@ const (
 )
 
 type endpointWorkerKey struct {
-	ep   uint32
-	dir  uint32
-	kind endpointWorkerKind
+	interfaceNumber  uint8
+	alternateSetting uint8
+	ep               uint32
+	dir              uint32
+	kind             endpointWorkerKind
+}
+
+// endpointDescriptorBinding identifies one endpoint in one exact interface
+// alternate setting. Endpoint addresses can be reused by different alternate
+// settings with different transfer types, intervals, and capacities; address
+// alone is therefore not sufficient worker identity.
+type endpointDescriptorBinding struct {
+	interfaceNumber  uint8
+	alternateSetting uint8
+	descriptor       *usbdesc.EndpointDescriptor
 }
 
 type endpointWaitResult uint8
@@ -42,6 +54,14 @@ const (
 	endpointWaitDeadline endpointWaitResult = iota
 	endpointWaitWake
 	endpointWaitCancelled
+)
+
+type preparedAdmissionResult uint8
+
+const (
+	preparedAdmissionRetired preparedAdmissionResult = iota
+	preparedAdmissionDeferred
+	preparedAdmissionAccepted
 )
 
 type endpointClock interface {
@@ -101,6 +121,17 @@ type interruptInClaimer interface {
 type inputReportSnapshotter interface {
 	SnapshotInputReportInto(destination []byte) (n int, presentationVersion uint64)
 	InputReportSnapshotCurrent(presentationVersion uint64) bool
+}
+
+// inputReportIDSnapshotter extends versioned EP0 serialization to devices with
+// more than the legacy report ID 0x01. The request ID is bound into each copy;
+// InputReportSnapshotCurrent still validates the device-wide presentation
+// version immediately under response send ownership.
+type inputReportIDSnapshotter interface {
+	inputReportSnapshotter
+	SupportsInputReportSnapshot(reportID uint8) bool
+	SnapshotInputReportForIDInto(reportID uint8,
+		destination []byte) (n int, presentationVersion uint64)
 }
 
 type microphonePacketReader interface {
@@ -543,8 +574,28 @@ func (w *endpointWorker) claimNext() int {
 }
 
 func (w *endpointWorker) finishCurrent(idx int, completed bool) {
+	w.finishCurrentWithRetention(idx, completed, false)
+}
+
+// finishCurrentWithRetention keeps a host request pending when source
+// admission rejected bytes before any RET_SUBMIT was emitted. The first job
+// remains endpoint-ordered and is retried at the next service opportunity;
+// unlink/reset can still cancel it because responseStarted remains false.
+func (w *endpointWorker) finishCurrentWithRetention(
+	idx int, completed, retain bool,
+) {
 	w.mu.Lock()
 	if w.inFlight == idx {
+		job := &w.slots[idx]
+		if retain && !job.cancelled && job.generation == w.generation {
+			now := w.clock.Now()
+			job.serviceAt = now.Add(w.interval)
+			job.serviceEnd = job.serviceAt.Add(job.duration)
+			w.reflowQueueLocked(job.serviceEnd, now)
+			w.mu.Unlock()
+			w.signal()
+			return
+		}
 		if completed {
 			w.telemetry.completed.Add(1)
 		}
@@ -566,6 +617,23 @@ func (w *endpointWorker) currentActive(idx int) bool {
 }
 
 func (w *endpointWorker) markResponseStarted(idx int) bool {
+	return w.markResponseStartedWithAdmission(
+		idx, nil, inputpresentation.Claim{}, false,
+	)
+}
+
+// markResponseStartedWithAdmission is the one transfer boundary between a
+// cancellable endpoint job and a response which owns stream ordering. The
+// worker lock makes endpoint cancellation/generation validation, optional
+// source admission, and responseStarted publication indivisible to unlink and
+// reset. The response writer already owns its send lock when it invokes this
+// method, so a true return is immediately followed by the first response byte.
+func (w *endpointWorker) markResponseStartedWithAdmission(
+	idx int,
+	source inputpresentation.AdmissionSource,
+	claim inputpresentation.Claim,
+	requireAdmission bool,
+) bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.inFlight != idx {
@@ -575,8 +643,47 @@ func (w *endpointWorker) markResponseStarted(idx int) bool {
 	if job.cancelled || job.generation != w.generation {
 		return false
 	}
+	if requireAdmission && (source == nil ||
+		!source.CanAdmitInputPresentation(claim, w.clock.Now())) {
+		return false
+	}
 	job.responseStarted = true
 	return true
+}
+
+// admitPreparedResponse is the only prepared-source copy boundary. Lock order
+// is responseWriter.mu -> endpointWorker.mu -> source. Unlink/reset take and
+// release endpointWorker.mu before they can enqueue a response, and lifecycle
+// retirement is invoked only after worker reset releases that lock. Prepared
+// sources must not call back into the transport, so this order has no cycle.
+//
+// A successful return transfers the job from cancellation ownership to the
+// serialized response. The worker lock is released before socket I/O and final
+// source resolution.
+func (w *endpointWorker) admitPreparedResponse(
+	idx int,
+	source inputpresentation.PreparedSource,
+	claim inputpresentation.Claim,
+	destination []byte,
+) preparedAdmissionResult {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.inFlight != idx || w.ctx.Err() != nil {
+		return preparedAdmissionRetired
+	}
+	job := &w.slots[idx]
+	if job.cancelled || job.generation != w.generation || source == nil ||
+		!source.OwnsInputPresentationEndpoint(uint8(w.ep)) {
+		return preparedAdmissionRetired
+	}
+	if len(destination) != claim.Size || cap(destination) != claim.Size ||
+		!source.AdmitAndCopyInputPresentation(
+			claim, destination, w.clock.Now()) {
+		clear(destination)
+		return preparedAdmissionDeferred
+	}
+	job.responseStarted = true
+	return preparedAdmissionAccepted
 }
 
 // beginSideEffect transfers ISO-OUT ownership from the cancellable pending
@@ -689,10 +796,10 @@ func (w *endpointWorker) run() {
 			}
 		}
 
-		var completed bool
+		var completed, retain bool
 		switch w.kind {
 		case interruptInWorker:
-			completed = w.processInterruptIn(timer, idx)
+			completed, retain = w.processInterruptIn(timer, idx)
 		case isoInWorker:
 			completed = w.processIsoIn(timer, idx)
 		case isoOutWorker:
@@ -700,7 +807,7 @@ func (w *endpointWorker) run() {
 		case genericInWorker:
 			completed = w.processGenericIn(idx)
 		}
-		w.finishCurrent(idx, completed)
+		w.finishCurrentWithRetention(idx, completed, retain)
 	}
 }
 
@@ -735,9 +842,11 @@ func (w *endpointWorker) processGenericIn(idx int) bool {
 	return written
 }
 
-func (w *endpointWorker) processInterruptIn(timer *time.Timer, idx int) bool {
+func (w *endpointWorker) processInterruptIn(
+	timer *time.Timer, idx int,
+) (bool, bool) {
 	if !w.waitForPhase(timer, idx, 0) {
-		return false
+		return false, false
 	}
 
 	w.mu.Lock()
@@ -748,102 +857,199 @@ func (w *endpointWorker) processInterruptIn(timer *time.Timer, idx int) bool {
 	w.mu.Unlock()
 	w.telemetry.queueAge.record(w.clock.Now().Sub(queuedAt))
 
-	var response []byte
-	presenter, hasPresentationSource := w.dev.(inputpresentation.Source)
-	presentationClaimed := hasPresentationSource &&
-		presenter.OwnsInputPresentationEndpoint(uint8(w.ep))
-	claimer, legacyClaimed := w.dev.(interruptInClaimer)
-	// A modern Source owns endpoint routing for the whole composite device.
-	// Falling back to its legacy, endpoint-agnostic compatibility methods on an
-	// auxiliary endpoint would recreate the exact cross-endpoint consumption
-	// that the Source contract prevents.
-	legacyClaimed = legacyClaimed && !hasPresentationSource
-	var presentationClaim inputpresentation.Claim
-	var presentationClaimFits bool
-	var claimToken uint64
-	if presentationClaimed {
-		destination := w.reportBuffer
-		if xferLen < len(destination) {
-			destination = destination[:xferLen]
-		}
-		presentationClaim = presenter.ClaimInputPresentation(
-			destination, time.Now())
-		n := presentationClaim.Size
-		presentationClaimFits = presentationClaim.Valid() &&
-			n <= len(destination)
-		if !presentationClaimFits {
-			n = 0
-		}
-		response = destination[:n]
-	} else if legacyClaimed {
-		destination := w.reportBuffer
-		if xferLen < len(destination) {
-			destination = destination[:xferLen]
-		}
-		n, token := claimer.ClaimInputReport(destination)
-		claimToken = token
-		if n < 0 {
-			n = 0
-		}
-		n = min(n, len(destination))
-		response = destination[:n]
-	} else if builder, ok := w.dev.(interruptInBuilder); ok &&
-		!hasPresentationSource {
-		destination := w.reportBuffer
-		if xferLen < len(destination) {
-			destination = destination[:xferLen]
-		}
-		n := builder.BuildInputReportInto(destination)
-		if n < 0 {
-			n = 0
-		}
-		n = min(n, len(destination))
-		response = destination[:n]
-	} else {
-		attemptCtx, cancel := context.WithTimeout(w.ctx, w.interval)
-		deviceResponse := w.dev.HandleTransfer(attemptCtx, w.ep, w.dir, nil)
-		expired := deviceResponse == nil && errors.Is(attemptCtx.Err(), context.DeadlineExceeded)
-		cancel()
-		if w.ctx.Err() != nil {
-			return false
-		}
-		if deviceResponse != nil {
-			response = deviceResponse
-			w.lastResponse = resizeBytes(w.lastResponse, len(deviceResponse))
-			copy(w.lastResponse, deviceResponse)
-		} else if expired && len(w.lastResponse) > 0 {
-			response = w.lastResponse
-		}
-		if len(response) > xferLen {
-			response = response[:xferLen]
-		}
-	}
-
-	w.responseBuffer = buildRetSubmitPacket(
-		w.responseBuffer, seq, 0, uint32(len(response)), response, nil, false,
-	)
-	readyAt := time.Now()
-	written, err := w.responses.writeIfThen(
-		w.responseBuffer, true, readyAt,
-		func() bool { return w.markResponseStarted(idx) },
-		func(success bool) {
-			if presentationClaimed && presentationClaim.Valid() {
-				outcome := inputpresentation.OutcomeDefer
-				if success && presentationClaimFits {
-					outcome = inputpresentation.OutcomeCommit
-				}
-				presenter.ResolveInputPresentation(
-					presentationClaim, outcome, time.Now())
-			} else if legacyClaimed {
-				claimer.CompleteInputReport(claimToken, success)
+	// One immediate retry lets a strict age fault replace the rejected claim
+	// with its mandatory neutral on this same host URB. A source which continues
+	// to reject is retained and retried on a later service opportunity rather
+	// than spinning or orphaning the request.
+	for attempt := 0; attempt < 2; attempt++ {
+		var response []byte
+		preparedPresenter, hasPreparedSource :=
+			w.dev.(inputpresentation.PreparedSource)
+		preparedClaimed := hasPreparedSource &&
+			preparedPresenter.OwnsInputPresentationEndpoint(uint8(w.ep))
+		presenter, hasPresentationSource := w.dev.(inputpresentation.Source)
+		admissionSource, hasAdmissionSource :=
+			w.dev.(inputpresentation.AdmissionSource)
+		presentationClaimed := !preparedClaimed && hasPresentationSource &&
+			presenter.OwnsInputPresentationEndpoint(uint8(w.ep))
+		claimer, legacyClaimed := w.dev.(interruptInClaimer)
+		// A modern Source owns endpoint routing for the whole composite device.
+		// Falling back to its legacy, endpoint-agnostic compatibility methods on
+		// an auxiliary endpoint would consume main-controller transitions.
+		legacyClaimed = legacyClaimed && !hasPresentationSource &&
+			!hasPreparedSource
+		if preparedClaimed {
+			maximumSize := min(xferLen, len(w.reportBuffer))
+			selectedAt := w.clock.Now()
+			claim, available := preparedPresenter.SelectInputPresentation(
+				maximumSize, selectedAt)
+			if !available {
+				continue
 			}
-		},
-	)
-	if err != nil {
-		w.fail(fmt.Errorf("interrupt-IN endpoint %d seq %d: %w", w.ep, seq, err))
-		return false
+			if !claim.Valid() || claim.Size > maximumSize {
+				preparedPresenter.ResolveInputPresentation(
+					claim, inputpresentation.OutcomeRetire, w.clock.Now())
+				w.fail(fmt.Errorf(
+					"interrupt-IN endpoint %d seq %d: malformed prepared claim %+v for capacity %d",
+					w.ep, seq, claim, maximumSize))
+				return false, false
+			}
+
+			w.responseBuffer = buildPreparedRetSubmitPacket(
+				w.responseBuffer, seq, claim.Size)
+			destination := w.responseBuffer[retSubmitHeaderSize : retSubmitHeaderSize+claim.Size : retSubmitHeaderSize+claim.Size]
+			admission := preparedAdmissionRetired
+			resolved := false
+			readyAt := time.Now()
+			written, err := w.responses.writeIfThen(
+				w.responseBuffer, true, readyAt,
+				func() bool {
+					admission = w.admitPreparedResponse(
+						idx, preparedPresenter, claim, destination)
+					return admission == preparedAdmissionAccepted
+				},
+				func(success bool) {
+					outcome := inputpresentation.OutcomeRetire
+					switch admission {
+					case preparedAdmissionDeferred:
+						outcome = inputpresentation.OutcomeDefer
+					case preparedAdmissionAccepted:
+						outcome = inputpresentation.OutcomeDefer
+						if success {
+							outcome = inputpresentation.OutcomeCommit
+						}
+					}
+					resolved = preparedPresenter.ResolveInputPresentation(
+						claim, outcome, w.clock.Now())
+				},
+			)
+			if err != nil {
+				w.fail(fmt.Errorf(
+					"prepared interrupt-IN endpoint %d seq %d: %w",
+					w.ep, seq, err))
+				return false, false
+			}
+			if admission != preparedAdmissionRetired && !resolved {
+				w.fail(fmt.Errorf(
+					"prepared interrupt-IN endpoint %d seq %d: source rejected terminal resolution",
+					w.ep, seq))
+				return false, false
+			}
+			if written {
+				return true, false
+			}
+			if w.ctx.Err() != nil {
+				return false, false
+			}
+			if !w.currentActive(idx) {
+				return false, false
+			}
+			continue
+		}
+		var presentationClaim inputpresentation.Claim
+		var presentationClaimFits bool
+		var claimToken uint64
+		if presentationClaimed {
+			destination := w.reportBuffer
+			if xferLen < len(destination) {
+				destination = destination[:xferLen]
+			}
+			presentationClaim = presenter.ClaimInputPresentation(
+				destination, w.clock.Now())
+			n := presentationClaim.Size
+			presentationClaimFits = presentationClaim.Valid() &&
+				n <= len(destination)
+			if !presentationClaimFits {
+				n = 0
+			}
+			response = destination[:n]
+		} else if legacyClaimed {
+			destination := w.reportBuffer
+			if xferLen < len(destination) {
+				destination = destination[:xferLen]
+			}
+			n, token := claimer.ClaimInputReport(destination)
+			claimToken = token
+			if n < 0 {
+				n = 0
+			}
+			n = min(n, len(destination))
+			response = destination[:n]
+		} else if builder, ok := w.dev.(interruptInBuilder); ok &&
+			!hasPresentationSource && !hasPreparedSource {
+			destination := w.reportBuffer
+			if xferLen < len(destination) {
+				destination = destination[:xferLen]
+			}
+			n := builder.BuildInputReportInto(destination)
+			if n < 0 {
+				n = 0
+			}
+			n = min(n, len(destination))
+			response = destination[:n]
+		} else {
+			attemptCtx, cancel := context.WithTimeout(w.ctx, w.interval)
+			deviceResponse := w.dev.HandleTransfer(
+				attemptCtx, w.ep, w.dir, nil)
+			expired := deviceResponse == nil &&
+				errors.Is(attemptCtx.Err(), context.DeadlineExceeded)
+			cancel()
+			if w.ctx.Err() != nil {
+				return false, false
+			}
+			if deviceResponse != nil {
+				response = deviceResponse
+				w.lastResponse = resizeBytes(
+					w.lastResponse, len(deviceResponse))
+				copy(w.lastResponse, deviceResponse)
+			} else if expired && len(w.lastResponse) > 0 {
+				response = w.lastResponse
+			}
+			if len(response) > xferLen {
+				response = response[:xferLen]
+			}
+		}
+
+		w.responseBuffer = buildRetSubmitPacket(
+			w.responseBuffer, seq, 0, uint32(len(response)), response, nil,
+			false,
+		)
+		readyAt := time.Now()
+		written, err := w.responses.writeIfThen(
+			w.responseBuffer, true, readyAt,
+			func() bool {
+				return w.markResponseStartedWithAdmission(
+					idx, admissionSource, presentationClaim,
+					presentationClaimed && presentationClaimFits &&
+						hasAdmissionSource,
+				)
+			},
+			func(success bool) {
+				if presentationClaimed && presentationClaim.Valid() {
+					outcome := inputpresentation.OutcomeDefer
+					if success && presentationClaimFits {
+						outcome = inputpresentation.OutcomeCommit
+					}
+					presenter.ResolveInputPresentation(
+						presentationClaim, outcome, w.clock.Now())
+				} else if legacyClaimed {
+					claimer.CompleteInputReport(claimToken, success)
+				}
+			},
+		)
+		if err != nil {
+			w.fail(fmt.Errorf(
+				"interrupt-IN endpoint %d seq %d: %w", w.ep, seq, err))
+			return false, false
+		}
+		if written {
+			return true, false
+		}
+		if !w.currentActive(idx) {
+			return false, false
+		}
 	}
-	return written
+	return false, true
 }
 
 func (w *endpointWorker) processIsoIn(timer *time.Timer, idx int) bool {
@@ -1018,17 +1224,19 @@ type endpointSchedulers struct {
 	responses *responseWriter
 	conn      net.Conn
 
-	workersMu sync.Mutex
+	// workers is populated completely during construction and immutable once
+	// the schedulers are published to the command reader. Hot-path lookup is a
+	// concurrent read and takes no connection-wide lock.
+	workersMu sync.Mutex // retained as a diagnostic/test contention sentinel
 	workers   map[endpointWorkerKey]*endpointWorker
-	// These arrays are populated completely during construction and immutable
-	// once the schedulers are published to the command reader. Descriptor-known
-	// DualSense/Edge admission therefore never takes the connection-wide map
-	// lock used only by legacy lazy creation, lifecycle, and diagnostics.
+	// Legacy test/diagnostic aliases for the first descriptor occurrence.
+	// Production admission resolves the exact active binding and ignores these.
 	fastInterruptIn        [16]*endpointWorker
 	fastIsoIn              [16]*endpointWorker
 	fastIsoOut             [16]*endpointWorker
-	presentationSource     inputpresentation.Source
+	presentationSource     inputpresentation.EndpointSource
 	presentationGeneration uint64
+	presentationMu         sync.Mutex
 	presentationRetireOnce sync.Once
 	failOnce               sync.Once
 	failErr                atomic.Pointer[error]
@@ -1050,29 +1258,26 @@ func newEndpointSchedulers(
 		conn:      conn,
 		workers:   make(map[endpointWorkerKey]*endpointWorker),
 	}
-	if source, ok := dev.(inputpresentation.Source); ok {
+	if source, ok := dev.(inputpresentation.PreparedSource); ok {
+		schedulers.presentationSource = source
+		schedulers.presentationGeneration =
+			source.InputPresentationGeneration()
+	} else if source, ok := dev.(inputpresentation.Source); ok {
 		schedulers.presentationSource = source
 		schedulers.presentationGeneration =
 			source.InputPresentationGeneration()
 	}
-	// DualSense and DualSense Edge expose explicit nonblocking endpoint APIs.
-	// Pre-create every descriptor-known fast-path plane before command ingestion
-	// so the first real URB does not allocate buffers/channels or start a worker.
-	// Legacy devices without these capabilities retain lazy generic workers.
-	schedulers.precreateFastPathWorkers()
+	// Pre-create every descriptor-known scheduled plane before command
+	// ingestion. This makes interface/alternate identity immutable and keeps the
+	// first real URB from allocating buffers/channels or starting a worker.
+	schedulers.precreateEndpointWorkers()
 	return schedulers
 }
 
-func (s *endpointSchedulers) precreateFastPathWorkers() {
+func (s *endpointSchedulers) precreateEndpointWorkers() {
 	if s == nil || s.desc == nil || s.dev == nil {
 		return
 	}
-	_, claimsInterrupt := s.dev.(interruptInClaimer)
-	_, buildsInterrupt := s.dev.(interruptInBuilder)
-	presenter, presentsInterrupt := s.dev.(inputpresentation.Source)
-	_, readsMicrophone := s.dev.(microphonePacketReader)
-	_, handlesIsoOutGeneration := s.dev.(isoOutGenerationDevice)
-	seen := make(map[endpointWorkerKey]struct{}, 3)
 	for ifaceIndex := range s.desc.Interfaces {
 		iface := &s.desc.Interfaces[ifaceIndex]
 		for endpointIndex := range iface.Endpoints {
@@ -1082,49 +1287,57 @@ func (s *endpointSchedulers) precreateFastPathWorkers() {
 			if endpoint.BEndpointAddress&0x80 != 0 {
 				dir = usbip.DirIn
 			}
-			var (
-				kind endpointWorkerKind
-				fast bool
-			)
+			var kind endpointWorkerKind
+			scheduled := false
 			switch endpoint.BMAttributes & 0x03 {
 			case 0x03:
-				kind = interruptInWorker
 				if dir == usbip.DirIn {
-					if presentsInterrupt {
-						fast = presenter.OwnsInputPresentationEndpoint(
-							uint8(ep))
-					} else {
-						fast = claimsInterrupt || buildsInterrupt
-					}
+					kind = interruptInWorker
+					scheduled = true
 				}
 			case 0x01:
 				if dir == usbip.DirIn {
 					kind = isoInWorker
-					fast = readsMicrophone
 				} else {
 					kind = isoOutWorker
-					fast = handlesIsoOutGeneration
+				}
+				scheduled = true
+			default:
+				if dir == usbip.DirIn {
+					kind = genericInWorker
+					scheduled = true
 				}
 			}
-			key := endpointWorkerKey{ep: ep, dir: dir, kind: kind}
-			if !fast {
+			if !scheduled {
 				continue
 			}
-			if _, duplicate := seen[key]; duplicate {
+			binding := endpointDescriptorBinding{
+				interfaceNumber:  iface.Descriptor.BInterfaceNumber,
+				alternateSetting: iface.Descriptor.BAlternateSetting,
+				descriptor:       endpoint,
+			}
+			key := endpointWorkerKeyFor(binding, dir, kind)
+			if _, duplicate := s.workers[key]; duplicate {
 				continue
 			}
-			seen[key] = struct{}{}
-			worker := s.worker(ep, dir, kind)
+			worker := s.newWorker(binding, ep, dir, kind)
+			s.workers[key] = worker
 			if ep >= 16 {
 				continue
 			}
 			switch kind {
 			case interruptInWorker:
-				s.fastInterruptIn[ep] = worker
+				if s.fastInterruptIn[ep] == nil {
+					s.fastInterruptIn[ep] = worker
+				}
 			case isoInWorker:
-				s.fastIsoIn[ep] = worker
+				if s.fastIsoIn[ep] == nil {
+					s.fastIsoIn[ep] = worker
+				}
 			case isoOutWorker:
-				s.fastIsoOut[ep] = worker
+				if s.fastIsoOut[ep] == nil {
+					s.fastIsoOut[ep] = worker
+				}
 			}
 		}
 	}
@@ -1151,36 +1364,61 @@ func (s *endpointSchedulers) failure() error {
 	return nil
 }
 
-func (s *endpointSchedulers) worker(ep, dir uint32, kind endpointWorkerKind) *endpointWorker {
-	s.workersMu.Lock()
-	defer s.workersMu.Unlock()
-	key := endpointWorkerKey{ep: ep, dir: dir, kind: kind}
-	if worker := s.workers[key]; worker != nil {
-		return worker
+func endpointWorkerKeyFor(binding endpointDescriptorBinding, dir uint32,
+	kind endpointWorkerKind) endpointWorkerKey {
+	return endpointWorkerKey{
+		interfaceNumber:  binding.interfaceNumber,
+		alternateSetting: binding.alternateSetting,
+		ep:               uint32(binding.descriptor.BEndpointAddress & 0x0f),
+		dir:              dir,
+		kind:             kind,
 	}
-	descriptor, _ := findEndpointDescriptor(s.desc, ep, dir)
+}
+
+func (s *endpointSchedulers) newWorker(binding endpointDescriptorBinding,
+	ep, dir uint32, kind endpointWorkerKind) *endpointWorker {
 	interval := time.Millisecond
 	maxPacket := 0
-	if descriptor != nil {
-		interval = usbServiceInterval(s.desc.Device.Speed, descriptor.BInterval)
-		if capacity, err := endpointServiceCapacity(descriptor); err == nil {
+	if binding.descriptor != nil {
+		interval = usbServiceInterval(s.desc.Device.Speed,
+			binding.descriptor.BInterval)
+		if capacity, err := endpointServiceCapacity(
+			binding.descriptor); err == nil {
 			maxPacket = int(capacity)
 		}
 	}
-	worker := newEndpointWorker(
+	return newEndpointWorker(
 		s.ctx, s.dev, ep, dir, kind, interval, maxPacket, s.responses, s.fail,
 	)
-	s.workers[key] = worker
-	return worker
+}
+
+func (s *endpointSchedulers) workerForBinding(
+	binding endpointDescriptorBinding,
+	dir uint32,
+	kind endpointWorkerKind,
+) *endpointWorker {
+	if binding.descriptor == nil {
+		return nil
+	}
+	return s.workers[endpointWorkerKeyFor(binding, dir, kind)]
+}
+
+// worker retains a test/legacy lookup by address. Production admission uses
+// the exact active binding and never this first-descriptor convenience.
+func (s *endpointSchedulers) worker(ep, dir uint32,
+	kind endpointWorkerKind) *endpointWorker {
+	binding, found := findEndpointBinding(s.desc, ep, dir)
+	if !found {
+		return nil
+	}
+	return s.workerForBinding(binding, dir, kind)
 }
 
 func (s *endpointSchedulers) workerList() []*endpointWorker {
-	s.workersMu.Lock()
 	workers := make([]*endpointWorker, 0, len(s.workers))
 	for _, worker := range s.workers {
 		workers = append(workers, worker)
 	}
-	s.workersMu.Unlock()
 	return workers
 }
 
@@ -1204,12 +1442,17 @@ func (s *endpointSchedulers) snapshot() USBIPConnectionDiagnostics {
 }
 
 func (s *endpointSchedulers) enqueueInterruptIn(seq, ep, xferLen uint32) bool {
-	worker := (*endpointWorker)(nil)
-	if ep < uint32(len(s.fastInterruptIn)) {
-		worker = s.fastInterruptIn[ep]
-	}
+	binding, found := findEndpointBinding(s.desc, ep, usbip.DirIn)
+	return found && s.enqueueInterruptInBinding(seq, xferLen, binding)
+}
+
+func (s *endpointSchedulers) enqueueInterruptInBinding(
+	seq, xferLen uint32,
+	binding endpointDescriptorBinding,
+) bool {
+	worker := s.workerForBinding(binding, usbip.DirIn, interruptInWorker)
 	if worker == nil {
-		worker = s.worker(ep, usbip.DirIn, interruptInWorker)
+		return false
 	}
 	return worker.enqueue(
 		seq, xferLen, nil, nil, time.Now(),
@@ -1217,7 +1460,19 @@ func (s *endpointSchedulers) enqueueInterruptIn(seq, ep, xferLen uint32) bool {
 }
 
 func (s *endpointSchedulers) enqueueGenericIn(seq, ep, xferLen uint32) bool {
-	return s.worker(ep, usbip.DirIn, genericInWorker).enqueue(
+	binding, found := findEndpointBinding(s.desc, ep, usbip.DirIn)
+	return found && s.enqueueGenericInBinding(seq, xferLen, binding)
+}
+
+func (s *endpointSchedulers) enqueueGenericInBinding(
+	seq, xferLen uint32,
+	binding endpointDescriptorBinding,
+) bool {
+	worker := s.workerForBinding(binding, usbip.DirIn, genericInWorker)
+	if worker == nil {
+		return false
+	}
+	return worker.enqueue(
 		seq, xferLen, nil, nil, time.Now(),
 	)
 }
@@ -1226,12 +1481,18 @@ func (s *endpointSchedulers) enqueueIsoIn(
 	seq, ep, xferLen uint32,
 	packets []usbip.IsoPacketDescriptor,
 ) bool {
-	worker := (*endpointWorker)(nil)
-	if ep < uint32(len(s.fastIsoIn)) {
-		worker = s.fastIsoIn[ep]
-	}
+	binding, found := findEndpointBinding(s.desc, ep, usbip.DirIn)
+	return found && s.enqueueIsoInBinding(seq, xferLen, packets, binding)
+}
+
+func (s *endpointSchedulers) enqueueIsoInBinding(
+	seq, xferLen uint32,
+	packets []usbip.IsoPacketDescriptor,
+	binding endpointDescriptorBinding,
+) bool {
+	worker := s.workerForBinding(binding, usbip.DirIn, isoInWorker)
 	if worker == nil {
-		worker = s.worker(ep, usbip.DirIn, isoInWorker)
+		return false
 	}
 	return worker.enqueue(
 		seq, xferLen, nil, packets, time.Now(),
@@ -1243,16 +1504,25 @@ func (s *endpointSchedulers) enqueueIsoOut(
 	payload []byte,
 	packets []usbip.IsoPacketDescriptor,
 ) bool {
+	binding, found := findEndpointBinding(s.desc, ep, usbip.DirOut)
+	return found && s.enqueueIsoOutBinding(seq, xferLen, payload, packets,
+		binding)
+}
+
+func (s *endpointSchedulers) enqueueIsoOutBinding(
+	seq, xferLen uint32,
+	payload []byte,
+	packets []usbip.IsoPacketDescriptor,
+	binding endpointDescriptorBinding,
+) bool {
 	var mediaGeneration uint64
 	if generationDevice, ok := s.dev.(isoOutGenerationDevice); ok {
-		mediaGeneration = generationDevice.IsoOutGeneration(uint8(ep & 0x0f))
+		mediaGeneration = generationDevice.IsoOutGeneration(
+			binding.descriptor.BEndpointAddress & 0x0f)
 	}
-	worker := (*endpointWorker)(nil)
-	if ep < uint32(len(s.fastIsoOut)) {
-		worker = s.fastIsoOut[ep]
-	}
+	worker := s.workerForBinding(binding, usbip.DirOut, isoOutWorker)
 	if worker == nil {
-		worker = s.worker(ep, usbip.DirOut, isoOutWorker)
+		return false
 	}
 	return worker.enqueueWithGeneration(
 		seq, xferLen, payload, packets, time.Now(), mediaGeneration,
@@ -1269,6 +1539,13 @@ func (s *endpointSchedulers) unlink(seq uint32) bool {
 }
 
 func (s *endpointSchedulers) resetEndpoint(endpointAddress uint8) {
+	s.resetEndpointWorkers(endpointAddress)
+	if s.ownsPresentationEndpoint(endpointAddress) {
+		s.rotatePresentationGeneration(time.Now())
+	}
+}
+
+func (s *endpointSchedulers) resetEndpointWorkers(endpointAddress uint8) {
 	ep := uint32(endpointAddress & 0x0f)
 	dir := uint32(usbip.DirOut)
 	if endpointAddress&0x80 != 0 {
@@ -1282,13 +1559,28 @@ func (s *endpointSchedulers) resetEndpoint(endpointAddress uint8) {
 }
 
 func (s *endpointSchedulers) resetInterface(interfaceNumber uint8) {
+	retirePresentation := false
 	for _, iface := range s.desc.Interfaces {
 		if iface.Descriptor.BInterfaceNumber != interfaceNumber {
 			continue
 		}
 		for _, endpoint := range iface.Endpoints {
-			s.resetEndpoint(endpoint.BEndpointAddress)
+			if s.ownsPresentationEndpoint(endpoint.BEndpointAddress) {
+				retirePresentation = true
+				break
+			}
 		}
+	}
+	for _, iface := range s.desc.Interfaces {
+		if iface.Descriptor.BInterfaceNumber != interfaceNumber {
+			continue
+		}
+		for _, endpoint := range iface.Endpoints {
+			s.resetEndpointWorkers(endpoint.BEndpointAddress)
+		}
+	}
+	if retirePresentation {
+		s.rotatePresentationGeneration(time.Now())
 	}
 }
 
@@ -1296,6 +1588,7 @@ func (s *endpointSchedulers) resetAll() {
 	for _, worker := range s.workerList() {
 		worker.reset()
 	}
+	s.rotatePresentationGeneration(time.Now())
 }
 
 func (s *endpointSchedulers) close() {
@@ -1308,19 +1601,57 @@ func (s *endpointSchedulers) close() {
 		<-worker.done
 	}
 	s.presentationRetireOnce.Do(func() {
-		if s.presentationSource != nil && s.presentationGeneration != 0 {
-			s.presentationSource.RetireInputPresentationGeneration(
-				s.presentationGeneration, time.Now())
-		}
+		s.retirePresentationGeneration(time.Now(), false)
 	})
+}
+
+func (s *endpointSchedulers) ownsPresentationEndpoint(
+	endpointAddress uint8,
+) bool {
+	return endpointAddress&0x80 != 0 && s.presentationSource != nil &&
+		s.presentationSource.OwnsInputPresentationEndpoint(
+			endpointAddress&0x0f)
+}
+
+func (s *endpointSchedulers) rotatePresentationGeneration(retiredAt time.Time) {
+	s.retirePresentationGeneration(retiredAt, true)
+}
+
+// retirePresentationGeneration serializes connection-level lifecycle
+// ownership. Reset boundaries retire the captured generation and adopt the
+// successor for later resets/close; final close retires only its current lease.
+func (s *endpointSchedulers) retirePresentationGeneration(
+	retiredAt time.Time, adoptSuccessor bool,
+) {
+	s.presentationMu.Lock()
+	defer s.presentationMu.Unlock()
+	if s.presentationSource == nil || s.presentationGeneration == 0 {
+		return
+	}
+	if !s.presentationSource.RetireInputPresentationGeneration(
+		s.presentationGeneration, retiredAt) {
+		return
+	}
+	if adoptSuccessor {
+		s.presentationGeneration =
+			s.presentationSource.InputPresentationGeneration()
+	}
 }
 
 func findEndpointDescriptor(
 	desc *usbdesc.Descriptor,
 	ep, dir uint32,
 ) (*usbdesc.EndpointDescriptor, bool) {
+	binding, found := findEndpointBinding(desc, ep, dir)
+	return binding.descriptor, found
+}
+
+func findEndpointBinding(
+	desc *usbdesc.Descriptor,
+	ep, dir uint32,
+) (endpointDescriptorBinding, bool) {
 	if desc == nil || ep == 0 {
-		return nil, false
+		return endpointDescriptorBinding{}, false
 	}
 	address := uint8(ep & 0x0f)
 	if dir == usbip.DirIn {
@@ -1330,11 +1661,17 @@ func findEndpointDescriptor(
 		for endpointIndex := range desc.Interfaces[ifaceIndex].Endpoints {
 			endpoint := &desc.Interfaces[ifaceIndex].Endpoints[endpointIndex]
 			if endpoint.BEndpointAddress == address {
-				return endpoint, true
+				return endpointDescriptorBinding{
+					interfaceNumber: desc.Interfaces[ifaceIndex].Descriptor.
+						BInterfaceNumber,
+					alternateSetting: desc.Interfaces[ifaceIndex].Descriptor.
+						BAlternateSetting,
+					descriptor: endpoint,
+				}, true
 			}
 		}
 	}
-	return nil, false
+	return endpointDescriptorBinding{}, false
 }
 
 func validateIsoSubmission(
@@ -1343,10 +1680,21 @@ func validateIsoSubmission(
 	packets []usbip.IsoPacketDescriptor,
 ) error {
 	endpoint, found := findEndpointDescriptor(desc, ep, dir)
-	if !found || endpoint.BMAttributes&0x03 != 0x01 {
+	if !found {
 		return fmt.Errorf("endpoint 0x%02x is not an isochronous %s endpoint",
 			uint8(ep)|map[bool]uint8{true: 0x80}[dir == usbip.DirIn],
 			map[bool]string{true: "IN", false: "OUT"}[dir == usbip.DirIn])
+	}
+	return validateIsoEndpointSubmission(endpoint, xferLen, packets)
+}
+
+func validateIsoEndpointSubmission(
+	endpoint *usbdesc.EndpointDescriptor,
+	xferLen uint32,
+	packets []usbip.IsoPacketDescriptor,
+) error {
+	if endpoint == nil || endpoint.BMAttributes&0x03 != 0x01 {
+		return fmt.Errorf("active endpoint is not isochronous")
 	}
 	if xferLen > maximumTransferSize {
 		return fmt.Errorf("ISO transfer length %d exceeds limit %d", xferLen, maximumTransferSize)
@@ -1388,8 +1736,18 @@ func validateInterruptSubmission(
 	ep, dir, xferLen uint32,
 ) error {
 	endpoint, found := findEndpointDescriptor(desc, ep, dir)
-	if !found || endpoint.BMAttributes&0x03 != 0x03 {
+	if !found {
 		return fmt.Errorf("endpoint %d is not an interrupt endpoint", ep)
+	}
+	return validateInterruptEndpointSubmission(endpoint, xferLen)
+}
+
+func validateInterruptEndpointSubmission(
+	endpoint *usbdesc.EndpointDescriptor,
+	xferLen uint32,
+) error {
+	if endpoint == nil || endpoint.BMAttributes&0x03 != 0x03 {
+		return fmt.Errorf("active endpoint is not interrupt")
 	}
 	if _, err := endpointServiceCapacity(endpoint); err != nil {
 		return err
@@ -1415,26 +1773,4 @@ func endpointServiceCapacity(endpoint *usbdesc.EndpointDescriptor) (uint32, erro
 		return 0, fmt.Errorf("endpoint uses reserved high-bandwidth transaction count")
 	}
 	return packetBytes * (additionalTransactions + 1), nil
-}
-
-func lifecycleResetFromSetup(schedulers *endpointSchedulers, setup []byte) {
-	if len(setup) < 8 {
-		return
-	}
-	bmRequestType := setup[0]
-	bRequest := setup[1]
-	wValue := uint16(setup[2]) | uint16(setup[3])<<8
-	wIndex := uint16(setup[4]) | uint16(setup[5])<<8
-
-	switch {
-	case bmRequestType == usbReqTypeStandardToEndpoint &&
-		bRequest == usbReqClearFeature && wValue == 0:
-		schedulers.resetEndpoint(uint8(wIndex))
-	case bmRequestType == usbReqTypeStandardFromInterface &&
-		bRequest == usbReqSetInterface && uint8(wValue) == 0:
-		schedulers.resetInterface(uint8(wIndex))
-	case bmRequestType == usbReqTypeStandardToDevice &&
-		bRequest == usbReqSetConfiguration:
-		schedulers.resetAll()
-	}
 }

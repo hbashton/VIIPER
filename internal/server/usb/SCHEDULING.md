@@ -1,5 +1,65 @@
 # USB/IP endpoint scheduling
 
+## Retained Xbox persona (2026-09-02)
+
+The retained import has its own three-lane arbiter rather than the legacy
+endpoint workers described below. It now snapshots validated IN/OUT descriptor
+intervals before activation and applies independent absolute service cursors.
+EP0 is immediate; readiness cannot bypass a consumed interrupt opportunity.
+Pending does not consume a service slot, and the arbiter's existing reusable
+timer wakes the next due opportunity. Full-interval lateness re-anchors instead
+of replaying expired slots. Small lateness preserves phase, so this is not a
+strict minimum inter-completion-gap guarantee. Final preparation samples time
+after acquiring response ownership, not before serializer contention.
+
+This corrects unbounded same-state URB response traffic. The retained Xbox
+semantic ingress now separately uses the shared fixed-report journal for
+ordinary buttons/Share/trigger transitions, paired with the engine's exact
+USB retry. Guide retains its separate queue. This is software-test evidence,
+not an end-to-end latency result. See the [dated validation ledger](../../../docs/architecture/controller-platform-validation-2026-09-02.md)
+for terminal-overflow teardown evidence and Windows/hardware validation gates.
+
+An optional `ImportRetirementOwner` now requests irreversible, exact-lease
+retirement for a terminal input-history overflow. The worker checks it before
+service and after consuming readiness, including with no queued URB. It records
+the retirement reason independently of `failure`, revokes admission, and retires
+all exact unadmitted tickets. A successful scheduler close then permits the
+existing executor drain and acknowledged disconnect-neutral transaction. A
+forged request, query panic/error, failed ticket retirement, or uncertain drain/
+neutral remains fatal; a retirement request never itself proves Safe. This is
+not a reset/reconnect or silent history-resynchronization mechanism.
+
+Descriptor-derived cadence is the present default policy, not a generic USB
+minimum spacing requirement. USB 2.0 section 5.7.4 permits shorter host service
+(1 ms minimum at full speed). The experimental
+`--usb.retained-input-service-ms` / `VIIPER_USB_RETAINED_INPUT_SERVICE_MS`
+accepts only `0`, `1`, `2`, or `4`; default `0` preserves descriptor timing.
+The import validates and snapshots this policy before owner activation. It
+overrides retained IN service only, without changing speed, descriptor bytes,
+OUT, or EP0. Scripted and real authorized-Xbox virtual-time tests pass, including
+decoded distinct states through the shared journal. Windows-consumer rate,
+idle/load CPU, and end-to-end latency remain unmeasured for this change.
+
+Unchanged ordinary Xbox input now parks without selecting the journal's idle
+image or polling every millisecond. New semantic work wakes it by readiness;
+the pending token captures the epoch before selection so publication racing
+with that decision cannot be swallowed. Explicit KeepAlive publications remain
+report requests. The owner retains the next periodic Status Device deadline
+while parked, so change-only input does not suppress required status traffic.
+This removes duplicate USB reports, not all ingress wake-ups or physical stick
+noise; no new deadzone is imposed by this transport policy.
+
+Ordinary motor/LED executor acceptance now has one separate engine-owned claim
+slot, so it does not retain the primary IN claim lane. Input/Guide/status and
+their retries may proceed while feedback acceptance waits; EP0/OUT/lifecycle
+ordering and mandatory output clears stay fenced. Delivered ordinary OUT wakes
+the selected local action immediately, detachment signals IN readiness, and
+failed feedback has its own exact local retry wake. No extra input poller or
+unbounded queue is introduced. This is deterministic/race-test evidence, not a
+measured explanation or elimination of historical Windows latency tails.
+
+## Ordinary endpoint workers
+
 Each attached USB/IP connection has three independent scheduling planes:
 
 - interrupt IN: one persistent worker per endpoint, one ordered bounded URB

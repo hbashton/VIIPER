@@ -76,8 +76,19 @@ func BusDeviceAdd(s *usbs.Server, apiSrv *api.Server) api.HandlerFunc {
 			return apierror.ErrInternal("failed to get device metadata from context")
 		}
 
-		apiSrv.ScheduleDeviceCleanup(uint32(busID),
-			fmt.Sprintf("%d", exportMeta.DevID), devCtx)
+		registration, registered := b.GetDeviceRegistration(dev, devCtx)
+		if !registered {
+			return apierror.ErrConflict(
+				"device registration changed during creation")
+		}
+		descriptor, err := s.SnapshotDeviceDescriptor(registration)
+		if err != nil {
+			_, _ = s.RemoveDeviceRegistrationIfPresent(registration)
+			return apierror.ErrInternal(fmt.Sprintf(
+				"failed to snapshot device descriptor: %v", err))
+		}
+
+		apiSrv.ScheduleDeviceCleanup(registration)
 
 		autoAttachResult := api.AutoAttachResult{}
 		if apiSrv.Config().AutoAttachLocalClient {
@@ -99,8 +110,8 @@ func BusDeviceAdd(s *usbs.Server, apiSrv *api.Server) api.HandlerFunc {
 		payload, err := json.Marshal(viipertypes.Device{
 			BusID:            uint32(busID),
 			DevID:            fmt.Sprintf("%d", exportMeta.DevID),
-			Vid:              fmt.Sprintf("0x%04x", dev.GetDescriptor().Device.IDVendor),
-			Pid:              fmt.Sprintf("0x%04x", dev.GetDescriptor().Device.IDProduct),
+			Vid:              fmt.Sprintf("0x%04x", descriptor.Device.IDVendor),
+			Pid:              fmt.Sprintf("0x%04x", descriptor.Device.IDProduct),
 			Type:             name,
 			DeviceSpecific:   dev.GetDeviceSpecificArgs(),
 			USBIPPort:        autoAttachResult.USBIPPort,
@@ -113,4 +124,16 @@ func BusDeviceAdd(s *usbs.Server, apiSrv *api.Server) api.HandlerFunc {
 		res.JSON = string(payload)
 		return nil
 	}
+}
+
+func parseXboxOneBusID(req *api.Request) (uint32, error) {
+	idStr, ok := req.Params["id"]
+	if !ok {
+		return 0, apierror.ErrBadRequest("missing id parameter")
+	}
+	busID, err := strconv.ParseUint(idStr, 10, 32)
+	if err != nil {
+		return 0, apierror.ErrBadRequest(fmt.Sprintf("invalid busId: %v", err))
+	}
+	return uint32(busID), nil
 }

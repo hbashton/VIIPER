@@ -16,7 +16,7 @@ import (
 	"github.com/Alia5/VIIPER/viiperclient"
 	"github.com/Alia5/VIIPER/viipertypes"
 
-	_ "github.com/Alia5/VIIPER/internal/registry" // Register all device handlers
+	_ "github.com/Alia5/VIIPER/internal/devicecatalog" // Register all device handlers
 
 	"github.com/Alia5/VIIPER/_testing/e2e/sdl"
 )

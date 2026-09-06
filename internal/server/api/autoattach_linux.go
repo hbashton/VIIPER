@@ -5,27 +5,21 @@ package api
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
-	"strconv"
 
 	"github.com/Alia5/VIIPER/usbip"
 )
 
 func attachLocalhostClientImpl(ctx context.Context, deviceExportMeta *usbip.ExportMeta, usbipServerPort uint16, _ bool, logger *slog.Logger) (AutoAttachResult, error) {
+	arguments, err := localhostAttachArguments(deviceExportMeta, usbipServerPort)
+	if err != nil {
+		return AutoAttachResult{}, err
+	}
 	logger.Info("Auto-attaching localhost client", "busID", deviceExportMeta.BusID, "deviceID", deviceExportMeta.DevID)
 
-	cmd := exec.CommandContext(
-		ctx,
-		"usbip",
-		"--tcp-port",
-		strconv.FormatUint(uint64(usbipServerPort), 10),
-		"attach",
-		"-r", "localhost",
-		"-b", fmt.Sprintf("%d-%d", deviceExportMeta.BusID, deviceExportMeta.DevID),
-	)
+	cmd := exec.CommandContext(ctx, "usbip", arguments...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		logger.Error("Failed to attach device",

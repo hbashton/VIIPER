@@ -1,9 +1,36 @@
 package scanner
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
+
+func TestNamedConstantUnderlyingWidthsAcrossFiles(t *testing.T) {
+	dir := t.TempDir()
+	for name, source := range map[string]string{
+		"a_constants.go":  "package fixture\nconst Mask Flags = 1\nconst SmallMode Narrow = 1\n",
+		"z_types.go":      "package fixture\ntype Flags Alias\ntype Alias uint64\ntype Narrow uint8\n",
+		"z_types_test.go": "package fixture\nconst TestOnly = 77\n",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(source), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := ScanDeviceConstants(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Constants) != 2 {
+		t.Fatalf("test constants leaked: %+v", got.Constants)
+	}
+	if got.Constants[0].Type != "Flags" || got.Constants[0].UnderlyingType != "uint64" || got.Constants[1].UnderlyingType != "uint8" {
+		t.Fatalf("named declaration widths not retained: %+v", got.Constants)
+	}
+	if resolveScalarDefinition("Cycle", map[string]string{"Cycle": "Cycle"}) != "" {
+		t.Fatal("cyclic definition resolved to a scalar")
+	}
+}
 
 func TestScanKeyboardConstants(t *testing.T) {
 	// Relative path from scanner package to keyboard device

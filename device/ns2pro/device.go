@@ -10,69 +10,99 @@ import (
 	"time"
 
 	"github.com/Alia5/VIIPER/device"
+	"github.com/Alia5/VIIPER/internal/inputpresentation"
 	"github.com/Alia5/VIIPER/usb"
 	"github.com/Alia5/VIIPER/usbip"
 )
 
 type NS2Pro struct {
-	inputCh        chan struct{}
-	bulkCh         chan struct{}
-	stateMu        sync.Mutex
-	inputState     *InputState
-	metaState      *MetaState
-	outputMu       sync.RWMutex
-	outputCallback func(OutputState)
-	outputVersion  uint64
-	descriptor     usb.Descriptor
+	input                      *inputpresentation.FixedReportScheduler[InputState]
+	inputSignal                chan struct{}
+	inputReports               *ns2InputReportSequencer
+	bulkCh                     chan struct{}
+	stateMu                    sync.Mutex
+	metaUpdateMu               sync.Mutex
+	inputState                 InputState
+	metaState                  *MetaState
+	inputLifecycleMu           sync.Mutex
+	producerMu                 sync.Mutex
+	producerActive             bool
+	compatProducerUsed         bool
+	retiredCompatibilityLease  inputpresentation.FixedReportProducerLease
+	resyncMu                   sync.Mutex
+	pendingResync              InputState
+	pendingResyncAt            time.Time
+	hasPendingResync           bool
+	activePresentationClaim    inputpresentation.Claim
+	activePresentationReport   [InputReportSize]byte
+	activePresentationState    InputState
+	hasDeferredPresentation    bool
+	inputReportSnapshot        [InputReportSize]byte
+	inputReportSnapshotState   InputState
+	inputReportSnapshotVersion uint64
+	outputMu                   sync.RWMutex
+	outputCallback             func(OutputState)
+	outputVersion              uint64
+	descriptor                 usb.Descriptor
 
 	protoMu           sync.Mutex
-	activeReportID    uint8
 	featureMask       uint8
-	featureFlags      uint8
 	usbReportsEnabled bool
-	reportCounter32   uint32
-	reportCounter8    uint8
-	motionStart       time.Time
-	lastMotionTS      uint32
 	bulkInQueue       [][]byte
 }
 
 func New(o *device.CreateOptions) (*NS2Pro, error) {
 	metaState := defaultMetaState()
 	if o != nil && o.DeviceSpecific != "" {
-		var newMeta MetaState
+		var newMeta struct {
+			SerialNumber  *string `json:"serial_number"`
+			BatteryLevel  *uint8  `json:"battery_level"`
+			Charging      *bool   `json:"charging"`
+			ExternalPower *bool   `json:"external_power"`
+			BatteryVolts  *uint16 `json:"battery_volts"`
+		}
 		if err := json.Unmarshal([]byte(o.DeviceSpecific), &newMeta); err != nil {
 			return nil, fmt.Errorf("invalid device specific JSON: %w", err)
 		}
-		if newMeta.SerialNumber != "" {
-			metaState.SerialNumber = newMeta.SerialNumber
+		if newMeta.SerialNumber != nil && *newMeta.SerialNumber != "" {
+			metaState.SerialNumber = *newMeta.SerialNumber
 		}
-		if newMeta.BatteryLevel != 0 {
-			metaState.BatteryLevel = newMeta.BatteryLevel
+		if newMeta.BatteryLevel != nil && *newMeta.BatteryLevel != 0 {
+			metaState.BatteryLevel = *newMeta.BatteryLevel
 		}
-		if newMeta.Charging {
-			metaState.Charging = true
+		if newMeta.Charging != nil {
+			metaState.Charging = *newMeta.Charging
 		}
-		if newMeta.ExternalPower {
-			metaState.ExternalPower = true
+		if newMeta.ExternalPower != nil {
+			metaState.ExternalPower = *newMeta.ExternalPower
 		}
-		if newMeta.BatteryVolts != 0 {
-			metaState.BatteryVolts = newMeta.BatteryVolts
+		if newMeta.BatteryVolts != nil && *newMeta.BatteryVolts != 0 {
+			metaState.BatteryVolts = *newMeta.BatteryVolts
 		}
 	}
 
-	inputCh := make(chan struct{}, 1)
-	inputCh <- struct{}{}
+	now := time.Now()
+	neutral := *defaultInputState()
+	inputSignal := make(chan struct{}, 1)
+	inputSignal <- struct{}{}
 	d := &NS2Pro{
-		inputCh:        inputCh,
-		bulkCh:         make(chan struct{}, 1),
-		inputState:     defaultInputState(),
-		metaState:      metaState,
-		descriptor:     MakeDescriptor(),
-		activeReportID: ReportIDPro,
-		featureFlags:   FeatureButtons | FeatureSticks,
-		motionStart:    time.Now(),
+		inputSignal:  inputSignal,
+		bulkCh:       make(chan struct{}, 1),
+		inputState:   neutral,
+		metaState:    metaState,
+		descriptor:   MakeDescriptor(),
+		inputReports: newNS2InputReportSequencer(*metaState, now),
 	}
+	input, err := inputpresentation.NewFixedReportSchedulerWithOverflowFault(
+		InputReportSize, neutral, d.inputReports.buildCurrentInto,
+		ns2InputTransition, now)
+	if err != nil {
+		return nil, fmt.Errorf("create ns2pro input scheduler: %w", err)
+	}
+	d.input = input
+	d.inputReports.buildControlInto(&neutral, 0, d.inputReportSnapshot[:])
+	d.inputReportSnapshotState = neutral
+	d.inputReportSnapshotVersion = 1
 	serialEnding := DefaultSerialEnding
 	if len(metaState.SerialNumber) >= 2 {
 		serialEnding = metaState.SerialNumber[len(metaState.SerialNumber)-2:]
@@ -106,19 +136,22 @@ func (d *NS2Pro) SetOutputCallback(f func(OutputState)) func() {
 	}
 }
 
-func (d *NS2Pro) UpdateInputState(state InputState) {
-	d.stateMu.Lock()
-	d.inputState = &state
-	d.stateMu.Unlock()
-	select {
-	case d.inputCh <- struct{}{}:
-	default:
+func (d *NS2Pro) UpdateInputState(state InputState) bool {
+	d.producerMu.Lock()
+	defer d.producerMu.Unlock()
+	if d.producerActive {
+		return false
 	}
+	d.compatProducerUsed = true
+	_, disposition := d.publishInputStateWithLease(
+		d.input.ProducerLease(), state, time.Now())
+	return disposition.Accepted()
 }
 
 func (d *NS2Pro) SetMetaState(meta MetaState) {
+	d.metaUpdateMu.Lock()
+	defer d.metaUpdateMu.Unlock()
 	d.stateMu.Lock()
-	defer d.stateMu.Unlock()
 	d.metaState = &meta
 	if d.descriptor.Strings != nil {
 		serialEnding := DefaultSerialEnding
@@ -127,6 +160,49 @@ func (d *NS2Pro) SetMetaState(meta MetaState) {
 		}
 		d.descriptor.Strings[3] = serialEnding
 	}
+	d.stateMu.Unlock()
+	d.updateInputEncodingConfiguration(func() {
+		d.inputReports.setMeta(meta)
+	})
+}
+
+// UpdateNS2ProRuntimeStatusV1 applies a strict, complete out-of-band power
+// snapshot. A status update never mutates serial identity, never enters the
+// 24-byte producer stream, and never fences controls to a synthetic neutral.
+// Any already selected immutable report may complete with the prior status;
+// the next newly encoded report observes this snapshot.
+func (d *NS2Pro) UpdateNS2ProRuntimeStatusV1(payload string) error {
+	status, err := DecodeRuntimeStatusV1(payload)
+	if err != nil {
+		return err
+	}
+	return d.SetRuntimeStatusV1(status)
+}
+
+func (d *NS2Pro) SetRuntimeStatusV1(status RuntimeStatusV1) error {
+	if err := status.Validate(); err != nil {
+		return err
+	}
+	d.metaUpdateMu.Lock()
+	defer d.metaUpdateMu.Unlock()
+
+	d.stateMu.Lock()
+	if d.metaState == nil {
+		d.stateMu.Unlock()
+		return errors.New("ns2pro metadata is unavailable")
+	}
+	meta := *d.metaState
+	meta.BatteryLevel = status.BatteryLevel
+	meta.Charging = status.Charging
+	meta.ExternalPower = status.ExternalPower
+	meta.BatteryVolts = status.BatteryVolts
+	d.metaState = &meta
+	d.stateMu.Unlock()
+
+	// The sequencer lock linearizes this rare control-plane change against
+	// report encoding. It does not touch the semantic input scheduler.
+	d.inputReports.setMeta(meta)
+	return nil
 }
 
 func (d *NS2Pro) HandleTransfer(ctx context.Context, ep uint32, dir uint32, out []byte) []byte {
@@ -139,7 +215,7 @@ func (d *NS2Pro) HandleTransfer(ctx context.Context, ep uint32, dir uint32, out 
 					return d.nextInputReport()
 				}
 				return nil
-			case <-d.inputCh:
+			case <-d.inputSignal:
 				if d.reportsEnabled() {
 					return d.nextInputReport()
 				}
@@ -225,38 +301,19 @@ func (d *NS2Pro) reportsEnabled() bool {
 }
 
 func (d *NS2Pro) nextInputReport() []byte {
-	d.protoMu.Lock()
-	reportID := d.activeReportID
-	d.protoMu.Unlock()
-	return d.inputReportForID(reportID)
+	report := make([]byte, InputReportSize)
+	if d.BuildInputReportInto(report) != InputReportSize {
+		return nil
+	}
+	return report
 }
 
 func (d *NS2Pro) inputReportForID(reportID uint8) []byte {
-	d.stateMu.Lock()
-	st := *d.inputState
-	meta := *d.metaState
-	d.stateMu.Unlock()
-
-	d.protoMu.Lock()
-	if reportID == 0 {
-		reportID = d.activeReportID
+	report := make([]byte, InputReportSize)
+	if n, _ := d.snapshotInputReportForIDInto(reportID, report); n !=
+		InputReportSize {
+		return nil
 	}
-	features := d.featureFlags
-	var report []byte
-	switch reportID {
-	case ReportIDCommon:
-		d.reportCounter32++
-		var motionTS uint32
-		if features&FeatureIMU != 0 {
-			motionTS = uint32(time.Since(d.motionStart).Microseconds())
-			d.lastMotionTS = motionTS
-		}
-		report = st.buildCommonReport(d.reportCounter32, motionTS, features, meta)
-	default:
-		d.reportCounter8++
-		report = st.buildProReport(d.reportCounter8, features, meta)
-	}
-	d.protoMu.Unlock()
 	return report
 }
 

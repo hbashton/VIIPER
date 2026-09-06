@@ -6,15 +6,12 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
-	"path/filepath"
-	"strings"
 	"syscall"
 	"time"
 
-	"github.com/Alia5/VIIPER/internal/configpaths"
+	"github.com/Alia5/VIIPER/device/xboxone"
 	"github.com/Alia5/VIIPER/internal/log"
 	"github.com/Alia5/VIIPER/internal/server/api"
-	"github.com/Alia5/VIIPER/internal/server/api/auth"
 	"github.com/Alia5/VIIPER/internal/server/api/handler"
 	"github.com/Alia5/VIIPER/internal/server/usb"
 	"github.com/Alia5/VIIPER/internal/tray"
@@ -26,6 +23,7 @@ type Server struct {
 	USBServerConfig   usb.ServerConfig `embed:"" prefix:"usb."`
 	APIServerConfig   api.ServerConfig `embed:"" prefix:"api."`
 	ConnectionTimeout time.Duration    `help:"ConnectionTimeout operation timeout" default:"30s" env:"VIIPER_CONNECTION_TIMEOUT"`
+	KeyFile           *string          `help:"Explicit absolute API password file; errors never fall back to the default key file"`
 }
 
 // Run is called by Kong when the server command is executed.
@@ -36,9 +34,32 @@ func (s *Server) Run(logger *slog.Logger, rawLogger log.RawLogger) error {
 }
 
 func (s *Server) StartServer(ctx context.Context, logger *slog.Logger, rawLogger log.RawLogger) error {
+	keyFilePath, err := resolveServerKeyFilePath(s.KeyFile)
+	if err != nil {
+		return err
+	}
 	if err := requireUSBIPRuntime(); err != nil {
 		logger.Error("Refusing to start VIIPER with an incompatible USB/IP runtime", "error", err)
 		return err
+	}
+
+	password, generated, err := loadServerAPIKey(keyFilePath, s.KeyFile != nil)
+	if err != nil {
+		return err
+	}
+	s.APIServerConfig.Password = password
+	if generated {
+		logger.Info("Generated API server password", "path", keyFilePath)
+		if s.KeyFile == nil {
+			// Preserve normal first-run output. Explicit deployments share the
+			// key file with their client and must not leak it to lab logs.
+			logger.Info("-------------------------------------")
+			logger.Info("Your VIIPER API server password is:")
+			logger.Info("-------------------------------------")
+			logger.Info(password)
+			logger.Info("-------------------------------------")
+			logger.Info("You can change this password at any time by editing the file")
+		}
 	}
 
 	ctx, cancel := context.WithCancel(ctx)
@@ -53,34 +74,6 @@ func (s *Server) StartServer(ctx context.Context, logger *slog.Logger, rawLogger
 	s.USBServerConfig.BusCleanupTimeout = s.APIServerConfig.DeviceHandlerConnectTimeout
 
 	logger.Info("Starting VIIPER USB-IP server", "addr", s.USBServerConfig.Addr)
-
-	keyFileDir, err := configpaths.KeyFileDir()
-	if err != nil {
-		return fmt.Errorf("failed to resolve key file path: %w", err)
-	}
-	keyFilePath := filepath.Join(keyFileDir, keyFileName)
-	if pwd, err := os.ReadFile(keyFilePath); err == nil {
-		s.APIServerConfig.Password = strings.TrimSpace(string(pwd))
-	} else {
-		newPwd, err := auth.GenerateKey()
-		if err != nil {
-			return fmt.Errorf("failed to generate new API password: %w", err)
-		}
-		if err := os.MkdirAll(keyFileDir, 0o700); err != nil {
-			return fmt.Errorf("failed to create config dir for key file: %w", err)
-		}
-		if err := os.WriteFile(keyFilePath, []byte(newPwd), 0o600); err != nil {
-			return fmt.Errorf("failed to write new API password to file: %w", err)
-		}
-		s.APIServerConfig.Password = newPwd
-		logger.Info("Generated API server password", "path", keyFilePath)
-		logger.Info("-------------------------------------")
-		logger.Info("Your VIIPER API server password is:")
-		logger.Info("-------------------------------------")
-		logger.Info(newPwd)
-		logger.Info("-------------------------------------")
-		logger.Info("You can change this password at any time by editing the file")
-	}
 
 	usbSrv := usb.New(s.USBServerConfig, logger, rawLogger)
 
@@ -101,6 +94,7 @@ func (s *Server) StartServer(ctx context.Context, logger *slog.Logger, rawLogger
 	}
 
 	apiSrv := api.New(usbSrv, s.APIServerConfig.Addr, s.APIServerConfig, logger)
+	api.RegisterStreamHandler("xboxone", xboxone.ProductionStreamHandler)
 	r := apiSrv.Router()
 	r.Register("ping", handler.Ping())
 	r.Register("bus/list", handler.BusList(usbSrv))
@@ -108,10 +102,19 @@ func (s *Server) StartServer(ctx context.Context, logger *slog.Logger, rawLogger
 	r.Register("bus/remove", handler.BusRemove(usbSrv))
 	r.Register("bus/{id}/list", handler.BusDevicesList(usbSrv))
 	r.Register("bus/{id}/add", handler.BusDeviceAdd(usbSrv, apiSrv))
+	r.Register("bus/{id}/add-authorized-xboxone",
+		handler.BusDeviceAddAuthorizedXboxOne(usbSrv, apiSrv))
+	r.Register("bus/{busId}/{devId}/activate-authorized-xboxone",
+		handler.BusDeviceActivateAuthorizedXboxOne(usbSrv, apiSrv))
+	r.Register("bus/{busId}/{devId}/remove-authorized-xboxone",
+		handler.BusDeviceRemoveAuthorizedXboxOne(usbSrv))
 	r.Register("bus/{id}/remove", handler.BusDeviceRemove(usbSrv))
 	r.Register("bus/{busId}/{devId}/microphone-interface",
 		handler.BusDeviceMicrophoneInterfaceStatus(usbSrv))
+	r.Register("bus/{busId}/{devId}/ns2pro-status-v1",
+		handler.BusDeviceNS2ProRuntimeStatusV1(usbSrv))
 	r.RegisterStream("bus/{busId}/{deviceid}", api.DeviceStreamHandler(usbSrv))
+	r.RegisterStream("bus/{busId}/{deviceid}/stream-authorized-xboxone", api.DeviceStreamHandler(usbSrv))
 
 	if s.APIServerConfig.AutoAttachLocalClient {
 		logger.Info("Auto-attach is enabled, checking prerequisites...")

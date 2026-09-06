@@ -17,7 +17,7 @@ viiper server
 
 This starts two services:
 
-- **USBIP Server** on port `3241` (standard USBIP protocol)
+- **USBIP Server** on `127.0.0.1:3241` (standard USBIP protocol)
 - **VIIPER API Server** on port `3242` (management and device interactions)
 
 !!! warning "Authentication for Remote Connections"
@@ -33,6 +33,12 @@ This starts two services:
     All authenticated connections use **ChaCha20-Poly1305 encryption** to protect against man-in-the-middle attacks.
     
     You can change the password at any time by editing `viiper.key.txt`.
+
+!!! warning "USB/IP is local-only by default"
+    The password and encryption above protect the API, not the separate USB/IP
+    protocol. USB/IP listens only on `127.0.0.1:3241` by default. If you
+    explicitly bind it to a non-loopback address, place it behind a trusted
+    tunnel, host firewall, or equivalent authenticated network boundary.
 
 !!! tip "Auto-attach Feature"
     By default, VIIPER automatically attaches newly created devices to the local machine. You can disable this with `--api.auto-attach-local-client=false`.  
@@ -204,14 +210,14 @@ Now that you have a working setup:
 
 ```bash
 # Use custom ports
-viiper server --usb.addr=:9000 --api.addr=:9001
+viiper server --usb.addr=127.0.0.1:9000 --api.addr=:9001
 ```
 
 **Permission denied (Linux):**
 
 ```bash
 # Use ports above 1024 or run with sudo
-viiper server --usb.addr=:3241 --api.addr=:3242
+viiper server --usb.addr=127.0.0.1:3241 --api.addr=:3242
 ```
 
 ### Auto-Attach Not Working

@@ -1,0 +1,1176 @@
+# Controller platform validation status, 2026-09-01
+
+This is the current dirty-working-tree evidence ledger for the DS4Windows +
+VIIPER Xbox One/Series output and physical Switch 2 work. It supersedes the
+implementation-status portions of
+`controller-platform-validation-2026-08-31.md` but retains that file as the
+dated evidence for the earlier hardware and retained-USB/IP tranche.
+
+No controller I/O, Bluetooth association, installation, Program Files change,
+driver mutation, push, tag, release, or publication was performed for this
+update. Software and replay results are not hardware results.
+
+## Compatibility invariants
+
+The canonical profile/output contract now explicitly requires both of these
+cross-products:
+
+1. every supported physical input family can select Xbox One / Series output;
+2. Switch 2 Pro, standalone Joy-Con 2 left/right, and explicitly joined
+   Joy-Con 2 can select every designated virtual pad: DualShock 4, Xbox 360,
+   DualSense, DualSense Edge, Switch 2 Pro, and Xbox One / Series.
+
+`ControllerUiCapabilityPolicyTests.EveryPhysicalFamilyRetainsEveryVirtualPadChoice`
+enumerates the live `InputDeviceType` domain and all six target personas. The
+output allocator is target-owned and accepts the same target set without a
+physical-family filter. Hardware-only profile panels may be hidden when they
+are meaningless for a physical controller; that never removes a virtual-pad
+choice. The mapped-state compatibility matrix independently encodes Xbox One
+for every declared physical family and encodes all six targets for Switch 2
+Pro, Joy-Con 2 left/right, and joined Joy-Con 2.
+
+## Current implementation state
+
+### Xbox One / Series output
+
+- Xbox One / Series is an append-only DS4Windows output persona and is routed
+  through `ViiperOutDevice`, the semantic-input broker, VIIPER's authorized
+  retained-device registry, and the existing USB/IP backend.
+- Input publication uses the dedicated `XboxOneEgressScheduler`; the generic
+  physical-controller mapping path feeds it, so selecting Xbox One does not
+  create a physical-family-specific mapper.
+- Canonical four-actuator feedback returns through the broker. Switch 2
+  runtimes bind it to a generation-authenticated HD-rumble session; other
+  physical devices use the common physical-feedback session, retaining
+  independent DualSense trigger lanes where available and deterministic body
+  downmix elsewhere.
+- Persona creation remains fail-closed unless an explicit
+  `xbox-one-authorized-persona.json` identity bundle is supplied. DS4Windows
+  does not invent or silently impersonate a Microsoft VID/PID.
+
+The code path is production-routed, but Windows enumeration and supported API
+visibility still require a disposable-system validation with an authorized
+identity bundle. This ledger does not claim XInput, GameInput, WGI, Steam, or
+game compatibility from unit tests alone.
+
+### Physical Switch 2 registration and transport
+
+- `ControlService` owns the production registration services and exact slot,
+  profile, mouse, output, and teardown facets.
+- Switch 2 Pro USB has an owned MI_00/MI_01 composition, bounded startup
+  transaction, post-startup factory/user calibration reads on that same MI_01
+  command lane, input pump, exact production coordinator, one output writer,
+  feedback lifetime, and terminal-neutral retirement.
+- BLE has adapter-scoped discovery/association boundaries, serialized command
+  ownership, Windows/WinRT platform adapters, input drain and runtime sinks,
+  throughput preference, player LED, side-specific HD-rumble writers, exact
+  production coordinators, and generation-aware teardown.
+- A clean controller-side association Commit now authorizes exactly one
+  matching `no host -> this PC` advertisement transition and rearms the
+  scan-private address capability for the remembered-device open. Failed,
+  timed-out, or cleanup-ambiguous ceremonies do not authorize that transition;
+  it remains quarantined as an identity conflict. A transition that arrives
+  after Commit but before temporary-owner cleanup finishes is held as in-
+  progress until the exact cleanup result commits or rejects the admission.
+- A clean remembered BLE input-lease teardown now retires only its exact opaque
+  reservation. The next matching advertisement can publish one fresh same-
+  scan candidate and rearm the private address slot. Active leases remain
+  duplicate-only; false CCCD completion, ambiguous disposal, stale/foreign
+  reservations, and identity quarantine cannot rearm reconnect authority.
+  The production coordinator also defers the fresh candidate while the prior
+  exact registration token remains bound/retiring/quiesced; only completed
+  profile/output removal permits the next open. A quarantined or uninspectable
+  predecessor rejects the candidate for that scan. This is replay-verified
+  lifecycle policy, not a physical reconnect claim.
+- USB and Bluetooth production feedback lifetimes retain the same body-only
+  fail-safe when a caller omits configuration. The normal persisted per-profile
+  **Map Xbox impulse triggers to side-local HD rumble** route is now on by
+  default so all four decoded Xbox feedback lanes are converted. Left/right
+  impulse lanes control only the corresponding group's high-frequency field;
+  body-low stays independent. Dynamic mode maps intensity monotonically across
+  300–481 Hz. Profiles can instead choose a fixed 1-through-10 carrier level
+  and an independent bounded 1-through-10 strength. High-band overlap uses
+  maximum composition. The current configuration is read on the dedicated
+  feedback path for every accepted Switch 2 Xbox frame. A transition
+  re-presents the newest canonical frame once; an uncertain delivery retains
+  its original policy, tuning, and byte-exact retry. This adds no
+  controller-input hot-path work and is a spectral conversion, not a claim that
+  Switch 2 hardware contains trigger actuators.
+- The existing profile `RumbleBoost` value now reaches that same canonical
+  Switch 2 sink instead of being bypassed by VIIPER feedback. The **Switch 2
+  Controls** panel presents it as **Body rumble strength** without creating a
+  second persisted value. The 0--200 percent gain is applied after the bounded
+  SDL compatibility basis for coarse sources and directly to packed amplitude
+  fields for source-preserved native/DualSense groups. Control codes, physical
+  side, and all three chronological subframes remain unchanged. Zero percent
+  mutes body/native haptics while the separately configured Xbox impulse lane
+  remains available; 100 percent is the prior byte-compatible default; boosted
+  values saturate at the 10-bit limit. Live changes re-present only a new
+  delivery, while an uncertain exact retry retains its original gain. The
+  arithmetic is allocation-free and shared by the existing USB/Bluetooth sole
+  writers.
+- Profiles can now opt into Switch2Connect-derived Xbox-style body carriers
+  without changing the byte-compatible native default. The low body carrier
+  remains 225 and the 1-through-10 high-carrier table is 241, 252, 264, 276,
+  288, 300, 312, 323, 335, and 347. Canonical coarse output and rich
+  source-preserved output share the same body-tuning snapshot; rich amplitudes,
+  side, and three temporal subframes remain intact. An active side-local Xbox
+  impulse overlay keeps its independently configured 300--481 high carrier.
+  Profile changes affect a new presentation only, while uncertain retry keeps
+  its original carrier selection byte-exactly. The feature adds no input-path
+  work, timer, queue, worker, or physical writer.
+- Every designated virtual-pad source now enters the same generation-
+  authenticated, monotonic-ownership Switch 2 feedback lifetime. Native
+  Switch 2 virtual output preserves all source oscillator groups, fields, and
+  all three temporal subframes; the physical writer changes only the transport
+  envelope/counter. DualSense PCM is divided chronologically into three stereo
+  windows and converted into independent left/right low-energy and transient
+  bands, so it retains temporal detail instead of collapsing a block to one
+  state. DualSense compatibility motors are composed with that PCM instead of
+  being erased by a valid but silent audio carrier. Supported adaptive-trigger
+  programs (`0x01`, `0x02`, and structured `0x21`/`0x22`/`0x23`/`0x25`/
+  `0x26`/`0x27`) preserve side, bounded strength, frequency hints, and a
+  three-region envelope while the corresponding physical digital trigger is
+  held. They use the same atomic source-preserved frame and sole writer as PCM;
+  occupied PCM/body carriers retain their control code and amplitudes combine
+  with saturation. Off, malformed, and unknown modes fail closed. This is a
+  tactile HD-rumble approximation, not adaptive resistance, because Switch 2
+  hardware has no equivalent resistance actuator. Coarse two-motor sources
+  repeat their bounded compatibility state in all three wire opportunities
+  rather than leaving two silent subframes.
+  Every source-preserved revision explicitly refreshes its staged physical
+  presentation, so distinct PCM/trigger/native groups with the same canonical
+  marker are not misclassified as lease-only renewals. Canonical feedback that
+  has no richer sidecar retains normal unchanged-effect deduplication.
+  Xbox body and available impulse lanes are converted into side-local HD-rumble
+  bands in every subframe; overlapping body-high and impulse energy uses
+  bounded saturating addition rather than replacement or wraparound. Xbox 360,
+  DualShock 4, and non-PCM Sony feedback are converted into a safe two-band
+  compatibility synthesis because those source protocols expose only coarse
+  motor magnitudes. Stop, watchdog, uncertain retry, successor
+  ownership, and terminal neutralization remain centralized in the same sole-
+  writer path. This preserves all information available from each decoded
+  source; it does not invent frequency detail absent from a two-motor source.
+- Native Switch 2 virtual player-indicator state now returns through that same
+  authenticated session without touching rumble state. BLE preserves all 16
+  valid four-segment masks exactly and retains the newest complete mask behind
+  an occupied acknowledged command exchange. USB emits only exact commands
+  established by the capture-backed contract: all off, players one through
+  four, and all on. Unsupported USB masks and every stale generation fail
+  closed rather than being approximated.
+- Joy-Con 2 left/right support a profile-default vertical/horizontal
+  presentation plus a live per-controller override, alongside explicit,
+  persisted joined-pair association. The override is keyed only by the
+  existing install-local opaque peer pseudonym and never persists a raw MAC or
+  Windows identity. Physical Bluetooth identity remains only left/right:
+  changing hold mode retains the exact runtime, descriptor, counter/timestamp
+  fences, output device, and feedback owner. Joined input,
+  motion, battery, stale-half
+  handling, pair epochs, feedback ownership, and one writer per physical half
+  are modeled and replay-tested.
+- The app-level **Joy-Cons are automatically paired** setting is additive,
+  persisted, and defaults off for existing installations. When enabled, the
+  production coordinator greedily joins the oldest available compatible left
+  and right halves into transient pair epochs: arrivals 1/2, 3/4, and 5/6
+  therefore remain deterministic, while safely released survivors can compact
+  into a new compatible pair when they re-advertise. Automatic mode
+  deliberately ignores historical fixed-pair records; disabling it restores
+  the explicit remembered-pair policy. With automatic mode off, unmatched
+  Joy-Con 2 cards appear in the Controllers tab with a two-controller link
+  button. The first click arms and highlights one card, a second click on the
+  same card cancels, and an opposite-side second click revalidates both IDs at
+  the coordinator before persisting and activating the exact pair. Same-side,
+  stale, disappearing, and auto/manual race candidates fail closed. This is a
+  connection/UI control path and adds no controller-report hot-path work.
+- Switch 2 Pro and Joy-Con 2 reports preserve high-resolution sticks, source
+  counters, QPC completion timestamps, generations, motion, magnetometer,
+  battery, optical observations, C, and source-specific paddle/rail controls
+  through the canonical sidecars before target encoding.
+- A VIIPER Switch 2 Pro virtual target now mirrors the validated physical
+  Switch 2 power snapshot without widening its fixed 24-byte input stream.
+  Creation metadata carries an already-known initial value; live changes use
+  the strict `bus/{busId}/{devId}/ns2pro-status-v1` control contract. The
+  complete v1 snapshot requires level, millivolts, charging, and external-
+  power fields, rejects unknown/duplicate/incomplete fields and invalid
+  ranges, and cannot mutate serial identity. Physical low/medium/high bands
+  map conservatively to virtual levels 1/5/9; validated millivolts pass
+  unchanged. Charging remains false because current direction is unproven,
+  while a physical USB transport establishes external power. DS4Windows uses
+  one latest-wins background control worker; the report callback only copies
+  the rare band change and signals it. Disconnect unsubscribes and drains that
+  exact worker before virtual removal, so reused bus/device numbers cannot be
+  reached by a predecessor. VIIPER linearizes status against new report
+  encoding without retiring the input scheduler or presenting a synthetic
+  neutral. Full design is in
+  `DS4Windows/docs/protocols/switch2-virtual-runtime-status.md`.
+- Switch 2 motion projection uses the source-established family-specific gyro
+  scales: Pro's ST `70 mdps/LSB` (`14.285714 LSB/dps`) and Joy-Con 2's
+  `16.384 LSB/dps`. The optional profile-persisted 9-axis yaw assist is
+  allocation-free and remains in the existing serialized motion projection.
+  It never gives magnetometer data direct frame authority: magnitude jumps,
+  acceleration rejection, non-yaw motion, direction disagreement, invalid or
+  overlong timing, a cached interval over 100 ms, and stale source/profile
+  epochs return the exact raw gyro frame. A rejected fresh frame also revokes
+  cached-frame correction until another fresh sample passes every gate.
+  Learned bias is capped, confidence-ramped, aged, and exponentially decayed
+  after one second without a trustworthy yaw observation; valid-bucket count
+  is saturated rather than allowed to grow without bound. The profile setting
+  defaults off and legacy XML therefore preserves prior behavior.
+- Pro, standalone Joy-Con 2, and joined Joy-Con 2 now publish that already-
+  calibrated projection through DS4Windows' existing `SixAccelMoved` seam
+  before the same frame's ordinary `Report` mapping. `OutputMapGyro` therefore
+  remains enabled and the established Gyro Controls, Gyro Mouse, Gyro Mouse
+  Joystick, and steering paths consume Switch 2 motion without a second
+  mapper, reader, poller, or UI. The runtime reuses one borrowed motion-event
+  envelope, retains QPC-derived elapsed time in `DS4State`, and emits no fake
+  motion event for terminal neutral. A throwing gyro observer rejects that
+  publication but cannot strand the serialization gate, suppress later Report
+  observers, or block terminal neutral. This is software-path evidence, not a
+  physical report-rate or pointer-latency measurement.
+- Pro and each physical Joy-Con half now own independent allocation-free
+  stationary gyro-bias calibration before yaw assist, orientation, and DJG
+  fusion. It uses each source report's QPC clock and requires five contiguous
+  seconds, at least 100 distinct physical samples, 0.85--1.15 g acceleration,
+  no more than 1 dps residual motion, no interval over 100 ms, and an absolute
+  2 dps committed-bias cap. Duplicate cached joined-half frames cannot advance
+  it. A manual calibration request retains the last committed bias until a
+  complete replacement qualifies, and a bias epoch change invalidates prior
+  magnetometer confidence. The existing profile-editor button and existing
+  Gyro Calibration special action now dispatch through the runtime device;
+  Switch 2 no longer advertises `NoGyroCalib` or runs the unused legacy
+  wall-clock sampler.
+- Joined Joy-Con 2 profiles now expose source-audited Dual Joy-Con Gyro (DJG)
+  behavior: Switch dominant side, Switch gyro side, and Single-side toggle;
+  Hold or Toggle activation; independently selected left/right activation
+  buttons from the complete semantic input set; and an explicit direct-merge
+  initial state for Single-side toggle. Activation observes but never consumes
+  the button. Profile or pair-epoch changes synchronize held-button baselines
+  to prevent phantom edges, and legacy `Dominant=None` profiles migrate to the
+  compatible explicit mode. The production runtime uses its existing
+  serialized mapper and lane-owned motion object; no reader, mapper, thread,
+  or virtual-output owner was added.
+- The live profile editor exposes only physical source controls the exact
+  Switch 2 model/side can emit: Pro exposes C, left Joy-Con exposes left
+  rail/IR, right Joy-Con exposes C plus right rail/IR, and joined exposes the
+  union. This input-source filtering does not remove any virtual-pad target.
+
+These are implemented software paths. The mandatory BLE radio/firmware matrix,
+multiple-radio behavior, live reconnect/suspend behavior, and physical output
+cadence remain hardware validation gates.
+
+### Stick-calibration precedence
+
+The production BLE lease and owned Pro USB lifetime now read both the required
+factory stick record and the optional read-only user slot before publishing
+input. USB performs these reads only after its five volatile startup commands,
+through the existing serialized MI_01 handle; it creates no second reader,
+handle, polling loop, or runtime hot-path work. An exact
+little-endian `0xA1B2` marker plus an adoptable nine-byte payload promotes the
+user record; absent, malformed, out-of-domain, or unreadable optional data
+leaves validated factory calibration active. No controller-memory write is
+performed.
+
+Primary user calibration is at `0x1FC040`. Pro right-stick user calibration is
+at `0x1FC080`, independently agreed by current upstream SDL
+`c71abd08605b8bb7078372307a93274725c99fe0` and hid-nintendo2
+`32a981ea7f916f1792a7e35aa0ecf79063ec4001`. The conflicting `0x1FC060` used
+by Switch2Connect v2.8 was audited and deliberately rejected. Joy-Con 2 right
+uses the primary slot because a standalone Joy-Con contains one physical
+stick, even though that stick projects to the logical right side.
+
+USB exposes only four closed `cmd=0x02/sub=0x04` reads: factory primary and
+secondary at `0x130A8`/`0x130E8`, and user primary and secondary at
+`0x1FC040`/`0x1FC080`. Responses must echo the exact length and address before
+payload bytes escape. Missing/malformed factory data retains the bounded
+centered wired fallback; an unmarked or invalid user record preserves factory
+data. An uncertain native command completion retires/quarantines the shared
+command lifetime rather than risking response misassociation. No memory write,
+erase, or arbitrary-address read API exists.
+
+### Joy-Con 2 optical controls
+
+Joy-Con 2 optical input is integrated into the ordinary DS4Windows profile
+pipeline in two complementary forms:
+
+- optional relative pointer movement from Auto, Left, Right, or Both sensors,
+  with independent Strict/Balanced/Relaxed thresholds and 1.0..10.0
+  sensitivities; and
+- append-only `Switch2JoyConLeftIrSensor` and
+  `Switch2JoyConRightIrSensor` physical source controls.
+
+Both sensor controls use their side's profile threshold and can be bound by the
+existing mapper to virtual-pad controls, mouse buttons, wheel actions, keys,
+macros, or profile actions. They default to unbound. Pointer movement uses the
+existing mouse policy and output handler. Continuous gyro/IR/Stick Assist
+velocity can now be presented by the one-owner high-rate worker described
+below; there is no direct physical-report injector, second mapping stack,
+per-report task/queue, or warm-path allocation.
+
+### Standalone Joy-Con orientation
+
+The `Switch 2 Controls` profile section exposes `Standalone Joy-Con hold
+default` for exact left/right Joy-Con 2 runtimes and offline profile editing.
+Vertical is the default; horizontal matches SDL's mini-controller rotation.
+The Controllers card adds a live button only to standalone Joy-Cons. That
+button persists an override in a fixed-size, versioned, digest-protected record
+keyed by the existing install-local HMAC peer pseudonym. Joined Joy-Cons and
+Pro controllers reject the binding; missing or malformed records retain the
+profile fallback. Neither setting participates in immutable Bluetooth
+authentication.
+
+The production BLE sink resolves the controller override over the profile
+default and reads one enum snapshot per physical report, reuses the same
+stateful mapper baselines, and publishes a wholly vertical or wholly horizontal
+frame. The next report observes a live change without a worker, queue,
+reconnect, or new cadence source. A profile change cannot retire the Bluetooth
+transport or HD-rumble lifetime. Motion history resets only its coordinate-
+basis delta state on the first differently oriented frame. Source semantics
+are pinned to
+`hifihedgehog/SDL@d98c5804a9d20b0d96e993741797878c86b8f1e1` and
+`Switch2Connect@61ac6642ce12fe7217e38a860b14863b18ca7e28`.
+
+The threshold bands, wrapping 16-bit deltas, velocity scale, and temporal
+activation policy are pinned to the GPL-compatible Switch2Connect source at
+commit `4487322a306f04efa27682e3f3a508635a84fd98`. Source-control activation
+uses the reference's distance/roughness threshold, while continued pointer
+movement additionally uses the motion-verification latch.
+
+### Switch2Connect profile-feature parity audit
+
+The current Switch2Connect profile surface at commit
+`61ac6642ce12fe7217e38a860b14863b18ca7e28` was compared at source level
+against the DS4Windows profile and canonical mapping paths. DS4Windows already
+provides the reference's ordinary button/axis remapping, shifted mappings,
+gyro hold/toggle (including the Gyro Lock behavior), gyro-to-mouse,
+gyro-to-stick, steering, physical-stick deadzones, mouse/gyro smoothing,
+mouse-button mapping, macros, and profile actions. Those features remain in
+their generic editors; no Switch-2-only duplicate mapper or mapping store was
+added.
+
+The reference's global Mode Shift behavior is now represented by append-only
+shift-trigger ID 37 in that existing mapper. Existing IDs 0 through 36 retain
+their numeric meaning. Each existing `DS4ControlSettings` entry owns three
+small alternative-action lanes matching the donor's independent Mouse, R
+Joystick, and Steering stores; execution remains in canonical `MapCustom`.
+Profiles select the lane to edit plus Hold and Tap inputs in **Switch 2
+Controls**, then assign an ordinary control's alternative action through the
+existing Shift Modifier editor. Tap and Hold share the donor's XOR state; Hold
+temporarily inverts a Tap-entered layer, joined Joy-Cons share one pair-epoch
+state, and simultaneous Tap presses in one report collapse to one edge.
+The activation surface includes C, all four Joy-Con rail/paddle inputs, and
+both profile-thresholded IR sensors. Consumption neutralizes both source and
+destination fields while retaining ordinary release cleanup, so a Mode Shift
+command cannot leak controller, key, macro, extras, or lightbar-macro output.
+Per-profile toggles auto-apply the corresponding independent layer while Gyro
+Mouse, Gyro Mouse Joystick, or motion steering is active; leaving an auto-
+applied scope clears Tap state. Device, transport, pair, profile, binding, and
+timestamp boundaries establish a fresh held-button baseline. Initial shared-
+layer profiles migrate once into all three stores and clear their legacy
+representation. Scoped action-only and extras-only profiles enter the
+canonical mapper. Evaluation is lazy unless a shifted action selects ID 37,
+uses fixed per-slot state, and allocates no managed memory on the warmed path.
+Full design details are in
+`DS4Windows/docs/protocols/switch2-mode-shift.md`.
+
+The first confirmed missing virtual-motion behavior was the reference's
+subtractive soft deadzone. Profiles now expose `Virtual gyro soft deadzone`
+from 0.0 through 100.0 in the existing `Switch 2 Controls` section. Zero is the
+legacy/default behavior. The production Pro and Joy-Con projections apply the
+deadzone to the reference-selected pitch/yaw axes after calibration and
+quality-gated magnetic correction but before SixAxis conversion. Vertical,
+joined, and horizontal Joy-Con coordinate bases select their axes separately.
+The operation is continuous at the threshold, allocation-free, and remains in
+the single serialized physical-report -> SixAxis -> canonical mapper path.
+Non-finite or out-of-range persisted values fail back to zero.
+
+The next confirmed gap was the reference's horizon-stabilized virtual-motion
+mode. Profiles now expose `Enable horizon-stabilized virtual gyro`, default
+off. One allocation-free estimator is owned by each serialized Pro or logical
+Joy-Con runtime. It uses the reference's 1--50 ms integration bounds, 100 ms
+reset gap, 0.1 accelerometer correction gain, and 10-degree acceleration
+rejection, then applies the pinned body-to-world pitch/yaw projection and
+matching accelerometer roll compensation before the existing SixAxis mapper.
+The estimator is fenced by device, pair, presentation-mode, DJG-policy, and
+calibration epochs. Invalid vectors, invalid/out-of-order timing, source
+changes, profile toggles, and gaps reset orientation and publish the raw
+physical motion for that frame rather than stale or synthetic motion.
+Quality-gated magnetic yaw bias remains a separate bounded pre-projection
+stage; there is still no second mapper or input scheduler.
+
+The remaining source-established Joy-Con optical-sensor aiming controls are
+now integrated into that same motion path. The existing gyro trigger selector
+has append-only IDs 27 and 28 for the left and right Joy-Con 2 IR sensors;
+existing persisted IDs 0 through 26 are unchanged. IR remains an ordinary
+canonical mapping source, so a mapped key, mouse action, macro, virtual-pad
+action, or profile action can execute on the same report that activates gyro.
+Per-side profile controls reproduce the reference's button-edge freeze,
+held/release-latched soft-deadzone override, and held/release-latched
+dampening policy. Joined pairs observe buttons from both halves while selecting
+the tuning for the side whose IR sensor activated. Configuration, profile,
+pair, device, transport, and timestamp changes establish a new edge baseline
+instead of emitting a synthetic freeze. Invalid persisted values are bounded
+or restored to safe donor defaults.
+
+The reference comments also describe a fixed 20 ms post-click suppression,
+but source audit found `last_click_event_time` is initialized and read without
+any assignment at pinned commit
+`61ac6642ce12fe7217e38a860b14863b18ca7e28`; it is therefore not an operative
+reference behavior to copy. DS4Windows provides the effective behavior through
+the per-side button-edge pause controls (100 ms donor default, configurable to
+20 ms). The legacy DS4Windows gyro trigger evaluator was simultaneously changed
+from per-report `string.Split` allocations to an exact, allocation-free token
+scan for Controls, Mouse, Mouse Joystick, and Directional Swipe modes.
+
+Optical-mouse parity now also includes the reference's conditional stick
+scrolling. Only a verified active sensor contributes its physical Joy-Con Y
+axis; a 0.2 deadzone and 60-unit full-scale wheel law match `controller.py`.
+Horizontal presentation is transformed back to the physical-axis basis, Both
+sums independently active sides, and threshold loss or any existing lifecycle
+fence emits no wheel event. The result is delivered through DS4Windows'
+profile-selected `outputKBMHandler`, next to the existing optical pointer
+accumulator, with no new injector or scheduler. DS4Windows intentionally keeps
+the stick visible to canonical virtual-pad mapping instead of reproducing the
+reference's unrelated right-stick consumption.
+
+Per-side IR-only click/action parity is represented by the existing shifted
+mapping system rather than a dedicated click injector. Persisted shift-trigger
+IDs 35 and 36 append the left and right Joy-Con 2 IR sensors without changing
+IDs 0 through 34. Any ordinary physical input can retain its regular action and
+use the chosen IR sensor as the condition for a mouse button, wheel action,
+keyboard key, macro, virtual-pad control, or profile action. This keeps normal
+mapper reference counting and release ownership authoritative. The audit also
+found and corrected stale display-name cases for existing shift IDs 28 through
+34; the serialized meanings were already correct and remain unchanged.
+
+Switch2Connect also advertises **Stick Assist**, and its pinned
+`src/controller.py` selects the right stick for Pro/joined controllers or the
+orientation-adjusted physical stick for a standalone Joy-Con. Source audit
+found that the resulting `sx`/`sy` values are never added to either mouse
+target at commit `61ac6642ce12fe7217e38a860b14863b18ca7e28`; the advertised
+reference feature is dead at that revision. DS4Windows now supplies the
+intended behavior through an opt-in 0.0--10.0 `Gyro mouse stick assist`
+profile control. It observes the existing gyro-mouse ratchet/toggle decision
+exactly once, selects the already orientation-corrected logical stick, and
+publishes a QPC-derived velocity through the same continuous presentation seam.
+The stick remains visible to canonical virtual-pad mapping. Source/profile/
+pair/generation changes, duplicate or reversed time, and intervals over 50 ms
+cannot produce a pointer jump. The lane is allocation-free and adds no
+physical input report, mapping stack, queue, per-report task, or input injector.
+
+The pinned source's one-owner 1 kHz mouse interpolation worker is now represented
+by the `High-rate mouse presentation (1 kHz)` profile option, on by default for
+Switch 2 profiles. One logical runtime owns one lazy worker, so a joined pair
+cannot create competing half-controller loops. Gyro Mouse, verified IR mouse,
+Stick Assist, and authored mapped-stick mouse replace fixed-size latest-state
+velocity records; wheel, flick-stick, mouse-button, macro, and non-stick mapped
+deltas remain on the existing report path and therefore cannot be repeated.
+The worker uses QPC
+elapsed time and private fractional carry, raises one-millisecond Windows timer
+resolution only while active, expires any unrefreshed source after 100 ms, and
+uses the reference's bounded 15 ms fallback after an interval above 50 ms.
+Profile revisions clear all earlier sources atomically. Terminal and
+abort-before-publication lifecycles stop admission and wait for admitted output
+before retirement, so no worker sample can appear after terminal closure.
+SendInput presentation is allocation-free; FakerInput atomically combines a
+pending canonical delta with a high-rate sample instead of overwriting it.
+
+The pinned source's operative five-level Cemuhook yaw sensitivity is now also
+represented in `Switch 2 Controls`. DS4Windows applies the exact
+`1 + (level - 1) / 12` multiplier only to Switch 2 yaw, after existing DSU
+smoothing and immediately before UDP serialization. Level 1 is the legacy
+default and preserves the canonical yaw bit-for-bit; level 5 is 4/3. Pitch,
+roll, non-Switch-2 DSU sources, canonical motion, gyro mapping, virtual-pad
+output, and report cadence are unchanged. The source runtime is captured by
+the existing exact-slot motion subscription, so a slot reuse cannot make an
+older handler borrow another controller's family policy. DS4Windows does not
+copy Switch2Connect's raw Joy-Con/Pro gyro constants because its canonical
+SixAxis value is already degrees per second.
+
+The README's adjacent claim that external gyro applications receive a
+consistent non-interpolated 1 kHz stream is not operative at the pinned
+revision. `virtual_controller.py::input_report_callback` calls
+`cemuhook_server.report_controller_data` directly on an admitted physical
+report; neither `Controller._interpolation_thread_loop` nor
+`VirtualController._1000hz_loop` calls the Cemuhook server. The former owns
+mouse movement only, while the latter repeats only ViGEm DS4 reports. Adding a
+DSU repeater would therefore copy a presentation claim rather than donor code,
+increase UDP traffic, and duplicate timestamps without new sensor samples.
+DS4Windows retains immediate event-driven DSU delivery until measurements
+establish a receiver that benefits from deliberate repetition.
+
+The pinned source's operative ordinary-button gyro trigger modifiers are now
+also integrated without creating another mapping path. A sparse per-profile
+table under `Switch 2 Controls` keeps independent tuning for every append-only
+DS4Windows activation-source token in separate Gyro Mouse and Gyro Mouse
+Joystick scopes. Each entry selects semantic deadzone and dampening buttons plus
+independent press, release, and latch durations. The allocation-free trigger
+scan retains the activation source that caused the inactive-to-active edge; for
+an AND chord this is the newly pressed member that completed the chord. The
+policy applies only to the existing presentation paths for an exact Switch 2
+runtime device. The canonical SixAxis state, Cemuhook stream,
+virtual-pad motion, and Xbox One encoding remain unchanged. Joined Joy-Cons use
+the pair epoch plus both device/transport generations as their lifecycle
+identity; Pro uses its exact device/transport generation. Source, profile,
+tuning, activation-source, or timestamp boundaries clear every latch and
+establish a held-button baseline without manufacturing an edge. Freeze also
+withdraws the existing
+high-rate gyro source, preventing repeated motion during the pause window. The
+state machine, subtractive deadzone, and dampening arithmetic are allocation
+free on the warmed report path. Optical-sensor aiming deliberately retains its
+separate per-side tuning because the selected sensor is itself the activation
+source.
+
+Switch2Connect's operative `GYRO_LOCK` action is now present as **In-app gyro
+lock** in the same section. Gyro Mouse and Gyro Mouse Joystick have independent
+Hold and press-to-toggle semantic-button masks. Locking keeps the established
+gyro activation mode engaged while suppressing only presentation, including
+withdrawal of the high-rate mouse source. Toggle state clears when gyro
+disengages. Exact controller lifecycle, profile, binding, mode, and timestamp
+boundaries establish a held-button baseline without synthesizing a toggle; an
+odd number of simultaneous toggle edges changes the donor-compatible shared
+lock boolean while an even number does not. The lock and trigger modifier share
+one canonical sidecar observation per active policy callback, and the default
+path returns before reading that sidecar when both features have no selected
+buttons. Canonical motion, ordinary mapping, DSU, virtual-pad, Xbox One, and
+feedback paths are unchanged.
+
+The same source audit confirmed that its 0--10 rumble Strength control is
+operative in `set_vibration`, while DS4Windows' existing profile Rumble Boost
+previously did not traverse the canonical Switch 2 route. That parity gap is
+closed by the shared body-gain policy above. Its ordinary-rumble Frequency
+control is also closed by the opt-in body-carrier policy above, including the
+exact source-derived 1-through-10 law and independent impulse carrier. Native
+versus Xbox-style carrier selection also supplies the operative part of the
+reference's Switch/Xbox rumble-mode choice. The advertised rumble Delay is
+persisted and displayed, but repository-wide inspection of the pinned commit
+finds no controller or feedback consumer; it is dead UI rather than a parity
+feature. DS4Windows therefore keeps immediate default delivery, terminal Stop,
+and the existing sole writer instead of adding a misleading delay setting.
+
+Switch2Connect's operative **Calibrate Gyro** flow also persists its accepted
+per-controller bias and reloads it on reconnect. DS4Windows' existing
+five-second stationary estimator was stricter than the donor's plain average
+but previously retained its committed bias only for the live runtime. That gap
+is now closed without weakening admission: acceleration must remain within
+0.85--1.15 g, corrected motion within 1 degree/second, report gaps within
+100 ms, and the finite committed bias within 2 degrees/second. Manual restart
+keeps the last valid bias active until a replacement qualifies.
+
+Accepted biases are normalized to degrees/second and stored in fixed 49-byte,
+versioned, digest-protected, atomically replaced records keyed only by the
+existing install-local HMAC peer pseudonym. Bluetooth Pro, standalone Joy-Con,
+joined halves independently, and USB Pro bind before activation. Loads stop
+automatic recalibration until the user presses **Restart gyro calibration** in
+Switch 2 Controls. A changed per-IMU revision enqueues one bounded FIFO
+background write; input publication never performs disk I/O, older retries
+cannot overtake newer commits, and the loaded steady-state path remains
+allocation-free. Full details are in
+`DS4Windows/docs/protocols/switch2-gyro-calibration-persistence.md`.
+
+## Source-backed magnetometer calibration and 9-axis preparation
+
+Switch2Connect commit
+`61ac6642ce12fe7217e38a860b14863b18ca7e28` exposes a user figure-eight
+magnetometer calibration and applies per-controller hard-iron bias plus a
+validated 3x3 soft-iron correction before fusion. DS4Windows previously fed
+raw magnetic vectors into a bounded relative yaw-bias learner; it had no
+calibration session, full ellipsoid fit, persistence owner, or UI.
+
+The canonical Pro and Joy-Con motion projections now own the source-backed
+calibration transform. The full fit preserves the donor's 20,000-sample cap,
+500-sample minimum, 25-unit per-axis range, rank/positive-ellipsoid checks,
+condition <= 3, seven-octant coverage, RMS <= 0.08, and P95 <= 0.15, with its
+validated diagonal min/max fallback. Calibration collection suppresses logical
+controller output while transport reports continue draining. Joined Joy-Cons
+fit both physical halves independently and adopt only when both succeed.
+
+Successful fits are stored per physical controller using the existing
+install-local HMAC pseudonym derived at the trusted Bluetooth/USB identity
+boundary. The fixed-size, versioned, digest-checked, atomically replaced record
+contains no address, DeviceId, path, container GUID, serial, or bond material.
+Reconnect loading happens before runtime activation. The warmed report path
+remains a fixed bias subtraction and 3x3 multiply with zero managed
+allocations; fit work and its bounded sample buffer exist only during explicit
+calibration.
+
+The **Switch 2 Controls** section now exposes Start, Complete, and Cancel for
+the selected physical controller, reports fit quality/model, and keeps the
+existing 9-axis yaw-assist checkbox as profile policy. Full implementation and
+verification details are in
+`DS4Windows/docs/protocols/switch2-magnetometer-calibration.md`.
+
+## Software validation
+
+Commands ran from the dirty trees without installation or hardware access.
+
+```text
+dotnet test DS4WindowsTests/DS4WindowsTests.csproj -c Release \
+  -p:Platform=x64 --filter "FullyQualifiedName~Switch2" --no-restore
+  1,053 passed, 0 skipped, 0 failed
+
+dotnet test DS4WindowsTests/DS4WindowsTests.csproj -c Release \
+  -p:Platform=x64 --no-restore
+  2,246 passed, 3 intentional live-audio skips, 0 failed
+
+dotnet test DS4WindowsTests/DS4WindowsTests.csproj -c Release \
+  -p:Platform=x64 --filter \
+  "FullyQualifiedName~ViiperSwitch2RuntimeStatusTests" --no-restore
+  6 passed, 0 skipped, 0 failed
+
+dotnet test DS4WindowsTests/DS4WindowsTests.csproj -c Debug \
+  -p:Platform=x64 --filter \
+  "FullyQualifiedName~Switch2GyroCalibrationFileStoreTests|FullyQualifiedName~Switch2StationaryGyroCalibrationTests|FullyQualifiedName~Switch2RuntimeInputDeviceTests|FullyQualifiedName~Switch2BluetoothRuntimeInputSinkTests" --no-restore
+  54 passed, 0 skipped, 0 failed
+
+dotnet test DS4WindowsTests/DS4WindowsTests.csproj -c Debug \
+  -p:Platform=x64 --filter \
+  "FullyQualifiedName~Switch2JoyConHoldModeFileStoreTests|FullyQualifiedName~Switch2BluetoothRuntimeInputSinkTests" --no-restore
+  21 passed, 0 skipped, 0 failed
+
+dotnet test DS4WindowsTests/DS4WindowsTests.csproj \
+  -p:Platform=x64 --filter \
+  "FullyQualifiedName~Switch2ModeShiftTests|FullyQualifiedName~Switch2ProfileMappingSchemaTests|FullyQualifiedName~Switch2IrGyroMotionModifierTests" --no-restore
+  41 passed, 0 skipped, 0 failed
+
+dotnet test DS4WindowsTests/DS4WindowsTests.csproj -c Release \
+  -p:Platform=x64 --filter \
+  "FullyQualifiedName~Switch2GyroLockTests|FullyQualifiedName~Switch2GyroTriggerModifierTests" --no-restore
+  21 passed, 0 skipped, 0 failed
+
+dotnet test DS4WindowsTests/DS4WindowsTests.csproj -c Release \
+  -p:Platform=x64 --filter \
+  "FullyQualifiedName~Switch2GyroTriggerModifierTests" --no-restore
+  13 passed, 0 skipped, 0 failed
+
+dotnet test DS4WindowsTests/DS4WindowsTests.csproj -c Release \
+  -p:Platform=x64 --filter \
+  "FullyQualifiedName~Switch2CemuhookYawSensitivityTests" --no-restore
+  6 passed, 0 skipped, 0 failed
+
+dotnet test DS4WindowsTests/DS4WindowsTests.csproj \
+  -p:Platform=x64 --filter \
+  "FullyQualifiedName~Switch2HdRumbleFeedbackTranslatorTests|FullyQualifiedName~Switch2HdRumbleDeliverySinkTests|FullyQualifiedName~Switch2ProUsbOwnedFeedbackActivationLifetimeTests|FullyQualifiedName~Switch2BluetoothFeedbackLifetimeTests|FullyQualifiedName~Switch2ProfileMappingSchemaTests" \
+  --no-restore
+  90 passed, 0 skipped, 0 failed
+
+dotnet test DS4WindowsTests/DS4WindowsTests.csproj \
+  -p:Platform=x64 --filter \
+  "FullyQualifiedName~Switch2StickAssistProfileLaneTests|FullyQualifiedName~Switch2ProfileMappingSchemaTests" \
+  --no-restore
+  25 passed, 0 skipped, 0 failed
+
+dotnet test DS4WindowsTests/DS4WindowsTests.csproj -c Release \
+  -p:Platform=x64 --filter \
+  "FullyQualifiedName~Switch2HighRateMousePresentationTests|FullyQualifiedName~Switch2StickAssistProfileLaneTests|FullyQualifiedName~Switch2ProfileMappingSchemaTests" \
+  --no-restore
+  35 passed, 0 skipped, 0 failed
+
+dotnet test DS4WindowsTests/DS4WindowsTests.csproj -c Release \
+  -p:Platform=x64 --filter \
+  "FullyQualifiedName~Switch2|FullyQualifiedName~DualSense|FullyQualifiedName~Viiper|FullyQualifiedName~PlayStation|FullyQualifiedName~ControllerUi" \
+  --no-restore
+  1,692 passed, 0 skipped, 0 failed
+
+dotnet test DS4WindowsTests/DS4WindowsTests.csproj -c Release \
+  -p:Platform=x64 --filter \
+  "FullyQualifiedName~Switch2HorizonStabilizerTests|FullyQualifiedName~Switch2ProfileMappingSchemaTests|FullyQualifiedName~Switch2ProProfileInputTests|FullyQualifiedName~Switch2JoyConProfileInputTests|FullyQualifiedName~Switch2RuntimeInputDeviceTests" \
+  --no-restore
+  84 passed, 0 skipped, 0 failed
+
+dotnet test DS4WindowsTests/DS4WindowsTests.csproj -c Release \
+  -p:Platform=x64 --filter \
+  "FullyQualifiedName~Switch2MotionSoftDeadzoneTests|FullyQualifiedName~Switch2ProfileMappingSchemaTests|FullyQualifiedName~Switch2ProProfileInputTests|FullyQualifiedName~Switch2JoyConProfileInputTests" \
+  --no-restore
+  54 passed, 0 skipped, 0 failed
+
+dotnet test DS4WindowsTests/DS4WindowsTests.csproj -c Release \
+  -p:Platform=x64 --filter \
+  "FullyQualifiedName~Switch2JoyConPairingPolicyTests|FullyQualifiedName~AppSettingsTests" \
+  --no-restore
+  11 passed, 0 skipped, 0 failed
+
+dotnet test DS4WindowsTests/DS4WindowsTests.csproj -c Release \
+  -p:Platform=x64 --filter \
+  "FullyQualifiedName~Switch2DualJoyConGyroModeTests|FullyQualifiedName~Switch2DualJoyConGyroFusionTests|FullyQualifiedName~Switch2JoyConProfileInputTests|FullyQualifiedName~Switch2ProfileMappingSchemaTests|FullyQualifiedName~Switch2RuntimeInputDeviceTests" \
+  --no-restore
+  70 passed, 0 skipped, 0 failed
+
+dotnet test DS4WindowsTests/DS4WindowsTests.csproj -c Release \
+  -p:Platform=x64 --filter \
+  "FullyQualifiedName~Switch2JoyConProfileInputTests|FullyQualifiedName~Switch2RuntimeInputDeviceTests|FullyQualifiedName~Switch2BluetoothRuntimeInputSinkTests|FullyQualifiedName~Switch2ProfileMappingSchemaTests|FullyQualifiedName~ControllerUiCapabilityPolicyTests"
+  102 passed, 0 skipped, 0 failed
+
+go test -count=1 ./...
+  all VIIPER packages passed
+
+go vet ./...
+  passed
+```
+
+The optical/profile tests cover independent per-side thresholds and
+sensitivities, merged movement, activation, lifecycle/profile/timestamp fences,
+invalid/stale source release, append-only enum values, mapping-table
+cardinality, XML round trips, UI availability, and zero-allocation warm calls.
+The orientation tranche additionally covers exact vertical/mini button and
+stick semantics, left/right runtime authentication, motion axes, coordinate-
+basis history reset, replay-fence retention, and a vertical-to-horizontal live
+profile change on the same runtime generation.
+DJG coverage additionally proves all Hold/Toggle edges and three source-audited
+mode transitions, exact per-side IMU activation, full semantic activation-
+button persistence, non-consumption of activation input, profile/pair held-
+button synchronization, legacy direct-merge migration, invalid-state
+rejection, and an allocation-free warm resolver.
+Calibration coverage additionally pins the factory/user address matrix,
+`0xA1B2` marker, user-over-factory precedence, invalid-user factory retention,
+and the serialized BLE command order.
+Feedback-policy coverage additionally proves the safe body-only fallback,
+default-on profile conversion over both USB and Bluetooth production lifetimes,
+left/right sidedness, dynamic/fixed 300–481 Hz endpoints, monotonic dynamic
+mapping, bounded 1-through-10 strength, one explicit unchanged-frame refresh,
+and byte/policy/tuning stability for an uncertain exact retry. Profile body-
+gain coverage additionally proves 0/100/200 percent bounds, independent impulse
+gain, 10-bit saturation, canonical and source-preserved scaling, unchanged
+native carrier/side/temporal identity, XML persistence through the existing
+Rumble Boost field, live USB/Bluetooth traversal, zero-allocation synthesis,
+and original-gain retention for an uncertain exact retry. Carrier-mode
+coverage additionally proves the exact 1-through-10 source law, off-by-default
+native compatibility, malformed-profile fallback, canonical and rich USB/BLE
+delivery, retained rich amplitude/side/subframe identity, independent impulse
+frequency, zero-allocation synthesis, and original carrier retention for an
+uncertain exact retry. Cross-output
+feedback coverage additionally proves
+monotonic ownership transfer between legacy virtual outputs over both USB and
+Bluetooth, exact native Switch 2 oscillator-group preservation, and stereo
+DualSense PCM low/transient-band conversion. It now also proves byte-exact
+three-subframe native preservation, chronological three-window DualSense PCM
+conversion, three-opportunity compatibility repetition, and side-local
+saturating Xbox impulse composition in every subframe. The richer DualSense
+coverage additionally proves silent-PCM/body coexistence, side-local trigger
+gating, supported-mode envelope/frequency decoding, bounded saturation,
+unknown-mode rejection, zero-allocation warm composition, byte-preserved
+delivery through both owned USB and Bluetooth writers, and consecutive rich
+payload delivery when the canonical marker remains unchanged. Native virtual player-
+indicator coverage additionally proves arbitrary exact BLE masks, newest-state
+command coalescing, the capture-bounded USB command set, stale-session
+rejection, and LED/rumble independence.
+Association coverage additionally proves the clean post-Commit host promotion,
+scan-private address rearm, early-readvertisement cleanup race, one-shot
+remembered open, and quarantine after every uncommitted or failed transition.
+Reconnect coverage additionally proves duplicate-only behavior while a lease
+is active, exact-reservation retirement, clean same-peer reopen, one-shot
+successor admissions, address-capability preservation across deferral, and
+non-rearm after false CCCD teardown or an identity conflict. Compatibility
+coverage additionally proves every declared physical
+family can produce a non-neutral 24-byte Xbox One semantic report and every
+Switch 2 physical form can produce all six designated virtual-pad reports.
+Motion coverage additionally pins the distinct Pro/Joy-Con gyro scales, raw
+fallback for every current-frame quality/timing failure, fresh-observation
+reauthorization after rejection, bounded cached intervals, learned-bias decay,
+confidence/count saturation, profile/source epoch resets, opt-in profile XML
+migration, the axis-aware subtractive soft-deadzone law with safe legacy
+defaults, direct Pro/joined projection integration, exact nontrivial
+quaternion-projection parity, Pro/joined/horizontal horizon projection,
+accelerometer roll compensation, gap/profile/source-epoch reset behavior, and
+zero-allocation warm assist and horizon paths. Runtime seam coverage now
+also proves same-report motion-before-mapping order for Pro, standalone, and
+joined devices; generic gyro capability enablement; borrowed-envelope reuse;
+QPC elapsed-time propagation; zero motion on terminal neutral; observer-fault
+containment; and zero managed allocations after warm-up with the gyro event
+subscribed.
+Calibration coverage additionally proves five-second QPC qualification,
+motion/acceleration/gap resets, duplicate-timestamp suppression, minimum sample
+count, absolute bias cap, last-safe-bias retention during manual replacement,
+separate left/right Joy-Con ownership before direct/DJG fusion, Pro projection
+integration, existing UI/action dispatch, and a zero-allocation warm path.
+Optical-sensor gyro-aiming coverage additionally proves exact allocation-free
+trigger-token matching, left/right sensor threshold activation, pair-side
+selection, press/release freeze windows, deadzone and dampening release latches,
+profile/lifecycle/re-entry edge baselines, invalid-value normalization, XML
+round trips and legacy defaults, plus non-interference with unrelated live gyro
+output in the profile editor/test slot. Optical-mouse scrolling coverage proves
+inactive/released suppression, the exact deadzone/full-scale law, correct
+joined-side ownership, horizontal-to-physical-axis recovery, and retention of
+the allocation-free warm lane. Conditional-action coverage additionally pins
+the complete existing 27-through-34 shift-trigger sequence, append-only IR IDs
+35/36, correct left/right live activation, UI display names, and mouse-action
+XML round trips.
+Stick Assist coverage additionally proves Pro, joined, standalone-left, and
+standalone-right source selection, logical orientation, QPC-rate-independent
+velocity, exact gyro-mouse activation handoff, profile/generation/timestamp
+fences, long-stall and duplicate suppression, safe persisted defaults, and
+zero managed allocations over 20,000 warm calls. The mapped stick remains
+unchanged for virtual-pad output.
+High-rate mouse coverage additionally proves fresh four-source mixing,
+100 ms stale-source expiry, atomic profile-revision reset, invalid/unbounded
+state rejection, QPC elapsed-time integration, fractional carry, bounded
+long-stall recovery, safe legacy-on profile migration and explicit opt-out,
+zero managed allocations over 20,000 warm updates, synchronous terminal stop,
+and refusal to resurrect a stopped presenter.
+Cemuhook coverage additionally proves all five exact source multipliers,
+bit-preserving level-1 behavior, safe invalid-level and non-finite handling,
+finite-overflow preservation, profile/XML migration and bounds, and zero
+managed allocations over 10,000 warm yaw projections.
+Gyro-trigger stabilization coverage additionally proves held-button baseline
+establishment, independent press/release freezes, deadzone and dampening release
+latches, exact Joy-Con pair and Pro generations, C/paddle semantics, profile,
+activation-source and timestamp fences, subtractive finite arithmetic, zero
+managed allocations over 20,000 warm updates, sparse XML and legacy profile
+migration, independent Mouse/Mouse-Joystick scopes, activation-edge source
+retention, table bounds, and live editor selection isolation.
+Gyro Lock coverage additionally proves Hold and press-edge Toggle behavior,
+release persistence, no synthetic edge from a held button at activation,
+donor-compatible even/odd simultaneous-toggle parity, lifecycle/profile/mode/
+binding/timestamp reset, inactive reset, zero managed allocations over 20,000
+warm updates, independent Mouse/Mouse-Joystick XML migration, legacy defaults,
+and editor scope isolation with mutually exclusive button modes.
+Mode Shift coverage additionally proves the donor's shared Tap/Hold XOR law,
+single-edge simultaneous Tap behavior, temporary Hold inversion, gyro auto-
+apply inversion and Tap reset, pair/device/transport/profile/binding/timestamp
+fences, held-button baselining, exact activation-control consumption for
+common, C, paddle, and IR sources, append-only trigger ID 37, legacy-safe XML
+migration into independent Mouse/Mouse-Joystick/Steering action and extras
+stores, canonical action/extras gate participation, source/output
+neutralization without skipped release bookkeeping, live mapping-list scope
+refresh, UI exclusivity, and zero managed allocations over 20,000 warm updates.
+Automatic/manual pairing coverage additionally proves stable oldest-left plus
+oldest-right selection, 1/2--3/4--5/6 greedy grouping, compatible survivor
+compaction, same-side refusal, either-side first-click ordering, same-card
+cancel, retained highlight after an incompatible click, stale-candidate
+reconciliation, legacy-default migration, and settings XML round-trip.
+Virtual runtime-status coverage additionally proves the exact 1/5/9 band
+projection, unchanged validated millivolts, USB-versus-Bluetooth external-
+power policy, unproven-charging suppression, separate snake-case creation and
+camel-case v1 runtime contracts, omission of serial identity, exact endpoint
+targeting, complete acknowledgement validation, and rejection of incomplete
+status before transport. VIIPER coverage independently proves required false
+and zero fields, unsupported-version/range/unknown/duplicate/trailing-data
+rejection, explicit creation-time external-power false, exact-device API
+updates, no mutation after rejection, serial preservation, and no scheduler
+generation, mandatory-neutral, or resynchronization change while an immutable
+input claim is active.
+
+Connection-haptic parity now pins Switch2Connect's exact bass/click frequency,
+amplitude, neutral-carrier, three-subframe, and 200/10/1,000 ms signature plus
+its 1,200 ms USB readiness delay. The implementation starts only after the
+input activation commit, uses the fixed low-priority ProfileEffect lane and
+the existing sole physical writer, yields to higher-priority game/audio/
+preview feedback, and cancels on non-neutral local feedback or terminal
+lifecycle. Profile persistence defaults on for legacy profiles and exposes an
+explicit opt-out under Switch 2 Controls. Focused source/persistence/BLE/USB
+coverage passes 5/5, the real asynchronous four-delivery BLE schedule passes
+alongside preview-cancellation/non-resurrection at 2/2, and the surrounding
+feedback/owner commit-abort-retirement matrix passes 134/134. No physical
+controller was touched in this validation pass. The complete name-filtered
+Switch 2 suite passes 1,064/1,064 after the identification tranche.
+
+Interactive-identification parity now adds a per-controller `Ping` action on
+the Controllers tab. It copies the donor's two 100 ms pulses and 100 ms gap,
+including three repeated temporal subframes and the post-render Pro
+(1,023/800) versus Joy-Con (696/327) amplitude laws. Both connection and Ping
+patterns now test the donor's model-specific `ignore_freq_scaling` multipliers
+and Joy-Con combined-amplitude limiter rather than treating the source values
+as final physical bytes. Ping uses the canonical TestPreview lane, restarts
+cleanly, withdraws the lower connection cue, and remains outside the input hot
+path. The combined focused haptic matrix passes 8/8 over source constants,
+profile migration, Pro/Joy-Con routing, BLE/USB owned delivery, schedules, and
+cancellation.
+
+Configurable game-rumble delay parity now covers Switch2Connect's persisted
+millisecond control across Xbox CFBK, legacy actuator state, native Switch 2
+groups, and rich DualSense groups. The legacy/default value is zero and stays
+on the existing synchronous path without creating a timer, queue, worker, or
+input-path work. A nonzero value lazily uses one bounded FIFO and timer per
+canonical virtual-feedback session instead of the donor's timer-per-callback
+model, preserving order and exact source/side/oscillator/subframe identity.
+Previously authenticated CFBK is re-timestamped at presentation while retaining
+its source sequence, generations, ownership epoch, actuator mask, values, and
+TTL. Delay/profile changes flush stale work, overflow prefers the newest
+complete state, and retirement fences every undelivered item before the sole
+physical owner retires. Player LEDs and local connection/identification effects
+remain undelayed. Focused bounds, migration, TTL, ordering, revision, zero-delay,
+retirement, Bluetooth, and owned-USB coverage passes 6/6. The complete
+name-filtered Switch 2 suite now passes 1,070/1,070. No physical controller was
+touched in this validation pass.
+
+Xbox impulse-trigger release parity now implements Switch2Connect's independent
+left/right 90 ms linear decay after an Xbox trigger motor reaches zero. A new
+positive value replaces only that side's release; repeated zero does not
+restart it. Dynamic frequency follows instantaneous decayed strength while
+fixed-frequency policy remains unchanged, and body rumble is preserved. The
+envelope is a downstream presentation continuation of the exact accepted CFBK
+frame, not a fabricated canonical sequence: its lazy 16 ms timer stages a
+monotonic renderer revision through the same runtime, sink, and sole USB/BLE
+writer. Exact uncertain physical bytes retry before a newer decay revision.
+Stop, non-impulse policy, and session retirement clear and fence the timer;
+a superseding delayed frame takes effect at its configured presentation time,
+and retirement non-resurrection is tested. Focused pure-state,
+dynamic-frequency, body-preservation, idempotence, uncertain-retry, BLE, USB,
+and retirement coverage passes 8/8. After one unrelated existing parallel
+timing test failed and passed in isolation, a clean repeat of the complete
+name-filtered Switch 2 suite passes 1,078/1,078. No physical controller was
+touched in this validation pass. The complete DS4Windows test assembly also
+passes 2,271 with the same three pre-existing live process-audio tests skipped.
+
+On-the-fly face-layout parity now exposes a per-profile **Face-button layout**
+selector under Switch 2 Controls for Pro Controller 2 and every joined or
+standalone Joy-Con 2 mode. Xbox preserves the established physical-position
+projection; Nintendo preserves the printed A/B/X/Y labels. The selector is
+applied once at the existing `DS4State` boundary for every virtual output type,
+while exact raw bits, per-side sidecars, custom mappings, motion, generations,
+and transport ownership remain unchanged. Existing profiles default to Xbox;
+unknown XML values normalize to Xbox. Focused projection, profile-persistence,
+invalid-value, sidecar, and live-runtime switching coverage passes 91/91, and
+the complete name-filtered Switch 2 suite passes 1,082/1,082. No physical
+controller was touched in this validation pass. The complete DS4Windows
+assembly passes 2,275 with the same three pre-existing live process-audio
+tests skipped, and every VIIPER Go package passes with the pinned local Go
+toolchain.
+
+Joy-Con optical-mouse scroll parity now exposes a profile-owned **Stick
+scroll** selector under Switch 2 Controls. Existing profiles remain on the
+established Up/Down behavior; Four-way additionally publishes the selected
+Joy-Con's physical X axis as horizontal-wheel output. Joined, standalone
+vertical, and both standalone horizontal presentations recover the physical
+stick basis before applying the existing 0.2 deadzone and 60-unit full-scale
+law. Both selected sensors combine their wheel axes without creating another
+mapper, queue, injector, or output device: the ordinary DS4Windows
+`outputKBMHandler` remains the sole SendInput/FakerInput boundary, and the
+stick remains available to the virtual pad. Profile XML round-trips the new
+mode and unknown values fail to the vertical default. Focused projection,
+orientation, profile-persistence, invalid-value, and zero-allocation coverage
+passes 36/36; the complete name-filtered Switch 2 suite passes 1,085/1,085.
+No physical controller was touched in this validation pass. The complete
+DS4Windows assembly passes 2,278 with the same three pre-existing live
+process-audio tests skipped, and every VIIPER Go package passes with the
+pinned local Go toolchain.
+
+Generic four-direction joystick-scroll parity now appends **Mouse Wheel Left**
+and **Mouse Wheel Right** to the canonical DS4Windows output-action enum while
+preserving the serialized byte value of every existing action, including
+`Unbound`. The binding editor, profile name parser/writer, ordinary/shift/Mode
+Shift mapping lanes, and stick-mouse FakerInput promotion all recognize the
+new actions. Digital mappings use the existing reference-counted edge and
+150 ms repeat owner; analog mappings use magnitude accumulation with a
+separate horizontal timer, direction latch, and fractional remainder so
+vertical and horizontal directions can coexist. Both SendInput and FakerInput
+receive the result only through the existing
+`PerformMouseWheelEvent(vertical, horizontal)` boundary. Focused append-only,
+name round-trip, UI classification, backend-promotion, horizontal-lane,
+shift-trigger non-interference, and dual-axis delivery coverage passes 4/4.
+The combined Switch 2 plus generic horizontal-wheel suite passes 1,089/1,089,
+the complete DS4Windows assembly passes 2,282 with the same three pre-existing
+live process-audio tests skipped, and every VIIPER Go package passes. No
+physical controller was touched in this validation pass.
+
+Mapped stick-wheel activation parity now adds independent **Hold/Tap** profile
+selectors for the left and right sticks under Switch 2 Controls. Hold preserves
+the established canonical analog magnitude/repeat path. Tap uses the
+source-pinned Switch2Connect sector law: a 3% fallback center deadzone,
+magnitude-normalized 30-through-150 wheel step, complete cardinal/diagonal
+sector edges, center rearming, and an independent 30 ms throttle per stick.
+The fixed-size gate runs only for a validated Pro Controller 2 or Joy-Con 2
+lifecycle frame and feeds the same four canonical wheel actions, so authored
+bindings, Mode Shift, SendInput/FakerInput selection, synchronization, and
+virtual-pad input remain unchanged. Profile, pair, device/transport generation,
+QPC frequency/order, mode, and source changes baseline held input without an
+event. Focused sector, throttle, lifecycle, signed-axis, persistence, and
+zero-allocation coverage passes 6/6. The combined Switch 2 plus generic
+horizontal-wheel suite passes 1,095/1,095, the complete DS4Windows assembly
+passes 2,288 with the same three pre-existing live process-audio tests skipped,
+and every VIIPER Go package passes with the pinned local Go toolchain. No
+physical controller was touched in this validation pass.
+
+Mapped stick-mouse sensitivity parity now adds independent 0-through-10 logical
+left/right scalars under Switch 2 Controls. The donor's default of five is an
+identity transform over DS4Windows' established mapped-stick mouse speed, zero
+suppresses motion, and ten doubles it. The scalar is applied only after one
+current Pro Controller 2 or Joy-Con 2 profile sidecar validates; invalid,
+stale, ambiguous, non-Switch-2, and non-stick paths remain unchanged. Existing
+direction bindings, Mode Shift, vertical scaling, acceleration, fractional
+rounding, FakerInput/SendInput selection, and virtual-stick consumption remain
+owned by the canonical mapper. Focused side-selection, normalization,
+identity-fallback, persistence, and zero-allocation coverage passes 5/5. The
+combined Switch 2 plus horizontal-wheel suite passes 1,100/1,100, the complete
+DS4Windows assembly passes 2,293 with the same three pre-existing live
+process-audio tests skipped, and every VIIPER Go package passes with the pinned
+local Go toolchain. No physical controller was touched in this validation pass.
+
+Per-direction mapped-stick Tap parity now adds independent Hold/Tap policy for
+Up, Down, Left, and Right on both logical sticks under Switch 2 Controls. Hold
+preserves the existing authored action level. Tap uses Switch2Connect's exact
+80 ms custom-token pulse and eight-sector transition law: center rearms;
+cardinal-to-diagonal movement fires only the newly introduced direction; and
+diagonal-to-cardinal movement suppresses a direction already introduced by
+that diagonal. The allocation-free gate runs only for one validated Pro
+Controller 2 or Joy-Con 2 lifecycle source and clears across profile, pair,
+device/transport generation, QPC timebase/order, setting, or source fences.
+Keys, macros, mouse buttons, touchpad click, and virtual buttons/triggers/axis
+directions enter the existing synthetic-input owners or `ControlToXInput`
+queue. Default analog passthrough, continuous relative/absolute mouse, and all
+four wheel mappings remain on their established specialized paths. XML
+round-trips all eight settings, unknown values fail to Hold, and legacy
+profiles remain unchanged. Focused timing, diagonal, rearm, lifecycle,
+allocation, schema, and canonical virtual-output coverage passes 47/47. The
+combined Switch 2 plus horizontal-wheel suite passes 1,111/1,111, the complete
+DS4Windows assembly passes 2,302 with the same three pre-existing live
+process-audio tests skipped, and every VIIPER Go package passes with the pinned
+local Go toolchain. No physical controller was touched in this validation
+pass.
+
+Mapped stick-to-mouse presentation parity now routes the canonical mapper's
+already-authored logical-stick cursor velocity through the existing one-owner
+Switch 2 high-rate presenter. It does not introduce another mapping stack or
+reimplement deadzone, speed, vertical scale, acceleration, Mode Shift, or
+profile policy: the ephemeral frame divides the mapper's exact signed report
+delta by that report's interval, and successful admission removes only that
+same delta from the ordinary report accumulator. Invalid intervals, stale or
+ambiguous Switch 2 sidecars, disabled high-rate policy, terminal runtimes, and
+rejected presentation all preserve the exact per-report fallback. Stick
+Assist, optical mouse, and mapped-stick sources are now committed as one
+transaction using one timestamp, one presenter lock, and one wake per report;
+a rejected value cannot partially mutate a source and race with fallback.
+Gyro retains its independently owned motion callback but mixes in the same
+fixed four-source worker. Source expiry, profile changes, centering,
+disconnect, and terminal lifecycle clear motion without queues or warm-path
+allocation. Focused IR, sensitivity, presentation, transaction, fallback,
+freshness, integration, and allocation coverage passes 44/44. The combined
+Switch 2 plus horizontal-wheel suite passes 1,116/1,116, the complete
+DS4Windows assembly passes 2,309 with the same three pre-existing live
+process-audio tests skipped, and every VIIPER Go package passes with the pinned
+local Go toolchain. No physical controller was touched in this validation
+pass.
+
+Switch 2 Bluetooth user disconnect now closes the previous UI/lifecycle gap:
+the existing Controllers-tab and special-action command can retire a Pro
+Controller 2, standalone Joy-Con 2, or joined Joy-Con 2 pair. The logical
+device remains transport-neutral and owns no native address or GATT handle. It
+coalesces one exact runtime-generation request into the already-authenticated
+lifecycle-attention path; a request made inside the active mapping callback is
+retained until callback exit instead of synchronously stopping its producer.
+The typed transaction then publishes and acknowledges exactly one terminal
+neutral, stops input and feedback, proves one physical lease release per half,
+unsubscribes exact delegates, and removes the slot/presentation. Pre-activation
+requests fail closed, rejected/throwing request handlers are contained and
+retryable, and `callRemoval` cannot bypass slot authority. Focused runtime,
+owner, participant, callback-race, and mixed-registration coverage passes
+70/70. The combined Switch 2 plus horizontal-wheel suite passes 1,119/1,119,
+the complete DS4Windows assembly passes 2,312 with the same three pre-existing
+live process-audio tests skipped, and every VIIPER Go package passes with the
+pinned local Go toolchain. No physical controller was touched in this
+validation pass.
+
+The existing DS4Windows per-profile **Idle Disconnect** option now applies to
+Switch 2 Pro and standalone/joined Joy-Con 2 Bluetooth runtimes. Those runtimes
+do not run the legacy HID read loop, so inactivity is evaluated allocation-free
+from the already-validated physical-button mask, canonical logical sticks, and
+source QPC timestamp. Buttons or either stick outside the established legacy
+idle slop restart the interval; motion alone does not. Disabled timeouts, USB,
+timebase changes, and backward timestamps fail safe by disabling or rebasing
+the check. Expiry enters the same one-shot authenticated disconnect/terminal
+transaction above. Dedicated threshold, button-reset, stick-reset,
+standalone, and joined coverage passes 2/2; the combined Switch 2 plus
+horizontal-wheel suite passes 1,121/1,121 and the complete DS4Windows assembly
+passes 2,314 with the same three pre-existing live process-audio tests skipped.
+Every VIIPER Go package remains green, and no physical controller was touched
+in this validation pass.
+
+The Xbox One ingress audit then traced the exact production path from the
+ordered DS4Windows claim through the authenticated `X1BR` stream and
+`PublishSemanticInputWire` into the retained-generation input cell. VIIPER's
+accepted ACK does not wait for an interrupt-IN request or USB/IP response: it
+confirms only that the exact successor revision replaced that cell. The audit
+did find a local scheduling asymmetry: the highest-priority MMCSS `Games`
+state writer synchronously waits for every accepted revision, while its ACK
+reader previously ran at `AboveNormal`. The Xbox ACK reader now uses the same
+`Highest` thread priority and MMCSS class. Its receive path remains separate
+from physical feedback delivery and adds no queue, mapper, task, or per-frame
+allocation.
+
+The same tranche adds allocation-free QPC timing at the existing ACK boundary.
+With `DS4WINDOWS_VIIPER_LATENCY_DIAGNOSTICS=1`, writer telemetry now separates
+`claim->socket`, `socketWrite`, `xboxSocketStart->accepted`, and
+`xboxAckReceived->writerWake`. This can attribute a live long tail to
+DS4Windows publication, socket/broker acceptance, or client-thread wakeup;
+it deliberately does not label the acceptance ACK as downstream USB
+presentation. The focused controller transport suite passes 62/62, the full
+DS4Windows assembly passes 2,315 with the same three intentional live
+process-audio skips, and every VIIPER Go package passes. These are software
+results; same-span USB/IP completion still requires the live gate below.
+
+Switch2Connect's remaining three-way automatic-disconnect behavior is now
+profile-owned under **Switch 2 Controls**. `Off` suppresses the Switch 2 timer,
+`Inactive` counts from the last validated physical button or logical-stick
+activity, and `Absolute` counts continuously from logical-runtime activation.
+The shared day/hour/minute duration is persisted as bounded total seconds; a
+zero duration disables either timed mode. Joined Joy-Cons retire together,
+USB never requests Bluetooth teardown, and every expiry enters the same
+generation-fenced lifecycle-attention transaction used by manual and legacy
+idle disconnect. Source QPC is the sole report-time clock; frequency changes
+and backward timestamps rebase safely. There is no one-second polling task,
+per-report allocation, second native disconnect path, or mapper.
+
+The append-only `LegacyProfile` serialized value preserves existing
+DS4Windows Idle Disconnect behavior until a user authors the new three-way
+control. Focused runtime/profile/policy coverage passes 57/57, the combined
+Switch 2 plus horizontal-wheel suite passes 1,125/1,125, and the complete
+DS4Windows assembly passes 2,319 with the same three intentional live
+process-audio skips. The preceding VIIPER all-package run remains green; this
+tranche changed no VIIPER code and performed no controller or installation
+I/O.
+
+The final narrowed Switch2Connect controller-mode audit found no additional
+gameplay mapper to implement. Its Mouse, Right Joystick, and Steering motion
+modes already enter DS4Windows' canonical gyro-to-mouse, gyro-to-stick, and
+accelerometer steering paths; its profile-selected keyboard/mouse delivery is
+the existing `outputKBMHandler`; and its optical mouse, dual-Joy-Con gyro,
+vertical/horizontal presentation, split/join lifecycle, deadzones, trigger
+modifiers, and rumble controls are covered by the source-audited tranches above.
+Emulation-specific duplicate mapping stores were deliberately not copied:
+DS4Windows maps once into the selected target persona, which is the required
+any-input-to-any-output architecture. The remaining differences in the donor
+README are application/driver management, an optional ESP32 bridge, or the NSO
+GameCube controller, not missing Switch 2 Pro/Joy-Con 2 gameplay semantics for
+the stated production goal.
+
+## Portable Switch 2 Pro USB input evidence, 2026-09-02
+
+The connected Nintendo `057E:2069`, `bcdDevice 0x0201` was observed with the
+project-owned passive `Switch2UsbReadProbe` from the Desktop laboratory while
+the installed DS4Windows/VIIPER files remained untouched. The probe opened only
+a share-compatible read handle, queried no serial/MAC/key/host identity, and
+performed zero controller writes. It captured 2,048/2,048 exact 64-byte report
+`0x05` completions over 8.152145 seconds: 251.099566 completions/second,
+3.982484 ms mean interval, 4.0101 ms p95, 4.0268 ms p99, and 4.3663 ms maximum.
+Every one of the 2,047 controller-counter transitions was exactly `+4`.
+
+Capture SHA-256 is
+`C72CB84419FB83F307B8CE5B4B19E90C083433CD2D82BC08A103EF6A1A77F144`.
+The local-only capture was then replayed through the current production
+`Switch2InputSession`, `Switch2ProProfileInputMapper`, and canonical
+`DS4State` writer. All 2,048 reports were accepted by all three boundaries;
+the session classified one first report and 2,047 forward `+4` reports. The
+replay summary SHA-256 is
+`2EA1E0EA688840414590E56F620A33AA3D7550CAB4E62609AD6568A5FA8EC4A9`.
+This proves current decoder/session/mapper acceptance of the observed USB
+stream. It is not an end-to-end latency, output-lease, LED, or haptics result;
+the replay used the named fallback stick calibration because the passive
+capture did not read controller calibration records.
+
+## Remaining evidence gates
+
+- authorized Xbox Windows enumeration and API/game visibility;
+- same-machine, same-span live USB/IP latency and long-tail attribution;
+- mandatory Switch 2 Pro/Joy-Con 2 BLE radio, firmware, reconnect, suspend,
+  multi-pair, and multi-radio matrix;
+- live Joy-Con 2 optical behavior, measured physical report rate, and measured
+  high-rate mouse presentation cadence/jitter;
+- live Pro/Joy-Con 2 horizon aiming behavior, recovery, and long-session drift;
+- physical HD-rumble onset, side separation, stop/watchdog, sustained thermal,
+  and loss/reconnect behavior;
+- virtual DualSense audio/adaptive-trigger approximation measurements on
+  physical Switch 2 actuators; and
+- clean installer/upgrade/uninstall validation in a disposable environment.
+
+Until those gates run, no claim of hardware-perfect feedback, 500 Hz BLE,
+latency parity/superiority, or release readiness is justified. Unknown packet,
+identity, transport, and generation states continue to fail closed.

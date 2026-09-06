@@ -32,6 +32,7 @@ type microphoneInterfaceEvent struct {
 }
 
 var _ inputpresentation.Source = (*DualSense)(nil)
+var _ inputpresentation.AdmissionSource = (*DualSense)(nil)
 
 // A DualSense output report is a set of field updates, not a complete state
 // replacement. Games commonly send trigger, LED, rumble, and audio changes in
@@ -787,11 +788,34 @@ func (d *DualSense) ResolveInputPresentation(claim inputpresentation.Claim,
 	d.input.mu.Lock()
 	resolved := d.input.resolveClaimAt(
 		claim.Token, claim.Generation, outcome, completedAt)
+	if resolved && outcome == inputpresentation.OutcomeRetire {
+		d.input.refreshPresentationSnapshot(
+			byte(d.inputBattery.Load()), completedAt)
+	}
 	d.input.mu.Unlock()
 	if resolved && outcome == inputpresentation.OutcomeCommit {
 		traceInputTransportAdmitted(d, claim, admittedTicks)
 	}
 	return resolved
+}
+
+// CanAdmitInputPresentation closes the selection-to-write lifecycle race for
+// the compatibility DualSense scheduler. It intentionally adds no age policy;
+// it only proves that the exact token and presentation generation selected by
+// this transport still own the immutable report immediately before USB/IP
+// exposes its first byte.
+func (d *DualSense) CanAdmitInputPresentation(
+	claim inputpresentation.Claim, _ time.Time,
+) bool {
+	if !claim.Valid() || claim.Size != InputReportSize {
+		return false
+	}
+	d.input.mu.Lock()
+	admissible := d.input.hasClaim && claim.Token == d.input.claimToken &&
+		claim.Generation == d.input.claimedPresentationGeneration &&
+		claim.Generation == d.input.presentationGeneration
+	d.input.mu.Unlock()
+	return admissible
 }
 
 // RetireInputPresentationGeneration establishes a hard backend-lifecycle
@@ -803,14 +827,20 @@ func (d *DualSense) RetireInputPresentationGeneration(generation uint64,
 	}
 	d.input.mu.Lock()
 	retired := d.input.retirePresentationGeneration(generation, retiredAt)
+	if retired {
+		d.input.refreshPresentationSnapshot(
+			byte(d.inputBattery.Load()), retiredAt)
+	}
 	d.input.mu.Unlock()
 	return retired
 }
 
-// SnapshotInputReportInto copies the last successfully presented interrupt
-// report without selecting input or advancing the encoder. The accompanying
-// version lets USB/IP serialize EP0 GET_REPORT against interrupt completion
-// without holding the input lock during socket I/O.
+// SnapshotInputReportInto copies the current cached input report without
+// selecting input or advancing committed encoder counters. Ordinarily this is
+// the last successfully presented interrupt report; lifecycle retirement
+// replaces it immediately with a current semantic preview so EP0 cannot expose
+// stale controls before the successor's first interrupt poll. The accompanying
+// version lets USB/IP serialize the copy against cache replacement.
 func (d *DualSense) SnapshotInputReportInto(destination []byte) (int, uint64) {
 	d.input.mu.Lock()
 	n := min(len(destination), len(d.input.lastReport))

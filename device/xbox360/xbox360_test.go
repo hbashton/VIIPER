@@ -17,7 +17,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	_ "github.com/Alia5/VIIPER/internal/registry" // Register devices
+	_ "github.com/Alia5/VIIPER/internal/devicecatalog" // Register devices
 )
 
 func TestInputReports(t *testing.T) {
@@ -627,6 +627,62 @@ func TestInputPresentationOrderedDeferIsByteExact(t *testing.T) {
 		retryClaim, inputpresentation.OutcomeCommit, time.Now()))
 }
 
+func TestInputPresentationNoAgeOverflowFaultsNeutralThenResynchronizes(
+	t *testing.T,
+) {
+	dev, err := xbox360.New(nil)
+	require.NoError(t, err)
+
+	for index := 0; index < inputpresentation.FixedReportTransitionCapacity; index++ {
+		state := xbox360.InputState{}
+		if index%2 == 0 {
+			state.Buttons = xbox360.ButtonA
+		}
+		require.True(t, dev.UpdateInputState(state), "publish edge %d", index)
+	}
+	overflowed := xbox360.InputState{Buttons: xbox360.ButtonA}
+	require.False(t, dev.UpdateInputState(overflowed),
+		"the sixty-fifth unconsumed edge exceeded the bounded journal")
+	snapshot := dev.InputSchedulerSnapshot()
+	require.Equal(t, 1, snapshot.TransitionDepth)
+	require.Equal(t, uint64(1), snapshot.Overflows)
+	require.Zero(t, snapshot.MaximumOrderedAge,
+		"production compatibility constructor unexpectedly enabled strict age")
+	require.True(t, snapshot.MandatoryNeutral,
+		"capacity overflow must fail closed even without an age deadline")
+	require.False(t, snapshot.Resynchronization)
+	require.Equal(t, inputpresentation.FixedReportFaultOverflow,
+		snapshot.LastFault)
+
+	var report [20]byte
+	claim := dev.ClaimInputPresentation(report[:], time.Now())
+	require.True(t, claim.Valid())
+	require.True(t, claim.Ordered)
+	require.Equal(t, xbox360.NewInputState().BuildReport(), report[:])
+	require.True(t, dev.CanAdmitInputPresentation(claim, time.Now()))
+	require.True(t, dev.ResolveInputPresentation(
+		claim, inputpresentation.OutcomeCommit, time.Now()))
+	require.False(t, dev.InputSchedulerSnapshot().Resynchronization,
+		"the freshest rejected complete state was not resynchronized after neutral")
+
+	// A complete post-neutral state is the new baseline; none of the ambiguous
+	// full journal is replayed and the rejected press cannot collapse with its
+	// subsequent release into a lost tap.
+	claim = dev.ClaimInputPresentation(report[:], time.Now())
+	require.True(t, claim.Valid())
+	require.False(t, claim.Ordered)
+	require.Equal(t, overflowed.BuildReport(), report[:])
+	require.True(t, dev.CanAdmitInputPresentation(claim, time.Now()))
+	require.True(t, dev.ResolveInputPresentation(
+		claim, inputpresentation.OutcomeCommit, time.Now()))
+
+	snapshot = dev.InputSchedulerSnapshot()
+	require.Zero(t, snapshot.TransitionDepth)
+	require.Equal(t, uint64(1), snapshot.Overflows)
+	require.Equal(t, inputpresentation.FixedReportFaultOverflow,
+		snapshot.LastFault)
+}
+
 func TestInputPresentationHotPathAllocatesZero(t *testing.T) {
 	dev, err := xbox360.New(nil)
 	require.NoError(t, err)
@@ -638,8 +694,10 @@ func TestInputPresentationHotPathAllocatesZero(t *testing.T) {
 			panic("publish failed")
 		}
 		claim := dev.ClaimInputPresentation(report[:], time.Now())
-		if !claim.Valid() || !dev.ResolveInputPresentation(
-			claim, inputpresentation.OutcomeCommit, time.Now()) {
+		if !claim.Valid() ||
+			!dev.CanAdmitInputPresentation(claim, time.Now()) ||
+			!dev.ResolveInputPresentation(
+				claim, inputpresentation.OutcomeCommit, time.Now()) {
 			panic("claim cycle failed")
 		}
 	})

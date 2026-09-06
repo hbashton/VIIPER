@@ -788,6 +788,9 @@ func (s *dualSenseInputScheduler) resolveClaimAt(token, generation uint64,
 		// while the response waited for send ownership, so it cannot safely be
 		// pushed back into that ring.
 		s.retry = claimed
+		// A continuous claim promoted to an ordering dependency must remain
+		// byte-exact recovery work across repeated downstream deferrals.
+		s.retry.ordered = true
 		s.hasRetry = true
 		copy(s.retryReport[:], s.claimedReport[:])
 		s.retrySequence = s.claimedSequence
@@ -871,6 +874,32 @@ func (s *dualSenseInputScheduler) collapsePresentationGeneration(
 	s.latest = snapshot
 	s.hasLatest = true
 	s.advancePresentationGeneration()
+}
+
+// refreshPresentationSnapshot replaces EP0's cached GET_REPORT bytes at a
+// backend lifecycle boundary without consuming the successor's first
+// interrupt claim or advancing committed encoder counters. The preview uses
+// the same next sequence numbers that an interrupt claim would use; its
+// timestamp is sampled at retirement.
+func (s *dualSenseInputScheduler) refreshPresentationSnapshot(
+	battery byte, refreshedAt time.Time,
+) {
+	if refreshedAt.IsZero() {
+		refreshedAt = time.Now()
+	}
+	current := neutralInputState()
+	if s.hasPrevious {
+		current = s.previous
+	}
+	timestamp := dualSenseTimestampTicks(s.timestampBase, refreshedAt)
+	if !encodeUSBInputReportInto(&current, battery, s.sequence+1,
+		s.packetSequence+1, timestamp, s.edge, s.lastReport[:]) {
+		s.corruptReports++
+	}
+	s.presentationVersion++
+	if s.presentationVersion == 0 {
+		s.presentationVersion = 1
+	}
 }
 
 func (s *dualSenseInputScheduler) restartPresentationTriggerEpoch(

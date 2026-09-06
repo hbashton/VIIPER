@@ -53,25 +53,36 @@ func (d *NS2Pro) handleUSBCommand(seq, sub uint8, out []byte) {
 	switch sub {
 	case subUSBEnableReports:
 		if len(out) >= 9 {
-			d.protoMu.Lock()
-			d.usbReportsEnabled = out[8] != 0
-			d.protoMu.Unlock()
+			enabled := out[8] != 0
+			d.updateInputEncodingConfiguration(func() {
+				d.protoMu.Lock()
+				d.usbReportsEnabled = enabled
+				d.protoMu.Unlock()
+			})
+			if enabled {
+				d.signalInput()
+			}
 		}
 		d.enqueueResponse(append(commandHeader(cmdUSB, seq, sub), 0x01, 0x00, 0x00, 0x00))
 	case subUSBSelectReport:
 		if len(out) >= 9 {
 			switch out[8] {
 			case ReportIDCommon, ReportIDPro:
-				d.protoMu.Lock()
-				d.activeReportID = out[8]
-				d.protoMu.Unlock()
+				reportID := out[8]
+				d.updateInputEncodingConfiguration(func() {
+					d.inputReports.setActiveReportID(reportID)
+				})
+				d.signalInput()
 			}
 		}
 		d.enqueueResponse(commandHeader(cmdUSB, seq, sub))
 	case subUSBStartReports:
-		d.protoMu.Lock()
-		d.usbReportsEnabled = true
-		d.protoMu.Unlock()
+		d.updateInputEncodingConfiguration(func() {
+			d.protoMu.Lock()
+			d.usbReportsEnabled = true
+			d.protoMu.Unlock()
+		})
+		d.signalInput()
 		d.enqueueResponse(append(commandHeader(cmdUSB, seq, sub), 0x01, 0x00, 0x00, 0x00))
 	default:
 		d.enqueueResponse(commandHeader(cmdUSB, seq, sub))
@@ -95,20 +106,31 @@ func (d *NS2Pro) handleFeatureCommand(seq, sub uint8, out []byte) {
 		d.protoMu.Unlock()
 		d.enqueueResponse(append(commandHeader(cmdFeature, seq, sub), 0x00, 0x00, 0x00, 0x00))
 	case subFeatureReset:
-		d.protoMu.Lock()
-		d.featureMask = 0
-		d.featureFlags = 0
-		d.protoMu.Unlock()
+		d.updateInputEncodingConfiguration(func() {
+			d.protoMu.Lock()
+			d.featureMask = 0
+			d.protoMu.Unlock()
+			d.inputReports.resetFeatures()
+		})
+		d.signalInput()
 		d.enqueueResponse(append(commandHeader(cmdFeature, seq, sub), 0x00, 0x00, 0x00, 0x00))
 	case subFeatureEnable:
-		d.protoMu.Lock()
-		d.featureFlags |= d.maskedFeatures(flags)
-		d.protoMu.Unlock()
+		d.updateInputEncodingConfiguration(func() {
+			d.protoMu.Lock()
+			features := d.maskedFeatures(flags)
+			d.protoMu.Unlock()
+			d.inputReports.enableFeatures(features)
+		})
+		d.signalInput()
 		d.enqueueResponse(append(commandHeader(cmdFeature, seq, sub), 0x00, 0x00, 0x00, 0x00))
 	case subFeatureDisable:
-		d.protoMu.Lock()
-		d.featureFlags &^= d.maskedFeatures(flags)
-		d.protoMu.Unlock()
+		d.updateInputEncodingConfiguration(func() {
+			d.protoMu.Lock()
+			features := d.maskedFeatures(flags)
+			d.protoMu.Unlock()
+			d.inputReports.disableFeatures(features)
+		})
+		d.signalInput()
 		d.enqueueResponse(append(commandHeader(cmdFeature, seq, sub), 0x00, 0x00, 0x00, 0x00))
 	default:
 		d.enqueueResponse(append(commandHeader(cmdFeature, seq, sub), 0x00, 0x00, 0x00, 0x00))

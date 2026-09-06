@@ -1,6 +1,14 @@
 # Xbox One/Series presentation through USB/IP: feasibility decision
 
-Status: evidence gate open; no production Xbox One persona is registered.
+Status: authenticated explicit-identity retained-USB composition is now
+production-routed and offline-tested. Real Windows enumeration/game
+compatibility, lawful deployment identity, and latency conformance remain
+release gates.
+
+The historical analysis below predates the typed
+`RegisterProductionXboxOneRetainedUSB` factory and authenticated duplex broker.
+It remains the record of why VIIPER does not invent a Microsoft identity or
+silently substitute an unrelated HID/XInput surface.
 
 This decision covers Windows PC controller presentation only. It does not
 target an Xbox console, extract credentials, bypass authentication, or
@@ -20,10 +28,14 @@ raw output captures for four independent actuator basis vectors. This test
 isolates whether USB/IP preserves a real supported device before synthetic
 descriptor or protocol work can confound the result.
 
-Until that hardware test and a lawful device-side authentication feasibility
-probe pass, safe implementation is limited to the transport-neutral semantic
+Until that hardware test and the official modern-Windows metadata/security
+path are implemented and validated, safe implementation is limited to the transport-neutral semantic
 state, versioned DS4Windows/VIIPER contract, four-actuator feedback ownership,
 bounds-checked codecs, sanitized capture conversion, and deterministic replay.
+
+The current official-source tranche adds the exact Protocol Control ACK and
+the new-controller Extended Status form when no events are present. It does
+not register a persona or change this gate.
 
 ## Source pins and legal treatment
 
@@ -81,19 +93,44 @@ capability-dependent extension, not one of the base 14 bytes.
 These packet bodies are sufficient for isolated golden codecs. They are not a
 complete Windows device session.
 
-### Authentication blocker
+### Modern-Windows security boundary
 
-The pinned wired implementation begins authentication during gamepad probe.
+The pinned physical wired implementation begins authentication during gamepad probe.
 It is not a static list of packets: host random values contribute to the
 transcript; one path requests a client X.509 certificate/public key, exchanges
 an RSA-protected premaster secret, and verifies a PRF result; another performs
 ECDH and transcript verification.
 
-It is unknown whether current Windows accepts a lawful ephemeral/self-auth
-device path, requires device credentials not available for redistribution, or
-uses a different policy for particular firmware. Capturing and replaying one
-session cannot answer this because randoms and session keys change. VIIPER
-must not extract, redistribute, forge, or bypass controller credentials.
+That physical-hardware flow is not the supported modern-Windows virtual-device
+gate. MS-GIPUSB specifies the Windows-PC metadata security opt-out, and states
+that USB authentication was removed for Windows 10 version 21H2, Windows 11,
+and later. The supported modern-Windows slice therefore does not require a
+controller credential. Exact metadata compilation, binding, supported-version
+behavior, and conformance remain unverified; older Windows and console paths
+remain out of scope. VIIPER must not extract, redistribute, forge, or bypass
+controller credentials.
+
+### Official metadata compiler and EP0 boundary
+
+The official `GIPDocumentation.zip` contains a C# metadata serializer and an
+ordinary-gamepad 182-byte golden blob. The serializer's three advertised
+validation methods are empty. Its output is useful byte-level evidence, but it
+does not by itself prove the firmware match, mandatory system-command set,
+message lengths/directions, type/interfaces, or a Windows-PC security policy.
+VIIPER therefore retains the identity-bound external compiled-blob seam until
+an independently tested semantic validator establishes all coupled facts.
+
+MS-GIPUSB table 4 exactly enumerates the controller EP0 requests and state
+rules. Material controller-only facts include GET_STATUS(Device), remote-wake
+SET/CLEAR_FEATURE, descriptor/configuration requests, SET_ADDRESS,
+GET/SET_CONFIGURATION, the `MSFT100` request, and the vendor-code `0x90`
+extended-compatible-ID request with `wIndex=0x0004`. Interface status and
+feature requests stall; controller-only GET/SET_INTERFACE and SYNC_FRAME
+stall; Device Qualifier must stall to identify a full-speed-only device; the
+Extended Properties request stalls; and every request not listed in table 4
+must stall. These facts are not yet a backend dispatcher: remote-wake,
+configuration, address, and endpoint-halt state must be owned coherently by
+the actual USB presentation layer rather than duplicated in the Xbox codec.
 
 ### HIDMaestro is not a raw wired-persona specification
 
@@ -120,9 +157,9 @@ which every game uses for four independent channels.
 | usbip-win2 transports descriptor/control/interrupt topology through UdeCx | fact from pinned source and live DualSense | retain it as a candidate |
 | real wired Xbox data uses 64-byte interrupt IN/OUT on `FF/47/D0` | fact from pinned xone source | do not model it as bulk or copy HID endpoint timing |
 | base GIP input and four-actuator rumble bodies are 14 and 9 bytes | fact from pinned source | safe for isolated bounds-checked codecs |
-| current wired startup includes a live cryptographic authentication exchange | fact from pinned source | static replay is invalid; credentials must not be guessed |
+| current physical wired startup includes a live cryptographic authentication exchange | fact from pinned source | do not replay it or generalize it to the official modern-Windows metadata opt-out |
 | a real Xbox transported over usbip-win2 will bind identically on this Windows build | untested inference | requires the positive control |
-| a lawful synthetic device can complete Windows authentication | unknown | blocks a production raw-GIP persona |
+| modern Windows documents a metadata security opt-out and removal of USB authentication | fact from MS-GIPUSB | credentials are not the supported modern-Windows blocker; exact metadata/binding/conformance still gate the persona |
 | HIDMaestro's HID descriptor would automatically bind documented `xinputhid` through USB/IP | unknown/undocumented | do not use as the production plan |
 | four independent game actuator values are available through a stable documented Windows surface for this persona | unknown by API/game | capture each claimed source; never infer from packet length |
 | removing TCP/USB-IP would by itself eliminate observed 50–124 ms tails | unsupported inference | stage timestamps/ETW must attribute each tail first |
@@ -147,11 +184,13 @@ Use a disposable test environment and preserve all raw artifacts.
    acknowledgements, authentication, and output byte-for-byte where exactness
    is expected. Measure direct versus USB/IP with the same stage boundaries.
 
-A positive result permits a synthetic session feasibility probe using exact
-sanitized captures and independently written codecs. A negative result is a
-USB/IP compatibility result only after exporter/importer correctness is also
-established. A synthetic device failing authentication proves only that the
-synthetic implementation is incomplete.
+A positive result permits a synthetic session feasibility probe using the
+official modern-Windows metadata path, exact sanitized captures, and
+independently written codecs. A negative result is a USB/IP compatibility
+result only after exporter/importer correctness is also established. A
+synthetic device failing startup proves only that its binding, metadata, or
+session implementation is incomplete; it does not re-establish a credential
+requirement for the supported modern-Windows slice.
 
 ## Integration seam and native boundary
 
@@ -170,7 +209,7 @@ future UdeCx backend would implement the same claim/resolve boundary and must
 not fork mapping or feedback policy.
 
 No native-driver implementation is authorized by this decision. If the
-positive control or lawful authentication gate fails, complete the safe
+positive control or modern-Windows metadata/binding gate fails, complete the safe
 semantic/codec/replay work, mark Xbox presentation blocked, and request a
 separate architecture decision from the user. Do not silently substitute a
 private GUID, reverse-engineered IOCTL, copied credential, or unrelated mapping

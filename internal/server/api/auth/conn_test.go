@@ -13,7 +13,7 @@ func TestConn(t *testing.T) {
 
 	type testCase struct {
 		name        string
-		wrapConn    func(net.Conn, []byte) (net.Conn, error)
+		wrapConn    func(net.Conn, []byte, auth.Role) (net.Conn, error)
 		setupFn     func(clientConn net.Conn, serverConn net.Conn) (clientKey []byte, serverKey []byte)
 		input       []byte
 		expected    []byte
@@ -141,7 +141,7 @@ func TestConn(t *testing.T) {
 			var wrappedServerConn net.Conn
 			var wrappedClientConn net.Conn
 			if tc.wrapConn != nil {
-				wrappedServerConn, err = tc.wrapConn(serverConn, serverKey)
+				wrappedServerConn, err = tc.wrapConn(serverConn, serverKey, auth.Server)
 				if err != nil {
 					if tc.expectedErr != nil {
 						assert.ErrorContains(t, err, tc.expectedErr.Error())
@@ -150,7 +150,7 @@ func TestConn(t *testing.T) {
 					}
 					return
 				}
-				wrappedClientConn, err = tc.wrapConn(clientConn, clientKey)
+				wrappedClientConn, err = tc.wrapConn(clientConn, clientKey, auth.Client)
 				if err != nil {
 					if tc.expectedErr != nil {
 						assert.ErrorContains(t, err, tc.expectedErr.Error())
@@ -170,7 +170,9 @@ func TestConn(t *testing.T) {
 				}
 				return
 			}
-			buf := make([]byte, len(tc.expected))
+			// Error cases still need a non-empty destination: zero-byte reads
+			// are required to avoid transport IO and cannot probe peer failure.
+			buf := make([]byte, max(1, len(tc.expected)))
 			_, err = wrappedServerConn.Read(buf)
 			if err != nil {
 				if tc.expectedErr != nil {
@@ -180,6 +182,7 @@ func TestConn(t *testing.T) {
 				}
 				return
 			}
+			assert.NoError(t, tc.expectedErr, "expected the read to fail")
 			assert.Equal(t, tc.expected, buf)
 
 		})

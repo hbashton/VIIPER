@@ -64,6 +64,14 @@ typedef struct {
 } NS2ProMetaState;
 
 typedef struct {
+	uint16_t Version;       // must be 1
+	uint8_t  BatteryLevel;  // 0-9, with 0 valid at runtime
+	uint8_t  Charging;      // 0 = not charging
+	uint8_t  ExternalPower; // 0 = battery only
+	uint16_t BatteryVolts;  // validated 2500-5000 mV
+} NS2ProRuntimeStatusV1;
+
+typedef struct {
 	uint8_t LeftRumble[16];
 	uint8_t RightRumble[16];
 	uint8_t Flags;
@@ -210,8 +218,33 @@ func SetNS2ProDeviceState(handle C.NS2ProDeviceHandle, state C.NS2ProDeviceState
 		GyroY:   int16(state.GyroY),
 		GyroZ:   int16(state.GyroZ),
 	}
-	ns2device.UpdateInputState(s)
-	return true
+	return ns2device.UpdateInputState(s)
+}
+
+// SetNS2ProRuntimeStatusV1 updates the versioned out-of-band power snapshot.
+// @param handle Handle to the NS2Pro device.
+// @param status Complete runtime status v1 snapshot.
+//
+//export SetNS2ProRuntimeStatusV1
+func SetNS2ProRuntimeStatusV1(handle C.NS2ProDeviceHandle,
+	status C.NS2ProRuntimeStatusV1,
+) bool {
+	dh := cgo.Handle(handle)
+	dhw, ok := dh.Value().(*deviceHandleWrapper)
+	if !ok {
+		return false
+	}
+	ns2device, ok := dhw.device.(*ns2pro.NS2Pro)
+	if !ok {
+		return false
+	}
+	return ns2device.SetRuntimeStatusV1(ns2pro.RuntimeStatusV1{
+		Version:       uint16(status.Version),
+		BatteryLevel:  uint8(status.BatteryLevel),
+		Charging:      status.Charging != 0,
+		ExternalPower: status.ExternalPower != 0,
+		BatteryVolts:  uint16(status.BatteryVolts),
+	}) == nil
 }
 
 // SetNS2ProOutputCallback sets a callback to be invoked when the host sends output (rumble/LED) commands to the device.

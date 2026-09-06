@@ -30,12 +30,25 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 #[cfg(feature = "async")]
 use tokio::net::TcpStream as AsyncTcpStream;
 
-const HANDSHAKE_MAGIC: &[u8] = b"eVI1\x00";
+const HANDSHAKE_MAGIC: &[u8] = b"eVI2\x00";
 const NONCE_SIZE: usize = 32;
-const AUTH_CONTEXT: &[u8] = b"VIIPER-Auth-v1";
-const SESSION_CONTEXT: &[u8] = b"VIIPER-Session-v1";
+const AUTH_CONTEXT: &[u8] = b"VIIPER-Auth-v2";
+const SESSION_CONTEXT: &[u8] = b"VIIPER-Session-v2";
 const PBKDF2_ITERATIONS: u32 = 100_000;
 const PBKDF2_SALT: &[u8] = b"VIIPER-Key-v1";
+const MAX_PACKET_SIZE: usize = 2 * 1024 * 1024;
+
+fn invalid_record() -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid encrypted record")
+}
+
+fn validate_server_nonce(packet: &[u8], counter: u64) -> std::io::Result<()> {
+    if counter == u64::MAX || packet.len() < 28 ||
+        packet[..4] != 1u32.to_be_bytes() || packet[4..12] != counter.to_be_bytes() {
+        return Err(invalid_record());
+    }
+    Ok(())
+}
 
 /// Derive a 32-byte key from password using PBKDF2-SHA256
 fn derive_key(password: &str) -> Result<[u8; 32], ViiperError> {
@@ -81,7 +94,7 @@ pub fn perform_handshake(mut stream: TcpStream, password: &str) -> Result<Encryp
     
     if &response[0..3] != b"OK\x00" {
         let mut error_buf = Vec::new();
-        let _ = stream.read_to_end(&mut error_buf);
+        let _ = Read::take(&mut stream, 4096).read_to_end(&mut error_buf);
         let full_response = [response, error_buf].concat();
         let error_str = String::from_utf8_lossy(&full_response);
         
@@ -124,7 +137,7 @@ pub async fn perform_handshake_async(mut stream: AsyncTcpStream, password: &str)
     
     if &response[0..3] != b"OK\x00" {
         let mut error_buf = Vec::new();
-        let _ = stream.read_to_end(&mut error_buf).await;
+        let _ = AsyncReadExt::take(&mut stream, 4096).read_to_end(&mut error_buf).await;
         let full_response = [response, error_buf].concat();
         let error_str = String::from_utf8_lossy(&full_response);
         
@@ -153,12 +166,15 @@ struct EncryptedReadState {
     stream: TcpStream,
     cipher: ChaCha20Poly1305,
     recv_buffer: Vec<u8>,
+    recv_counter: u64,
+    failed: bool,
 }
 
 struct EncryptedWriteState {
     stream: TcpStream,
     cipher: ChaCha20Poly1305,
     send_counter: u64,
+    failed: bool,
 }
 
 impl EncryptedStream {
@@ -171,11 +187,14 @@ impl EncryptedStream {
                 stream: read_stream,
                 cipher: read_cipher,
                 recv_buffer: Vec::new(),
+                recv_counter: 0,
+                failed: false,
             })),
             write: std::sync::Arc::new(std::sync::Mutex::new(EncryptedWriteState {
                 stream: inner,
                 cipher: write_cipher,
                 send_counter: 0,
+                failed: false,
             })),
         })
     }
@@ -204,9 +223,12 @@ impl EncryptedStream {
 
 impl Read for EncryptedStream {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if buf.is_empty() { return Ok(0); }
         let mut inner = self.read.lock().unwrap();
+        if inner.failed { return Err(invalid_record()); }
+        let result = (|| {
         
-        if inner.recv_buffer.is_empty() {
+        while inner.recv_buffer.is_empty() {
             let mut first_byte = [0u8; 1];
             let n = inner.stream.read(&mut first_byte)?;
             if n == 0 {
@@ -218,12 +240,13 @@ impl Read for EncryptedStream {
             inner.stream.read_exact(&mut len_buf[1..])?;
             let packet_len = u32::from_be_bytes(len_buf) as usize;
             
-            if packet_len > 2 * 1024 * 1024 {
-                return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Packet too large"));
+            if !(28..=MAX_PACKET_SIZE).contains(&packet_len) {
+                return Err(invalid_record());
             }
             
             let mut packet = vec![0u8; packet_len];
             inner.stream.read_exact(&mut packet)?;
+            validate_server_nonce(&packet, inner.recv_counter)?;
             
             let nonce = Nonce::from_slice(&packet[0..12]);
             let ciphertext_and_tag = &packet[12..];
@@ -231,6 +254,7 @@ impl Read for EncryptedStream {
             let plaintext = inner.cipher.decrypt(nonce, ciphertext_and_tag)
                 .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "Decryption failed"))?;
             
+            inner.recv_counter += 1;
             inner.recv_buffer = plaintext;
         }
         
@@ -238,12 +262,24 @@ impl Read for EncryptedStream {
         buf[..to_copy].copy_from_slice(&inner.recv_buffer[..to_copy]);
         inner.recv_buffer.drain(..to_copy);
         Ok(to_copy)
+        })();
+        if result.is_err() {
+            inner.failed = true;
+            let _ = inner.stream.shutdown(std::net::Shutdown::Both);
+        }
+        result
     }
 }
 
 impl Write for EncryptedStream {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if buf.is_empty() { return Ok(0); }
         let mut inner = self.write.lock().unwrap();
+        if inner.failed { return Err(invalid_record()); }
+        let result = (|| {
+        if inner.send_counter == u64::MAX || buf.len() > MAX_PACKET_SIZE - 28 {
+            return Err(invalid_record());
+        }
         
         let mut nonce_bytes = [0u8; 12];
         nonce_bytes[4..].copy_from_slice(&inner.send_counter.to_be_bytes());
@@ -260,6 +296,12 @@ impl Write for EncryptedStream {
         inner.stream.write_all(&packet)?;
         
         Ok(buf.len())
+        })();
+        if result.is_err() {
+            inner.failed = true;
+            let _ = inner.stream.shutdown(std::net::Shutdown::Both);
+        }
+        result
     }
     
     fn flush(&mut self) -> std::io::Result<()> {
@@ -280,21 +322,26 @@ pub struct AsyncEncryptedRead {
     inner: tokio::net::tcp::OwnedReadHalf,
     cipher: ChaCha20Poly1305,
     recv_buffer: Vec<u8>,
+    recv_counter: u64,
     read_state: ReadState,
 }
 
 #[cfg(feature = "async")]
-pub struct AsyncEncryptedWrite {
-    inner: tokio::net::tcp::OwnedWriteHalf,
+pub struct AsyncEncryptedWrite<W = tokio::net::tcp::OwnedWriteHalf> {
+    inner: W,
     cipher: ChaCha20Poly1305,
     send_counter: u64,
+    pending: Vec<u8>,
+    pending_offset: usize,
+    failed: bool,
 }
 
 #[cfg(feature = "async")]
 enum ReadState {
     ReadingLength { buf: [u8; 4], pos: usize },
     ReadingPacket { expected_len: usize, buf: Vec<u8>, pos: usize },
-    Ready,
+    Failed,
+    Closed,
 }
 
 #[cfg(feature = "async")]
@@ -308,12 +355,16 @@ impl AsyncEncryptedStream {
                 inner: read_half,
                 cipher: read_cipher,
                 recv_buffer: Vec::new(),
+                recv_counter: 0,
                 read_state: ReadState::ReadingLength { buf: [0; 4], pos: 0 },
             },
             write: AsyncEncryptedWrite {
                 inner: write_half,
                 cipher: write_cipher,
                 send_counter: 0,
+                pending: Vec::new(),
+                pending_offset: 0,
+                failed: false,
             },
         }
     }
@@ -330,6 +381,7 @@ impl AsyncRead for AsyncEncryptedRead {
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<std::io::Result<()>> {
+        if buf.remaining() == 0 { return Poll::Ready(Ok(())); }
         if !self.recv_buffer.is_empty() {
             let to_copy = buf.remaining().min(self.recv_buffer.len());
             buf.put_slice(&self.recv_buffer[..to_copy]);
@@ -338,7 +390,8 @@ impl AsyncRead for AsyncEncryptedRead {
         }
         
         loop {
-            let state = std::mem::replace(&mut self.read_state, ReadState::Ready);
+            // A read error is terminal; only complete or pending operations restore state.
+            let state = std::mem::replace(&mut self.read_state, ReadState::Failed);
             match state {
                 ReadState::ReadingLength { buf: mut len_buf, pos } => {
                     let mut read_buf = ReadBuf::new(&mut len_buf[pos..]);
@@ -348,6 +401,7 @@ impl AsyncRead for AsyncEncryptedRead {
                             let bytes_read = read_buf.filled().len();
                             if bytes_read == 0 {
                                 if pos == 0 {
+                                    self.read_state = ReadState::Closed;
                                     return Poll::Ready(Ok(())); // Normal EOF
                                 } else {
                                     return Poll::Ready(Err(std::io::Error::new(
@@ -362,7 +416,7 @@ impl AsyncRead for AsyncEncryptedRead {
                             } else {
                                 // We have all 4 bytes
                                 let packet_len = u32::from_be_bytes(len_buf) as usize;
-                                if packet_len > 2 * 1024 * 1024 {
+                                if !(28..=MAX_PACKET_SIZE).contains(&packet_len) {
                                     return Poll::Ready(Err(std::io::Error::new(
                                         std::io::ErrorKind::InvalidData,
                                         "Packet too large"
@@ -402,13 +456,18 @@ impl AsyncRead for AsyncEncryptedRead {
                                     pos: new_pos,
                                 };
                             } else {
+                                if let Err(e) = validate_server_nonce(&packet_buf, self.recv_counter) {
+                                    return Poll::Ready(Err(e));
+                                }
                                 let nonce = Nonce::from_slice(&packet_buf[0..12]);
                                 let ciphertext_and_tag = &packet_buf[12..];
                                 
                                 match self.cipher.decrypt(nonce, ciphertext_and_tag) {
                                     Ok(plaintext) => {
+                                        self.recv_counter += 1;
                                         self.recv_buffer = plaintext;
                                         self.read_state = ReadState::ReadingLength { buf: [0; 4], pos: 0 };
+                                        if self.recv_buffer.is_empty() { continue; }
                                         
                                         let to_copy = buf.remaining().min(self.recv_buffer.len());
                                         buf.put_slice(&self.recv_buffer[..to_copy]);
@@ -435,8 +494,10 @@ impl AsyncRead for AsyncEncryptedRead {
                         }
                     }
                 }
-                ReadState::Ready => {
-                    self.read_state = ReadState::ReadingLength { buf: [0; 4], pos: 0 };
+                ReadState::Failed => return Poll::Ready(Err(invalid_record())),
+                ReadState::Closed => {
+                    self.read_state = ReadState::Closed;
+                    return Poll::Ready(Ok(()));
                 }
             }
         }
@@ -444,12 +505,44 @@ impl AsyncRead for AsyncEncryptedRead {
 }
 
 #[cfg(feature = "async")]
-impl AsyncWrite for AsyncEncryptedWrite {
+impl<W: AsyncWrite + Unpin> AsyncEncryptedWrite<W> {
+    // One bounded buffered record. A Pending/short transport write never causes
+    // encryption or nonce assignment to run again for the accepted plaintext.
+    fn poll_pending(&mut self, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        if self.failed { return Poll::Ready(Err(invalid_record())); }
+        while self.pending_offset < self.pending.len() {
+            match Pin::new(&mut self.inner).poll_write(cx, &self.pending[self.pending_offset..]) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(Ok(0)) => {
+                    self.failed = true;
+                    return Poll::Ready(Err(std::io::ErrorKind::WriteZero.into()));
+                }
+                Poll::Ready(Ok(n)) => self.pending_offset += n,
+                Poll::Ready(Err(e)) => { self.failed = true; return Poll::Ready(Err(e)); }
+            }
+        }
+        self.pending.clear();
+        self.pending_offset = 0;
+        Poll::Ready(Ok(()))
+    }
+}
+
+#[cfg(feature = "async")]
+impl<W: AsyncWrite + Unpin> AsyncWrite for AsyncEncryptedWrite<W> {
     fn poll_write(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<Result<usize, std::io::Error>> {
+        if buf.is_empty() { return Poll::Ready(Ok(0)); }
+        match self.poll_pending(cx) {
+            Poll::Ready(Ok(())) => {},
+            other => return other.map_ok(|()| 0),
+        }
+        if self.send_counter == u64::MAX || buf.len() > MAX_PACKET_SIZE - 28 {
+            self.failed = true;
+            return Poll::Ready(Err(invalid_record()));
+        }
         let mut nonce_bytes = [0u8; 12];
         nonce_bytes[4..].copy_from_slice(&self.send_counter.to_be_bytes());
         self.send_counter += 1;
@@ -461,24 +554,26 @@ impl AsyncWrite for AsyncEncryptedWrite {
         let packet = [&nonce_bytes[..], ciphertext.as_slice()].concat();
         let len_buf = (packet.len() as u32).to_be_bytes();
         
-        let full_packet = [&len_buf[..], &packet].concat();
-        
-        match Pin::new(&mut self.inner).poll_write(cx, &full_packet) {
-            Poll::Ready(Ok(n)) if n >= full_packet.len() => Poll::Ready(Ok(buf.len())),
-            Poll::Ready(Ok(_)) => Poll::Ready(Err(std::io::Error::new(
-                std::io::ErrorKind::WriteZero,
-                "Failed to write complete packet"
-            ))),
-            Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
-            Poll::Pending => Poll::Pending,
-        }
+        self.pending = [&len_buf[..], &packet].concat();
+        // Accept once into the bounded buffer, just like a buffered writer.
+        // Flush opportunistically, retaining any suffix on backpressure.
+        if let Poll::Ready(Err(e)) = self.poll_pending(cx) { return Poll::Ready(Err(e)); }
+        Poll::Ready(Ok(buf.len()))
     }
     
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), std::io::Error>> {
+        match self.poll_pending(cx) {
+            Poll::Ready(Ok(())) => {},
+            other => return other,
+        }
         Pin::new(&mut self.inner).poll_flush(cx)
     }
     
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), std::io::Error>> {
+        match self.poll_pending(cx) {
+            Poll::Ready(Ok(())) => {},
+            other => return other,
+        }
         Pin::new(&mut self.inner).poll_shutdown(cx)
     }
 }
@@ -516,6 +611,123 @@ impl AsyncWrite for AsyncEncryptedStream {
         cx: &mut Context<'_>,
     ) -> Poll<Result<(), std::io::Error>> {
         Pin::new(&mut self.write).poll_shutdown(cx)
+    }
+}
+
+#[cfg(test)]
+mod v2_tests {
+    use super::*;
+
+    const RECORDS: [&str; 4] = [
+        "0000002400000000000000000000000018b94032d266582e05ebcfe4ba88b8a24dd1043e6dcd23fb",
+        "00000024000000000000000000000001695d7eda4e8a46850d10d0c85e47680d9f125be025e25461",
+        "00000024000000010000000000000000ab479fea760618c3be9f8fd13269fd4b4fc440460493639f",
+        "00000024000000010000000000000001e10be70c805489fbcb0d12b623a633fd8e2ad6a2e57a58c0",
+    ];
+    fn hex(s: &str) -> Vec<u8> {
+        (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i+2], 16).unwrap()).collect()
+    }
+    fn key() -> [u8; 32] { std::array::from_fn(|i| i as u8) }
+    #[test]
+    fn independent_session_context_and_nonce_order() {
+        assert_eq!(derive_session_key(&key(), &[0xa5; 32], &[0x5a; 32]).to_vec(),
+            hex("71424901662650fb5c29ce71795ba055f114d4701da55490fadd27f82398f00c"));
+    }
+    fn pair() -> (TcpStream, TcpStream) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        for stream in [&client, &server] {
+            stream.set_read_timeout(Some(std::time::Duration::from_secs(3))).unwrap();
+            stream.set_write_timeout(Some(std::time::Duration::from_secs(3))).unwrap();
+        }
+        (client, server)
+    }
+
+    #[test]
+    fn sync_vectors_and_record_tails() {
+        let (client, mut server) = pair();
+        let mut client = EncryptedStream::new(client, key()).unwrap();
+        let payload = hex("000102037f80feff");
+        client.write_all(&payload).unwrap(); client.write_all(&payload).unwrap();
+        let mut actual = [0; 80]; server.read_exact(&mut actual).unwrap();
+        assert_eq!(actual.to_vec(), hex(&format!("{}{}", RECORDS[0], RECORDS[1])));
+        server.write_all(&hex(&format!("{}{}", RECORDS[2], RECORDS[3]))).unwrap();
+        let mut output = [0; 16];
+        for byte in &mut output { assert_eq!(client.read(std::slice::from_mut(byte)).unwrap(), 1); }
+        assert_eq!(output.to_vec(), [payload.clone(), payload].concat());
+    }
+
+    #[test]
+    fn sync_rejects_bad_records_without_panics_or_plaintext() {
+        let mut tampered = hex(RECORDS[2]); *tampered.last_mut().unwrap() ^= 1;
+        for bad in [hex(RECORDS[0]), hex(RECORDS[3]), hex("0000001b"), hex("00200001"),
+            hex(&RECORDS[2][..78]), tampered] {
+            let (client, mut server) = pair();
+            let mut client = EncryptedStream::new(client, key()).unwrap();
+            server.write_all(&bad).unwrap(); server.shutdown(std::net::Shutdown::Write).unwrap();
+            let mut output = [0x55; 8];
+            assert!(client.read(&mut output).is_err()); assert_eq!(output, [0x55; 8]);
+            assert_eq!(client.read.lock().unwrap().recv_counter, 0);
+            assert!(client.read(&mut output).is_err());
+        }
+    }
+
+    #[test]
+    fn sync_nonce_exhaustion_cannot_wrap() {
+        let (client, _server) = pair();
+        let mut client = EncryptedStream::new(client, key()).unwrap();
+        client.write.lock().unwrap().send_counter = u64::MAX;
+        assert!(client.write(&[1]).is_err());
+    }
+
+    #[cfg(feature = "async")]
+    #[test]
+    fn async_short_writes_pending_cancelled_flush_and_successor_preserve_records() {
+        struct ScriptedWriter { bytes: Vec<u8>, pending_next: bool }
+        impl AsyncWrite for ScriptedWriter {
+            fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<std::io::Result<usize>> {
+                if self.pending_next { self.pending_next = false; cx.waker().wake_by_ref(); return Poll::Pending; }
+                let n = buf.len().min(3);
+                self.bytes.extend_from_slice(&buf[..n]); self.pending_next = true;
+                Poll::Ready(Ok(n))
+            }
+            fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> { Poll::Ready(Ok(())) }
+            fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> { Poll::Ready(Ok(())) }
+        }
+        struct Wake;
+        impl std::task::Wake for Wake { fn wake(self: std::sync::Arc<Self>) {} }
+        let waker = std::task::Waker::from(std::sync::Arc::new(Wake));
+        let mut cx = Context::from_waker(&waker);
+        let mut writer = AsyncEncryptedWrite {
+            inner: ScriptedWriter { bytes: Vec::new(), pending_next: false },
+            cipher: ChaCha20Poly1305::new(&key().into()), send_counter: 0,
+            pending: Vec::new(), pending_offset: 0, failed: false,
+        };
+        let payload = hex("000102037f80feff");
+        assert!(matches!(Pin::new(&mut writer).poll_write(&mut cx, &payload), Poll::Ready(Ok(8))));
+        assert_eq!(writer.pending_offset, 3); assert_eq!(writer.send_counter, 1);
+        // A caller may abandon this pending flush. The successor must first
+        // drain the owned first record, without re-encrypting or skipping it.
+        assert!(Pin::new(&mut writer).poll_flush(&mut cx).is_pending());
+        let mut accepted = false;
+        for _ in 0..100 {
+            match Pin::new(&mut writer).poll_write(&mut cx, &payload) {
+                Poll::Ready(Ok(8)) => { accepted = true; break; },
+                Poll::Pending => assert_eq!(writer.send_counter, 1),
+                other => panic!("unexpected write: {:?}", other),
+            }
+        }
+        assert!(accepted); assert_eq!(writer.send_counter, 2);
+        let mut flushed = false;
+        for _ in 0..100 {
+            match Pin::new(&mut writer).poll_flush(&mut cx) {
+                Poll::Ready(Ok(())) => { flushed = true; break; },
+                Poll::Pending => {}, other => panic!("unexpected flush: {:?}", other),
+            }
+        }
+        assert!(flushed);
+        assert_eq!(writer.inner.bytes, hex(&format!("{}{}", RECORDS[0], RECORDS[1])));
     }
 }
 `

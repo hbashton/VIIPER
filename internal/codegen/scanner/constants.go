@@ -14,9 +14,10 @@ import (
 
 // ConstantInfo represents a single constant definition
 type ConstantInfo struct {
-	Name  string `json:"name"`
-	Value any    `json:"value"` // Can be int, string, etc.
-	Type  string `json:"type"`  // e.g., "int", "uint8", "string"
+	Name           string `json:"name"`
+	Value          any    `json:"value"`                    // Can be int, string, etc.
+	Type           string `json:"type"`                     // e.g., "int", "uint8", "string"
+	UnderlyingType string `json:"underlyingType,omitempty"` // Resolved local scalar definition, when Type is named.
 }
 
 // MapInfo represents a map variable with its entries
@@ -43,6 +44,7 @@ func ScanDeviceConstants(devicePkgPath string) (*DeviceConstants, error) {
 		Maps:       []MapInfo{},
 	}
 	constEnv := make(map[string]ConstantInfo)
+	typeDefinitions := make(map[string]string)
 
 	entries, err := os.ReadDir(devicePkgPath)
 	if err != nil {
@@ -51,7 +53,7 @@ func ScanDeviceConstants(devicePkgPath string) (*DeviceConstants, error) {
 
 	fset := token.NewFileSet()
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
 			continue
 		}
 
@@ -64,6 +66,16 @@ func ScanDeviceConstants(devicePkgPath string) (*DeviceConstants, error) {
 		for _, decl := range file.Decls {
 			if genDecl, ok := decl.(*ast.GenDecl); ok {
 				switch genDecl.Tok {
+				case token.TYPE:
+					for _, spec := range genDecl.Specs {
+						typeSpec, ok := spec.(*ast.TypeSpec)
+						if !ok {
+							continue
+						}
+						if base, ok := typeSpec.Type.(*ast.Ident); ok {
+							typeDefinitions[typeSpec.Name.Name] = base.Name
+						}
+					}
 				case token.CONST:
 					result.Constants = append(result.Constants, extractConstants(genDecl, constEnv)...)
 				case token.VAR:
@@ -74,7 +86,30 @@ func ScanDeviceConstants(devicePkgPath string) (*DeviceConstants, error) {
 		}
 	}
 
+	// Resolve after all files are scanned: declarations may follow the constant
+	// or live in another file. Do not guess the width from its current value.
+	for index := range result.Constants {
+		constant := &result.Constants[index]
+		if _, named := typeDefinitions[constant.Type]; named {
+			constant.UnderlyingType = resolveScalarDefinition(constant.Type, typeDefinitions)
+		}
+	}
 	return result, nil
+}
+
+func resolveScalarDefinition(name string, definitions map[string]string) string {
+	for remaining := len(definitions) + 1; remaining > 0; remaining-- {
+		switch name {
+		case "int", "int8", "int16", "int32", "int64", "uint", "uint8", "uint16", "uint32", "uint64", "byte", "rune", "string", "bool", "float32", "float64":
+			return name
+		}
+		base, ok := definitions[name]
+		if !ok {
+			return ""
+		}
+		name = base
+	}
+	return "" // Invalid cyclic definitions must never hang code generation.
 }
 
 func parseFile(fset *token.FileSet, filePath string) (*ast.File, error) {

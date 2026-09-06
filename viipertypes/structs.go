@@ -69,11 +69,78 @@ type DeviceRemoveResponse struct {
 	DevID string `json:"devId"`
 }
 
+// NS2ProRuntimeStatusV1 is the complete mutable Switch 2 Pro power snapshot.
+// It travels over the versioned management endpoint, never the fixed input
+// stream.
+type NS2ProRuntimeStatusV1 struct {
+	Version       uint16 `json:"version"`
+	BatteryLevel  uint8  `json:"batteryLevel"`
+	Charging      bool   `json:"charging"`
+	ExternalPower bool   `json:"externalPower"`
+	BatteryVolts  uint16 `json:"batteryVolts"`
+}
+
+type NS2ProRuntimeStatusUpdateResponseV1 struct {
+	Version uint16 `json:"version"`
+	Updated bool   `json:"updated"`
+}
+
 type DeviceCreateRequest struct {
 	Type           *string        `json:"type"`
 	IDVendor       *uint16        `json:"idVendor,omitempty"`
 	IDProduct      *uint16        `json:"idProduct,omitempty"`
 	DeviceSpecific map[string]any `json:"deviceSpecific,omitempty"`
+}
+
+// Named child DTOs preserve the JSON contract while making its complete
+// structure available to the generated client libraries.
+type XboxOneAuthorizedIdentityV1 struct {
+	VendorID         uint16 `json:"vendorId"`
+	ProductID        uint16 `json:"productId"`
+	DeviceReleaseBCD uint16 `json:"deviceReleaseBcd"`
+	DeviceID         uint64 `json:"deviceId"`
+	FirmwareMajor    uint16 `json:"firmwareMajor"`
+	FirmwareMinor    uint16 `json:"firmwareMinor"`
+	FirmwareBuild    uint16 `json:"firmwareBuild"`
+	FirmwareRevision uint16 `json:"firmwareRevision"`
+	HardwareMajor    uint8  `json:"hardwareMajor"`
+	HardwareMinor    uint8  `json:"hardwareMinor"`
+}
+
+type XboxOneAuthorizedUSBV1 struct {
+	MaxPower2mA   uint16 `json:"maxPower2mA"`
+	OUTIntervalMS uint16 `json:"outIntervalMs"`
+	INIntervalMS  uint16 `json:"inIntervalMs"`
+}
+
+type XboxOneAuthorizedStringsV1 struct {
+	Manufacturer string `json:"manufacturer"`
+	Product      string `json:"product"`
+	Serial       string `json:"serial"`
+}
+
+type XboxOneAuthorizedFeedbackV1 struct {
+	Source                 uint8  `json:"source"`
+	PersonaGeneration      uint64 `json:"personaGeneration"`
+	DeviceGeneration       uint64 `json:"deviceGeneration"`
+	TransportGeneration    uint64 `json:"transportGeneration"`
+	OwnershipEpoch         uint64 `json:"ownershipEpoch"`
+	TimeToLiveMicroseconds uint64 `json:"timeToLiveMicroseconds"`
+}
+
+// XboxOneAuthorizedCreateRequestV1 is the closed authenticated factory
+// contract for one retained Xbox One/Series-class USB persona. It is separate
+// from DeviceCreateRequest so generic deviceSpecific JSON cannot weaken the
+// identity, lifecycle-generation, or feedback-ownership boundaries.
+type XboxOneAuthorizedCreateRequestV1 struct {
+	Version                      uint16                      `json:"version"`
+	IdentityAuthorizationGranted bool                        `json:"identityAuthorizationGranted"`
+	Identity                     XboxOneAuthorizedIdentityV1 `json:"identity"`
+	USB                          XboxOneAuthorizedUSBV1      `json:"usb"`
+	Strings                      XboxOneAuthorizedStringsV1  `json:"strings"`
+	Feedback                     XboxOneAuthorizedFeedbackV1 `json:"feedback"`
+	ImportDeviceID               uint64                      `json:"importDeviceId"`
+	LocalTimeoutMilliseconds     uint32                      `json:"localTimeoutMilliseconds"`
 }
 
 // UnmarshalJSON implements custom unmarshaling to accept both uint16 and hex string formats

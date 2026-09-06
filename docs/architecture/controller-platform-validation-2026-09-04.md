@@ -1,0 +1,3148 @@
+# Controller platform validation status, 2026-09-04
+
+Current working order: [itemized execution checklist](controller-platform-execution-checklist.md).
+The user redirected prioritization on September 4: core USB/Xbox/Bluetooth play
+and measured failures take precedence over continuing the profile-picker pathway.
+The full scope below remains required; historical tranche order is not the plan.
+
+## September 5 live b72 stalled status: confirmed causes; b73 held
+
+**Final handoff: b74 is built, verified and delivered to the Desktop, not
+installed.** `DS4Windows-VIIPER-b74-Setup.exe` contains the ownership/import
+fixes below and the unchanged pinned preview.70 broker. Exact-published full
+validation passed **3,738 tests, zero failures, three named opt-in live-audio
+skips (3,741 total)**, including all eight real-Go/C# interop cases. Independent
+MSI extraction verified all **548 files and destination paths**. Installer
+integrity and mocked setup/reboot/startup simulations passed. Source archive
+verification covered all 1,068 entries (1,060 source/build inputs; eight exact
+reviewed transformations; six additions), with an unchanged post-build recheck.
+
+Desktop EXE: 200,355,681 bytes, SHA-256
+`B620253B4C40B671610B879326C8A34FA369387C93D82C71194228AAFF780AF5`.
+Published application SHA-256:
+`09E3E7D00C698194D6A7E4B14A37CE1029C85BCB23845A8F5451641359A67ACE`.
+DS4Windows source ZIP SHA-256:
+`94462661EBEABE0D441BB8E21825A79B39C57BC5D70D2999407CC1BFFB28C1B8`;
+source-manifest SHA-256:
+`43EAB7881DD05C4200ECC30D227DD52305D46207ED8CED0713E39335F77BBB40`.
+Source/notices/validation are in Desktop folder
+`DS4Windows-VIIPER-b74-Source-and-Validation`. Durable evidence:
+`installer-b74-final-full-tests.{trx,log}`,
+`b74-msi-independent-verification.json`, and `installer-b74-delivery.log`.
+No installed application was replaced or restarted. Fresh combined-build
+hardware acceptance remains required. The USB serial reconnect caveat and
+unsigned personal-only/public-licensing limitations remain; b73 is held.
+
+The chronological investigation below preserves failed evidence rather than
+rewriting earlier failed checks as successes.
+
+### September 5 user-authorized disk cleanup
+
+After delivery, the user requested removal of accumulated Desktop/Documents
+artifacts. The guarded cleanup removed 100 generated project `bin`/`obj` and
+old b71-b73 publish/MSI-extraction directories: 15,113,316,850 logical bytes
+(14.075 GiB). C: free space measured 57.674 -> 69.425 GiB during the deletion
+pass; these are filesystem observations, not a claim of byte-for-byte physical
+reclamation. All 1,054 enumerated main DS4Windows source-file hashes were
+verified unchanged afterward. The Desktop b74 installer/source ZIP hashes
+still match the handoff above. Program Files, portable profiles/runtimes,
+diagnostic dumps, current b74 publish and MSI-extraction evidence, source
+archives, references, toolchains and repository history were not removed.
+The removed generated outputs are rebuildable/re-extractable; there is no
+Recycle Bin backup. Main and snapshot test binaries must be built again before
+using `--no-build`. The original built MSI is recoverable from the retained
+installer; its former project `bin` path is no longer present. Audit manifests
+and result: lab `evidence/cleanup-{reviewed-targets,removed-targets}-20260905.csv`
+and `cleanup-result-20260905.json`.
+
+The user clarified that the application had **not crashed**. The installed b72
+window and main UI thread were responsive. Read-only process, log, PnP and local
+broker observations were followed by private diagnostic snapshots of the exact
+installed main process. No replacement, installation or controller restart was
+performed. The heap snapshot briefly paused the application; the 16:33:55
+587 ms DualSense latency warning is temporally associated with that diagnostic
+and is not evidence of a naturally occurring input-lag regression.
+
+The live sequence was Switch 2 Pro virtual Xbox 360 -> Xbox One at 16:13:15,
+then DualSense virtual DualSense -> Xbox One, rejected at 16:13:23. Source and
+real two-pad broker regressions establish that each Xbox creation reused the
+same configured retained-import device ID; the broker rejects a second claim
+for an active ID. The client hid management error envelopes behind an invalid
+capability-response error. A separately allocated per-registration import ID
+and sanitized operation/status errors are implemented in working source.
+Optional per-registration USB serial derivation is enabled only in the lab's
+synthetic preview persona; it is not silently enabled for user personas. Such
+serials are not stable Windows per-instance identities across reconnects.
+
+The private heap establishes the Switch 2 stale-row cause independently:
+physical input ended with `Disconnected`, terminal neutral was delivered,
+the BLE runtime owner reached `Removed`, and the host cleanup rejected removal.
+The profile inverse retained the initial Xbox 360 output reference, whereas
+the slot now contained its legitimate Xbox One replacement. Its exact-identity
+guard consequently rejected cleanup before clearing the physical slot.
+The registration remained `Quarantined/ExternalLifecycleFailure`, with
+`Remove/OutcomeUncertain/CleanupRejected`. This is not a blocked UI worker,
+input overflow, or proof of an unrelated second registration removing the
+first. The recorded output EOF may follow physical disconnect; its temporal
+ordering and underlying BLE disconnection cause have not been established.
+An authenticated output-ownership handoff fix and real-host regression tests
+are in progress; existing cleanup-authority checks must not be bypassed.
+
+**The preliminary b73 installer is held and has not been delivered.** Its
+first exact-published uninstrumented full suite returned 3,697 passes, three
+opt-in live-audio skips and two failures: the unchanged strict stick-filter
+allocation assertion measured 6,488 bytes against zero, and the synthetic
+deadline interop test still expected the old exact exception type after the
+new typed management error. The latter fixture is being corrected to assert
+the precise new operation/status; the allocation failure remains unexplained.
+A separate boundary-diagnostic full rerun measured zero in that filter loop;
+this does not resolve or waive the original failure. Original failed evidence
+is retained in `evidence/installer-b73-final-full-tests.{trx,log}`. Dumps remain
+private local diagnostics and must never enter source archives or installers.
+
+The real production inverse, host, table and output manager now reproduce the
+live `Remove/OutcomeUncertain/CleanupRejected` on the old code
+(`switch2-output-ownership-red.trx`). The first repaired ownership/race group
+passes 23 tests (`switch2-output-ownership-green-v2.trx`). Ownership transfers
+at exact plug/unplug operations; native teardown exceptions retain uncertainty
+even if legacy code already cleared an array. Already-admitted profile work
+may finish during retirement drain; unrelated new output changes may not.
+Review identified reusable-output claim/release races, being closed under the
+existing output manager cold-path gate before final validation.
+
+New opt-in independent-baseline instrumentation captured another strict
+allocation failure in the 21st repeated filter measurement:
+`b73-stick-baseline-focused.trx`, **7,216 bytes**. Local and independently
+Volatile-preserved baselines both equal 139867416; raw end is 139874632.
+The managed thread remains 4 and generation 0/1/2 collection counts remain
+10/5/3. These observations rule out divergent baseline storage and a newly
+counted collection start inside that window, not an already-running background
+collection, other runtime activity or actual allocations. They do not locate
+an allocating stack. Default warmup, measured
+loop, Step body and zero threshold remain unchanged. Optional diagnostics and
+the added 100-measurement strict repetition do not waive the release gate.
+
+Final ownership targeted validation passes **37/37**, including two real
+production-path red/green regressions: stale initial-output cleanup and a
+connected output whose GUI-log observer throws before manager publication.
+The latter must retain an uncertain exact candidate, never certify a null
+array as proof of cleanup. Reusable-output claim and release are atomic under
+the existing cold manager lock; old reset/feedback cleanup finishes before
+the output becomes reusable. One-shot safe cleanup-failure diagnostics and
+exact quarantined-runtime `Needs attention` status are present. Independent
+source review found no remaining blocker after the unpublished-output fix.
+
+The final uninstrumented source-v4 full suite still fails its release gate:
+**3,725 passed, three live-audio skips, two allocation failures**. The new
+strict filter repetition measured 7,336 bytes and
+`PcmFixedBlockPathDoesNotAllocateAfterWarmup` measured 2,928. All eight synthetic
+interop cases ran. Tested app SHA-256:
+`1F366578E2528D40E55AABCF4027615F888D47698554D3A82758AFD78F7B5CF8`;
+test DLL SHA-256:
+`39264CB1652B515B2DDFE2F4183357C0F956A34C3D1F617BDD577DBB4E8EE853`.
+
+A separate frozen pre-final-fix diagnostic bin captured the 7,216-byte filter
+increase with the validated per-object native profiler enabled:
+`b74-stick-native-baseline.{trx,txt,log}`. The failing window recorded **zero
+objects and zero recorder overflow**; an intentional 144-byte control produced
+one allocation with the correct allocating method. The earlier window had
+GC counts 10/5/2; the failing window began and ended at 11/6/3. This is new
+evidence toward a counter-accounting issue, not yet final attribution. The
+specific .NET 8.0.29 background-mark `repair_allocation_contexts(FALSE)` /
+`void_allocation` path is under investigation. No production runtime or
+allocation assertion has been changed to evade these failures.
+
+### Reproduced allocation-counter cause: background-GC context retirement
+
+The repeated filter failure is now correlated with the .NET 8.0.29 background
+GC final-mark suspension, not a managed object allocation. The v3 recorder
+uses `ICorProfilerInfo5.SetEventMask2` / `COR_PRF_HIGH_BASIC_GC` so background
+GC remains enabled. `b74-stick-native-gc-v3.txt` lines 687-703 records the
+strict 7,216-byte increase, zero object callbacks, zero recorder overflow,
+GC start before the window, and reason-7 suspend/resume callbacks inside it.
+The intentional 144-byte allocation still produces one correctly identified
+object. Ignore the recorder's invalid derived `gcDepth` aggregate; only the
+timestamped callback events are evidence. An earlier v2 experiment using
+`COR_PRF_MONITOR_GC` disabled background GC and is explicitly rejected as
+phase-correlation evidence. Original allocation-only captures remain valid.
+
+The corresponding pinned runtime code explains the counter change:
+
+- `GetAllocatedBytesForCurrentThread` computes `alloc_bytes + alloc_bytes_uoh
+  - (alloc_limit - alloc_ptr)`.
+- Normal `fix_allocation_context(..., for_gc_p=true)` subtracts the unused tail
+  before clearing the context pointers.
+- End of background mark calls `repair_allocation_contexts(FALSE)` and
+  `void_allocation`, which clears those pointers without subtracting that tail.
+  The counter therefore increases without a new object. Collection counters
+  need not change again because this background collection already started.
+
+Primary source: [runtime GC v8.0.29](https://github.com/dotnet/runtime/blob/v8.0.29/src/coreclr/gc/gc.cpp#L7946)
+and [counter implementation](https://github.com/dotnet/runtime/blob/v8.0.29/src/coreclr/vm/comutilnative.cpp#L936).
+Local pinned source is in `tools/allocation-profiler-gc-v2/runtime-v8.0.29`.
+
+Independent pure-BCL reproduction in `evidence/BgcAllocationCounterProbe`
+contains no DS4Windows/controller code. With the same rooted object graph and
+only an integer loop inside each counter window, the durable unprofiled run
+records 86 jumps / 4,096 windows; the identical workload with concurrent GC
+disabled records zero / 4,096. The enabled tiny-heap control also records zero.
+A 128-window intentional-allocation control records exactly 56 bytes each.
+The non-perturbing v3 capture independently records 20 jumps / 1,024 empty-loop
+windows, zero objects, with the same final-mark suspension inside the window.
+
+A bounded **test-only** no-GC measurement scope is being validated to prevent
+this known counter disturbance. It must preserve warmup, loop and zero-byte
+assertions; fail rather than skip if entry/exit cannot be proven; retain a
+positive allocation control; and never alter production GC configuration.
+This attribution explains the captured failure mechanism, not an assertion
+that every uncaptured historical failure has been individually traced.
+
+The reviewed scope is now implemented in test infrastructure only, with a fixed
+16 MiB reservation, a process-wide helper gate, same-thread ownership, and
+failure on unsuccessful entry, premature region loss or unsuccessful exit.
+Only four default counter windows and their two repeat wrappers are isolated;
+the stick-filter diagnostic branches remain unisolated for reproduction.
+Original warm counts, workloads and exact-zero assertions are unchanged.
+The cross-thread lifecycle controls prove failure cannot leave a hidden
+reentrant gate held. `b74-strict-allocation-focus.trx` passes **17/17**, zero
+skips: four default workloads, two 100-repeat wrappers, and eleven controls.
+The positive control still rejects an intentional allocation at a zero limit.
+Application SHA-256 remains
+`1F366578E2528D40E55AABCF4027615F888D47698554D3A82758AFD78F7B5CF8`;
+test SHA-256 is
+`6703258A122802D945AC30BCF9BCD80F9D888309ED38B442C5168B86E55E7AE7`.
+The ordinary full source-v5 suite now passes **3,738/3,741**, zero failures.
+The only three skips are the explicitly opt-in live process-audio cases;
+all eight pinned real-Go/C# interop cases ran and passed. Both assembly hashes
+above remained unchanged across that run. Evidence is
+`output-ownership-final-source-v5-full-20260905.{trx,log}`. The separate b74
+snapshot has been prepared and is building; its exact-published full suite,
+MSI extraction and corresponding-source verification remain delivery gates.
+b73 remains held and has not been delivered.
+
+## September 5 b72 coexistence/reconnect fix and personal installer
+
+After the user installed b71, its log showed physical DualSense Bluetooth
+occupying slot 1, then Switch 2 Pro activation failing with
+`PrepareRejected/None; cleanup=InvalidRegistration`. The legacy fallback path
+claimed the controller array without claiming the shared registration table;
+Switch 2 selected that table slot and the real host rejected its occupied
+external collections. A real production-host regression test reproduces the
+old rejection. New `ControlServiceInputSlotAdmission` bridges legacy array
+claims and Switch 2 table reservation under a short setup-only gate, skipping
+occupied slots without adopting/aborting the new runtime. No per-report queue
+or wait, or change to DualSense worker-lifecycle classification, was introduced.
+
+Settings now offers **Reconnect selected** for a remembered peer following a
+clean failed open/activation and fresh BLE advertisement. Reconnect preserves
+association and never sends command `0x15`. Completed null native opens can
+rearm; unresolved operations and ambiguous cleanup remain fail-closed. Review
+caught a physical-release/external-slot-quarantine race; scan-private peer
+fencing plus a post-connection-gate recheck and regression test close it for
+Pro, standalone and joined Joy-Con paths. Logs now report host phase and avoid
+double-aborting a runtime already cleaned by its failed attach transaction.
+
+Targeted runs passed 57 slot tests and 122 Bluetooth/recovery tests. The exact
+published b72 DLL passed **3,679 tests, three opt-in live-audio skips, zero
+failures**, with all eight synthetic Xbox interop cases and unchanged allocation
+assertions enabled. No profiler/diagnostic allocation mode was active. Standard
+installer validations and all **548 separately extracted MSI payload hashes**
+passed. Initial new fixture failures and corrected runs remain in lab evidence.
+
+Delivered `Desktop/DS4Windows-VIIPER-b72-Setup.exe`, 200,361,295 bytes, SHA-256
+`EE06CFD729CD21B5EA1852F4956DB94FBE6D6CD5004AC81535514CCFC54777EA`.
+DS4Windows version is `5.0.4.72-Switch2-Coexistence-Reconnect-Preview`; DLL SHA-256
+`DE96072C95B78D35158352A1BAFFF789245111F17C2D67714CD17E714061A713`.
+It retains current VIIPER `0.1.2-controller-preview.70` (not old release broker),
+self-contained .NET Desktop, USBip 0.9.7.7 and the tested synthetic PC persona.
+Source/validation accompanies it in `DS4Windows-VIIPER-b72-Source-and-Validation`;
+DS4Windows source ZIP SHA-256 is
+`128BAA1FB5FDD793A5B0AA590ED7C89831B7DD852FE9B2C808EFC29300A9D144`.
+
+The installer was **not run** and no live controller/installed software was
+changed during this fix. Hardware reconnect acceptance remains to be confirmed.
+This is an unsigned personal preview, not public release/stability clearance;
+the earlier intermittent allocation failure and public kong-yaml licensing
+questions remain unresolved. Evidence: Desktop lab
+`evidence/installer-b72-{build.log,final-full-tests.trx,msi-extraction.log}` and
+`evidence/{shared-slot-coexistence-targeted-v2,switch2-reconnect-quarantine-20260905}.trx`.
+
+## September 5 personal all-in-one b71 handoff (not public release clearance)
+
+After the passing rerun below, the user requested both builds, then reported the
+b70 portable launcher would not start and explicitly requested one full EXE.
+Delivered `Desktop/DS4Windows-VIIPER-b71-Setup.exe` (200,343,179 bytes), SHA-256
+`68B6B38AA08D9C22FEF07F30BB5756971A59C44170894682E510BF69EC5F795E`.
+This is the standard per-machine installer, not a portable launcher. It was
+**not run or installed**. It bundles self-contained .NET 8.0.29 Desktop,
+DS4Windows 5.0.4.71 preview, current VIIPER 0.1.2-controller-preview.70,
+USBip 0.9.7.7 and optional driver setup. The old v0.1.2 broker is not its payload.
+Exact package pins/provenance were updated in an isolated source snapshot;
+normal repository release pins were not changed or published.
+
+Final installer app DLL SHA-256 is
+`4A2600FA9B5C910967334B21F5F9B65393C189B9607A7D4A560884C678E96574`.
+The exact DLL passed **3,659 tests, three opt-in audio skips, zero failures**,
+including all eight synthetic Xbox interop cases and unchanged allocation checks.
+Standard installer composition/ownership/provenance, Burn extraction, reboot,
+startup-task and state-machine checks passed. All **548 actual MSI files** were
+also extracted and individually hash-compared with publish inputs. Full source
+archives and validation details are beside the Desktop EXE in
+`DS4Windows-VIIPER-b71-Source-and-Validation`.
+
+Packaging found two isolated PowerShell harnesses missing the startup argument
+constant, then caught a real historical `server` startup-task migration gap.
+Source fixes initialize that constant safely in tests and recognize historical
+exact arguments only on otherwise verified canonical legacy tasks; replacements
+must use the current authority argument. Added negative extra-argument,
+wrong-authority and downgrade cases preserve zero-mutation collision behavior.
+These changes remain in the original DS4Windows backend script and test harnesses.
+
+The earlier allocation failure is still **unexplained and not cleared for a
+public stability claim**. This user-requested unsigned personal preview does not
+reclassify it as harmless, supply public licensing clearance, or claim hardware/
+installation acceptance. b70 startup failure itself was not attributed: hashes,
+runtime availability and current preflight passed, with no startup log or matching
+crash event. b71 removes the PowerShell launch requirement. Evidence is Desktop
+lab `evidence/installer-b71-{build-final.log,final-full-tests.trx,msi-extraction.log}`.
+
+## September 5 installer review: allocation assertion remains a release blocker
+
+The installer review reproduced `WarmAssistPathAllocatesNothing`: **6,728 bytes
+against the unchanged zero-byte assertion**. The ordinary full run had 3,656
+passes, three opt-in live-audio skips and one failure, with all eight synthetic
+Go/C# Xbox interop cases enabled. Packaging was paused; no installer was composed,
+published, installed or delivered. Go's full suite and the targeted Xbox/API/
+USB/input-presentation/controller-feedback race suites passed, but those passes
+do not override this failure.
+
+Native per-object allocation recording, EventPipe traces, repeated strict
+measurements, and standalone GC-pressure controls did not yet reproduce and
+attribute the failed window. Several later full-suite passes are diagnostic
+evidence, **not clearance of the release gate**. The original yaw allocation
+method, workload and zero threshold remain unchanged. No production code,
+controller process or installed runtime was modified to make it pass.
+
+Detailed results and diagnostic limitations are retained in Desktop lab
+`evidence/allocation-review-20260905.md`; the opt-in native recorder is under
+`tools/allocation-profiler-headers`. Runtime/JIT, test-runner and GC-accounting
+explanations remain hypotheses. Do not characterize this as a fixed regression
+or an installer-ready source tree. The b69 packaging snapshot is incomplete and
+must be restaged after the allocation gate is genuinely resolved.
+
+### User-requested fresh rebuild and rerun, September 5 at 14:56–14:59
+
+The user asked to rebuild and see whether the allocation assertion passes.
+Release/x64 `Rebuild` completed with **zero errors and 15 warnings**. The fresh
+ordinary suite passed **3,659**, skipped only the same three opt-in live-audio
+cases, and failed **zero** (3,662 total, 63 seconds). The original zero-byte
+assertion, repeated measurement and intentional-allocation control all passed.
+All eight hash-pinned synthetic Xbox interop cases remained enabled; no profiler,
+EventPipe capture, debugger or diagnostic allocation mode was enabled.
+
+An independent VIIPER run passed uncached `go test ./... -count=1` and the
+targeted Xbox/API/auth/handler/USB/input-presentation/controller-feedback race
+suite, both exit zero, without retries. Evidence is Desktop lab
+`evidence/user-rebuild-20260905-1456-{build.log,full.trx,viiper-full.log,viiper-race.log}`.
+The rebuilt app DLL SHA-256 remains
+`C2B7AC289283196F268DB70E9D55B41FEFF5AA531DB0440CB734102FF7EC23A4`.
+
+This establishes a passing fresh rebuild, not the cause or harmlessness of the
+earlier intermittent allocation failure. No controller/runtime replacement,
+installer composition or installation was performed during this recheck.
+
+## September 5 PCM peak/stereo-band tuning: source verified, not deployed
+
+User says the input stall did not recur during tracing, but DualSense advanced
+haptics -> HD rumble needs better peak and side/frequency correlation. Audit
+confirmed even/odd PCM -> left/right groups -> USB/BLE first/second group order;
+no global side swap found. Prior synthesis reused packet-wide LF/HF proportions
+across slices, flattened brief attacks by RMS and early-clipped sustained gain.
+Any nonzero compatibility rumble could also overwrite stronger PCM frequencies.
+
+Switch2PcmBandAnalyzer now reconstructs LF DC/bins1/2 and complementary HF inside
+the same32-sample packet, measures local band peaks/RMS per slice, normalizes to
+local source energy and gates exact silence. Peak-oriented bounded envelopes
+retain attacks without a new history, timer, packet wait or input-path change.
+PCM/body carrier selection follows the stronger component independently per
+side/band, PCM wins ties; trigger overlay priority and wire ceilings unchanged.
+Sparse peak fixture HF136 ->276, LF53, source-peak code339; encoded units only.
+No calibrated actuator fidelity or listening acceptance is claimed. See
+DS4Windows/docs/protocols/switch2-haptic-detail-rendering.md for source references,
+intentional policy differences and remaining finite-window/3kHz/8-bit limits.
+
+Five red regressions on preceding source; 13 new cases including128 bin/phase
+combinations, all peak positions/signed extremes, USB/BLE field extraction and
+100-packet stereo/gain corpus. Full suite pcm-correlation-full-20260905.trx:
+3649passed/11opt-in skips/0failed,54s. Skips are three live process-loopback audio
+tests and eight Go-peer integration cases (no pinned peer enabled in this run).
+Warm converter2.204us/report,0managed allocations; CPU cost, not physical latency.
+Built tested DLL SHA256:
+C2B7AC289283196F268DB70E9D55B41FEFF5AA531DB0440CB734102FF7EC23A4.
+Existing b68 app34356/broker30516 remained live. No portable replacement, hardware
+output, installed-state, broker-source, UI, profile, commit or release change.
+Next step is portable A/B deployment and user feel comparison when requested.
+
+## September 5 b68 Hades II transient input stall: cause not yet isolated
+
+Follow-up authorized live trace while user played: Desktop lab evidence/
+b68-hades-input-trace-20260905-1217/README.md contains scripts, raw captures,
+decoder and limitations. EventPipe12:17:39-12:22:39 and12:23:16-12:26:16;
+Windows scheduling12:22:57-12:25:59; read-only XInput12:24:50-12:27:50.
+No restart, profile/output/controller-write, driver or installed-state change.
+Longest recorded runtime suspension2.4644ms; completed managed contention2.1778ms.
+Observed ready-event scheduling pairs max~1.52ms DS4Windows/~0.33ms VIIPER.
+No five-second unchanged deflected XInput state captured, but no recurrence marker
+was supplied and unchanged packets alone are not transport-latency measurements.
+BTHPORT Performance provider returned metadata only; physical BLE report timing
+remains unobserved. Managed sample symbols unresolved because rundown was disabled.
+No multi-hop causal diagnosis or fix claimed. Captures finished and exact private
+Windows sessions verified stopped; app34356/broker30516/Hades31084 remained live.
+
+User reported about five seconds of a held direction and stalled inputs in
+Hades II, on Pro Controller 2 Bluetooth -> Xbox One/Series. First diagnostic
+clock read12:04:50 local; the user described onset roughly20seconds earlier,
+so the timestamp is approximate, not a captured boundary event.
+
+Read-only inspection found the same b68 app34356/broker30516, both responsive,
+and established active API/USB-IP sockets. DS4Windows has no new error, feedback
+reader failure, output rebuild or disconnect around the reported window. The
+last output change was DualSense detach12:00:16.6168 -> Xbox attach12:00:20.1161,
+several minutes earlier. An old opaque USB-IP import ID was retried and rejected
+as nonexistent12:03:58.313; no causal link to this episode is established.
+No relevant System Bluetooth/USB/PNP/driver/WHEA/display event was returned in
+the bounded check. The current Hades II.log is empty, not evidence of game health.
+
+Source audit: BluetoothInputOwner.WaitForDrainSignal waits without a timeout
+when no notifications arrive, and no independent no-report neutralization is
+present in that wait path. A silent notification gap without Disconnected can
+therefore retain the last virtual direction. This fits the symptom but does not
+prove that BLE notifications actually paused in the user's episode. The Xbox
+reader dispatches physical feedback separately from input ACK handling; the
+input ACK wait is250ms after the shared locked socket write completes. A five-
+second hold is not explained by a deliberate five-second ACK timer. Socket
+write/lock stalls, OS scheduling, downstream virtual USB and game consumption
+have not been excluded.
+
+b68's optional per-hop latency histograms and endpoint diagnostics were not
+enabled at startup. Existing lifecycle logs cannot retrospectively distinguish
+the first stopped stage. Next evidence should timestamp physical BLE receipt,
+mapper publication, broker acceptance and virtual presentation during the same
+episode, before choosing transport repair versus stale-input neutralization.
+No dump/debugger suspension, test rumble, process restart, new physical capture,
+source behavior, installed state or settings change was made for this report.
+
+The logs also show DualSense removal11:48:14-16 and Pro rediscovery/reconnection
+11:48:23-27 in b68. This is useful removal/reconnect evidence but is not an
+independently observed UI disappearance or explicit user acceptance of the
+previous disconnect test.
+
+## September 5 b68 disconnect correction: running, physical retest pending
+
+User reports b67 Pro Bluetooth disconnect left its row and froze the program.
+Private heap app27368: exact Disconnected end reason, 5998 published reports,
+zero overflow/session failure, input worker exited; owner Quarantined with
+TerminalDeliveryRejected and feedback stopping/not retired. UI dispatcher was
+in normal message wait, not a proven UI-thread deadlock. Physical rumble Stop
+was required after the target had gone, blocking virtual terminal/removal.
+
+Source adds exact disconnected-and-released lease proof, local notification
+drain without new remote CCCD writes, and standalone disconnected feedback
+retirement using the existing pump/sink primitives. Virtual input still requires
+terminal acknowledgement. Xbox's delivered-Stop shortcut excludes this local
+retirement. Joined pairs and genuine ambiguous failures are not bypassed.
+5 red -> 5 green, 387 focused pass, 90 adapter/runtime integration pass.
+Final full suite:3644pass/3existing audio skips/0fail in62seconds,
+ble-disconnect-retirement-full-20260905.trx. See DS4Windows/docs/protocols/
+switch2-bluetooth-disconnect-retirement.md. b68 DLL:
+9769FC5C83DAA20109289E3089341BD27D78854179DFECECE38A12CE323858F8.
+UI helper found no targetable b67 window although both processes remained.
+After asking the user to close them, the agent explained it would end the two
+residual portable processes; exact executable paths were revalidated and only
+27368/33284 ended. Eight saved files hash-copied after exit, only launcher DLL
+pin changed. b67 remains intact. b68 launched11:10:54-56 via isolated launcher,
+broker30516/app34356. Discovery11:11:04.2796; independent UI no controller /
+Disconnected / no virtual device. User cued to wake with A, wait for Ready, then
+repeat disconnect. Actual new physical acceptance is pending. Launcher SHA:
+C3DC0AD74B85C19702E01FF2BF2E1B65F9A2AE1B5A66B0601838D4E018FBB9AF.
+Complete pins/config hashes are in b68 PORTABLE-STATUS.md. No Program Files,
+driver, startup, security, broker-source, commit or release change.
+
+## September 5 b67 haptic-detail source and launch checkpoint
+
+User authorized synthesis improvements and replacing the running portable.
+HD PCM cutoff removed; packet-local32-sample/3kHz Goertzel band split/remapping;
+trigger>body>PCM control priority; bounded soft overlap mixing for Xbox/DS;
+quantized-silent Xbox impulses no longer retune body. No input or transport
+cadence change.9red->9green,165focused pass; warm stereo conversion2.867us/report,
+zero managed allocations. First full run3632pass/3existing audio skips/1fail:
+unchanged Switch2MagnetometerYawAssistTests.WarmAssistPathAllocatesNothing saw
+448bytes. Isolated13tests pass; full repeat3633pass/3existing audio skips/0fail.
+The intermittent allocation is not claimed fixed.
+Details: DS4Windows/docs/protocols/switch2-haptic-detail-rendering.md.
+
+b67-haptic-detail published with DLL349E96C6938560BC9DF7BFFDD7E87B883FD6A8B9905674DD749284564B1FBB56.
+Before restart, b66 UI text independently showed Pro/Bluetooth/DualSense/Ready,
+90%,14.98-15.00ms. Helper activation failed twice (fresh selection before retry),
+so UI input stopped. User closed both app/broker and said "done"; log shutdown
+10:44:22.959. Eight explicit saved b66 files hash-copied forward; only launcher
+DLL pin changed. ProfileCE6983AF8F8B608ED372651691EF55CF511BFF67732784529359699B81FD6E97
+preserves current DualSense output, despite its Switch2LabXboxOne filename.
+Launched10:47:57-58, broker33284/app27368. Pro connected10:48:14.787,
+independent UI Bluetooth/DualSense/Ready/90%/~15ms. Both API/USB-IP connections
+and four DualSense PnP entries OK. This Ready snapshot is superseded by the
+disconnect failure above; no haptic A/B acceptance. Launcher SHA:
+8F30BD010DCBE2F0392ABC4196A6275BEF6C22A1AB1426EC62D4AC21320EE4C5.
+No keys/logs/dumps/calibration stores copied;
+Program Files, driver, startup, security, broker source and releases unchanged.
+
+## September 5 b66 live checkpoint: BLE Xbox connected, boundary soak pending
+
+User said "done, ready". Both b65 app/broker were already closed; no termination
+was needed. Eight explicit files copied from closed b65 with before/copy/after
+SHA256 equality, including the saved Switch2LabXboxOne profile and correctly
+spaced Auto Profiles.xml. Only the new launcher's app-DLL pin was changed.
+No logs, heap dump, API key, peer key or calibration store was copied.
+
+b66 launched via Start-IsolatedLab.ps1 on September5: broker15432 at10:15:24.616,
+app34488 at10:15:26.284. Discovery10:15:34.805, Pro BLE connected10:15:40.881,
+profile Switch2LabXboxOne at90%. Windows has one present OK XboxComposite
+Xbox Gaming Device (F00D:BEED). API3242 and USB-IP3241 each have an established
+broker connection. No fresh feedback-reader/canonical rejection through the
+10:16 observations. The UI card shows Pro/Bluetooth/90%; navigating to the
+controller details returned "window bounds changed" twice with a fresh
+observation between attempts while the user opened the profile editor. Further
+UI input stopped; an independent Ready-label capture is not claimed.
+
+Pins: DLL D1DEDBECCD5D4947DDD3C50816B36E1EEBD98937A3AE35ACD1D360EC64360E31;
+launcher6D2AD2F574830FCDB797639CD16FEF74836F4746D1B7D3583D3956A3285AB5EB;
+broker99C088793673F2F1BEF9FEB19EB359FF78F630109648121D3D356B34E119512F.
+Saved profile copied with DFC71F30325C22BB67FE607025A6E18E01BE2AB599A0769157E3CEE311121F94.
+Full staging manifest is the Desktop candidate's PORTABLE-STATUS.md. User cued
+to test game buttons/sticks. Actual changing game input/physical feedback,
+counter-boundary continuity, Hades II and failure/Stop cleanup remain distinct
+open gates. No Program Files, driver, startup, security, broker-source or release changes.
+
+## September 5 prior b66 source/build checkpoint: awaiting saved profile and app close
+
+Full regression suite:3617 passed,3 existing audio skips,0 failures in
+ble-pro-counter-reset-full-green-20260905.trx (68s). The initial full run found
+one old raw-calibration assertion requiring Pro BLE reset rejection; it now
+tests preserved Pro USB/BLE samples and unchanged left/right Joy-Con rejection.
+No production calibration change was necessary: it uses the shared policy.
+
+Published, not launched: Desktop runtime/DS4Windows-current-2026-09-05-b66-ble-counter-continuity.
+DLL D1DEDBECCD5D4947DDD3C50816B36E1EEBD98937A3AE35ACD1D360EC64360E31;
+EXE CAE700D769717753E8B2636BD40CABC0A860A4175B02A67F780F4FED8D24A4B7.
+Contains both Pro BLE counter correction and DualSense native-media fallback
+guard. No broker source change. The user has Switch2LabXboxOne open in b65's
+profile editor; asked them to save/cancel and close before copying current
+configuration or restarting. No UI click, settings overwrite or process stop
+performed. b66 is not yet a configured runnable lab: copy exact saved b65
+configuration/launcher/broker/persona after close, update launcher DLL pin,
+verify hashes, then launch through the isolated launcher. Do not claim live
+counter-boundary or Hades II acceptance. Program Files untouched.
+
+## September 5 live failure: b65 Pro BLE counter reset retires Xbox feedback
+
+This supersedes the earlier b65 Ready snapshot, not the user's successful
+output-switch test. At09:48:44.701 DS4Windows rejected canonical Xbox feedback;
+the reader warning followed at09:48:44.703 and VIIPER removed the pad five
+seconds later. A private local heap of app35472 proves 94738 published Pro BLE
+reports, zero overflows, SinkFailure, and mapper BackwardOrOutOfOrder. Consecutive
+ring counters1431640->1 have increasing host QPC (14.8998ms). The mapper retires
+valid input at this reset, then the feedback lifetime rejects Xbox feedback.
+Source extends the existing Pro/Common05 arrival-order rule to BLE, preserving
+all identity/lease/host-clock fences and Joy-Con policy. Three red regressions
+now pass (9 tests total). Full tests and portable replacement are pending here.
+Separate terminal-feedback retirement rejection/quarantine is still unresolved;
+do not claim cleanup fixed by removing this trigger. Details:
+DS4Windows/docs/protocols/switch2-pro-bluetooth-counter-continuity.md.
+
+## September 5 source checkpoint: RC4.3 -> RC4.4 DualSense native media fallback
+
+User reported Hades II advanced feedback regressed between the two published
+releases. Comparing their exact tagged source identified a caller-scratch
+fallback change in 5fcc5ab and a BT template admission rejection scenario in
+f280774. A native audio frame can reach SetDevRumble with zero compatibility
+motor values when native delivery returns false. Four hardware-free USB/BT,
+primary/sidecar cases reproduced this; the narrow no-fallback-on-native-media
+guard passes all five new tests, 546 related and 3610 full tests (3 existing
+audio skips). The earlier intermittent allocation-test failure remains
+unattributed despite this green run.
+This proves a software defect, not the sole cause of the user's Hades session.
+USB/BT connection type and game verification remain pending. No hardware tests,
+portable replacement, installed files, drivers, broker changes or release.
+Details: DS4Windows/docs/dualsense-rc43-rc44-native-haptics-regression.md.
+
+## Latest live checkpoint: b65 output-switch stall hardware fix confirmed
+
+User confirmed "tested, fixed" after the real round trip. BLE cold start
+connected09:19:35.221. XboxOne->Xbox360 detached/attached09:20:25-29, then
+Xbox360->XboxOne detached/attached09:20:36-40. Independent UI shows Bluetooth /
+Xbox One-Series / Ready /90% /~15ms, with one OK F00D:BEED Xbox in PnP and no
+new feedback-stream rejection in the observed log. Output-switch stall is now
+accepted on the connected Pro. b65 remains running, app35472/broker27708.
+WGI's current session still records only neutral/Timestamp0; this acceptance
+does not prove changing Windows API input, physical feedback, or a real game.
+Those remain distinct next gates, alongside normal Stop/lifecycle cleanup.
+
+b65-ble-output-handoff launched09:18:27-28 as app35472/broker27708; discovery
+active09:18:36.105. DLL42FBF734A0B047AEF3EE67F60EB2461546ADCB537FD9955C667501C927D9D081.
+Eight exact b63 files copied with source/copy hashes, including Auto Profiles.xml;
+startup now refuses missing required lab configuration before starting children.
+No first-run/default regeneration occurred. Selected profile remains the exact
+E852A3FC... Switch2LabXboxOne profile. User cued to press A without USB and
+exercise input before output switching; initial hardware acceptance was pending
+at that checkpoint and has since advanced as recorded above. b64's modified
+Default profile and private dump are retained.
+
+Output handoff regression:3 red before fix;439 focused pass; full
+switch2-bluetooth-output-transition-full-20260905.trx:3605pass/3existing audio
+skips/0fail,64s. Integration tests use the real owner/drain/sink/runtime/table
+action chain with synthetic notification bursts for Pro and both standalone
+halves. Joined shared scope, exceptional/nested cleanup and suppression of the
+reserved old snapshot are covered. Existing active-play FIFO/overflow stays
+fail-closed. Earlier7448byte allocation failure is still unattributed, not cured
+by a later green run. b64 Stop09:16:25 again lacked full completion; normal
+Close09:17:04 ended app. No app/lab Xbox/established connections verified before
+exact idle broker26636 was terminated. Program Files and release state unchanged.
+
+## Prior checkpoint: b64 output switch causes ACTIVE BLE queue overflow
+
+September 5: b64-ble-native-throughput runs as app34044/broker26636. Its DLL
+is FE0C5B01942462D3768C75CA23A2B9FC8290AB82884D71F96C8E4F2DE1750275.
+WinRT ABI access now uses IWinRTObject.NativeObject.GetRef rather than CLR
+Marshal.GetIUnknownForObject. A real Windows stream reproduces the wrong native
+identity without radio use (1 red test); 51 focused tests pass. Full run
+switch2-bluetooth-native-identity-full-20260905.trx:3594pass/3audio skips/1fail,
+same WarmFilterOwnerAndReducersAllocateNothing 7448bytes vs0. Gate remains open.
+Windows accepted the retained throughput request at08:54:57.443, but actual UI
+report interval remains~15ms. This did not prove a rate improvement or hardware
+maximum, nor end-to-end latency.
+
+Staging mistake: AutoProfiles.xml was used instead of Auto Profiles.xml. Seven
+other files hash-matched b63, but missing the first-run marker caused b64 to
+generate default app settings/profile. Original b63 data was not changed. The
+next candidate must restore the exact b63 files including the correct marker.
+The generated marker is an empty Programs list with a timestamp; b63's empty
+marker SHA is B08F6B32845F5ACE73E05C8E2601B67D7EE0A737F672E770E11186408BBAB7B9.
+
+User switched Default from Xbox360 to XboxOne: old output detached08:56:16,
+new Xbox attached08:56:20.067; DS4Windows rejected canonical feedback08:56:20.480
+and the broker closed the stream. Private heap evidence in the Desktop lab
+proves input owner activationCommitted=true, publishedCount5017, overflowCount1,
+endReason=QueueOverflow. The input consumer is blocked by native output switch
+on its serialized action queue; physical feedback owner retires before new Xbox
+feedback arrives. This is not a Bluetooth connection or rate failure.
+
+Source handoff fix in progress: explicit serialized cold virtual-output scope
+allows latest-state replacement during detach/attach, shared by Pro, standalone
+halves and joined runtime. Normal active FIFO/overflow and disconnect identity
+remain unchanged. The reserved old snapshot is not reported to the new output.
+Three raw active-handoff regressions fail before the change, then initial145
+related tests pass. Expanded integration tests are running; hardware not yet
+validated. b64 remains live pending corrected b65, not production-ready.
+
+b63 Stop08:50:01 stalled; normal Close08:50:55 ended the app. Broker timeout
+removed device08:51:00/bus08:51:05. No app/lab Xbox/established connections then
+verified before exact idle broker33368 was terminated. No clean Stop acceptance.
+No installed files, drivers/security/startup changes, reboot, commit or release.
+
+## Prior live checkpoint: b63 Bluetooth Ready; changing Xbox input pending
+
+After the user's A-button wake, b63 logged Xbox association at 08:30:25.916 and
+Bluetooth connected in slot1 at 08:30:25.935, selected profile at 08:30:25.966.
+UI independently shows Switch 2 Pro / Bluetooth / Ready / 90% / Xbox One-Series.
+Observed UI report interval around14.55-15ms (67-69Hz), not end-to-end latency.
+PnP shows one OK F00D:BEED Xbox and no USB057E:2069 device. WGI selected one
+matching Gamepad at13:30:26.337UTC, but only Timestamp0 neutral state so far.
+Read-only XInput reports slot0 success/packet265/neutral, other slots absent.
+User cued to hold a face button and move a stick after Ready. Do not equate
+enumeration/Ready with changing input or game acceptance; that check is pending.
+
+Source already requests a retained ThroughputOptimized preference after GATT
+discovery, but acceptance/current connection parameters were not inspected on
+this live session. Windows status Success=1 means request accepted, not proof
+of a particular negotiated interval. Do not attribute15ms solely to hardware
+or claim a lower achievable rate without measurement.
+
+September 5: the private local heap snapshot
+`evidence/b62-bluetooth-activation-20260905.dmp` confirms the input owner retired
+with QueueOverflow (enum3), overflowCount1, publishedCount0 and
+activationCommitted=false. This was not an inferred disconnect: the 16-entry
+pre-activation queue filled while virtual Xbox startup held the consumer parked.
+The snapshot stays private in the Desktop lab; never commit or upload it.
+
+Input ingress now keeps one latest state while Preparing/Prepared, rejecting an
+older-QPC callback rather than replacing a newer sample. Activation starts from
+that current state, not historical startup button transitions. Once Active the
+existing ordered queue, capacity, overflow retirement and neutral/loss behavior
+remain unchanged. Exact subscribe/disconnect/abort and joined atomic activation
+authority are unchanged. This also permits user-paced Joy-Con joining without
+pre-activation overflow; no larger queue, input timer or second mapper was added.
+
+Three synthetic Pro/left/right slow-start regressions fail against b62:
+`switch2-bluetooth-preactivation-red-20260905.trx` (3failed/0pass). Initial related
+run: 387pass/7fail, all failures asserted the superseded pre-activation FIFO/
+overflow contract. Those tests now verify latest initial state, preserved
+disconnect retirement and explicit abort authority; active FIFO/overflow tests
+are unchanged. Intermediate 391pass/2fail identified two remaining old test
+expectations, subsequently corrected. Final focused run
+`switch2-bluetooth-preactivation-final-targeted-20260905.trx`: 395pass/0fail,
+including Pro/both halves 1000-report waits, atomic paired wait and older-QPC
+rejection. Full `switch2-bluetooth-preactivation-full-20260905.trx`: 3594pass,
+3 existing live-audio skips, 0fail (67s). Eight real C#/Go process tests pass
+with the separate AB42697C... test peer. This later pass does not attribute or
+resolve the earlier intermittent allocation failure (7448bytes vs0).
+
+b62 normal Stop at 08:25:50 stopped logging at Closing VIIPER connections;
+complete service-stop proof was not observed. Normal app Close subsequently
+ended the process. Revalidated no app, no lab Xbox and only listening broker
+ports, then terminated exact idle broker18100. Its folder/dump remain intact.
+b63 `DS4Windows-current-2026-09-05-b63-ble-startup-state` is now running as
+app35304/broker33368, using the isolated launcher (normal auto-start). DLL
+28FC540E5D1125FD2A966AD5506596BE53A2A27DCE17B030310B772B28030287; app/broker/persona
+pins unchanged. Eight exact lab files copied with source/copy hashes, excluding
+credentials, logs, dumps and association/calibration stores. Only the new
+launcher's DLL pin changed. Selected profile remains E852A3FC... .
+User cued to press A without USB and exercise sticks/buttons. Hardware readiness,
+input, feedback and real-game acceptance are not yet claimed. No installed-file,
+driver/security/task change, reboot, commit, push or release occurred.
+
+## Prior live checkpoint: b62 Bluetooth reconnect reaches activation, then fails
+
+September 5: b60 stopped normally at 07:52:02 local; its exact virtual Xbox
+was removed (WGI zero at 12:52:02.599990 UTC). App closed, then path-verified
+idle broker 29968 was terminated. b61 launched stopped at 07:53:45-47 as broker
+26828/app35032. Escape paused UI input; the user subsequently tested manually.
+b61 log shows USB attach 07:54:53 and virtual disassociation/removal 07:55:08
+after unplug; subsequent PnP inspection showed no USB Pro or lab Xbox. This
+passes removal for this observed attempt, not repeated reconnect/UI acceptance.
+
+The user reported b61 "Switch 2 Pro controller associated" followed by no
+connection after A. Source audit found a host-address endian error: WinRT
+produces canonical/display-order bytes, but command 0x15 copied them directly.
+Pinned Switch2Connect 61ac6642ce12fe7217e38a860b14863b18ca7e28 utils.py:129-142
+parses the displayed MAC as a hex integer; controller.py:3984-3992 sends six
+little-endian bytes twice. DS4Windows now reverses each wire field once.
+No donor implementation or new static key material was copied. Three checks
+fail pre-fix (`switch2-bluetooth-host-endian-red-20260905.trx`); 324 Bluetooth
+checks pass after (`switch2-bluetooth-host-endian-targeted-20260905.trx`). Two
+new synthetic-address cases also validate command-to-advertisement host matching.
+
+Two sparse association lifecycle log entries now record request and typed
+outcome, without identities, packet contents, keys or exception messages.
+21 focused tests pass (`switch2-bluetooth-association-diagnostics-20260905.trx`),
+including invalid candidate and throwing diagnostic sink. Full ordinary run
+`switch2-bluetooth-host-endian-full-20260905.trx`: 3589 passed, 3 existing audio
+skips, ONE FAILURE: WarmFilterOwnerAndReducersAllocateNothing measured 7448
+bytes vs unchanged zero (66s). Its historical intermittent failure remains
+unattributed; this is not a green full-suite or release-ready claim.
+
+User stopped b61 at 08:10:35 and closed at 08:10:38. Verified no app, no lab
+Xbox, no established broker connection; terminated exact idle broker26828.
+b62 `DS4Windows-current-2026-09-05-b62-ble-host-order` launched stopped around
+08:12:59 as app31924/broker18100. DLL D36B1EBDD6F852BA1398E07AAAE4690613DB2B48C01BD04A0FD2F9C7CEB9045F;
+app/broker/persona pins unchanged from b61. Eight exact files copied with
+source/copy hashes, excluding keys/logs/dumps/association/calibration. Profiles.xml
+changed only save timestamp/window position; selected profile still E852A3FC... .
+Only new launcher's DLL pin changed. Program Files/drivers/security untouched.
+
+User started b62 at 08:13:20 and associated at 08:13:26.958; Commit succeeded
+08:13:29.391. Wireless remembered-device open and calibration advanced to virtual
+Xbox association 08:13:39.074, then `slot activation rejected:
+QuarantineRequired/None; cleanup=QuarantineRequired` at 08:13:39.083. A feedback
+stream-close warning followed 08:13:39.976. This confirms progress beyond the
+previous reconnect boundary but NOT working Bluetooth input. Latest live failure
+is being investigated in this session. Do not publish/release or mark complete.
+The earlier b60/b61 staged-only claims below are historical and superseded.
+
+## Historical live checkpoint: b60 Ready; Switch 2 cards visually checked
+
+September 5: b59 normal Stop at 06:29:54 local removed its row and exact bus
+1/device 1 registration. Windows no longer listed the lab Xbox; the WGI reader
+records zero gamepads at 11:29:54.194 UTC. After normal app Close, its exact
+path-verified idle broker 3028 was terminated with no DS4Windows process,
+established connections or lab Xbox remaining. The b59 folder is intact.
+This does not close the physical-unplug gate.
+
+New Desktop runtime `DS4Windows-current-2026-09-05-b60-feedback-cards` includes
+the feature cards, DS4 profile-stop fix and current regular cmd/viiper reader
+optimization described below. Publish and Go build succeeded; `go version -m`
+confirms a regular Go 1.27.0 Windows/amd64 cmd/viiper executable, not a test peer.
+Only six reviewed lab configuration/persona files and the launcher were copied;
+all copies matched their source hashes before updating the launcher's two new
+binary pins. No credentials, association/calibration, logs or dumps were copied.
+Exact commands, hashes, software results and rollback are in b60's status file.
+
+The hash-pinned launcher started b60 stopped at 06:30:36-39 local as app 16260 /
+broker 29968. Normal Start at 06:31:01 reached USB Pro Ready at 06:31:07, observed
+about 4ms / 250Hz, battery 90%, one Windows Xbox Gaming Device. WGI independently
+records one matching F00D:BEED Gamepad at 11:31:08.187 UTC and neutral input.
+This is startup/enumeration evidence, not physical button or game acceptance.
+
+Computer-use verified actual card rendering at the normal 1267x774 captured
+profile-editor size: all five collapsed headings fit; expansion/scrolling reaches
+HD feedback, motion, Joy-Con mouse/dual gyro and stick tuning, connection and
+calibration. Tab/Space expands and collapses the motion card. Impulse-to-HD off
+disables tuning, and on restores it. No calibration or haptic/LED test was run.
+Light theme also renders the HD and collapsed-card views with readable contrast
+after settling; original Dark was restored. Both editor visits ended with Cancel.
+Saved profile hash remains E852A3FC4252941B745637BDB21A332C9C6DFAFECBD992209A7ED6C8DCD7210A.
+The app is left on Controllers. A resize attempt did not change geometry, so
+narrow-window/DPI acceptance is not passed. The helper did not expose card
+internals in its accessibility tree; these were screenshot/keyboard checks,
+not screen-reader acceptance or full visual/reference parity.
+
+b60 DLL FDF02C1ADC3CE6DAB522868B465A71DC68D33F2CCFD7B77AEDF9BF8C09B662A9;
+app host CAE700D769717753E8B2636BD40CABC0A860A4175B02A67F780F4FED8D24A4B7;
+regular broker 99C088793673F2F1BEF9FEB19EB359FF78F630109648121D3D356B34E119512F;
+persona 20E0C0939964EA83928D8DBA1ED82BA97CE05FA02963BF9EB382E63356F29263.
+
+Retired opaque USB/IP imports still retry and are rejected as nonexistent.
+Permanent retry cleanup, physical unplug/reconnect, wireless/Joy-Con, complete
+native input/feedback matrix, games, latency and full parity remain open.
+No installed-file/driver/security/startup change, installer or release occurred.
+Earlier live process IDs below are dated evidence, superseded by this checkpoint.
+
+## Latest source/staging checkpoint: bounded Bluetooth discovery retries, b61
+
+September 5: association and remembered input/duplex now share a startup-only
+uncached-service retry helper, using the same device and existing overall
+deadline. It follows the pinned SDL source below: at most ten attempts with
+500ms spacing. The native status is no longer flattened to a boolean: only
+Unreachable and an empty successful service list retry. Access-denied, protocol,
+unknown failures, malformed lists and nonempty results return immediately to
+the existing failure/identity checks. This selected transient policy is informed
+by [Windows' GATT status meanings](https://learn.microsoft.com/en-us/uwp/api/windows.devices.bluetooth.genericattributeprofile.gattcommunicationstatus);
+it does not reproduce the donor's retries for every failed status/exception.
+
+Each retry retires intermediate service objects before another query; cleanup
+failure stops further attempts after trying to dispose all intermediate results.
+The helper does not reopen the address, renew consumed candidate authority,
+reset the deadline, pair through SMP or add waits to input publication. The
+WinRT service-query projection now awaits actual operation completion rather
+than cancelling its projected task when the caller's wait expires. Existing
+bounded outer observers retain the device and dispose late query results. This
+is not a hard bound on native Windows connection completion; characteristic-
+query cancellation remains unchanged and is not covered by this narrower fix.
+
+Three association/remembered-input/duplex cases fail against the old single-query
+path. All 322 Bluetooth tests pass in
+`switch2-bluetooth-service-retry-final-targeted-20260905.trx` (22s), including
+21 discovery policy/ownership cases and five production-owner retry cases.
+Tests cover exact attempt count/spacing, status conversion, no access-denied
+retry, intermediate/final ownership, cleanup exceptions, real cancellable
+backoff and late noncooperative results after a second attempt. Full ordinary
+regression: 3,585 passed, three existing live-audio skips, zero failures in
+`switch2-bluetooth-service-retry-full-20260905.trx` (63s). All eight C#/Go process
+cases passed with the separate AB42697C... test-only peer; no native attach,
+physical output or real wireless link is inferred from those process tests.
+The historical intermittent stick-filter allocation failure remains unattributed.
+
+Desktop `runtime/DS4Windows-current-2026-09-05-b61-ble-connect` is staged only,
+not launched. It includes both BLE startup fixes and the prior legacy Nintendo
+rumble writer. Publish succeeded with existing warnings; five reviewed b60 lab
+configuration files, persona, unchanged regular broker and launcher were copied
+with source/copy hash checks. No keys, association/calibration, logs or dumps
+were copied. Only the new launcher's app-DLL pin changed. Syntax and all four
+binary/persona pins verify; `go version -m` confirms regular cmd/viiper, not a
+test peer. Its broker deliberately retains the b60 build/version.
+
+b61 DLL BBEB90554D3A9ABEF9AF2BE0F6264C842351D033B10CD4A4349A87DAC388BF27;
+app host CAE700D769717753E8B2636BD40CABC0A860A4175B02A67F780F4FED8D24A4B7;
+broker 99C088793673F2F1BEF9FEB19EB359FF78F630109648121D3D356B34E119512F;
+persona 20E0C0939964EA83928D8DBA1ED82BA97CE05FA02963BF9EB382E63356F29263.
+Commands, configuration hashes, limits and rollback are in b61's
+`PORTABLE-TEST-STATUS.md`. DS4Windows base remains 061fab1304e77c995ce9451b7ef20e51cc870070;
+VIIPER base remains 54f7853aa4f97394298fc8f4c3ebb865237a3456, both dirty.
+
+b60 app 16260 / broker 29968 still run unchanged; no b61 process was launched.
+There was no controller command, UI automation, installed-file/driver/security/
+startup mutation, commit, installer or release. Physical unplug/reconnect,
+wireless pairing, Joy-Con, games, feedback/native-feature matrix, latency and
+full parity remain open. This does not resolve the user's USB unplug report.
+
+## Earlier source checkpoint: Bluetooth opens no longer require a pre-existing link
+
+September 5: both `Switch2BluetoothWindowsAssociationOwner.ExecuteAsync` and
+the Windows adapter's remembered input/duplex open path checked `IsConnected`
+immediately after `OpenDeviceAsync`. The production WinRT implementation only
+creates the `BluetoothLEDevice` object there. A valid newly opened object may
+be disconnected until uncached GATT discovery initiates its connection, so the
+old check rejected the path before reaching the operation that can connect it.
+This is a source-confirmed Bluetooth startup defect, not an explanation for
+the outstanding USB unplug report.
+
+[Microsoft's FromBluetoothAddressAsync contract](https://learn.microsoft.com/en-us/uwp/api/windows.devices.bluetooth.bluetoothledevice.frombluetoothaddressasync)
+explicitly distinguishes creating the object from establishing a connection.
+Local Switch2Connect pin `61ac6642ce12fe7217e38a860b14863b18ca7e28`,
+`src/controller.py:1981-2069`, awaits Bleak connection before using services.
+The separately pinned hifihedgehog SDL reference
+`d98c5804a9d20b0d96e993741797878c86b8f1e1`,
+`src/joystick/windows/SDL_ble_switch2joystick.c:1254-1340`, also opens the object
+then queries uncached GATT without requiring an already-connected link. These
+are source comparisons, not a claim about the installed donor binary/version.
+SDL remains read-only; no code was contributed to that reference repository.
+
+The two DS4Windows checks now run after successful, exact service discovery
+and before throughput requests, writable endpoint queries or association
+commands. Later notification/activation/disconnect checks remain. Failed
+discovery is still rejected; a link lost during discovery cannot proceed.
+Existing deadlines, consumed candidate authority and late-result cleanup remain.
+Nine new cases fail against the old code and pass with the fix: delayed link
+establishment for association, remembered input and duplex; a link that never
+connects; service failure without commands; cancellation during a noncooperative
+query retaining its device until late completion. All 296 Bluetooth cases pass
+in `switch2-bluetooth-lazy-connect-targeted-20260905.trx`. The full ordinary
+suite passes 3,559 tests, three existing live-audio skips and zero failures in
+`switch2-bluetooth-lazy-connect-full-20260905.trx` (56s), with all eight real
+C#/Go process cases enabled by the previously documented AB42697C... test peer.
+
+Follow-up from the same reference audit: the SDL fork retries transient/empty
+uncached service discovery up to ten times with 500ms spacing; this DS4Windows
+fix changes ordering only and still makes one service query per open. Reconcile
+that startup retry behavior under the existing deadline and ownership rules
+before claiming donor connection parity. No SMP/bond policy, runtime input
+cadence, physical controller state or installed files changed. b60 remains
+unchanged and running; the source repair has not been deployed or wirelessly
+accepted. Cable-state clarification, physical unplug/reconnect, pairing, Joy-Con,
+games, latency, full parity and the final installer remain open.
+
+## Earlier source checkpoint: legacy Nintendo rumble no longer waits on input
+
+September 5, 07:15 local: original Switch Pro and Joy-Con rumble now use one
+dedicated writer per physical lifetime. The input loop keeps the existing
+canonical rumble merge and Nintendo packet codec, then copies the latest packet
+into fixed storage. Native HID submission runs outside that mailbox lock and
+outside the input thread. The existing input-pass active refresh/retry cadence
+is retained; there is no polling timer or growing effect queue. Newer feedback
+supersedes unsent older feedback. Submitted bytes remain owned until I/O returns.
+
+Rumble and subcommand writes serialize their shared four-bit packet counter.
+Removal, detach and input-thread exit retire the output worker; reader-start
+failure also cleans it up. Stop seals publication and attempts neutral only
+when hardware may be active, including a rejected/throwing nonzero write.
+Unsubmitted effects are discarded without probing idle hardware. Neutral is
+not acknowledged on failure; three unsuccessful stop attempts retire the writer
+with one warning per device lifetime. The last thrown write exception remains
+available for diagnostics. These are software/native-call acceptance rules,
+not proof of physical vibration stopping.
+
+All 58 relevant cases pass (45 real-codec/device cases across Pro and left/right
+Joy-Con USB/BT layouts, 13 writer cases). Coverage includes a blocked native
+write while input publication completes, immutable borrowed storage, latest-wins
+retry, real-worker retirement, stop/completion races, four-bit counters, idle
+suppression and zero warmed publication/admission allocation. The ordinary full
+suite passes 3,550 tests with three existing live-audio skips and zero failures
+in `legacy-nintendo-output-owner-full-20260905.trx` (55s). All eight real C#/Go
+process cases pass using the AB42697C... test-only peer documented below.
+The older intermittent stick-filter allocation failure remains unattributed.
+
+Limits: each native rumble write still uses the existing 100ms wait and exact
+cancellation retirement. Joining the writer is not a hard bounded native
+shutdown guarantee; explicit setup/LED/subcommands remain synchronous. This
+does not repair every controller's master-output policy, establish end-to-end
+latency or change Switch 2 USB/Bluetooth behavior. b60 app 16260 / broker 29968
+remain running unchanged; its DLL hash was rechecked against the live checkpoint.
+Windows still enumerates all five USB Pro interfaces as OK; no new cable-state
+confirmation or physical unplug/reconnect acceptance was obtained. No controller
+command, UI automation, portable replacement, installed-file/driver change,
+commit, installer or release occurred in this source follow-up.
+
+## Earlier source checkpoint: Xbox broker reader reuses its frame header
+
+September 5: the production Xbox broker stream now owns one framed reader and
+reuses its 16-byte header for ConsumerReady and subsequent input/feedback ACKs.
+Previously, passing a new local header to `io.ReadFull` incurred one heap
+allocation per decoded frame. Payload storage remains caller-owned. The reader
+does not expose header fields until a complete validated frame has arrived;
+magic/version/type/length checks and correlation values are unchanged. Input
+ordering, ACK admission, deadlines, feedback dispatch and USB/IP pacing are not
+changed. The C# reader already offloads physical feedback delivery; this review
+did not establish physical delivery blocking that ACK reader.
+
+The new allocation test first failed with one object/frame on the old decoder.
+On Go 1.27.0, Windows amd64, Ryzen 7 5800XT, three isolated 40-byte input-frame
+benchmarks measured 29.79 / 30.36 / 33.74 ns, 16 B and one allocation per decode
+before the change; afterward, 18.38 / 18.51 / 21.43 ns, zero bytes and zero
+allocations. This is an in-memory decoder microbenchmark, not a complete broker
+allocation audit, physical-to-pad latency measurement, USB interrupt interval
+change or explanation for historical 50-124ms stalls.
+
+All six new top-level reader tests pass, covering warmed allocation, every
+truncated frame length, malformed headers after valid input, missing storage,
+all six frame kinds with changing payload lengths, and eight parallel independent
+readers. `go test ./...` passes; `go test -race ./device/xboxone
+./internal/server/api/handler ./internal/server/usb` passes without race reports.
+The real Go/C# process suite passes all eight cases, zero skips/failures, in
+`xbox-broker-reader-interop-20260905.trx`. Its dedicated Desktop test peer has
+SHA256 AB42697CFB9DD1EB1DFADAF5163968DF2DD791F459F644257167F7290559A999.
+It uses simulated native attach/USB host and recording physical feedback; it is
+not a runtime broker and must not enter a runtime folder or installer. Build,
+reproduction commands and limits are in that folder's `TEST-PEER-ONLY.md`.
+
+The running b59 app 24720 and regular broker 3028 remain unchanged. No hardware
+commands, runtime restart, installed-file/driver/security changes or release
+occurred. Physical unplug/reconnect, wireless/Joy-Con, feedback/game acceptance,
+UI-card rendering and measured latency remain open; passing software checks do
+not close those gates or the intermittent stick-filter allocation investigation.
+
+## Earlier source checkpoint: DS4 profile-disable no longer swallows rumble stop
+
+September 5: source inspection confirmed that `CheckProfileOptions` set the
+hardware `NoOutputData` bit before queuing zero rumble, and the DS4 effect writer
+then returned before sending that zero. Physical DS4 profiles now configure a
+separate policy revision; immutable input-only capability and subsequently set
+hardware failure flags cannot be cleared by a profile. Other controller classes
+retain their existing custom output configuration. Switch 2's no-HID foundation
+and current live b59 app 24720 / broker 3028 are unchanged.
+
+The DS4 writer tracks possibly active motor submissions, including audio-mode
+controls. A profile disable clears retained game/preview rumble and requires a
+rumble-only stop through the existing writer if needed. Startup-disabled profiles
+do not initiate an unnecessary output probe. Failed/throwing stops retain their
+pending state; existing direct-HID error/disconnect behavior remains. Successful
+audio-mailbox admission hands native retry to the existing owner, not a new
+writer. Re-enable requires fresh feedback; rapid toggles and publication during
+I/O do not revive old effects or hold a profile publisher behind the HID lock.
+Lightbar/flash validity is omitted on the stop. Bluetooth audio keeps its mode,
+volume fields and valid CRC in an F1 control packet.
+
+The initial legacy-behavior reproduction had 22 failing tests in
+`ds4-profile-stop-red-20260905.trx`: missing stop, stale rumble or capability
+violations. The first repair run had four CRC assertion failures because the
+fixture omitted `ControlService`'s normal CRC-table initialization; adding that
+same pure initialization repaired the fixture, not production CRC code.
+`ds4-profile-stop-reviewed-20260905.trx` passed 149 related cases. The complete
+follow-up test class has 34 passing cases across USB, Sony adapter, BT 0x11,
+BT clone 0x05, speaker and full-duplex audio routing, actual audio-mailbox retry,
+startup/input-only guards and races. Three warmed measurements in
+`ds4-profile-stop-allocation-20260905.trx` record zero managed allocation through
+20,000 enable/effect/disable/stop cycles each, with capture disabled in the fake
+writer. These are simulated writer admissions, not physical or latency evidence.
+
+The first full run `ds4-profile-stop-full-20260905.trx` passed 3,519 with three
+existing live-audio skips, zero failures (55s), including all eight pinned process
+interop cases. The historical stick-filter allocation test passed this time but
+its previous intermittent 2,312-byte failure remains unexplained and open.
+After the three allocation cases were added, final ordinary full regression
+`ds4-profile-stop-final-full-20260905.trx` passed 3,522 with the same three skips,
+zero failures (59s), using the same pinned process-interop environment.
+The DS4 non-audio writer still uses synchronous HID with its existing 3,000ms
+timeout/cancellation retirement; this correction is not a nonblocking-output or
+bounded physical-flush solution. Hardware feedback, unplug, wireless/Joy-Con,
+game, UI-card rendering and latency gates remain open. No portable deployment,
+installer, commit/push/release, driver/security or installed-file change occurred.
+Details: DS4Windows `docs/protocols/xbox-one-physical-output-policy.md`.
+
+## Earlier source checkpoint: feature cards; allocation failure still open
+
+September 5: the Switch 2 Controls page is now organized in source into five
+theme-aware, collapsible cards: HD rumble/feedback, motion/aiming, Joy-Con 2
+mouse/dual gyro, layout/connection, and calibration. Feedback initially expands;
+the other cards and supplemental mapping/feedback notes start collapsed. Headers
+include wrapping descriptions and accessible names. Joy-Con applicability is
+stated explicitly without hiding offline profile options or changing capability
+policy. The existing 33 top-level control blocks were partitioned exactly once;
+their normalized contents are unchanged except the page title's font styling.
+Bindings, named enablement targets, calibration handlers, tuning ranges and
+transport behavior are unchanged. This is not a new mapping or feedback path.
+
+Organization was checked against the pinned Switch2Connect source
+61ac6642ce12fe7217e38a860b14863b18ca7e28, `src/gui.py` around 12222-12299
+(layout, rumble/impulse controls and gyro settings). No donor code was copied.
+The card styling uses DS4Windows' existing dynamic theme brushes. Twelve added
+production-markup test cases cover card layout/default expansion, binding homes,
+calibration actions and element references; all 110 related cases pass in
+`switch2-settings-cards-20260905.trx`. These are not rendered-layout tests.
+No new portable candidate was launched: live b59 remains app 24720 / broker
+3028, preserving the outstanding physical-unplug cue. Visual/theme/resize and
+keyboard acceptance of the cards is still pending; no superior-design or full
+reference-parity claim is made.
+
+Ordinary full regression `switch2-settings-cards-full-20260905.trx` reports
+3,487 passed, three existing live-audio skips, one failure, 55s. The known
+`DS4StickFilterTests.WarmFilterOwnerAndReducersAllocateNothing` again measured
+2,312 bytes against zero. Filter production code, workload and assertion were
+not changed. Source review and test-host-only JIT disassembly were collected;
+the isolated `stick-filter-jit-20260905.trx` passed, and the diagnostic full run
+`stick-filter-full-jit-20260905.trx` passed 3,488 with the same three skips (56s),
+including all eight pinned Go/C# process-interop cases. These passing executions
+do not identify or repair the failed allocation. JIT output remains local in
+Desktop lab `evidence/stick-filter-{jit,full-jit}-20260905.txt`; it is evidence
+from passing runs, not an allocation stack from the failed window. Do not
+attribute this to JIT/runtime or call the source consistently green. The release
+gate remains open alongside unplug, wireless, physical feedback, games and latency.
+
+## Live checkpoint: b59 running; dedicated Switch 2 profile page verified
+
+September 5: moved from b56 to b58, then b59 using normal application Stop/Close.
+b56 Stop at 04:51:48 local removed the controller row and its exact bus 2/device 1
+registration. b58 reached Ready at 04:53:45, then Stop at 05:06:06 removed its
+exact bus 1/device 1 registration and row. Both times the Windows lab Xbox was
+absent before closing the app and terminating only its path-verified idle broker,
+with no established connections. Neither operation is physical unplug acceptance.
+
+b59 is now app 24720 / broker 3028 in Desktop runtime
+`DS4Windows-current-2026-09-05-b59-switch2-section`. Its hash-pinned isolated
+launcher started it stopped, then normal Start reached one Ready USB Pro at
+05:07:19 local, displayed interval about 4ms / 250Hz, battery 90%, one Windows
+Xbox PnP device. The existing WGI reader's JSONL independently records one
+matching lab Gamepad at 10:07:20.163 UTC and a neutral reading. A background UI
+readback retained an earlier zero-pad display, but the reader's own log and
+activated window resolve that as stale UI evidence, not an enumeration failure.
+The log also records b58 arrival and removal at the corresponding times.
+
+The live b58 UI exposed the requested dedicated section still missing: its
+Switch 2 Controls group was under Advanced. Source now moves all 693 existing
+group lines unchanged into a separate settings tab and sidebar item below
+Trigger Lab. Advanced and Log indices were adjusted, and the settings range is
+derived from the actual tab count. Non-Switch-2 physical contexts get an
+availability explanation; existing capability guards and offline editing remain.
+Eight new production-markup tests and 42 related tests pass. Full regression:
+`switch2-dedicated-section-full-20260905.trx`, 3,476 passed, three existing
+live-audio skips, zero failures, 59s, with the pinned process-interop peer enabled.
+
+b59 visual checks confirm the dedicated section, reachable calibration/layout/
+rumble settings, impulse checkbox off disabling its tuning and on restoring it,
+Advanced opening the correct page, Log opening service events, and return to
+Switch 2 Controls. The editor was canceled with impulse conversion restored;
+saved profile hash remains E852A3FC4252941B745637BDB21A332C9C6DFAFECBD992209A7ED6C8DCD7210A.
+This proves navigation/enablement, not physical feedback or full design parity.
+No haptic/LED pulse, calibration, association or driver/security/installed-file
+change was performed. Controller remains available in Controllers for unplug.
+
+b59 DLL F2B0F8824B8A178AC74A96457A157D5C4C5A2A9E3FA2552A56557283EBE95A5D;
+app host CAE700D769717753E8B2636BD40CABC0A860A4175B02A67F780F4FED8D24A4B7;
+broker unchanged from b58, 5EE0D5E0C0ABB9E4FCB438C72018FCD23E26BD2EEB4A6D7F200724D932DB04AA;
+persona 20E0C0939964EA83928D8DBA1ED82BA97CE05FA02963BF9EB382E63356F29263.
+It also includes the subsequent legacy Nintendo neutral retry fix. Exact build,
+launcher, selected-copy hashes, limits and rollback are in its status file.
+No commit, push or installer/release was made. USB/IP continues attempting old
+retired opaque import IDs, rejected as nonexistent; permanent retry cleanup is
+still open. The original failed unplug, wireless/Joy-Con/game/latency gates and
+full reference parity remain unresolved. Historical b56/b58 claims below are
+dated evidence, not the identity of the current process.
+
+## Historical b56 checkpoint: unplug reported unsuccessful; USB still delivered
+
+On September 5 the user reported "unplugged, didnt disappear" after the b56
+cue. The automatic unplug gate remains failed/unresolved, not passed. At
+06:18-06:20 UTC, the original b56 processes were still app 35880 / broker 16976.
+Computer-use readback showed the same Ready / USB / Xbox One row. Windows
+reported the five Nintendo USB/HID/audio nodes and the virtual Xbox present;
+the pre-dump DS4Windows log read ended at the original attach without a removal
+entry. The subsequent lifecycle event below qualifies this historical readback.
+
+The new read-only `evidence/b56-user-unplug-readonly-20260905.jsonl` contains
+64 successful 64-byte `0x05` reads with changing counters and sensor bytes.
+This is actual read delivery on a newly opened USB HID handle, not just a
+cached PnP/UI status, but does not explain what occurred at the user's unplug.
+The user was asked whether USB is still physically unplugged or was reconnected;
+no response had arrived when this checkpoint was written.
+
+An exact-process-guarded local heap capture of b56 is retained at
+`evidence/b56-user-unplug-state-20260905.dmp` (185,070,806 bytes,
+06:19:52 UTC). It contains private process memory: do not upload or commit it.
+Selected inspection shows the pump Running, workerExited=false, no terminal
+failure, 1,492,266 reads started / 1,492,265 retired, and the last completion
+observed with Published disposition. The transport is Open with one outstanding
+read; the worker stack is awaiting its native completion. The outer runtime is
+Active, with no terminal task or lifecycle attention recorded. This is not the
+b53 Stopped/NativeFailure state and does not reproduce that prior defect.
+
+Later readback found DS4Windows disassociation at `01:19:52.1980` local and
+virtual unplug at `01:19:52.2199`, followed by reattachment at `01:19:55.5016`.
+VIIPER independently records exact removal of bus 1/device 1 at 01:19:52.217,
+broker stream closure, creation of bus 2/device 1, and native import at
+01:19:55.500. The private dump was created at 06:19:43 UTC and last written at
+06:19:52 UTC, so the lifecycle transition coincides with diagnostic capture.
+This correlation does not establish whether capture caused it, and it cannot
+be counted as physical unplug/reconnect acceptance. The selected heap objects
+above describe the captured lifetime, not necessarily the later active one.
+
+No commanded Stop, app restart, replacement build, haptic/LED test command, Bluetooth association,
+driver mutation or installed-configuration change was performed. The live
+reader state must be reconciled with the physical unplug report before claiming
+a new root cause or changing removal logic. Earlier pending-cue observations
+below are historical and superseded by this user report.
+
+Read-only presence recheck at 09:38-09:39 UTC: b56 remains app 35880 /
+broker 16976, with no new log transition after the reattachment above. All five
+physical USB interfaces still report present/OK. Computer-use inspection of the
+existing window shows Ready, USB, Xbox One / Series and an observed interval of
+about 4ms. A fresh passive capture contains 32 successful 64-byte `0x05` reports,
+all with distinct payloads, in
+`evidence/b56-usb-presence-recheck-20260905-0442.jsonl` (10,043 bytes; actual
+creation/write time 09:39:34 UTC, not the filename's approximate time suffix).
+No output command, UI input, restart or configuration change was performed.
+This establishes current USB report delivery only; it does not establish the
+cable state or explain the earlier user-reported failed disappearance. The
+physical unplug/reconnect gate remains unresolved pending that distinction.
+
+## September 5 source follow-up: legacy Nintendo lost-neutral repair
+
+Source-level feedback review found the original Switch Pro/Joy-Con writers
+cache their new amplitudes before issuing interrupt-OUT and ignore write failure.
+After a failed neutral, the next pass treats unchanged zero as already delivered.
+`legacy-nintendo-neutral-retry-red-20260905.trx` reproduces this in 15 cases
+(expected third write, actual two); 15 healthy-path cases passed in the same run.
+The test seam replaces only the final HID write, with real device constructors,
+rumble mailbox, merge, report encoder and decision logic; OS PostInit is not run.
+
+A writer-owned pending bit now survives rejected/throwing writes and clears on
+success. The next existing pass re-merges the latest mailbox instead of replaying
+an old packet. No new worker/timer/allocation, changed wire encoding or direct
+Xbox-to-HID writer was added. The 30 new cases cover Pro and left/right Joy-Con
+USB/BT report sizes, retries, uncertain failed active output followed by neutral,
+newer-state replacement, normal refresh/idle behavior and publication during I/O.
+All 60 related tests pass in `legacy-nintendo-neutral-retry-green-20260905.trx`.
+Full regression with the existing pinned process-interop peer enabled passes:
+`legacy-nintendo-neutral-retry-full-20260905.trx`, 3,468 passed, 3 existing
+live-audio skips, zero failures, 55 seconds. Scoped diff whitespace checks pass.
+
+This is not a Switch 2 unplug fix, tactile evidence, completed terminal flush or
+latency acceptance. Legacy Nintendo still synchronously writes on its input loop
+with the existing 100ms wait/cancellation retirement; retries can delay more
+input passes. The DS4 base `NoOutputData` early-return-before-neutral issue also
+remains open and cannot safely be fixed by bypassing known hardware capability.
+See DS4Windows `docs/protocols/xbox-one-physical-output-policy.md` for exact scope.
+Live b56 app 35880 / broker 16976 remain unchanged. Staged b58 does not include
+this later source repair. No controller write, UI input, replacement launch,
+installed-file edit, commit or push was performed.
+
+## September 5 source follow-up: cancellation-aware Xbox activation
+
+While the current cable state awaits clarification, completed the pending
+native attach cancellation implementation without replacing b56. Native attach
+now owns an overlapped request, pins its payload/operation, requests exact
+cancellation, observes actual completion and joins the cancellation callback
+before releasing resources. A late native success is not discarded as if it
+proved removal. The authenticated activation handler binds request timeout and
+exact registration cancellation, rechecks before commit, and retires canceled
+activation through the existing exact registration/retained neutral lifecycle.
+Duplicate activation stays rejected until native completion and cleanup finish.
+Pre-canceled requests do not consume a ready owner or invoke native attach.
+
+Six new native-operation tests and five new handler tests pass, including late
+success, cancellation errors, deadline, same-address replacement, duplicate
+activation and event/buffer retirement. The original ABI/retry tests were moved
+onto the actual overlapped helper and its unused synchronous predecessor removed.
+Full `go test ./... -count=1` passes all packages; `go vet ./...` passes.
+Ten race-enabled repetitions of the native/activation groups pass in both
+API (2.109s) and handler (35.766s) packages. The first race build failed because
+the local GCC could not find its linker; adding the existing w64devkit bin to
+that test process's PATH resolved it, with no machine-level environment change.
+
+These are source and simulated-native/loopback tests, not new hardware acceptance.
+The Windows cancellation request is not a hard completion-time bound. The API
+also does not detect management-peer socket closure inside an executing handler;
+that event alone is not claimed as an immediate cancellation trigger. Pinned
+usbip-win2 parallel query/Stop queues and hash-based retry selection still do
+not supply a permanent exact retry-removal barrier after successful imports.
+That separate cleanup remains open; no Stop All/numeric-port detach is added.
+See [the API lifecycle contract](../api/xboxone-exact-removal.md) for details and
+Microsoft references. No app, broker, controller, pairing or output action was
+performed during this source follow-up; installed binaries remain untouched.
+
+## September 5 staging: b57 feedback/activation candidate, not launched
+
+Published a separate Desktop portable candidate at
+`runtime/DS4Windows-current-2026-09-05-b57-feedback-activation` without stopping
+or overwriting b56. It includes the accumulated Joy-Con UI action guards,
+terminal Stop and live Xbox output/impulse policy fixes plus the native
+activation changes. Its PORTABLE-TEST-STATUS.md records scope, limits and hashes.
+The full .NET suite was rerun before publish: `b57-staging-full-20260905.trx`,
+3,288 passed, 3 existing live-audio skips, zero failures (45s).
+
+App DLL SHA256 `2B4762DF2A5D0520F5C1E48C3F40D09F289E72F6C4DEAD87B0E7E8486965E6E5`;
+new broker SHA256 `CA4A0DF3D51C22A39EA1BFB0E03C7E089215F8D79E21291ABA42EA9B69AF9616`.
+App host and authorized persona hashes match b56. Six explicitly selected lab
+configuration/persona files were copied and hash-compared; no credential,
+association, calibration, log or dump was copied. The launcher pins both app
+images, broker and persona. No b57 app/broker, physical/native test, association
+or feedback command was started. This is preparation for hardware validation,
+not an installer, deployment or acceptance claim. b56 remains the live target.
+
+## September 5 source follow-up after b57: client activation abort
+
+The client-side lifecycle audit reproduced a pending activation remaining in
+its management response read after disposal had already started exact removal.
+That read also retained DS4Windows' shared native-attach monitor. The regression
+`xbox-client-activation-cancel-red-20260905.trx` failed its explicit one-second
+activation-completion assertion while the removal response was held.
+
+The Xbox lifetime now owns one scoped activation cancellation request. Disposal
+cancels only its pending management socket before exact removal; the broker
+feedback transport remains open for retained Stop/ACK. The client propagates
+the scope through connect and the existing absolute authentication/write/read
+deadline. Revalidation after acquiring the shared monitor prevents a retired
+lifetime issuing a delayed activation command. Request completion serializes
+with cancellation before source disposal, and exact request identity prevents
+old cleanup from touching a successor request.
+
+Four new cases cover cancellation during authentication/response wait, release
+of the shared attach lock while exact cleanup is held, feedback transport
+retention, stale request isolation and cancellation/completion overlap. The
+first related run passed 34 cases and exposed one old test's expected exception
+type: it expected a late disposed-port binding, while management now aborts
+earlier with the sanitized IOException. That assertion was updated while
+preserving no-bind/no-repeat-removal checks. The corrected related suite
+`xbox-client-activation-cancel-fixed-20260905.trx` passes 183 tests. Full
+`xbox-client-activation-cancel-full-20260905.trx`: 3,292 passed, 3 existing
+live-audio skips, zero failures (46 seconds).
+Five further runs of the four new cases plus the updated late-response control
+all pass (25 case executions, 166-180 ms per five-case group). Results are
+`xbox-client-activation-cancel-repeat-{1..5}-20260905.trx`.
+
+These tests exercise the real DS4Windows management client against test TCP
+peers, not full new C#/Go/native interop or hardware. At this checkpoint the
+shared monitor was non-cancellable while another owner was attaching; the next
+source follow-up below supersedes that specific limitation. Broker socket EOF is
+not newly interpreted as abandoned activation; exact registration retirement
+and deadline remain the server's cancellation sources. Permanent native retry
+cleanup remains open. This source is not in live b56 or staged b57. Neither
+payload, app/broker owner, controller, profile or installed configuration was
+changed during this follow-up. The USB cable-state clarification is still pending.
+
+## September 5 source follow-up: cancel queued Xbox activation
+
+The next real-client regression held DS4Windows' shared attach admission on a
+separate thread, queued an Xbox activation behind it, then retired that exact
+Xbox lifetime through the test management peer. Before the fix, activation
+remained blocked after exact removal replied: `xbox-attach-gate-cancel-red-20260905.trx`
+failed the one-second completion assertion. No activation command had reached
+the peer. This isolates a managed queue wait, not a new physical unplug cause.
+
+The exact activation request scope now exists before admission. The shared
+monitor was replaced with a synchronous reentrant native-mutation gate: legacy
+create and its nested cleanup still serialize with Xbox attach, but canceling
+a queued activation wakes it without taking or releasing another owner's lease.
+The state monitor is held only for admission bookkeeping, and cancellation
+registration completion is joined after that monitor is released. Admitted
+native work retains its lease until its own completion/cleanup. No input-path
+lock, polling timer, mapper, parallel native attach or numeric cleanup is added.
+
+The initial failing real-client case now passes; eleven additional gate cases
+cover nested admission, pre-cancellation, unrelated waiters, canceling an owner
+after admission, owner-release/cancellation races, exception cleanup,
+wrong-thread/duplicate disposal, and the real legacy detach wrappers with
+invalid-port guards that return before native queries. The race case exercises
+100 admission/cancel/release iterations. The first targeted run passes 71 cases
+(`xbox-attach-gate-related-20260905.trx`); the two legacy wrapper cases were added
+after that run and are included in the full suite below.
+
+Full `xbox-attach-gate-full-20260905.trx`: 3,304 passed, 3 existing live-audio
+skips, zero failures (46 seconds). Five further runs of the twelve new cases all
+pass (60 case executions, including 500 additional admission/cancel/release
+iterations; 178-229 ms per twelve-case group). Results are
+`xbox-attach-gate-repeat-{1..5}-20260905.trx`.
+These are managed/loopback tests, not hardware
+acceptance, a fairness guarantee or a hard native completion deadline. Existing
+server/native cancellation and permanent retry-cleanup limitations are unchanged.
+This source is not in live b56 or staged b57; neither portable payload was
+overwritten or launched/restarted during this follow-up. No hardware command,
+profile/configuration edit, driver operation or installed-software change was
+performed. The user's physical USB-state clarification is still pending, and
+automatic row/output removal remains an open acceptance gate.
+
+## September 5: real DS4Windows / Go lifecycle process interoperability
+
+The previous queue-cancellation turn was source progress. This turn rechecked
+the current checklist and live process ownership (b56 still app 35880 / broker
+16976), then addressed the independent combined-client/server validation gap.
+The recent fixes had run against separate test peers but had not been exercised
+together through production management routing and auth.
+
+Added an opt-in C# test against a separate Go handler-test executable. It uses
+the real C# client/authentication/stream/lifetime and Go auth/API/router/factory/
+X1BR ConsumerReady/activation/exact removal implementations. Native attach alone
+is a test-only stub returning a synthetic port; canceled calls deliberately
+return a late positive result. Successful activation/removal, client disposal
+during pending activation, and server deadline cleanup each pass. Go checks
+the actual production registry is empty, with one create/attach/explicit
+removal per case; C# checks port binding or rejection and transport/lease cleanup.
+Full-width feedback generation/ownership values cross the real factory request.
+
+The peer never starts USB/IP, opens a controller, invokes a driver, or reads
+installed configuration. Review tightened failure cleanup: native attach stays
+stubbed for the whole child lifetime, including late API dispatch after a test
+failure, and the peer refuses a shared Go test selection. The C# portable context
+is restored even if child cleanup fails. The synthetic public key is pinned to
+dedicated Desktop storage; no production key is read. The peer's `viiper.exe`
+basename is solely for the portable hash pin and is **not** a broker payload.
+
+Normal test peer root: Desktop lab `xbox-lifecycle-interop-20260905`.
+SHA256 `838B1C9A85C550825CCA7BD637112EEA3DA4889B913A26A97ACB1572FA0FDB29`.
+The first three-case run passed before cleanup hardening; the full suite after
+hardening is `xbox-process-interop-full-20260905.trx`: 3,307 passed, 3 existing
+live-audio skips, zero failures (47 seconds), with the new interop opt-in enabled.
+Without a prepared opt-in peer, the three new C# cases skip rather than claim
+success. Full uncached `go test ./... -count=1` and `go vet ./...` also pass;
+the Go peer is opt-in and is not launched by that ordinary suite.
+
+The separately built `race/` peer is SHA256
+`8D547DF3F00C20CBB22C096FA33EFE8ECA00BCBD8C1D4ADE8BEFFAD9FA81235B`.
+All five three-case process runs using this Go race-instrumented binary pass
+(15 case executions, no Go race reports, 6-7 seconds per group):
+`xbox-process-interop-race-{1..5}-20260905.trx`. Both the native simulation and
+real API handlers are in the instrumented process. This does not instrument
+the CLR or prove race freedom beyond the exercised schedules. C toolchain PATH
+and compiler variables were scoped only to the build process, not persisted.
+
+These tests establish combined management/auth/ConsumerReady/cancellation
+behavior, not physical USB removal, Windows native completion, canonical Stop/ACK,
+HD-rumble delivery, wireless, games or latency. A retained USB/feedback process
+test needs a simulated USB/IP host and remains a next independent gate, using
+the existing retained import/START/Stop fixtures as the reference. No new mapper
+or unrelated controller transport is needed. This turn changes tests and
+documentation only; live b56 and staged b57 remain untouched. No installer or
+production-readiness claim follows from this evidence.
+
+## September 5: retained USB/IP / canonical HD-feedback process checks
+
+The preceding process-validation turn was progress. This turn extended that
+same test peer to the actual production USB/IP listener on private ephemeral
+loopback ports, with a simulated host instead of Windows/native attach. The
+real API factory, export alias, retained import, configuration, Hello/START,
+encrypted broker stream, canonical feedback and exact retirement are composed
+together. C# uses the existing mapped-state Xbox egress, stream demultiplexing
+methods, feedback dispatcher, Switch 2 feedback lifetime/runtime and HD encoder.
+Only the final BLE lease is a recording fake reused from existing tests. This
+is not a WPF/service/controller simulation or a claim about real Bluetooth.
+
+The host verifies mapped A/full-left-trigger/rightmost-left-stick input in the
+production Share-capable GIP report and a subsequent complete neutral release.
+Four normative Direct Motor commands independently exercise body low/high and
+left/right impulse. C# checks canonical channel identity and ordered magnitude,
+fresh HD-encoded output, and the conversion option both enabled and disabled:
+body stays available; impulse-only frames encode neutral when conversion is off.
+The option is passed into the production session policy, not toggled through UI.
+
+During removal the test deliberately holds terminal Stop before delivery.
+Exact removal must remain pending, the broker stays open, and four distinct
+requested effects are acknowledged with no Stop ACK. Releasing delivery produces
+canonical HD neutral and exactly one Stop ACK. Go verifies registry removal and EOF on the retained USB connection; C#
+verifies stream/private port-lease closure and no output from the old 90 ms
+impulse-release envelope during the following 120 ms. This is event/lifecycle
+evidence, not a latency measurement or physical waveform proof.
+
+Fixture corrections are retained as evidence, not hidden as production fixes:
+the first two runs failed because the old handler-only fixture supplied a zero
+USB listener timeout; the next run exposed its assumption of an 18-byte report
+instead of the actual 36-byte Share-capable form. A positive test-only timeout
+and the existing strict Share-capable decoder fix those assumptions. The five
+targeted cases then pass (`xbox-retained-interop-impulse-off-20260905.trx`).
+The first full run (`xbox-retained-interop-full-20260905.trx`) failed one retained
+case with three rather than four delivered frames: an idle dispatcher after
+USB OUT acceptance did not prove arrival of its last successor. The test now
+awaits C# feedback ACKs for all four distinct effects before checking them.
+
+Corrected full suite `xbox-retained-interop-ack-gated-full-20260905.trx`: 3,309
+passed, 3 existing live-audio skips, zero failures (47 seconds), with all five
+interop cases enabled. Without a prepared peer those five cases skip, not pass.
+Uncached `go test ./... -count=1` and `go vet ./...` also pass. Production hot-path
+and protocol code were not changed; this turn adds combined tests and fixes
+their configuration/observation errors rather than weakening production behavior.
+
+Desktop test root: `xbox-retained-interop-20260905`; normal peer SHA256
+`77A85458F31C9BECC4E3164F7A891C03F65F03F8084CAF5B118EB3735DF5886D`.
+Its `race/` peer is SHA256
+`09E9ADC615AA2A040DEBF24D552E01A220724F127A7F3A75B92CF67A1A0451A7`.
+Both are test executables, **not broker/runtime/installer payloads**. The older
+management-only artifacts and b56/b57 are unchanged. Tests use only public
+synthetic credentials. No controller handle/output, Windows driver operation,
+installed configuration or profile edit was performed. Physical unplug and
+wireless/game/UI acceptance remain open; combined negative Stop/ACK outcomes
+and the remaining feedback routes need their own evidence.
+
+The first race-peer run and two diagnostic runs passed three cases and failed
+both retained cases. This was a fixture semantic failure, not a Go race-detector
+report: after the four requested effects, an unchanged nonzero Apply lease
+refresh was correctly emitted. The fixture incorrectly required a fresh physical
+write for it, faulted the dispatcher and then could not acknowledge terminal
+Stop. A preliminary description calling this a zero-output frame was incorrect;
+decoded diagnostics identified right-impulse Apply refreshes at sequence 26/28.
+The final fixture distinguishes refresh ACKs from the four distinct effect ACKs,
+retains amplitude/policy assertions, and requires fresh output for the requested
+effects and terminal Stop. No production protocol behavior was changed.
+
+`xbox-retained-interop-race-refresh-aware-20260905.trx`: five passes.
+`xbox-retained-interop-refresh-aware-full-20260905.trx`: 3,309 passes, three
+existing live-audio skips, zero failures. Five subsequent
+`xbox-retained-interop-race-fixed-{1..5}-20260905.trx` runs each pass all five
+cases (25 cases), requiring a zero exit code from each race-instrumented peer.
+These results do not erase the earlier fixture failures or establish latency.
+
+A final harness-only cleanup review found that the startup `WaitAsync` deadline
+bounded observation, not its creation task. Cleanup now owns and joins creation
+and any exact rollback before restoring the portable key context, closing only
+the exact test peer if creation is still pending. The join remains required even
+if child termination throws. Production code is unchanged. Final rebuilt
+`xbox-retained-interop-cleanup-final-full-20260905.trx`: 3,309 passed, three
+existing live-audio skips, zero failures (48 seconds). Final race-peer
+`xbox-retained-interop-cleanup-final-race-20260905.trx`: five passed (10 seconds).
+These passes exercise ordinary cleanup; the timed-out-creation termination
+failure path was source-reviewed, not separately fault-injected in this run.
+
+Read-only PnP ancestry at `2026-09-05T03:03:14.7142013-05:00` still lists the
+physical Pro composite `USB\\VID_057E&PID_2069\\00` as OK beneath USB Root Hub
+30 and the AMD USB 3.10 xHCI controller, location
+`PCIROOT(0)#PCI(0102)#PCI(0000)#USBROOT(0)#USB(5)`. Its service is `usbccgp`;
+the parent services are `USBHUB3` and `USBXHCI`, not the virtual USB/IP bus.
+This narrows current enumeration; it does not reconstruct whether the cable
+was unplugged/reconnected during the user's earlier observation. Cable-state
+clarification and physical row/output removal remain open. b56 PIDs remain
+35880 / 16976. No controller writes or live restart occurred.
+
+## September 5: failed terminal Stop/ACK across real managed and Go processes
+
+The prior turn completed combined positive feedback/retirement evidence and
+corrected the historical dump/lifecycle interpretation. This continuation keeps
+the physical cable-state question open and extends the same process harness;
+it does not restart b56 or alter the staged b57/runtime/installed payloads.
+
+Three new retained cases complete mapped input/neutral and all four canonical
+motor effects before removal. Each holds terminal Stop so exact removal remains
+pending with the broker open and zero positive Stop ACKs, then injects one failure:
+
+- The recording physical lease rejects writes. Real canonical publication fails,
+  and the production dispatcher sends a negative acknowledgement.
+- The real HD encoder delivers neutral, then the test ACK callback throws before
+  writing the acknowledgement, modeling failure of that write.
+- The real HD encoder delivers neutral, but the test withholds acknowledgement
+  while keeping the broker socket open, exercising the server's own deadline.
+
+Go requires an exact-removal conflict rather than successful removal. It checks
+that the fenced registration remains, its broker is not ready, activation and
+same-alias USB/IP reimport are refused, a repeated exact close cannot turn absent
+neutral proof into success, and the original USB socket ends. These assertions
+exercise real factory/auth/retained behavior, not an injected removal result.
+C# checks zero positive Stop ACKs, the appropriate NACK/write-failure/withheld
+counts and dispatcher outcome. Making the recording lease writable again lets
+the existing physical feedback owner send terminal neutral and retire, with no
+old effect returning over the subsequent 120 ms. Local recovery does not clear
+the broker fence or retroactively acknowledge the failed terminal command.
+
+Evidence progression:
+
+- `xbox-terminal-failure-interop-initial-20260905.trx`: seven cases passed,
+  including rejected physical Stop and failed ACK write.
+- `xbox-terminal-failure-interop-timeout-20260905.trx`: seven passed, one failed.
+  The initial no-ACK fixture advertised a 24-second removal budget (three
+  eight-second USB lifecycle periods) but its observation wait was ten seconds.
+  The recorded exception was a harness wait timeout, not evidence of an unbounded
+  production wait. Its cleanup then hit another observation timeout before
+  terminating the owned peer; no test peer remained after that failed run.
+- The no-ACK fixture now uses a two-second USB period and asserts the actual
+  factory receipt advertises a six-second removal budget. No production timeout
+  was changed. Harness teardown joins owned disposal/activation work before
+  restoring its portable authentication context, including observation failures.
+- Rebuilt full `xbox-terminal-failure-interop-full-20260905.trx`: **3,312 passed,
+  three existing live-audio skips, zero failures**, 54 seconds. All eight process
+  cases were opted in. Without an explicit peer the eight cases skip, not pass.
+- Final-source uncached `go test ./... -count=1` and `go vet ./...` pass.
+- `xbox-terminal-failure-interop-race-{1..3}-20260905.trx`: all eight cases
+  pass in each of three runs (24 cases; 23, 22 and 22 seconds). Every case
+  requires its Go race-instrumented child to report its pass marker and exit
+  zero. No race-detector report occurred. This is not a .NET race detector
+  or an input-latency measurement.
+
+Dedicated Desktop test root `xbox-terminal-failure-interop-20260905`, normal peer
+SHA256 `6A8FBE88BCA51A47235563A9008ABBF796CBCC580EA1F6B25F3D9C26E9F1D3D3`;
+race peer `15346AB7EBF8C8897B15A57FE779E1E6B37476945701B593D3FCF9BF0634C6E7`.
+Both are test executables, **not runtime brokers or installer payloads**. Earlier
+retained/management-only artifact directories are unchanged. Credentials remain
+public synthetic test data. Only test/fixture/documentation code changed.
+
+This establishes these three failed-terminal compositions, not every negative
+case: permanently unavailable hardware cannot prove neutral, kernel noncompletion
+is not simulated, and UI recovery, physical unplug/reconnect, wireless, all
+source/target routes, full feature parity, games and latency still need their
+own evidence. The production goal and requested final installer remain open.
+
+## September 5: ordinary physical Xbox targets get live output suppression
+
+The prior continuation completed the three combined Stop/ACK failure gates.
+This continuation examined source/target routing: the profile output selector
+and OutputSlotManager offer Xbox One independently of physical family, and all
+parsers converge on mapped DS4State. That source structure is not physical
+matrix acceptance. Existing `ViiperCompatibilityMatrixTests` mostly serialize
+seeded canonical states; they do not instantiate each parser/device or prove
+games/feedback across the named families. The complete matrix remains open.
+
+The audit reproduced one production composition defect: live profile output
+disable woke only the Switch 2 Xbox feedback session. An ordinary target kept
+nonzero rumble state until another game frame or expiry. The pre-fix regression
+`xbox-physical-live-policy-before-20260905.trx` failed with expected heavy motor
+0, actual 3. Its manual clock prevents expiry from masking the failure. It uses
+the real profile setter, output callback, canonical session/pump and ControlService
+state setter with an inert recording target, not a physical controller.
+
+The common `QueueXboxFeedbackPolicyRefresh` now serves both Switch 2 and ordinary
+Xbox feedback owners. Ordinary requests capture exact session/slot/stream and
+publication sequence without taking the physical state-setter gate. Existing
+feedback callback admission and the existing Xbox worker deliver the restriction
+through the canonical pump. Re-enable cannot revive that frame, but a newly
+accepted identical game frame repaints. Publication sequence is exposed before
+sampling live output policy, closing the concurrent-disable capture window.
+Queued old-sequence requests cannot replace a newer pending restriction, and
+changed session/slot/stream identity invalidates stale work. Neutral acceptance
+can retry; original expiry is unchanged. No broker frame/ACK or input timer is
+created. The common profile-reload hook was moved outside its Switch 2-only branch.
+
+Validation:
+
+- Initial focused `xbox-physical-live-policy-initial-20260905.trx`: 58 passed.
+- `xbox-physical-live-policy-races-20260905.trx`: 61 passed. Four new cases
+  cover profile-setter behavior, policy-read/publication ordering, unchanged
+  absolute expiry with neutral retry, and nonblocking capture while a setter
+  is held. The profile case also checks off/on, new identical frames, old request
+  ordering, stream replacement and same-slot controller replacement.
+- During the generic helper rename, the first full build caught one remaining
+  ControlService call site; no tests ran in that failed build. The call site and
+  all-source profile-reload routing were corrected before the successful runs.
+- `xbox-physical-live-policy-full-20260905.trx`: 3,316 passed, three existing
+  live-audio skips, zero failures, 54 seconds.
+- Final rebuilt `xbox-physical-live-policy-final-full-20260905.trx`: **3,316
+  passed, three existing live-audio skips, zero failures**, 54 seconds. All
+  eight existing C#/Go interop cases were enabled with the unchanged normal
+  terminal-failure test peer. The final queue-order regression is included.
+
+`DS4Windows/docs/protocols/xbox-one-physical-output-policy.md` records the scope.
+Successful ordinary-target delivery remains physical **state-setter acceptance**,
+not HID flush proof. Existing output-disable feature flags, persistent TriggerLab
+effects, legacy Nintendo fixed-carrier HD encoding, hardware/tactile behavior and
+the full source/target matrix are not redefined by these tests. No production
+VIIPER source changed. No installed file, profile, controller output or live app
+restart was performed. b56 and staged b57 do not contain these source changes.
+The Pro was still enumerated at the start of this continuation; no physical
+unplug/Bluetooth/game gate or installer-readiness claim is closed here.
+
+## September 5: Switch 2 Xbox publication resamples live output policy
+
+The corresponding Switch 2 race was reproduced through the actual profile
+setter and ViiperOutDevice Xbox callback: hold the session gate after the
+callback samples enabled output, disable master output or impulse conversion,
+then allow publication. Previously the effect used the old enabled snapshot,
+advanced the publication revision, and discarded the off-request as obsolete.
+`switch2-xbox-policy-publication-before-20260905.trx` failed both cases with
+nonzero HD amplitude. The test uses a recording BLE lease and an explicitly
+joined publisher thread, not hardware. Its real-clock 250ms freshness limit
+remains active; expiry is not treated as proof of successful suppression.
+
+The shared USB/BLE session now exposes the authenticated publication revision
+before a final bounded policy read under its existing gate. The production
+callback supplies a cached reader; no per-input branch, mapper, writer, timer
+or input lock is added. Late output-off creates canonical Neutral preserving
+sequence/timestamp/TTL and bypasses profile delay; impulse-off preserves body
+rendering. Existing queues/envelopes are cleared on immediate restriction.
+Stop bypasses policy reads, rejected foreign/replayed frames cannot call them,
+and read failure rejects Apply without asserting delivery or preventing Stop.
+Queued refreshes preserve newer same-lifetime revisions; CAS retries revalidate
+session/slot/stream before replacing a successor's work.
+
+Validation and corrections:
+
+- An initial compile rejected the stack-backed effective span (CS8352/CS8347);
+  an explicit scoped span fixed its lifetime declaration. No tests ran in that
+  failed build.
+- `switch2-xbox-policy-publication-initial-20260905.trx`: 73 passed, one failed.
+  The new suppression call aliased its readonly input and out-result, allowing
+  the helper's default initialization to invalidate its own input. A distinct
+  result local fixes this newly introduced issue before any portable staging.
+- `switch2-xbox-policy-publication-fixed-20260905.trx`: 74 passed.
+- `switch2-xbox-policy-publication-expanded-20260905.trx`: 84 passed. Twelve new
+  cases cover the two production-callback races, six cold-request ordering/owner
+  cases, three USB live-policy/body/delay cases, and rejected policy read with
+  malformed/replay/foreign inputs and successful terminal Stop.
+- `switch2-xbox-policy-publication-full-20260905.trx`: **3,328 passed, three
+  existing live-audio skips, zero failures**, 54 seconds. All eight existing
+  C#/Go process-interop cases were enabled using the unchanged hash-pinned
+  terminal-failure test peer. No production Go source changed.
+- Five additional `switch2-xbox-policy-publication-repeat-{1..5}-20260905.trx`
+  runs pass all 60 case executions (12 per run, 130-132ms), including the two
+  production-callback races and all cold-request ordering tests.
+
+At 04:01 local, b56 DLL hash remains
+`7B5758610B21381096638B7E5945E624AC6CDB64C85E7DAEF5C1169FF143EF1C`; staged b57
+remains `2B4762DF2A5D0520F5C1E48C3F40D09F289E72F6C4DEAD87B0E7E8486965E6E5`.
+Neither contains this follow-up. The original b56 app/broker remain running;
+the five physical Pro USB/HID/audio interfaces still report present/OK, and
+the DS4Windows log still ends at the previously recorded 01:19:55 reattachment.
+No app restart, controller output, association, driver or installed-file change
+was performed. The unanswered cable-state clarification remains necessary; this
+source fix does not close physical unplug, Bluetooth, game or latency acceptance.
+
+## September 5 staging: b58 includes current activation and feedback fixes
+
+The previous continuation closed the Switch 2 policy-publication race with
+3,328 full-suite passes and repeated race cases. The next available core-play
+step was to put that source and the post-b57 activation changes into a portable
+candidate for the next hardware handoff, without replacing the live b56 evidence.
+
+Created a new, previously absent Desktop directory:
+`runtime/DS4Windows-current-2026-09-05-b58-activation-feedback`.
+Release/x64, win-x64, framework-dependent .NET 8 publish succeeded with existing
+warnings. Regular `cmd/viiper` built with Go 1.27.0, CGO disabled, trimpath and
+stripped symbols; version metadata explicitly identifies `0.1.2-b58-portable-lab`
+and dirty base commit `54f7853`. `go version -m` verifies the regular production
+command package, Windows/amd64 and vcs.modified=true, not an interop test peer.
+Fresh `go test ./... -count=1` passes all packages and `go vet ./...` passes.
+No source changes requiring another .NET regression run were made during staging.
+
+The base revisions remain DS4Windows `061fab1304e77c995ce9451b7ef20e51cc870070`
+and VIIPER `54f7853aa4f97394298fc8f4c3ebb865237a3456`, both on
+`feature/native-udecx-landing-zone` with accumulated dirty work (461 and 284
+status entries at the snapshot). These are not committed candidate revisions.
+No commit, push, signing, tag or release action was performed.
+
+Candidate SHA256:
+
+- App DLL: `3D797B7A11C4D2D021BAB42AF2761BB6A40924F6F63FC0BF11BBB1CAD2B7C796`.
+- App host: `CAE700D769717753E8B2636BD40CABC0A860A4175B02A67F780F4FED8D24A4B7`.
+- Broker: `5EE0D5E0C0ABB9E4FCB438C72018FCD23E26BD2EEB4A6D7F200724D932DB04AA`.
+- Lab persona: `20E0C0939964EA83928D8DBA1ED82BA97CE05FA02963BF9EB382E63356F29263`.
+
+The unchanged six-file lab selection was copied from b56 and hash-compared:
+Profiles.xml, empty Actions.xml/Auto Profiles.xml, empty viiper.json,
+Switch2LabXboxOne.xml and the authorized persona. GL -> A / GR -> B, Xbox One,
+impulse-to-HD enabled and zero profile delay remain. No credential, association,
+calibration, log, dump or test-peer payload was copied. PORTABLE-TEST-STATUS.md
+records the exact commands, six configuration hashes, scope and rollback.
+Start-IsolatedLab.ps1 is the prior isolated launcher with current app/broker
+pins. AST syntax validation and independent extraction/comparison of all four
+pins pass. The launcher was not executed; its refusal/success behavior is not
+newly claimed as runtime-verified. The publish still includes its usual offline
+extras, which portable mode does not install or invoke.
+
+b58 is **staged only**, not an installer or physical validation. It includes all
+post-b57 client cancellation/admission and ordinary/Switch 2 output-policy fixes
+documented above. b56 app 35880 / broker 16976 remain live; b57 and b56 were not
+overwritten. No controller/LED/haptic, Bluetooth association, native attach,
+installed-software or startup/security action was performed. Next hardware
+action remains cable-state reconciliation and an explicit portable handoff,
+then USB removal/reconnect, input/feedback/native features and Pro BLE. Full
+Joy-Con/source-target/reference parity, games, latency and installer gates remain
+open; a new candidate does not itself establish progress on those acceptance gates.
+
+## September 5: registered Switch 2 input-to-broker matrix
+
+After b58 staging, the next independent core compatibility check replaced the
+weak inference from seeded canonical-state packet tests with actual registered
+Switch 2 input composition. The old ViiperCompatibilityMatrixTests names now
+explicitly describe seeded serialization, not physical-family acceptance.
+No production behavior was changed to obtain a passing result.
+
+The new Switch2ProductionInputMatrixTests reuses the existing registered
+gyro-mapping fixture and OS-only owner factories. The fixture now admits left
+and right standalone BLE owners as well as Pro USB/BLE and joined owners, and
+can feed independent raw stick values. It preserves the existing production
+registration transaction, reversible slot host, report handler and canonical
+curve/custom mapper. OS transports/profile persistence remain fakes; the test
+records final DS4Windows/VIIPER broker payloads, not USB reports or game input.
+
+110 new cases cover:
+
+- 42 routes (seven source modes x six virtual targets) with applicable ordinary
+  controls, full digital triggers, held/press/release/repress sequences, exact
+  output masks and one terminal neutral before profile cleanup.
+- 42 routes with four physical axes at seven raw values (0, 1, 2047, 2048, 2049,
+  4094, 4095), independent expected signed-axis arithmetic, unused-half neutral,
+  standalone rotation and final Xbox16/Switch12/Sony8 quantization.
+- 21 explicit C/GL/GR/Capture/mini-paddle/rail binding cases, each checking all
+  six target payloads for A, no extra native button, release and terminal neutral.
+- Five Joy-Con-mode cases preventing Pro-only rear bits from manufacturing
+  controls. SDL's combined handler and Switch2Connect's is_pro gating differ;
+  the existing conservative model policy remains, rather than extrapolating
+  extra hardware buttons from SDL alone.
+
+Pinned source recheck: SDL-current HEAD is
+`c71abd08605b8bb7078372307a93274725c99fe0`; its combined/mini handlers establish
+the existing button/rotation conventions. Switch2Connect HEAD is
+`61ac6642ce12fe7217e38a860b14863b18ca7e28`; controller.py btn_states explicitly
+gates GL/GR to Pro and distinguishes the physical Joy-Con rails. Reference
+repositories were read only; no contribution or copied PadForge implementation
+was made. The Joy-Con protocol note also corrects stale wording that implied
+TryWriteLegacyState irrevocably reduced sticks to eight bits; its current code
+seeds mapping-owned fractional axes and retains precision until final encoding.
+
+Validation:
+
+- `switch2-production-input-matrix-initial-20260905.trx`: 103 related passes.
+- `switch2-production-input-matrix-axes-20260905.trx`: 160 related passes.
+- `switch2-production-input-matrix-full-20260905.trx`: 3,433 passed, three
+  existing live-audio skips, zero failures, 54 seconds.
+- Final rebuilt `switch2-production-input-matrix-final-full-20260905.trx`:
+  **3,438 passed, three existing live-audio skips, zero failures**, 55 seconds,
+  including the five negative Joy-Con cases and all eight existing C#/Go
+  process-interop cases with the unchanged hash-pinned normal test peer.
+
+Scope is recorded in `DS4Windows/docs/protocols/switch2-production-input-matrix.md`.
+New decoder sessions seed the fixtures, so this matrix does not establish
+arrival continuity/skew, initialization/association, real profile loading,
+all transforms, live orientation edits, actual virtual-device selection or
+socket/scheduler/USB/IP/game observation. Legacy physical families, all feedback
+routes, optics/gyro/native features and hardware acceptance remain separate.
+The source/target checklist therefore remains open rather than being checked
+off by these narrower tests. No performance or waveform claim is made.
+
+This tranche changes tests/documentation only. b56 app 35880 / broker 16976
+remain live; b58 app/broker hashes remain 3D797B7A... and 5EE0D5E0... as recorded
+above. No portable launch, controller output, Bluetooth association, installed
+file/driver/startup mutation or production Go edit occurred. The cable-state
+question still has no user answer; physical unplug remains unresolved.
+
+## b56 startup and initial unplug cue
+
+Portable b56 includes the USB native-failure fix, durable Bluetooth cleanup and
+discovery-status UI from the 3,246-passing-test source. App DLL SHA256:
+`7B5758610B21381096638B7E5945E624AC6CDB64C85E7DAEF5C1169FF143EF1C`.
+Its `runtime/DS4Windows-current-2026-09-04-b56-discovery-ui/PORTABLE-TEST-STATUS.md`
+records all payload hashes, isolated configuration and live observations.
+
+b54 was confirmed stopped, then closed through its UI at 23:35:51. After the
+app exited, only its exact portable broker PID 18244 was ended. b55 was never
+launched. b56 started stopped at 23:36:15 as User: app PID 35880 / broker 16976.
+Computer-use observations verified stopped discovery text, disabled association,
+Refresh retaining stopped state, no controller row and navigation back to Settings.
+
+Normal Start was then tested at 23:40:07 to distinguish a usable initialized
+controller from stale enumeration. Bluetooth discovery became active at
+23:40:11; the USB Pro and Xbox One output attached at 23:40:14. Overview shows
+Ready, USB observed 4.00ms / 250Hz, Switch2LabXboxOne and battery 90%. Settings
+shows active empty discovery and does not enable association without selection.
+The earlier passive timeout did not prove that the controller was absent.
+
+`evidence/b56-ready-passive-usb-20260904.jsonl` contains 1,024 successful reads,
+counter 862734 -> 866826. This is streaming evidence after normal initialization,
+not latency measurement. The existing Windows API reader records one matching
+Xbox pad at `2026-09-05T04:40:14.5482281Z` and initial neutral. No new manual
+rumble pulse or Bluetooth association was initiated; old pulse labels remain
+historical. No changing-button or game acceptance is inferred for b56.
+
+The user is now cued to unplug USB and leave it unplugged without pairing mode.
+This supersedes the prior reconnect-confirmation wait. Automatic row/output
+removal and subsequent physical reconnect still require observation.
+
+The 34-entry installed-state inventory remained unchanged after startup at
+`2026-09-05T04:43:31.4950924Z`. This covers the specified executable hashes,
+startup/task and roaming XML/JSON inventory, not every machine side effect.
+Virtual Xbox attachment is an intentional portable-test state change.
+
+### September 5 follow-up: live session retained, Joy-Con UI safeguards tested
+
+No new physical unplug confirmation has arrived after the b56 cue. A later
+computer-use observation still shows Ready / USB / Xbox One, and the read-only
+`evidence/b56-usb-presence-recheck-20260904.jsonl` sample contains 64 successful
+64-byte `0x05` reports, counter 498337 -> 498589. This demonstrates fresh read
+delivery, not automatic unplug success, a firmware modulus or end-to-end latency.
+The app/broker remain the same b56 PIDs 35880 / 16976; no Stop, restart, output
+pulse or association was initiated. The Windows API reader still has one pad
+and no subsequent selection-removal event. The unplug/reconnect gate stays open.
+
+Source-only Joy-Con UI follow-up corrects actions being offered without usable
+connections and overlapping Settings/Controllers mutations. Join/separate now
+require a usable coordinator lifecycle, automatic pairing off, no other active
+association/pairing action, and the appropriate explicit selections. Both UI
+surfaces share busy admission; the backend remains authoritative for native
+ownership and exact candidate validation. A stopped advertisement watcher alone
+does not disable already-held Joy-Con connections in a running coordinator.
+
+Refresh preserves the exact selected half when it still exists, never picks a
+replacement half after removal (including subsequent refreshes), and retains the
+last action result separately from candidate counts. Manual selection is explicit
+even with one candidate. Automatic pairing enabled while stopped now reports the
+saved on state accurately. The existing Controllers refresh signature includes
+action availability so lifecycle-only changes update button state. No input-path
+work or new timer was added.
+
+All 12 new availability/selection tests pass. Related Joy-Con/Bluetooth/theme
+suite: 409 passed. Full `switch2-joycon-action-gating-full-20260905.trx`:
+3,258 passed, 3 existing live-audio skips, zero failures (42 seconds). Five
+Joy-Con selection/action controls are initially disabled in compiled XAML;
+manual visual and physical acceptance for this follow-up remains pending. This
+source is not in b56, and no live payload was overwritten during the USB gate.
+
+## September 5 source follow-up: failed Xbox activation cannot schedule retries
+
+The live b56 broker still receives failed import attempts for two retired
+production aliases from prior sessions. Their roughly eight-minute repeat
+intervals are consistent with usbip-win2's documented capped backoff, not a new
+DS4Windows controller attach. The current b56 USB input row and Windows Xbox pad
+remain attached; no subsequent physical unplug confirmation/removal was observed.
+
+Pinned driver source at `7c219953101cc5d0ec9a0bcb3eb87259cf72bedd` confirms two
+distinct retry sources: failure of an ordinary native attach call, and receiver
+loss after an import succeeded. Existing VIIPER always used ordinary attach.
+The new native-boundary regression reproduced the former policy defect:
+expected one-attempt IOCTL `0x0022e018`, observed ordinary `0x0022e000` (one failed
+test, two controls passed). Production Xbox activation now selects the documented
+one-attempt operation; legacy numeric imports keep their prior behavior.
+
+Five boundary tests pass, including successful exact payload/port preservation,
+failure without a fallback call, invalid-request rejection and five malformed
+response sizes. Related native/activation/handler tests pass uncached.
+`../_toolchains/go1.27.0/go/bin/go.exe test ./...` passes all packages; unchanged
+packages used their valid cached results. No new native API was invoked, no
+registry/driver setting changed, and no running broker or controller was stopped.
+
+The repair is source-only, not in b56. It addresses initial activation failure,
+**not** the observed retries following successful older lifetimes. That remaining
+cleanup must account for asynchronous driver retry creation and exact ownership.
+The upstream location-based Stop API cancels currently queued work by location
+hash, not a permanent future retry policy; a pre-queue zero result cannot prove
+cleanup. Neither global Stop All nor numeric-port detach was attempted.
+
+## September 5 source follow-up: terminal feedback bypasses profile delay
+
+Feedback-policy audit found that the Switch 2 shared session queued an explicit
+broker CFBK Stop behind the configured rumble delay, up to 9,999 ms, and returned
+accepted while the command had not reached its owner. Invalid effect tuning
+could reject Stop entirely. Six new USB/Bluetooth cases reproduced this defect
+in `switch2-terminal-stop-delay-red-20260905.trx` (six failures).
+
+Stop now enters the existing exact-lifetime canonical owner without the profile
+delay or effect-tuning gate, preserving its broker sequence/timestamp/TTL. Once
+canonical admission records terminal Stop, pending delayed effects and impulse
+release presentation are cleared, including when physical neutral needs retry.
+The two owners no longer demand a live-Frame presentation refresh after Stop
+has replaced that event. Actual output still uses the existing sole sink/writer;
+no input work, new polling, queue or logging was introduced.
+
+Additional negative controls exposed rejected stale/foreign immediate Apply
+clearing an accepted delay queue before canonical rejection (two failures, two
+Stop controls passing in `switch2-rejected-frame-queue-red-20260905.trx`). The
+pre-admission check now runs before presentation mutations and observes the
+existing accepted watermark without advancing it. Rejected frames also cannot
+change sink tuning. Ordinary game Apply/Neutral timing and release envelopes
+remain on the existing path.
+
+Twelve new cases cover USB/Bluetooth terminal bypass at 250 and 9,999 ms,
+invalid effect tuning, post-terminal immediate/delayed rejection, stale/foreign
+Stop and Apply, non-mutating canonical admission, and a physically rejected
+Bluetooth Stop followed by successful retirement retry. One intermediate test
+assertion incorrectly expected the physical Stop event to carry a CFBK frame;
+the canonical runtime instead binds Stop to the existing delivery epoch. The
+corrected test verifies that exact epoch and successful completion.
+
+`switch2-terminal-stop-related-fixed-20260905.trx`: 106 passed, zero failures.
+`switch2-terminal-stop-full-20260905.trx`: 3,270 passed, 3 existing live-audio
+skips, zero failures (44 seconds). These are source/fake-transport tests, not
+new physical feedback acceptance. USB retains its existing `RetryPending`
+admission semantics; only exact delivery/retirement evidence proves physical
+neutralization. The Bluetooth failure control does not claim delivery.
+
+This source is not in live b56. Read-only process/log/API inspection still shows
+app 35880 / broker 16976, the original USB attach/profile log entries and one
+Windows Xbox pad with no subsequent selection-removal event. No Stop, restart,
+new output command, association, installed-file change or payload replacement
+was performed. The b56 physical unplug/reconnect retest remains pending.
+
+The same audit identified a separate issue, still open at that checkpoint: Xbox output/impulse profile
+changes are read when a new CFBK packet arrives, not yet refreshed immediately
+when a game sends no new feedback. Its repair must use presentation-only policy
+state without inventing a broker sequence or extending the original expiry.
+This terminal Stop repair does not claim to close that live-toggle gap.
+
+## September 5 source follow-up: live Xbox-to-Switch-2 enablement refresh
+
+The next source change closes that specific live-toggle implementation gap for
+Switch 2 targets. The profile output master and Xbox impulse-to-HD checkbox now
+queue an exact-session/stream/slot/publication request. The existing Xbox One
+feedback-delivery dispatcher wakes for local policy work even without a game
+packet. Sony's control worker is not started for Xbox and is not used for this
+path. No new input pacing, physical writer or worker was added.
+
+The physical owner's existing sink stages a restriction for the accepted
+NativeGame frame. Impulse off preserves body output; output off zeros both
+sides. Canonical sequence, timestamp, TTL and ownership are unchanged. Off/on
+intersects only for the same source publication, so an old effect cannot revive,
+while a fresh broker packet may start a new effect. Stale requests cannot mute
+a newer publication or inherit into a different session/stream/slot. Delay and
+release queues are canceled at the exact session boundary. Other arbitration
+origins are not changed by this frame-scoped restriction.
+
+An unresolved physical submission retains its original bytes/counter. Refresh
+can first complete that exact submission and then perform a second bounded
+presentation pass; the policy receipt cannot mistake the earlier completion for
+the restriction. Failed work retains its request and retries on the same worker
+with a 100 ms idle wait, without a broker correlation or fabricated ACK. Expiry
+remains the existing canonical Stop. A zero-amplitude compatibility report is
+not the terminal all-zero report; tests verify its actual oscillator fields.
+
+A new blocked-output test initially failed because profile request capture took
+the session gate held across physical I/O. The capture now reads an atomic
+revision/terminal snapshot; only the feedback worker takes that gate and
+revalidates the request. `switch2-xbox-policy-boundary-red-20260905.trx` records
+that one failure with the retained-write and expiry controls passing. No input
+callback performs the physical refresh.
+
+Eighteen new cases cover live USB/Bluetooth output/impulse disable, no-resurrection,
+fresh successors, queue cancellation, source/stream/slot replacement, preserved
+metadata/body/origin, retained USB bytes, original expiry, nonblocking capture,
+worker serialization and retry (including an injected exception). The real
+profile setters -> VIIPER callback -> Xbox dispatcher -> Bluetooth owner ->
+fake lease test passes without a new game packet or extra broker ACK; it uses
+identity-only stream and setter-only view-model fixtures, not an OS connection
+or rendered UI. `switch2-xbox-policy-related-20260905.trx`: 133 passed before
+the final production-setter/exception cases. `switch2-xbox-policy-production-20260905.trx`:
+one production-path test passed. Final `switch2-xbox-live-policy-final-20260905.trx`:
+3,288 passed, 3 existing live-audio skips, zero failures (45 seconds).
+
+Source-only: not deployed into b56, and no new physical rumble/LED/association
+command was sent. App 35880 / broker 16976 remain the live portable session;
+read-only log inspection still ends at the original USB attachment/profile.
+No subsequent physical unplug confirmation has arrived. The unplug/reconnect,
+wireless, games, matrix, latency and installer gates remain open. Frequency,
+strength and delay edits still apply on later game feedback; this source change
+does not claim immediate refresh of those tunings or other physical families.
+
+## Earlier b54 USB removal repair
+
+### Physical unplug failure isolated and repaired
+
+After successful GL/GR input testing the user unplugged USB and reported the
+controller did not disappear. b53's row and Windows Xbox output remained.
+The read-only probe `evidence/b53-unplug-readonly-20260904.jsonl` opened the
+still-enumerated HID interface but timed out on its first 1-second read, with
+zero bytes. Windows still reported all five Nintendo USB/HID/audio nodes
+present/OK. That PnP observation does not override the user's unplug report or
+the native completion evidence below.
+
+A guarded local heap capture of only portable DS4Windows PID 26604 is retained
+at `evidence/b53-usb-unplug-stall-20260904.dmp` (188,742,488 bytes). It contains
+private process memory; do not upload or commit it. Selected object inspection
+shows: pump Stopped, workerExited=true, started=retired=207852; the last claim
+completed with NativeFailure (6); transport StopRequested; pump terminalFailure
+None and lifecycleAttentionRaised=false. The outer runtime was Active and its
+registration remained attached, with no removal/attention queued. There was no
+still-running input worker in the captured managed thread stacks.
+
+Root cause: `CompleteInputRead` marks its transport StopRequested on native
+failure before the pump consumes the retirement result. The pump previously
+raised ReadCompletionRejected only if that transport was still Open, silently
+suppressing the exact failure that should retire the outer slot. The repair
+uses the pump's own explicit stop state under its gate to distinguish requested
+shutdown from unexpected non-publish completion. No per-report timer, queue,
+logging or latency delay was added.
+
+Three real-pump/registration regressions (DeviceRemoved, Failed, unexpected
+Cancelled) reproduced the attached stale slot before the repair. Three explicit
+stop controls passed. All 422 related USB/registration/UI-retirement tests pass
+afterward. Full `switch2-usb-native-completion-full-20260904.trx`: 3,219 passed,
+3 existing live-audio skips, zero failures. This does not replace hardware retest.
+
+b53 manual Stop at 22:46:22 removed the row and virtual Xbox; WGI recorded zero
+gamepads at `2026-09-05T03:46:22.9202651Z`. The app was closed, then its exact
+portable broker PID 34168 was ended after cleanup. No installed process or file
+was changed. The old broker log also shows recurring import requests for its
+removed bus ID; kernel-client retry behavior remains a separate observation,
+not a passed reconnect/cleanup acceptance claim.
+
+Published `runtime/DS4Windows-current-2026-09-04-b54-usb-removal`; app DLL SHA256
+`00B9E816762238B732AC64ACF5B52A63B8AEEEC89C0934425C4D6AC0C9AEE655`.
+The candidate status file records all payload hashes and staging policy. b54
+launched intentionally stopped at 22:48:46, Running as User, app PID 25752 /
+broker PID 18244. The user has been cued to reconnect USB before Start and the
+next explicit unplug cue. Both source repair and b54 hardware retest remain
+distinct from the already-passed b53 GL/GR acceptance below.
+
+### Bluetooth shutdown semaphore correction included in b54
+
+Source audit found `StopAsync` discarding the bool returned by bounded
+`SemaphoreSlim.WaitAsync`, treating timeout as acquisition and releasing a
+gate held by another operation. The new production-coordinator regression
+reproduced false successful cleanup after the real five-second timeout. The
+repair records acquisition and returns incomplete cleanup without release on
+timeout. Happy and cancelled-stop controls also pass. All 248 related Bluetooth
+tests passed, and the subsequent full suites remain green. No Bluetooth physical
+pairing claim is made; retry-after-incomplete-stop behavior remains to audit.
+
+### Follow-up source: durable Bluetooth stop/retry ownership (after b54)
+
+While USB reconnection was pending, further tests reproduced three failures:
+retrying an incomplete Stop immediately returned true, concurrent Stop callers
+did not share watcher cleanup, and caller cancellation allowed premature Start.
+`switch2-bluetooth-stop-retry-red-20260904.trx`: 3 failed, 2 controls passed.
+A separate real-coordinator/fake-platform test held watcher creation before
+adapter publication; Stop ran, then the old Start incorrectly reported success.
+`switch2-bluetooth-stop-start-red-20260904.trx`: 1 failed.
+
+The coordinator now retains one control-plane stop task across bounded callers,
+keeps cancellation ownership until cleanup completes, and waits for the exact
+start attempt and connection work. Explicit association work is tracked along
+with remembered-device opens. Watcher cleanup can be observed by exact retired
+generation after a timeout or spontaneous Windows Stopped callback; incomplete
+or failed adapter retirement rejects a successor. Pending Joy-Con leases expose
+their real resource-release result rather than an already-expired observer.
+No input cadence, mapper, driver, USB output path or per-report logging changed.
+
+Seven production-coordinator tests pass. The related suite
+`switch2-bluetooth-durable-stop-related-20260904.trx` passes all 253 tests, also
+covering partial watcher-handler setup, late lease release and preserved false
+unsubscribe results. Full `switch2-bluetooth-durable-stop-full-20260904.trx`:
+3,224 passed, 3 existing live-audio skips, zero failures (43 seconds).
+
+These are source/simulation results, not physical Bluetooth acceptance or a
+complete audit of every startup failure. They are not included in the running
+b54 binary. b54 remains intentionally stopped with the same app/broker PIDs and
+startup-only log; USB reconnect confirmation and its automatic unplug retest are
+still pending. No new candidate was launched and no installed software changed
+during this follow-up.
+
+### Failed-start cleanup follow-up and portable b55 staging
+
+Settings starts Bluetooth discovery through ControlService and the same
+production coordinator. Audit of unsuccessful startup found its cancellation
+source was discarded before native cleanup finished. Three tests reproduced
+false successful Stop during partial handler drain, loss of a disposal failure,
+and inability to recognize that a factory returned no watcher during Stop.
+`switch2-bluetooth-failed-start-red-20260904.trx`: 3 failed, 1 clean-failure/
+restart control passed.
+
+The Windows adapter now supplies the exact failed-attempt cleanup task with its
+failure result. The coordinator routes unsuccessful starts through the durable
+stop owner too. It preserves unfinished/false native cleanup and can recognize
+an explicit no-resource result. Automatic cleanup checks exact lifetime identity
+so a late failed-start finally block cannot stop a successor. No second mapper,
+transport or notification hot-path scheduling was introduced.
+
+All 11 production-coordinator tests and all 257 related Bluetooth tests pass.
+Full `switch2-bluetooth-failed-start-identity-full-20260904.trx`: 3,228 passed,
+3 existing live-audio skips, zero failures (45 seconds). The Settings discovery
+UI still needs physical acceptance; these are fake-platform lifecycle tests.
+
+Published a separate Desktop candidate
+`runtime/DS4Windows-current-2026-09-04-b55-bluetooth-cleanup`, app DLL SHA256
+`D96F110AC448F3E52A1A36E0B534007E76653A08CD8893E3D44BD1FEB69C9F8A`.
+It includes b54's USB repair and the subsequent Bluetooth source fixes. Reviewed
+broker/persona/scripts and lab configurations were copied from b54, preserving
+GL/GR bindings and excluding old keys, associations, memory data and logs.
+Its status file records all payload hashes. The launcher is pinned to b55.
+
+b55 is staged only, not launched; no physical acceptance is inferred. b54 stays
+running as a process with the controller service stopped, awaiting the user's
+USB reconnect confirmation. No installed software or startup task was changed.
+After the b54 USB gate, b55 is the next portable Bluetooth candidate, not the
+final installer. The full objective and all outstanding hardware/parity/game/
+latency gates remain required.
+
+### Settings discovery status follow-up (source after b55)
+
+Source inspection found Settings Refresh checked only ControlService.running.
+An empty list therefore instructed sync mode even when host lookup or watcher
+startup had failed, or Windows had stopped the watcher. Refresh also replaced
+the last association result with the empty-list message.
+
+Added a control-plane discovery snapshot and presentation for Stopped, Starting,
+Scanning, Unavailable, StartFailed, Interrupted, Stopping and CleanupFailed.
+The coordinator reports its real start/scan/stop state; ControlService publishes
+host-lookup status without making the UI take its native-start lifecycle lock.
+Each lookup has a unique identity, so a late result cannot overwrite Stop or a
+successor. A timed-out Stop defers to the coordinator's actual cleanup task;
+it is not frozen as a permanent failure in UI state.
+
+Settings now separates discovery status from association outcome, preserves a
+still-present selected candidate on refresh, and enables association only with
+an active scan and selected candidate. The click path rechecks current status;
+busy association rejects list refresh/reentry. Settings entry refreshes status,
+and tab-selection handling rejects bubbled events from nested selectors to avoid
+recursive refresh. There is no new UI timer or input-report scheduling work.
+
+The 29 focused status/coordinator tests pass; related Bluetooth plus theme-loading
+suite: 276 passed. Full `switch2-bluetooth-discovery-status-full-20260904.trx`:
+3,246 passed, 3 existing live-audio skips, zero failures (41 seconds). WPF markup
+compiled successfully. State/presentation tests and theme loading do not replace
+visual/manual interaction acceptance, which remains open. This follow-up is not
+in the running b54 or the staged b55; neither candidate was overwritten/launched.
+
+A fresh read-only USB check used the existing reviewed passive probe, requested
+1,024 reports with a 1-second read timeout, and exited 5 on its first read with
+zero bytes. Evidence: `evidence/b54-reconnect-presence-readonly-20260904.jsonl`.
+No feature/output/initialization commands were sent. This does not distinguish
+unplugged hardware from connected-but-uninitialized/non-streaming hardware and
+does not prove reconnection. b54 retains its startup-only log and prior PIDs;
+explicit USB reconnect confirmation and the actual unplug retest remain pending.
+
+## Earlier b53 GL/GR candidate observations
+
+### Physical GL/GR acceptance completed at 22:33 local
+
+The user reports "i tested it works" after the explicit GL, GR and both cue.
+Filtering the Windows API recording to timestamps after b53's 22:25:03 attach
+gives 44 input states: 13 A-only (4), 6 B-only (8), 7 A+B (12), and 18 neutral
+(0), including the initial neutral and repeated releases. Final neutral is
+`2026-09-05T03:33:31.9517279Z`. This confirms the user's saved bindings through
+the physical Pro -> canonical mapper -> VIIPER Xbox -> Windows consumer path.
+The earlier passive raw-HID capture does not overlap this later exercise;
+no packet-correlated latency or new raw-capture claim is made. Current UI still
+shows Ready, Xbox One / Series, USB observed 4.00ms / 250Hz and 90% battery.
+
+The chronological launch/pending notes below describe the earlier checkpoint;
+GL/GR hardware acceptance now supersedes that pending state. Physical unplug/
+reconnect, full axis/click/guide inventory, Bluetooth and game acceptance remain.
+
+The full `switch2-extra-buttons-full-20260904.trx` suite completed: 3,210 passed,
+3 existing live-audio skips, zero failures. Published current source to the
+Desktop `runtime/DS4Windows-current-2026-09-04-b53-extra-buttons` directory.
+The candidate's `PORTABLE-TEST-STATUS.md` records its four payload hashes and
+scope. Its launcher verifies the app, unchanged broker and reviewed F00D:BEED
+persona. The user's saved GL -> A / GR -> B lab bindings were retained.
+
+After the user explicitly resumed UI automation, b52 was stopped/closed through
+its UI. Windows.Gaming.Input recorded zero gamepads at 22:23:52 local. Its
+broker had already exited when the guarded process check ran; no forced kill
+occurred. b53 runs as User: DS4Windows PID 26604 / VIIPER PID 34168, both from
+the exact Desktop candidate. Logs record USB full-duplex attachment and Xbox
+association at 22:25:03; the existing Windows API probe sees one lab gamepad.
+No controller-specific activation command was introduced.
+
+The user has been cued to press GL, GR and both, with release, while the Windows
+API probe is foreground. Physical acceptance of the repaired bindings remains
+pending; build/test success is not that acceptance. The first b53 shared-read
+capture completed with exit 0; a separately named repeat capture was started
+for the physical exercise, without adding a HID writer.
+The repeat `evidence/b53-passive-usb-glgr-repeat-20260904.jsonl` subsequently
+completed with 30,000 successful reports, all with button bytes `00000000`.
+No GL/GR exercise was captured in that window, and the Windows API recording
+contains only its initial b53 neutral. This is an idle observation, not evidence
+that the repaired mapping fails. No passive capture remains running; the
+foreground Windows API probe continues logging changes for the user's retest.
+
+At 22:31:18 local, `Capture-LabState.ps1` matched all 34 entries against
+`evidence/b52-installed-state-before-20260904.json`: zero changed entries across
+the measured installed binaries, tasks, startup files and ordinary profile/
+configuration hashes and timestamps. This is not an all-machine-state claim.
+
+## Earlier b52 USB and Xbox observations, and source repair
+
+### GL/GR raw-HID confirmation and mapper registration repair
+
+The user saved explicit lab bindings BLP -> A and BRP -> B, but neither rear
+button produced its mapped Xbox action. Repeated physical presses were captured
+with the existing GENERIC_READ/shared HID utility, with no output or activation
+command. `evidence/b52-passive-usb-glgr-repeat-20260904.jsonl` contains 15,000
+successful reports: 413 GL-only, 571 GR-only, 893 both, and 13,123 neutral.
+GL is 0x02000000, GR 0x01000000, both 0x03000000; repeated press/release sequences
+match the pinned Switch2Connect masks. Capture SHA256:
+`813F340906972A5832A6536282B138929C3E678283A7842B001FAB490F9B8D32`.
+
+Root cause is beyond the initial unassigned profile: `ControlSettingsGroup`
+excludes BLP/BRP from the ordinary loop, and the Switch 2 transactional profile
+stage never registered its extra-button inventory. `GetKnownExtraButtons` also
+lacked Switch 2 cases. The decoder and DS4State copies retain the correct bits,
+but `Mapping.MapCustom` never visits the saved bindings. Capture has the same
+omission. No undocumented controller activation sequence is necessary.
+
+Repair adds Pro Capture/BLP/BRP and left/joined Joy-Con Capture to the existing
+model-specific inventory, registers it before transactional profile loading,
+and retains/restores the former slot inventory in exact-runtime cleanup.
+No report-path timer, queue or extra diagnostic logging is added. Pro mapping
+labels become GL (Rear Left) and GR (Rear Right); serialized BLP/BRP keys and
+other controller labels remain unchanged. The user-saved lab bindings remain.
+
+Six production decoder/runtime/mapper/encoder regressions (Pro USB/BLE, GL/GR/
+Capture) failed before the repair on the missing mapped press. All 78 related
+tests pass afterward, including press/release and terminal neutral. The full
+suite and b53 publication/launch subsequently completed as recorded above.
+The earlier b52 binary does not contain this repair.
+
+### Counter continuity and changing Windows input (22:03-22:06 local)
+
+`evidence/b52-passive-usb-continuity-20260904.jsonl` completed with exit 0:
+100,000 successful 64-byte 0x05 reports, no bad reports, on the existing shared
+read-only handle. At ordinal 73,404 the counter goes 1,431,652 -> 2, with a
+3.9958ms host read-completion interval. The 399.957201-second span averages
+3.999612ms between read completions. SHA256:
+`8D674130789870EAEBB0371DC65C40BC3781D14B44970EFC5F3C24CBA2945E45`.
+This is continuity evidence, not calibrated input latency. DS4Windows remains
+Ready on the same lifetime with no new lifecycle log and changing virtual input
+observed after the boundary. 83 physical reports contain the GL bit 0x02000000.
+
+The earlier WGI-only neutral observation was initially called an input failure
+in commentary; subsequent positive controls do not support that conclusion.
+Read-only XInput advanced from packet 1 to 806, then 836 with buttons 20480.
+After the probe was brought to the foreground and the user repeated the button
+exercise, its recording contains 77 changing readings, button union 4095, both
+triggers spanning 0/1 and a final neutral. Focus is a test precondition to record;
+the unchanged earlier reader state is not proof of a transport failure. Full
+stick range/click and guide acceptance still need their own observed inventory.
+
+The user reports GL/GR did not appear but everything else did. Current lab XML
+contains no BLP/BRP binding; the canonical default table assigns both None. Pro
+projection maps raw GL 0x02000000 to BLP and GR 0x01000000 to BRP. The pinned
+Switch2Connect controller.py uses the same bits and None default actions at
+lines 4371-4372. Temporary explicit lab bindings will test the complete route;
+no claim that native independent Xbox paddle output is implemented is made.
+
+### Subsequent feedback check (22:01-22:02 local)
+
+The user explicitly resumed UI automation after the earlier Escape cancellation.
+The existing Windows API probe requested one Left body pulse; its matching neutral
+API call returned 215.8ms later, and the user confirmed vibration and stop. The
+user then exercised Left body, Right body, Left impulse and Right impulse in the
+same probe and confirmed "I tested, they all work". The recording below contains
+all four channel requests at strength 0.2 / nominal 200ms, each followed by a
+successful neutral request (observed API-call spans 201-216ms). No pulse error or
+neutral error is recorded. The profile explicitly enables
+`Switch2MapXboxImpulseTriggersToHdRumble` and sets rumble delay to zero.
+
+This verifies tactile feedback delivery/stop through the selected Xbox One ->
+VIIPER -> USB Pro path. It does not quantify waveform fidelity, side isolation,
+latency, gain/toggle-off behavior or disconnect stop. The input reader still
+contains only its initial neutral state; physical input exercise was requested
+separately. DS4Windows still reports Ready / 250Hz with the same owners and no
+new controller lifecycle log event. The existing shared-read-only USB capture is
+running for 100,000 reports; no additional physical writer was introduced.
+
+After the user closed the old owners, launched verified Desktop b52 with DS4Windows
+PID 21240 and VIIPER PID 20376. Both exact executable paths/command lines were read
+back. DS4Windows reports Running as User. No elevated shell, security setting,
+driver installation, startup modification or Program Files replacement was needed.
+
+The first launch found a real package omission: the lab Xbox profile was staged,
+but its required authorized identity JSON was not. Output validation rejected
+registration. Stopped the portable service, restored the identical reviewed b48
+F00D:BEED synthetic identity (semantic JSON equality checked), then restarted.
+The launcher now verifies its hash as well as the unchanged app/broker hashes.
+Persona SHA256: `20E0C0939964EA83928D8DBA1ED82BA97CE05FA02963BF9EB382E63356F29263`.
+This changes lab configuration, not protocol authorization or Microsoft identity.
+
+At 21:47:42, logs confirm exact full-duplex USB Pro attachment and association
+with Xbox One / Series. Actual UI shows Ready, 90% battery, observed 4.00ms / 250Hz.
+PnP shows the F00D:BEED Xbox Gaming Device OK. Existing Windows API reader PID
+32208 sees one matching gamepad. Read-only XInput (`-PulseMilliseconds 0`) succeeds
+on slot 0 with packet 1 and neutral; slots 1-3 return disconnected. No new pulse
+has been sent. The Windows API input recording still contains only neutral; the
+requested physical button/stick exercise has not been confirmed. This proves
+enumeration/readiness, not changing input, physical feedback or game latency.
+
+The user pressed physical Escape during a Computer Use activation, stopping UI
+automation. No further UI input was issued; later checks used read-only processes,
+logs, XInput and the existing installation snapshot script. Before/after-ready
+snapshots compare equal for their measured installed-file/task/startup/normal-
+configuration inventory. Evidence under the Desktop lab:
+
+- `evidence/b52-installed-state-before-20260904.json`
+- `evidence/b52-installed-state-after-ready-20260904.json`
+- `evidence/b52-xinput-readonly-ready-20260904.jsonl`
+- `ControllerWindowsApiProbe-b43/results/wgi-20260905-024832-3661c52854db42d198ef1e3c84605940.jsonl`
+
+Changing input/neutral, feedback, cued unplug/reconnect, sustained counter rollover,
+Bluetooth, Joy-Con, game, latency and full parity/installer acceptance remain open.
+The live binary is b52, not the subsequent 3,202-test profile-worker source build.
+
+Dated evidence snapshot. The full source prompt, feature parity, wireless,
+source/target matrix, feedback, latency, game and installer requirements remain
+open. The previous continuation made progress through the separate-process
+auth check and hardware capture; this continuation repairs the captured USB
+counter admission regression. No goal completion is claimed.
+
+## USB counter disconnect root cause and repair
+
+The passive capture `switch2-usb-counter-transition-20260903.jsonl` completed
+260,000 successful reports through one shared read-only HID handle. It crosses
+the raw counter transition **1,431,653 → 2 → 6** without interrupted input.
+The boundary read-completion interval is 3.9993 ms. SHA256:
+`0A9018D8B9D50D1CA7133507CCCB04C220A5FE0660B28DCA0D0C6FBDA6916495`.
+The counter's firmware implementation/modulus is not established or hardcoded.
+
+The previous production replay executable rejects **row 250488** with
+`BackwardOrOutOfOrder`. The live owner converts that mapper failure to runtime
+retirement. The b48 logs show the recurring approximately 1,431.68-second
+disconnect/reconnect, including 01:07:08 on September 3. No user unplug is
+inferred from these log events.
+
+The admitted Pro USB Common05 path now uses the existing native read claims
+and host QPC to preserve arrival order; raw counter classification remains
+diagnostic. Both live session and offline replay advance the counter baseline
+on each accepted USB arrival. The discontinuity's raw delta and classification
+remain visible. BLE, other models, framing, calibration and lifetime checks
+are unchanged. No timer/queue/rate change or per-report diagnostic was added.
+
+Reference review used Switch2Connect
+`61ac6642ce12fe7217e38a860b14863b18ca7e28` and SDL-hifihedgehog
+`d98c5804a9d20b0d96e993741797878c86b8f1e1`, which process USB input without
+using this counter as a monotonic admission gate. No PadForge code was copied.
+Details and exact source locations are in DS4Windows
+`docs/protocols/switch2-pro-usb-counter-continuity.md`.
+
+Verification:
+
+- New regression tests before the repair: 2 failed, 3 passed. The failures
+  exercise the lost release and successor counter baseline.
+- Focused session/replay/mapper/runtime-owner tests after the repair:
+  **133 passed, 0 failed** (`usb-counter-focused-20260904.trx`).
+- Full DS4Windows suite: **3,003 passed, 3 skipped, 0 failed**, 33 seconds
+  (`usb-counter-full-20260904.trx`). The three skips are existing live-audio
+  tests. Tests include a release at rollover, no runtime lifecycle attention,
+  live/replay agreement and retained host/transport-generation rejection.
+- Full captured recording replay through the repaired production assembly:
+  **260,000 decoded, session accepted, mapped and state-written; zero rejected**.
+  Diagnostics retain one backward discontinuity, one first report, 221 delta-3,
+  259,578 delta-4 and 199 delta-5 reports. Summary:
+  `Desktop/Controller-Platform-Portable-Lab-2026-08-31/results/`
+  `switch2-usb-counter-transition-after-20260904.json`.
+
+An independent reviewer identified the separate replay baseline that also
+needed updating. Its final review attempt failed with an account usage-limit
+error; **no completed independent final review is claimed**. The parent
+inspected both production changes and all counter consumers.
+
+## Auth v2 actual process interoperability
+
+The source-owned `_testing/authv2/interoppeer` and `ds4interop` harnesses use
+production Go auth and the unchanged DS4Windows authentication/portable-policy
+source files. They establish an actual loopback TCP handshake using only a
+public synthetic test password in dedicated Desktop lab storage, followed by
+4,096 variable-length records per direction concurrently. Each side verifies
+every plaintext byte. The C# reader splits reads into seven-byte pieces.
+
+The first run and ten additional repetitions passed on September 3. This
+closes the happy-path Go↔DS4Windows cross-process auth gap, but does not replace
+the negative protocol/version tests, full API routing tests or hardware checks.
+The peer is a separate ephemeral-port test executable with no controller/API
+server/USB/IP capability; it must never be packaged as the actual broker.
+
+### Generated-client build repairs
+
+The four nested authorized Xbox One request objects now use named Go DTOs.
+Their JSON names, field order and wire types are unchanged; an exact JSON
+round-trip regression includes full-width unsigned values. The scanner now
+retains declared underlying scalar widths for named constants across source
+files and excludes test files. Rust constants use those declared widths.
+TypeScript device exports follow current wire metadata, preventing a nonexistent
+generic Xbox One input module from being exported. No generic Xbox One input
+wire tag was introduced; its authorized protocol remains separate.
+
+Fresh complete SDK generation in `Desktop/Controller-Platform-Portable-Lab-2026-08-31/`
+`sdk-generation-20260904` verifies:
+
+- Whole TypeScript SDK compilation passes; generated authentication tests:
+  **18 passed, 0 failed**. Dependency installation reused the Desktop offline
+  package store with lifecycle scripts disabled.
+- Whole Rust SDK builds with the async feature; **5 tests passed, 0 failed**
+  using the portable Desktop Rust toolchain and offline dependency cache.
+  One existing non-camel-case type-name warning remains.
+- Full VIIPER `go test ./...` passes after the DTO/scanner/generator repairs.
+
+These gates do not establish complete SDK API fidelity. TypeScript management
+DTO `uint64` fields still map to JavaScript `number`, which cannot represent
+all generation/authority values exactly. Generated C# targets net10.0 and
+whole-SDK compilation remains blocked by the installed SDK9; a framework
+override attempt also failed with NETSDK1045. C++ compile/runtime validation
+remains open. The actual production Go/C# endpoints used by DS4Windows have
+their separate process-interoperability evidence above.
+
+These later DTO/code-generation source changes are not in the already staged
+b50 broker binary. Its pinned artifact remains unchanged; the DTO refactor
+preserves its wire shape.
+
+## Portable b50 staged, not yet run
+
+Directory:
+`Desktop/Controller-Platform-Portable-Lab-2026-08-31/runtime/`
+`DS4Windows-current-2026-09-04-b50-usb-counter-continuity`.
+
+- Complete source-built DS4Windows publish, SHA256 of DS4Windows.dll:
+  `D278A03D18F0ED9F9583BC2F020C7D3A0A85DD2BB194063978DEEBB2F30CFCE2`.
+- Real source-built VIIPER broker:
+  `94AF4B62F6F30286AAE9495FD66CA3881725EE1478D87ACF7C085594F10AF6F7`.
+- Matching auth v2 endpoints; launcher pins both hashes and its syntax passes.
+  Lab profiles/configuration were copied selectively from the reviewed,
+  unlaunched b49 candidate. No deployment key, logs or association store copied.
+  First launch generates a private lab key. Environment isolation and process/
+  port refusal checks remain active. Installed files/tasks were not modified.
+
+Current-state checks on September 4 find DS4Windows PID 31316 and VIIPER PID
+33580, both started September 3 around 07:11. Their paths/command lines are
+not readable at the current privilege, and no targetable DS4Windows window
+was returned. PID 33580 owns ports 3241/3242. These are **not** the historical
+b48 PIDs; b48 logged shutdown at 07:10:24. Five physical Switch 2 Pro USB PnP
+nodes are present. Current input/virtual readiness is not inferred from PnP.
+
+One asynchronous user request asks them to close those existing instances so
+the portable hardware test can take ownership. No process was terminated and
+b50 has not been launched. Keep the Pro on USB until the controlled unplug
+test is cued; Bluetooth pairing has not been started.
+
+Next physical gates are b50 USB readiness, continuous input through rollover,
+controlled unplug/row removal/reconnect, and explicit BLE association followed
+by input, feedback and reconnect. The full Joy-Con, feature, source/target,
+game and latency matrix remains required, as does the requested test installer.
+
+## Subsequent continuation: calibration parity foundations
+
+The preceding goal turn made concrete progress through full generated Rust/
+TypeScript build verification, the full Go suite and the documented codegen
+repairs. The present continuation rechecked current source before choosing
+its next gap: automatic Switch 2 DSU registration is already implemented in
+the reversible host/observer and metadata callback, with production-composition
+tests. The earlier September 2 open entry is superseded by
+`DS4Windows/docs/protocols/switch2-udp-observation.md`; no duplicate observer
+or report subscription was added.
+
+The confirmed raw-stick calibration gap now has two implemented foundations:
+
+- `Switch2RawStickCalibrationCollector`: per-physical-side raw extrema/center
+  sampling, exact descriptor/opaque peer binding, continuous rotate/settle/
+  center workflow, bounded storage, rate-independent movement comparison,
+  stale frame/pause/cancel/travel checks and existing calibration validation.
+  Source behavior and attribution come from the same pinned GPL Switch2Connect
+  wizard (`src/gui.py:2158`, `:2349`, `src/controller.py:3961`).
+- `Switch2RawStickCalibrationFileStore`: exact 51-byte versioned records bound
+  to peer/model/side, checked raw travel/endpoint values, corruption digest,
+  bounded reads, flushed scratch+atomic replacement and exact reset. This is
+  cold synchronous I/O; callers must keep it outside report/publication locks.
+
+Verification: initial 20 focused tests pass; full DS4Windows suite after both
+helpers **3,023 passed, 3 existing live-audio skips, zero failures**, 29 seconds
+(`raw-stick-calibration-full-20260904.trx`). Four further basic-BLE 07/08/09
+decoder/physical-side/wrap cases pass, bringing the targeted calibration suite
+to **24 passes** (`raw-stick-calibration-basic-20260904.trx`). Sampling tests
+include synthetic 250/500 Hz cadence and zero warmed managed allocation.
+These are software tests, not hardware-rate or latency measurements.
+
+At this foundation checkpoint, the collector and store were not wired into
+the runtime or UI. The subsequent section records startup-loaded application;
+live collection and save/reset/cancel wizard integration remain required.
+Detailed integration gates and codec layout are in
+`DS4Windows/docs/protocols/switch2-raw-stick-calibration.md`. This is progress
+toward the original full parity goal, not completion of calibration or release.
+
+Current process recheck still finds DS4Windows 31316 and VIIPER 33580. The prior
+user close request remains pending. No competing owner or hardware test was
+started. Both staged b50 artifact hashes were rechecked and remain identical
+to the values above; these subsequent source helpers are not in that candidate.
+No installed component, system setting, driver, task, release or commit changed.
+
+## Startup-loaded physical-stick calibration and shutdown repair
+
+Subsequent source integration supplies the cold store to both production
+coordinators and binds exact runtime/model/transport generations to opaque
+physical-peer records before activation. Pro loads both sides; standalone
+Joy-Cons use their physical side; joined pairs load two independent records.
+Cold loading is outside the runtime publication lock and final adoption refuses
+activation/removal races. The immutable snapshot is applied by the USB owner
+and Bluetooth/ joined sinks before existing profile projection/orientation.
+Raw input and factory/SPI evidence remain unchanged, with explicit local-side
+provenance flags. Missing/corrupt/unreadable optional records retain source
+calibration. No per-report I/O, allocation, queue or additional lock was added
+to snapshot application.
+
+Software integration verification:
+
+- `raw-stick-binding-20260904.trx`: 37 passed (24 foundation cases plus 13
+  binding/projection cases).
+- `raw-stick-runtime-adversarial-20260904.trx`: 210 passed. Tests cover actual
+  USB owner and Bluetooth/standalone/joined sink composition using simulated
+  transport leases, high-resolution Xbox One egress, orientation/identity,
+  stale generations, slow/throwing storage and zero-allocation application.
+- `raw-stick-runtime-full-20260904.trx`: **3,040 passed, 3 skipped, 1 failed**.
+  The failure was `ConcurrentStopsShareOneNeutralAndBothPhysicalProofs`.
+
+The shutdown failure was investigated rather than dismissed as a passing
+rerun. `joined-stop-window-before-20260904.trx` holds the first stop's terminal
+callback open and starts a second independent stop: it fails because the
+pre-wait global `TerminalPublicationInProgress` flag rejects that second
+caller. The repair uses current-thread callback identity before joining an
+existing lifecycle operation. The global active-publication check remains
+after claiming lifecycle ownership. Same-thread pump/report/terminal callbacks
+still reject promptly; independent stop callers share the first terminal and
+physical release proofs. The joined focused suite passed 32 cases, followed
+by **3,043 passed, 3 skipped, zero failed** in
+`raw-stick-runtime-stop-fixed-full-20260904.trx`.
+
+The related single-controller BLE owner lacked the pre-wait reentry guard.
+Three new Pro/left/right regressions failed before repair with
+`OperationAlreadyInProgress` instead of `CallbackActive`, consuming the nested
+200 ms timeout (`bluetooth-stop-reentry-before-20260904.trx`). It now applies
+the same current-thread-only pre-wait guard and retains its existing post-claim
+global guard. Independent-stop tests also block terminal publication and
+verify shared success, one terminal event and one physical release.
+
+Final full suite after both source repairs:
+`raw-stick-runtime-all-stop-fixed-full-20260904.trx`, **3,049 passed,
+3 existing live-audio skips, zero failed**, 30 seconds. Independent read-only
+review found no source blocker but identified a weak joined reentry assertion;
+it now captures and checks `CallbackActive` inside the callback rather than
+accepting a nested timeout. The strengthened focused rerun
+`bluetooth-and-joined-stop-reviewed-20260904.trx` passed **76 cases**. No
+production code changed after the full run. Controlled concurrency tests have
+bounded scheduling windows; these tests do not establish physical BLE behavior.
+
+Calibration remains partial: raw collector observation, live revision-safe
+save/reset/cancel, gameplay suppression and the wizard UI are not yet wired.
+Queued projected frames and a joined pair's unchanged half must not retain
+old calibration after a future live revision. USB container-derived and BLE
+Windows-device-ID-derived peer pseudonyms are not proven identical for one
+physical Pro, so automatic cross-transport sharing is not claimed. The detailed
+state and remaining gates are in DS4Windows
+`docs/protocols/switch2-raw-stick-calibration.md`.
+
+The latest user reply acknowledges the earlier USB-reconnect request, not the
+later request to close owners. Read-only checks still find USB Pro PnP nodes
+and the September 3 processes DS4Windows 31316 / VIIPER 33580 with inaccessible
+paths. No competing owner was launched, no controller output or Bluetooth
+association was attempted, and no installed component or startup task changed.
+These source changes are not in the immutable staged b50 candidate.
+
+## Portable b51 staged after reviewed source repairs; not launched
+
+Directory:
+`Desktop/Controller-Platform-Portable-Lab-2026-08-31/runtime/`
+`DS4Windows-current-2026-09-04-b51-calibration-lifecycle`.
+
+This fresh complete publish includes startup-loaded local stick calibration,
+both shutdown repairs and the earlier USB counter continuity repair. It does
+not provide the unfinished live calibration wizard. Its real VIIPER broker
+includes the prior auth-v2 and named authorized DTO/codegen source work.
+
+Build commands, from their respective repositories:
+
+```powershell
+dotnet publish DS4Windows/DS4WinWPF.csproj -c Release -p:Platform=x64 -r win-x64 --self-contained false --no-restore -o <b51-directory>
+..\_toolchains\go1.27.0\go\bin\go.exe test ./...
+..\_toolchains\go1.27.0\go\bin\go.exe build -o <b51-directory>\viiper.exe ./cmd/viiper
+```
+
+Both builds and the complete Go test command pass (most Go results cached;
+Xbox One tests executed afresh). Ordinary existing C# warnings remain. Hashes:
+
+- DS4Windows.dll SHA256:
+  `96CE7ED1D610CA57242204FB7A6939F7F6E51A03AFA7B67A25E556442B19E9A3`.
+- DS4Windows.exe SHA256:
+  `CAE700D769717753E8B2636BD40CABC0A860A4175B02A67F780F4FED8D24A4B7`.
+- viiper.exe SHA256:
+  `19AEDD6743BEB84A43B11ABA7F903BF193810F743D333ABAF75A3A404E80C0C6`.
+
+The launcher passes syntax validation and an exact normalized comparison to
+b50 with only its two candidate hashes changed. Selected reviewed profile,
+empty action/auto-profile, broker configuration and read-only state-capture
+script copies have identical hashes to b50. No keys, association records or
+logs were copied. First launch must create its own private lab key. Existing
+process/port refusal, environment isolation, disabled update notifications,
+hidden child launches and portable policy remain active. No launch occurred.
+The b50 app/broker hashes were rechecked and remain unchanged.
+
+Latest hardware/process snapshot still shows the connected USB Pro and owners
+31316/33580. After those owners close, b51 supersedes b50 as the next physical
+test candidate: readiness and input, controlled unplug/row removal/reconnect,
+then the explicitly cued Bluetooth association/input/feedback sequence. Do
+not infer a new hardware pass from staging or this software test count. Full
+feature parity, hardware/game/latency/installer gates remain open.
+
+## Live raw-stick runtime integration and independent-review repairs
+
+The source now retains an exact raw stick observation (descriptor, report kind,
+raw physical axes and original factory/SPI calibration) through the profile
+frame. Local calibration is applied under the existing runtime publication gate
+immediately before legacy state and motion projection. The former USB-owner,
+BLE-sink and joined-source pre-mapper application calls are removed. Shared
+physical-side/orientation projection preserves horizontal-right Joy-Con mapping,
+local provenance, raw metadata and cached unchanged joined-half behavior.
+
+New exact runtime/peer/side/slot/profile receipts provide Begin, progress,
+Cancel and asynchronous explicit Save/Reset. Capture observes raw data, ignores
+duplicate joined timestamps, releases mapped controls immediately and suppresses
+gameplay while active. Ready results are stored off the UI/report gate; live
+adoption waits for reserved publication and revalidates the receipt. Optional
+storage failure preserves the old binding and supports retry/cancel. A completed
+write that cannot be adopted reports StoredNotApplied rather than live success.
+There is still no wizard UI or physical calibration acceptance result.
+
+Verification before review: `raw-stick-live-full-20260904.trx`, **3,067 passed,
+3 existing audio skips, zero failures**. Eighteen new runtime executions cover
+USB/BLE Pro physical sides, standalone vertical/horizontal sides, joined
+capture/reset with repeated cached halves, reset of preprojected old frames,
+slow/failing storage, cancellation/disconnect/rebind, in-flight publication
+adoption and zero warmed allocation through decoder/mapper/publication.
+
+Independent read-only review found two real gaps, both reproduced before repair
+in `raw-stick-review-races-before-20260904.trx` (**2 failures**):
+
+1. Per-runtime save serialization prevented stale live adoption but not an old
+   save overwriting a newer successor's reset on disk. All FileStore instances
+   for the same normalized/case-insensitive directory now share one cold gate.
+   Entire binding loads (both joined peers) and mutations serialize there. After
+   entering the gate, a queued worker checks volatile cancellation and briefly
+   revalidates exact runtime/slot/profile/basis before I/O. Cancellation never
+   waits on disk. Already-entered writes complete before later load/save/reset;
+   queued cancelled or invalidated writes do not start. The gate is process-local
+   under the app's single-owner policy, not cross-process file sequencing.
+2. Neutral reports without motion did not clear the independently running gyro
+   mouse source. Begin now clears all presenter sources, advances a revision
+   that fences stale worker snapshots and resets fractional integration state,
+   then fences external output outside the publication lock before returning.
+   Source setters serialize with Begin and reject updates while capture is
+   active. Cancel/completion can resume the existing presenter without a restart.
+
+`raw-stick-review-ordering-20260904.trx`: **72 focused passes**. Additional
+cases cover queued cancel/slot/profile changes, successor load and reset ordering,
+canonical directory identity, in-flight OS-output fencing and resumption. Full
+repaired run `raw-stick-live-reviewed-full-20260904.trx`: **3,074 passed,
+3 skipped, zero failures**, 33 seconds. Independent re-review found no remaining
+blocker in this scoped source and verified neutral Mapping fallback behavior.
+
+Six real runtime-registration/Mouse/Mapping/Xbox-egress release tests were then
+added: USB Pro, BLE Pro and joined input, each with gyro-stick and directional
+swipe. All pass in `raw-stick-canonical-release-20260904.trx`. No production
+behavior changed after the reviewed full run (one source comment changed).
+
+The following full run `raw-stick-live-canonical-full-20260904.trx` has
+**3,079 passed, 3 skipped, 1 failed**: existing
+`JoyConPeerAssociationTests.WarmPeerAccessDoesNotAllocate` measured **1,960
+bytes**, expected zero. The strict assertion was not relaxed. The four legacy
+peer-association cases passed in isolation and in eight further fresh-process
+focused repetitions (`joycon-peer-allocation-investigation-20260904.trx`,
+`joycon-peer-allocation-repeat-1` through `-8-20260904.trx`). Source inspection
+shows only volatile field reads/writes and CompareExchange in the measured
+production path. Those facts do not identify the allocation's cause; investigation
+is still open at this checkpoint. Do not relabel this failed full run as green.
+
+Portable/hardware status is unchanged: b51 DLL and broker hashes rechecked
+identical to the staged values above; latest live calibration code is source
+only. Five USB Pro PnP nodes are present/OK. Older DS4Windows 31316 and VIIPER
+33580 remain open with paths unavailable; the earlier user close request remains
+pending. No competing process, physical controller handle/output, Bluetooth
+pairing, Program Files mutation, driver/task change, commit or release occurred.
+
+Allocation investigation follow-up: the six new canonical-release cases ran
+eleven seconds after the legacy allocation failure in the failed TRX, so they
+could not have caused it in that execution. Independent source review found no
+managed-allocation site in the measured peer path and recommended no production
+change. Tiered-JIT/OSR or runner warm-state perturbation is a plausible explanation,
+not a demonstrated root cause. The original test and zero-byte assertion remain
+unchanged. A supplemental dedicated-thread test warms an identical no-inline
+measurement helper, checks eight separate 10,000-iteration zero-byte segments,
+and separately verifies the same meter detects an intentional 128-byte allocation.
+
+Latest complete run, including that diagnostic and the six production-composition
+release cases: `raw-stick-live-allocation-diagnostic-full-20260904.trx`,
+**3,081 passed, 3 existing live-audio skips, zero failed**, 33 seconds. This
+passing run does not erase the recorded intermittent allocation failure or prove
+its cause resolved. Calibration runtime source is reviewed/software-tested;
+wizard UI and physical validation remain open. Staged b51 remains unchanged.
+
+## Stick-calibration wizard, reviewed cancellation and portable b52
+
+The subsequent source work adds the per-physical-stick wizard under the profile
+editor's Switch 2 Controls section. It uses the existing raw collector and
+canonical mapper, not the legacy byte-scale drift window. USB/BLE Pro and joined
+pairs expose both physical sides; standalone Joy-Cons expose only their actual
+side regardless of horizontal orientation. Progress is a UI-only 100 ms read;
+sampling remains report-driven. Save is explicit, Reset confirms the exact side,
+and disk results persist across progress updates. Storage and Begin run off the
+UI thread. Calibration is PC-local, with no controller flash write or claim of
+automatic cross-transport identity sharing.
+
+The window is bound to one runtime, slot and profile revision. Closing or a
+context change revokes capture/live adoption; already-entered disk I/O may finish
+and is described accurately. Independent review identified cancellation during
+the worker-to-UI Begin handoff. The view model now owns a token before scheduling
+Begin and through its await continuation. The runtime retains it in the exact
+receipt, registers cancellation after reservation outside the publication lock,
+and rechecks it at every admission. Its cold external-mouse fence has cancellable
+20 ms lock attempts. This adds no input polling delay; an already-entered external
+output call cannot be undone. Closing after Begin returns but before the UI claims
+the receipt is reaped before the next physical frame's suppression check.
+The independent final re-review found no remaining scoped source blocker.
+
+Test history, preserving failures:
+
+- The initial editor runs exposed a test-only WPF application-resource setup
+  error. After fixing the harness to reuse the existing theme-test Application,
+  they exposed a real progress-bar default two-way binding to a read-only
+  property. Explicit OneWay binding repairs it. Failed TRX files are retained.
+- `raw-stick-wizard-visual-fixed-20260904.trx`: **98 focused passes** after the
+  binding fix. Default layout was then increased to keep Reset visible, compact
+  layouts remain scrollable with Close outside the scroll area, and disabled
+  Save styling was made visibly inactive. `raw-stick-wizard-layout-20260904.trx`
+  passes its combined theme/layout test.
+- `raw-stick-wizard-handoff-joined-20260904.trx`: **18 editor executions**, with
+  physical sides/orientation, chosen joined peer only, reset retry, cancellation,
+  storage outcomes, delayed UI handoff, retirement/slot/profile invalidation.
+- `raw-stick-wizard-full-20260904.trx`: **3,102 passed, 3 existing audio skips,
+  zero failures**, 30 seconds. Eight fresh offscreen start/ready renders at
+  460/620 pixels in light/dark themes are in the Desktop lab's
+  `evidence/stick-calibration-ui-2026-09-04`. Selected dark/default and
+  light/compact images were visually inspected. No window was shown or physical
+  controller opened; these do not establish live UI/hardware/DPI acceptance.
+- Review's nonblocking missing end-to-end case was added: cancelling runtime
+  Begin while a fake external mouse call is held proves receipt revocation,
+  resumed mapped input and source admission before that call returns, and no
+  save. `raw-stick-wizard-runtime-fence-20260904.trx`: **56 focused passes**.
+- Final full suite `raw-stick-wizard-reviewed-full-20260904.trx`: **3,103 passed,
+  3 existing live-audio skips, zero failures**, 32 seconds. The earlier isolated
+  legacy Joy-Con allocation reading remains documented above, not explained
+  away by these later passing runs.
+
+The complete app was published into the fresh directory
+`Desktop/Controller-Platform-Portable-Lab-2026-08-31/runtime/`
+`DS4Windows-current-2026-09-04-b52-stick-calibration-ui`:
+
+```powershell
+dotnet publish DS4Windows/DS4WinWPF.csproj -c Release -p:Platform=x64 -r win-x64 --self-contained false --no-restore -o <b52-directory>
+```
+
+Build passed with existing compiler warnings. Repository bases remain
+DS4Windows `061fab1304e77c995ce9451b7ef20e51cc870070` and VIIPER
+`54f7853aa4f97394298fc8f4c3ebb865237a3456`, both on the dirty
+`feature/native-udecx-landing-zone` branch; unrelated changes were preserved.
+No VIIPER production source changed during this UI work. Its b51 broker was
+hash-verified and copied, not rebuilt or replaced in the installed location.
+
+- DS4Windows.dll SHA256:
+  `58F4A837B7E0D2474B640BDD13F5228546A2F503E2C26A1DAC83D5B47D65E840`.
+- DS4Windows.exe SHA256:
+  `CAE700D769717753E8B2636BD40CABC0A860A4175B02A67F780F4FED8D24A4B7`.
+- viiper.exe SHA256:
+  `19AEDD6743BEB84A43B11ABA7F903BF193810F743D333ABAF75A3A404E80C0C6`.
+
+Only reviewed profile/action/auto-profile/broker configuration and launcher/
+read-only state-capture scripts were copied. No keys, associations or logs were
+copied. The launcher changes only its app hash, retaining owner/port refusal,
+per-child environment isolation and the portable policy. b51 app/broker hashes
+remain unchanged. The next physical candidate is now b52, not b51.
+Final staging verification passed: all three candidate hashes, exact copied-file
+hashes, launcher syntax, normalized launcher comparison with only the app hash
+changed, and the five-file lab-data allowlist. The launcher was not executed.
+
+Latest read-only check still finds five present/OK USB Pro PnP nodes and older
+DS4Windows 31316 / VIIPER 33580, whose paths remain unavailable. The user reply
+acknowledged the older USB reconnect question, not the pending close-owner
+request. b52 has not been launched; no controller output, Bluetooth association,
+Program Files or driver/task change, commit, push or release occurred. The next
+hardware sequence remains USB readiness/input, cued unplug/row removal/reconnect,
+then explicitly cued Bluetooth association. Full source/target/feedback, game,
+latency, hardware and installer acceptance remain open.
+
+## Controller-operated profile picker: audited source foundation
+
+The next continuation classified the previous wizard/staging turn as progress,
+then inspected the remaining source-pinned manual profile-picker gap. The same
+Switch2Connect commit `61ac6642ce12fe7217e38a860b14863b18ca7e28` implements
+stick/D-pad navigation, orientation/layout-dependent A/B, initial held-button
+seeding, 180 ms navigation debounce, confirm/cancel and release drain. Its manual
+picker is distinct from automatic delayed cycling. Source pin, masks, orientation
+table and integration gates are in DS4Windows
+`docs/protocols/switch2-profile-picker.md`.
+
+New `Switch2ProfilePickerInput` uses existing admitted calibrated Pro/Joy-Con
+profile frames and their physical metadata. `Switch2ProfilePickerSession` is a
+single-owner bounded-state reducer with fixed catalog count/index, rising edges,
+wraparound, exact physical context/QPC admission, one-shot confirmed intent and
+independent physical release tracking. No UI/file/profile loading, queue, timer
+or alternate mapper is introduced. Nintendo/Xbox UI interpretation follows the
+donor's manual picker specifically. Horizontal manual-picker button positions
+differ from the pinned SDL mini gamepad labels; the existing game mapper was not
+silently changed. The discrepancy and required physical label checks are recorded.
+
+Independent architecture review found the current UI selection path unsuitable
+for delayed picker confirmation: it changes `Global.ProfilePath`, linked storage
+and UI selection before guarded worker admission. The mandatory integration is a
+guarded named regular-profile request in the existing coalescing worker, atomic
+expected-prior revision admission, exact slot/token action lease from a cold
+worker, and revalidation at load. UI catalogs must be immutable name snapshots,
+not mutable index authority. The parent additionally found that `LoadProfileNew`
+resets live globals before DTO deserialization; restoring only a profile name on
+failure would not roll back mapping. Target staging/validation and truthful
+failure semantics remain necessary before that commit path is added.
+
+Software progression:
+
+- `profile-picker-foundation-20260904.trx`: 19 focused passes.
+- `profile-picker-drain-20260904.trx`: 22 passes, including one-shot intent,
+  own-revision/layout and standalone-orientation drain checks.
+- `profile-picker-foundation-full-20260904.trx`: 3,125 passed, 3 audio skips.
+- `profile-picker-precision-allocation-20260904.trx`: 24 focused passes;
+  full `profile-picker-precision-full-20260904.trx`: 3,127 passed, 3 skips.
+  Additional cases exercise strict signed thresholds despite a centered legacy
+  byte and zero warmed managed allocation through 100,000 Pro/Joy-Con projections.
+  The reducer separately tests 100,000 warmed observations. These are component
+  tests, not physical reports, application latency or whole-report performance.
+
+Adversarial review then found a real premature-resume race: physical release
+could end suppression while a confirmed intent still awaited the worker. It also
+found the 60% navigation threshold was too high for release: relaxing a stick to
+59% could end drain. Both were reproduced as failures in
+`profile-picker-review-before-20260904.trx` before repair. The reducer now keeps
+latest physical release evidence separate from a completed-drain latch, ending
+suppression only after confirmed intent transfer/revocation AND physical release.
+Transfer requires the freshly read current basis and profile revision even without
+a new report. Pending Cancel/Invalidate cannot rewrite transferred or terminal
+outcomes. Release uses a separate 20% center-band policy, navigation stays at 60%.
+
+`profile-picker-reviewed-20260904.trx`: **30 focused passes**. Final full suite
+`profile-picker-reviewed-full-20260904.trx`: **3,133 passed, 3 existing live-audio
+skips, zero failures**, 32 seconds. Final independent re-review found no remaining
+reducer/helper blocker. It additionally requires the owner to retain/evaluate the
+original open/cycle binding throughout drain after profile changes; a new-profile
+lookup could lose a held opener. This is now explicit in source/docs and remains
+an owner-integration test gate.
+
+The picker is **not yet wired into live runtime suppression, a configurable open
+action, the overlay or guarded profile loading**. These are mandatory next steps,
+not a narrowed substitute for the user goal. Tests do not establish physical
+parity, game usability or full platform readiness. No installed binaries, drivers,
+tasks, Bluetooth associations, output commands, Git history or release changed.
+Read-only checks still find DS4Windows 31316 / VIIPER 33580. The pending close-owner
+request is unanswered. No competing owner was launched. b52 app/broker SHA256
+values remain exactly those above; this source foundation is not in b52 and the
+next physical candidate remains b52 for the controlled USB sequence.
+
+## Profile-picker prerequisite: staged content validation
+
+The next source-only continuation hardened the existing DS4Windows profile loader
+before adding guarded picker commits. `PreparedProfileLoad` migrates/deserializes
+once and exercises the canonical DTO mapper against a private store before any
+live reset. It owns a single-use DTO snapshot, so replacement/deletion of the file
+after prepare cannot silently change the applied settings. It distinguishes
+Missing, Unreadable and Invalid; only Missing uses the historical reset/unplug
+fallback. Invalid/unreadable rejection also preserves active temporary-profile
+metadata. Shadow stores skip backend key alias resolution but still parse the
+canonical actions; actual apply resolves aliases as before.
+
+Tests exposed a second real issue: migration could replace an arbitrary XML root
+and accept it as a default profile. Original-root validation now prevents that.
+The initial two eight-failure runs were a test-fixture initialization error, not
+valid regression evidence. The corrected fixture passed seven and failed the
+wrong-root case (sentinel rumble 77 became 100) before the repair. Exact progression
+and caveats are in DS4Windows `docs/protocols/profile-load-preparation.md`.
+
+Independent review identified and corrected the File.Exists access-error fallback
+problem, a test-only leaked revision, and preparation's dependency on the running
+keyboard backend. It confirmed private DTO reuse/ownership; no OS action occurs
+in shadow mapping. Existing curve normalization can still log during validation.
+The final focused profile/migration run passes 44 tests. Full
+`profile-prepare-full-20260904.trx`: **3,151 passed, 3 existing live-audio skips,
+zero failures**, 31 seconds.
+
+This does not make profile switching transactional. Existing generic load revision
+acquisition remains before preparation, and actual live mapping still needs
+coordination with keyboard-backend replacement. The picker must prepare first,
+then CAS the expected revision under shared per-slot serialization (including
+direct auto-profile loads), use an exact cold action lease and revalidate the
+runtime/catalog/temp context. That guarded named worker path, live suppression,
+opener and overlay remain unfinished. All physical/game/latency acceptance gates
+and the test installer remain open; the full platform goal is not complete.
+
+Read-only process checks still found DS4Windows 31316 and VIIPER 33580. No hardware
+or association action occurred. b52 DLL and broker hashes were rechecked and
+remain `58F4A837B7E0D2474B640BDD13F5228546A2F503E2C26A1DAC83D5B47D65E840`
+and `19AEDD6743BEB84A43B11ABA7F903BF193810F743D333ABAF75A3A404E80C0C6`.
+It was not launched or modified; this new source is not in b52. Program Files,
+drivers, startup tasks, running owners, Git history and releases are unchanged.
+
+## Shared profile writer boundary and bounded automatic loading
+
+The following continuation classified the preceding profile preparation work as
+progress, re-read current loaders/worker and confirmed the same live owners, then
+implemented the next switching prerequisite. A shared per-slot ProfileMutationGate
+now covers Mapping worker admission, its serialized UI-edit helper and direct
+Global regular/temporary loads. Direct stale requests are rejected under the gate
+and after preparation, before apply or missing-file reset. Four failures were
+reproduced before repair in `profile-boundary-before-20260904.trx`: both direct
+load types bypassed the worker/UI gate, and both stale load types reset a sentinel
+from 77 to 100. The first repair passed 45 focused cases.
+
+Independent review identified a liveness risk introduced by naively waiting for
+that gate inside AutoProfileChecker's existing report-pause callback. The changed
+path now prepares first and waits for the writer gate before pausing input.
+`ApplyPreparedProfileNew` extracts the canonical apply body; file migration saving
+and program enumeration are deferred to `CompletePreparedProfileLoad` after
+reports resume. Base TryHalt restores the previous FireReport in finally. Switch 2
+TryHalt rejects reentrant/timeout work without later replay; the existing void
+Halt API retains its prior deferred behavior. Connected and disconnected failed
+reverts remain retryable instead of dropping the auto-profile marker.
+
+The extracted path passed 60 focused cases, then 68 with added contention,
+snapshot replacement, invalid-before-pause, source/revision recheck, deferred
+migration save, rejected pause, exception restoration and Switch 2 no-replay
+coverage. Pre-review full `profile-boundary-full-20260904.trx` passed 3,163 with
+3 audio skips. Final rebuilt `profile-boundary-reviewed-full-20260904.trx`, after
+the disconnected revert correction: **3,163 passed, 3 existing live-audio skips,
+zero failures**, 35 seconds. Independent final source review found no remaining
+blocker in this bounded auto-profile change.
+
+Open requirements are explicit in DS4Windows
+`docs/protocols/profile-load-preparation.md`: a source ReferenceEquals check is not
+an exact lifetime lease, and retirement can still win after it; register-table
+action-lease ownership must cover prepared application. Existing lifecycle ->
+profile order must be respected. Live KBM replacement/alias synchronization is
+unfinished. Default/preset wrappers and post-wrapper DualSense mutations are not
+yet complete atomic transactions, and UI logical edits need revision invalidation
+beyond a delayed gated save. Guarded picker named load/CAS, runtime suppression,
+configurable opener and overlay remain unfinished. None of the synthetic tests
+proves physical latency, wireless/game acceptance or full platform readiness.
+
+No physical output, association, competing owner launch, Program Files/driver/task
+change, commit, push or release occurred. This source is not in the immutable b52
+portable candidate. The full user goal and requested test installer remain open.
+
+## Exact controller lifetime for automatic profile application
+
+The next continuation made source progress on the shared profile boundary; it
+did not perform the pending portable USB sequence. Read-only checks still found
+DS4Windows PID 31316 and VIIPER PID 33580, both started September 3 around 07:11.
+The existing close-owner request remains unanswered; the user's old USB reconnect
+acknowledgment is not evidence that these owners have exited. No competing owner,
+association, controller output, installation, startup-task change, reboot, commit,
+push or release occurred. b52 DLL/broker hashes were verified unchanged:
+`58F4A837B7E0D2474B640BDD13F5228546A2F503E2C26A1DAC83D5B47D65E840` /
+`19AEDD6743BEB84A43B11ABA7F903BF193810F743D333ABAF75A3A404E80C0C6`.
+The new source is not in that immutable candidate. Next hardware sequence remains
+controlled USB readiness/input/counter rollover, cued unplug row cleanup/reconnect,
+then an explicit Bluetooth pairing cue; no physical acceptance gate is closed.
+
+`ControlService` retains its existing single shared table as a readonly field.
+`TryCaptureAttachedToken` captures exact attached sender/service/slot/registration
+identity without owner callbacks, lifecycle locks, report suppression or snapshot
+allocation. `ControllerProfileActionTarget` requires that token for Switch 2 and
+supported typed legacy DS4/DS3. Missing/closed/unattached/stale/quarantined table
+identity never falls back. Other currently untabled sources retain their existing
+reference/removal path; this does not claim universal typed lifetime coverage.
+
+Auto profiles capture before file preparation, wait for ProfileMutationGate before
+pausing reports, then acquire a zero-time exact action lease **inside** the
+synchronous TryHalt callback. Revision/name/source are checked before apply, and
+the lease is disposed before returning, including exceptions. Switch 2's pending
+terminal-neutral finalization therefore sees drained action admission. No lease
+spans cold preparation, writer contention, migrated-file saving or program
+enumeration. There is no new report-rate throttle or per-report mapper branch.
+
+The queued auto-profile PostLoad transition retains the same target and reacquires
+a nonwaiting lease for its synchronous output work. Queue execution is outside
+admitted Report callbacks for both Switch 2 and typed legacy sources. Other
+generic PostLoad calls gained reference/removal checks but are not silently
+reinterpreted as Attached-state token holders during startup. Future picker work
+must capture authority at confirmation, not reidentify a slot after dispatch.
+
+Independent audit found legacy presentation teardown previously preceded table
+drain. Normal removal/service-stop now perform lightbar/output/audio/feature
+teardown inside terminal admission, after action/report drain and before neutral
+Commit. Partial presentation exceptions fail terminal publication and quarantine
+the lifetime. Quarantined retirement recovery waits its retained retirement
+claim's drain before presentation; Bound activation quarantine cannot contain an
+Attached-state action. An already-admitted action may finish after retirement
+begins, but terminal/presentation/removal cannot pass it. State remaining Attached
+is not promised by the lease.
+
+Verification progression:
+
+- `profile-action-capture-20260904.trx`: 21 table tests; 100,000 warmed token
+  captures allocate zero and do not suppress report admission.
+- Initial integration: 71 passed, one obsolete architectural assertion rejected
+  the now-intentional shared ControlService field. Updated assertion requires
+  exactly one readonly table field and keeps DS4Devices discovery independent.
+- `profile-lifetime-races-20260904.trx`: 94 focused passes covering same-source
+  lifetime replacement during prepare/contention and before queued output,
+  missing/closed authority, busy/fresh retry, active action versus retire/Close,
+  real synthetic Switch 2 pause plus pending terminal with/without exception,
+  and legacy presentation drain/partial-failure quarantine/recovery.
+- Independent source review found no new production blocker. It requested an
+  explicit stale-target assertion and direct SupportedLegacyHid coverage; both
+  were added and re-reviewed. `profile-lifetime-reviewed-focused-20260904.trx`:
+  **95 passed**, zero failures. Tests start no physical HID/transport workers.
+
+The first ordinary full run `profile-lifetime-full-20260904.trx` had **3,175
+passed, 3 existing audio skips, one failure**, 37 seconds. The previously
+intermittent `WarmFilterOwnerAndReducersAllocateNothing` measured **2,312 bytes**
+against the unchanged zero threshold. `profile-lifetime-filter-allocation-check-
+20260904.trx` then passed all 15 isolated filter cases. Existing opt-in boundary
+instrumentation in `profile-lifetime-allocation-boundary-20260904.trx` passed
+3,176 with 3 skips and reported `rawLoopDelta=0`, thread 4, original assertion
+passed. The subsequent uninstrumented `profile-lifetime-full-normal-confirmation-
+20260904.trx` also passed 3,176 with 3 skips (36 seconds). None attributes or fixes
+the intermittent allocation. Keep it as an unresolved release gate, not a
+runtime/JIT diagnosis or a consistently green-suite claim. Filter source, normal
+workload and threshold were not modified. The two final reviewer test additions
+were rebuilt afterward; final full-suite evidence follows below.
+
+Open work remains guarded picker named-load/revision CAS, runtime
+suppression/neutral Commit/mouse fences, opener/overlay, live KBM synchronization,
+complete preset/UI mutation and revision invalidation, and the physical/game/
+latency matrices. Prepared content is one-shot and is not rollback-safe after
+reset: a future retry-capable worker must claim ownership before destructive
+reset or enforce a single owned attempt. See DS4Windows
+`docs/protocols/profile-load-preparation.md` for the exact boundaries. This
+continuation does not complete the full platform goal or authorize an installer
+readiness claim.
+
+Final rebuilt ordinary suite `profile-lifetime-reviewed-full-20260904.trx`:
+**3,177 passed, 3 existing live-audio skips, zero failures**, 33 seconds (3,180
+total). Independent re-review confirmed the two additional lifetime/classifier
+tests close its bounded requests, with no further production finding. This
+successful final run does not erase the initial allocation failure or its open
+attribution gate. All test processes from this continuation completed.
+
+## Guarded named profile worker; legacy output and UI-name race fixes
+
+The next continuation made source progress on the picker prerequisite, using the
+existing Mapping coalescing worker and canonical prepared mapper. The named API
+captures an exact target, requested/expected names/root and expected revision;
+it prepares before claiming a live revision. Application admits writer gate ->
+bounded source pause -> zero-time exact action lease -> nonwaiting keyboard gate.
+Final request ticket and expected-revision CAS serialize with enqueue. Displaced
+named requests complete, pending ordinary requests retain priority, and TCS
+completion occurs after admission/mutation locks. Candidate ownership is claimed
+before destructive reset. Invalid preparation leaves name/revision/settings alone;
+save failure after apply has a distinct applied-with-completion-error outcome.
+
+Independent review found two concrete composition problems, both now repaired:
+
+- Base legacy HID drains its event queue while reports are disabled. An immediate
+  post-load enqueue could run under the still-held outer exact action lease and
+  silently discard the output transition. Deferred apply now stages enqueue until
+  `CompletePreparedProfileLoad` runs after the outer lease/pause, before cold
+  saving/program work. The callback retains exact lifetime/revision checks.
+- Ordinary profile workers reread mutable `ProfilePath`, and named apply could
+  overwrite the UI's newer pre-enqueue name. Regular requests now freeze the name;
+  the UI passes its local selection explicitly; the ordinary loader uses that
+  fixed path and republishes the name only after a current state-changing load.
+  Existing direct callers retain null/current-profile fallback semantics.
+
+Verification evidence:
+
+- `profile-regular-name-before-20260904.trx`: one real pre-fix failure, loaded
+  Other/rumble21 rather than the enqueued Candidate/rumble42.
+- The first base-queue fixture was unsynced, so it never staged output and failed
+  an expected queue count. Corrected fixture sets synced state without HID access;
+  this setup failure is not a reproduced production queue failure.
+- `profile-named-interleaving-reviewed-20260904.trx`: 57 passes. Deterministic
+  older named apply versus UI local selection/late enqueue, supersession while
+  waiting, stale exact lifetime, prepare/CAS/name/temp guards, completion delivery,
+  stable key aliases, backend contention and migration save failure are covered.
+- `profile-named-output-admission-20260904.trx`: **82 passes**, including actual
+  execution of the deferred legacy closure, observation of its action admission
+  at a benign service gate, and a stale-revision fence before hardware options.
+- Final ordinary `profile-named-reviewed-full-20260904.trx`: **3,202 passed,
+  3 existing live-audio skips, zero failures**, 38 seconds (3,205 total).
+
+Independent final re-review found no remaining production blocker in these
+bounded changes. Its semantic caveat is documented in source/protocol notes:
+`AdmissionBusy` includes a refused/expired publication pause, which cannot
+distinguish inactive source from contention. `SourceUnavailable` identifies exact
+admission failure inside a pause, not every retirement race. Retry requires a
+new request with freshly captured authority. Context guards must be lock-free,
+owned immutable snapshot reads, never monitor/dispatcher/I/O/profile re-entry.
+
+The named API has no production caller yet. Immutable catalog identity and
+rename/delete invalidation, reducer-to-worker receipt transfer, runtime neutral/
+Commit/mouse suppression/drain, opener/overlay, guarded UI persistence and complete
+preset/logical-edit invalidation remain open. This is not a finished picker or
+full Switch2Connect parity. The earlier intermittent filter-allocation failure
+is still unattributed; this successful full run does not close that release gate.
+
+Read-only checks again found DS4Windows 31316 / VIIPER 33580, both started September
+3. The user's reconnect acknowledgment referred to the older 2,964-test portable
+question; it did not confirm that those owners closed. A concise close-owner
+request was sent while source work continued. No competing process, association,
+physical input/output test, Program Files/driver/task change, reboot, commit, push
+or release occurred. Immutable b52 is unchanged and does not include this source.
+Next physical sequence remains USB readiness/input/counter rollover, explicitly
+cued unplug cleanup/reconnect, then an explicit Bluetooth pairing cue. All full
+platform hardware/game/latency acceptance and the test installer remain open.

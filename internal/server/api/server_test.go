@@ -16,8 +16,8 @@ import (
 	"github.com/Alia5/VIIPER/device"
 	"github.com/Alia5/VIIPER/device/xbox360"
 	th "github.com/Alia5/VIIPER/internal/_testing"
+	_ "github.com/Alia5/VIIPER/internal/devicecatalog" // Register devices
 	"github.com/Alia5/VIIPER/internal/log"
-	_ "github.com/Alia5/VIIPER/internal/registry" // Register devices
 	"github.com/Alia5/VIIPER/internal/server/api"
 	apierror "github.com/Alia5/VIIPER/internal/server/api/error"
 	"github.com/Alia5/VIIPER/internal/server/api/handler"
@@ -31,6 +31,7 @@ import (
 func TestAPIServer_StreamHandlerError_ClosesConn(t *testing.T) {
 	cfg := srvusb.ServerConfig{Addr: "127.0.0.1:0"}
 	usbSrv := srvusb.New(cfg, slog.Default(), log.NewRaw(nil))
+	t.Cleanup(func() { require.NoError(t, usbSrv.Close()) })
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
@@ -46,6 +47,7 @@ func TestAPIServer_StreamHandlerError_ClosesConn(t *testing.T) {
 	bus, err := virtualbus.NewWithBusID(70002)
 	require.NoError(t, err)
 	require.NoError(t, usbSrv.AddBus(bus))
+	t.Cleanup(func() { require.NoError(t, usbSrv.RemoveBus(bus.BusID())) })
 	dev, err := xbox360.New(nil)
 	require.NoError(t, err)
 	_, err = bus.Add(dev)

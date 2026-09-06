@@ -23,11 +23,10 @@ func DeviceStreamHandler(srv *usb.Server) StreamHandlerFunc {
 		}
 
 		deviceType := inferDeviceType(*dev)
-		reg := GetRegistration(deviceType)
-		if reg == nil {
+		handler := GetStreamHandler(deviceType)
+		if handler == nil {
 			return fmt.Errorf("no handler for device type: %s", deviceType)
 		}
-		handler := reg.StreamHandler()
 		if err := handler(conn, dev, logger); err != nil {
 			return err
 		}

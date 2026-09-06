@@ -33,12 +33,18 @@ func BusDevicesList(s *usb.Server) api.HandlerFunc {
 		metas := b.GetAllDeviceMetas()
 		out := make([]viipertypes.Device, 0, len(metas))
 		for _, m := range metas {
+			descriptor, descriptorErr := s.SnapshotDeviceDescriptor(m)
+			if descriptorErr != nil {
+				return apierror.ErrConflict(fmt.Sprintf(
+					"device %d changed during listing: %v",
+					m.Meta.DevID, descriptorErr))
+			}
 			dtype := inferDeviceType(m.Dev)
 			out = append(out, viipertypes.Device{
 				BusID:          m.Meta.BusID,
 				DevID:          fmt.Sprintf("%d", m.Meta.DevID),
-				Vid:            fmt.Sprintf("0x%04x", m.Dev.GetDescriptor().Device.IDVendor),
-				Pid:            fmt.Sprintf("0x%04x", m.Dev.GetDescriptor().Device.IDProduct),
+				Vid:            fmt.Sprintf("0x%04x", descriptor.Device.IDVendor),
+				Pid:            fmt.Sprintf("0x%04x", descriptor.Device.IDProduct),
 				Type:           dtype,
 				DeviceSpecific: m.Dev.GetDeviceSpecificArgs(),
 			})

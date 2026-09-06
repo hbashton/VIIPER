@@ -28,6 +28,11 @@ Thumbs.db
 # build
 dist/
 
+# Generated cross-language authentication harness outputs (not test fixtures)
+_testing/authv2/**/bin/
+_testing/authv2/**/obj/
+_testing/authv2/**/target/
+
 # Windows version info resources
 resource.syso
 cmd/viiper/resource.syso

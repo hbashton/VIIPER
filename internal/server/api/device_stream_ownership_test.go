@@ -8,7 +8,143 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/Alia5/VIIPER/virtualbus"
 )
+
+type deviceStreamCloseProbe struct {
+	net.Conn
+	closes atomic.Uint32
+}
+
+func (conn *deviceStreamCloseProbe) Close() error {
+	conn.closes.Add(1)
+	return conn.Conn.Close()
+}
+
+func TestStaleIncarnationClaimCannotDisplaceAddressReuseSuccessor(t *testing.T) {
+	var coordinator deviceStreamCoordinator
+	bus := virtualbus.New(0xaa61)
+	t.Cleanup(func() { _ = bus.Close() })
+	oldKey := deviceStreamKey{
+		busID: 17, devID: "1", bus: bus, registrationToken: 1,
+	}
+	successorKey := deviceStreamKey{
+		busID: 17, devID: "1", bus: bus, registrationToken: 2,
+	}
+	successorServer, successorClient := net.Pipe()
+	t.Cleanup(func() { _ = successorClient.Close() })
+	probe := &deviceStreamCloseProbe{Conn: successorServer}
+	successor := coordinator.claim(successorKey, probe)
+	require.True(t, successor.waitForTurn(context.Background()))
+
+	staleServer, staleClient := net.Pipe()
+	t.Cleanup(func() {
+		_ = staleServer.Close()
+		_ = staleClient.Close()
+	})
+	stale := coordinator.claim(oldKey, staleServer)
+	require.Zero(t, probe.closes.Load(),
+		"stale registration claim closed the address-reuse successor")
+	require.True(t, stale.waitForTurn(context.Background()))
+	stale.abandon()
+	successor.abandon()
+}
+
+func TestExactIncarnationCoordinatorReleasesTerminalChurn(t *testing.T) {
+	var coordinator deviceStreamCoordinator
+	bus := virtualbus.New(0xaa62)
+	t.Cleanup(func() { _ = bus.Close() })
+	for token := uint64(1); token <= 128; token++ {
+		key := deviceStreamKey{
+			busID: 18, devID: "1", bus: bus, registrationToken: token,
+		}
+		coordinator.scheduleCleanup(
+			key, 0, context.Background(), func() {})
+	}
+	require.Eventually(t, func() bool {
+		coordinator.mu.Lock()
+		defer coordinator.mu.Unlock()
+		return len(coordinator.streams) == 0
+	}, time.Second, time.Millisecond)
+
+	server, client := net.Pipe()
+	t.Cleanup(func() { _ = client.Close() })
+	key := deviceStreamKey{
+		busID: 18, devID: "1", bus: bus, registrationToken: 129,
+	}
+	lease := coordinator.claim(key, server)
+	require.True(t, lease.waitForTurn(context.Background()))
+	lease.abandon()
+	coordinator.mu.Lock()
+	require.Empty(t, coordinator.streams)
+	coordinator.mu.Unlock()
+}
+
+func TestDeviceStreamCallbackPanicIsContainedAndStateRemainsReusable(
+	t *testing.T,
+) {
+	var coordinator deviceStreamCoordinator
+	bus := virtualbus.New(0xaa63)
+	t.Cleanup(func() { _ = bus.Close() })
+	key := deviceStreamKey{
+		busID: 19, devID: "1", bus: bus, registrationToken: 1,
+	}
+	coordinator.scheduleCleanup(key, 0, context.Background(), func() {
+		panic("cleanup panic")
+	})
+	require.Eventually(t, func() bool {
+		coordinator.mu.Lock()
+		defer coordinator.mu.Unlock()
+		return len(coordinator.streams) == 0
+	}, time.Second, time.Millisecond)
+
+	server, client := net.Pipe()
+	t.Cleanup(func() { _ = client.Close() })
+	lease := coordinator.claim(key, server)
+	require.True(t, lease.waitForTurn(context.Background()))
+	lease.finish(0, time.Millisecond, context.Background(), func() {
+		panic("finalize panic")
+	}, func() { panic("removal panic") })
+	require.Eventually(t, func() bool {
+		coordinator.mu.Lock()
+		defer coordinator.mu.Unlock()
+		return len(coordinator.streams) == 0
+	}, time.Second, time.Millisecond)
+}
+
+func TestDeletedStateTimerCannotAuthenticateRecreatedExactKey(t *testing.T) {
+	var coordinator deviceStreamCoordinator
+	bus := virtualbus.New(0xaa64)
+	t.Cleanup(func() { _ = bus.Close() })
+	key := deviceStreamKey{
+		busID: 20, devID: "1", bus: bus, registrationToken: 1,
+	}
+	var staleCleanup atomic.Uint32
+	coordinator.scheduleCleanup(key, 10*time.Millisecond,
+		context.Background(), func() { staleCleanup.Add(1) })
+	coordinator.mu.Lock()
+	old := coordinator.streams[key]
+	require.NotNil(t, old)
+	// Hold the callback behind the coordinator lock until its timer has fired,
+	// then recreate the same exact key and generation with a new state pointer.
+	time.Sleep(25 * time.Millisecond)
+	delete(coordinator.streams, key)
+	freshTimer := time.NewTimer(time.Hour)
+	fresh := &deviceStreamOwnership{
+		generation: old.generation, cleanupTimer: freshTimer,
+	}
+	coordinator.streams[key] = fresh
+	coordinator.mu.Unlock()
+	t.Cleanup(func() { freshTimer.Stop() })
+	time.Sleep(25 * time.Millisecond)
+	require.Zero(t, staleCleanup.Load())
+	coordinator.mu.Lock()
+	require.Same(t, fresh, coordinator.streams[key])
+	require.Same(t, freshTimer, fresh.cleanupTimer)
+	delete(coordinator.streams, key)
+	coordinator.mu.Unlock()
+}
 
 func TestDeviceStreamReplacementWaitsForDisplacedHandlerCleanup(t *testing.T) {
 	var coordinator deviceStreamCoordinator

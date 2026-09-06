@@ -259,8 +259,14 @@ type versionedInputTestDevice struct {
 }
 
 func newVersionedInputTestDevice() *versionedInputTestDevice {
+	descriptor := testCompositeDescriptor()
+	descriptor.Configuration.BConfigurationValue = 1
+	descriptor.Interfaces[0].Descriptor.BInterfaceNumber = 0
+	descriptor.Interfaces[0].Descriptor.BInterfaceClass = usbInterfaceClassHID
+	descriptor.Interfaces[1].Descriptor.BInterfaceNumber = 1
+	descriptor.Interfaces[1].Descriptor.BInterfaceClass = 0xff
 	device := &versionedInputTestDevice{
-		schedulerTestDevice: &schedulerTestDevice{desc: testCompositeDescriptor()},
+		schedulerTestDevice: &schedulerTestDevice{desc: descriptor},
 		version:             1,
 		snapshotReady:       make(chan struct{}),
 		completion:          make(chan bool, 2),
@@ -308,6 +314,32 @@ func (d *versionedInputTestDevice) InputReportSnapshotCurrent(version uint64) bo
 	current := version == d.version
 	d.inputMu.Unlock()
 	return current
+}
+
+type versionedInputIDTestDevice struct {
+	*versionedInputTestDevice
+}
+
+func (*versionedInputIDTestDevice) SupportsInputReportSnapshot(
+	reportID uint8,
+) bool {
+	return reportID == 0 || reportID == 0x05 || reportID == 0x09
+}
+
+func (d *versionedInputIDTestDevice) SnapshotInputReportForIDInto(
+	reportID uint8, destination []byte,
+) (int, uint64) {
+	d.inputMu.Lock()
+	n := min(len(destination), len(d.lastReport))
+	copy(destination[:n], d.lastReport[:n])
+	if n > 0 && reportID != 0 {
+		destination[0] = reportID
+	}
+	version := d.version
+	d.inputMu.Unlock()
+	d.snapshotCalls.Add(1)
+	d.snapshotOnce.Do(func() { close(d.snapshotReady) })
+	return n, version
 }
 
 type blockingIsoOutDevice struct {
@@ -708,6 +740,27 @@ func TestInterruptSocketFailureReturnsClaimToRecovery(t *testing.T) {
 
 func TestVersionedGetReportCannotSerializeStalePressAfterRelease(t *testing.T) {
 	device := newVersionedInputTestDevice()
+	runVersionedGetReportCannotSerializeStalePressAfterRelease(
+		t, device, device)
+}
+
+func TestVersionedReportIDZeroCannotSerializeStalePressAfterRelease(
+	t *testing.T,
+) {
+	device := newVersionedInputTestDevice()
+	byID := &versionedInputIDTestDevice{versionedInputTestDevice: device}
+	runVersionedGetReportCannotSerializeStalePressAfterRelease(
+		t, device, inputReportIDSnapshotRequest{
+			inputReportIDSnapshotter: byID,
+			reportID:                 0,
+		})
+}
+
+func runVersionedGetReportCannotSerializeStalePressAfterRelease(
+	t *testing.T, device *versionedInputTestDevice,
+	snapshotter inputReportSnapshotter,
+) {
+	t.Helper()
 	firstWriteEntered := make(chan struct{})
 	releaseFirstWrite := make(chan struct{})
 	var writeCount atomic.Uint64
@@ -748,7 +801,7 @@ func TestVersionedGetReportCannotSerializeStalePressAfterRelease(t *testing.T) {
 	go func() {
 		var report [64]byte
 		_, err := writeVersionedInputReportResponse(
-			responses, device, nil, report[:], 701, len(report),
+			responses, snapshotter, nil, report[:], 701, len(report),
 		)
 		getDone <- err
 	}()
@@ -797,22 +850,91 @@ func TestVersionedInputReportRequestRoutesOnlyExactInputReport(t *testing.T) {
 	binary.LittleEndian.PutUint16(setup[2:4], 0x0101)
 	binary.LittleEndian.PutUint16(setup[6:8], 64)
 
-	snapshotter, length, ok := versionedInputReportRequest(
+	snapshotter, length, disposition := versionedInputReportRequest(
 		device, 0, usbip.DirIn, setup[:], 255,
 	)
-	require.True(t, ok)
+	require.Equal(t, versionedInputReportSnapshot, disposition)
 	require.Same(t, device, snapshotter)
 	require.Equal(t, 64, length,
 		"control response must be bounded by wLength before host xfer capacity")
 
 	setup[2] = 0x02 // another report ID must retain device HandleControl semantics
-	_, _, ok = versionedInputReportRequest(device, 0, usbip.DirIn, setup[:], 64)
-	require.False(t, ok)
+	_, _, disposition = versionedInputReportRequest(
+		device, 0, usbip.DirIn, setup[:], 64)
+	require.Equal(t, versionedInputReportUnhandled, disposition)
 	setup[2] = 0x01
-	_, _, ok = versionedInputReportRequest(device, 1, usbip.DirIn, setup[:], 64)
-	require.False(t, ok, "only EP0 can use control snapshot serialization")
-	_, _, ok = versionedInputReportRequest(device, 0, usbip.DirOut, setup[:], 64)
-	require.False(t, ok, "OUT requests cannot use input GET_REPORT serialization")
+	_, _, disposition = versionedInputReportRequest(
+		device, 1, usbip.DirIn, setup[:], 64)
+	require.Equal(t, versionedInputReportUnhandled, disposition,
+		"only EP0 can use control snapshot serialization")
+	_, _, disposition = versionedInputReportRequest(
+		device, 0, usbip.DirOut, setup[:], 64)
+	require.Equal(t, versionedInputReportUnhandled, disposition,
+		"OUT requests cannot use input GET_REPORT serialization")
+}
+
+func TestVersionedInputReportRequestBindsOptedInReportID(t *testing.T) {
+	device := &versionedInputIDTestDevice{
+		versionedInputTestDevice: newVersionedInputTestDevice(),
+	}
+	var setup [8]byte
+	setup[0] = hidReqTypeIn
+	setup[1] = hidReqGetReport
+	binary.LittleEndian.PutUint16(setup[2:4], 0x0105)
+	binary.LittleEndian.PutUint16(setup[6:8], 64)
+	snapshotter, length, disposition := versionedInputReportRequest(
+		device, 0, usbip.DirIn, setup[:], 64,
+	)
+	require.Equal(t, versionedInputReportSnapshot, disposition)
+	require.Equal(t, 64, length)
+	var report [64]byte
+	n, version := snapshotter.SnapshotInputReportInto(report[:])
+	require.Equal(t, len(report), n)
+	require.Equal(t, byte(0x05), report[0])
+	require.True(t, snapshotter.InputReportSnapshotCurrent(version))
+
+	binary.LittleEndian.PutUint16(setup[2:4], 0x0100)
+	snapshotter, _, disposition = versionedInputReportRequest(
+		device, 0, usbip.DirIn, setup[:], 64,
+	)
+	require.Equal(t, versionedInputReportSnapshot, disposition,
+		"report ID zero must retain versioned serialization")
+	n, version = snapshotter.SnapshotInputReportInto(report[:])
+	require.Equal(t, len(report), n)
+	require.True(t, snapshotter.InputReportSnapshotCurrent(version))
+
+	binary.LittleEndian.PutUint16(setup[2:4], 0x0102)
+	_, _, disposition = versionedInputReportRequest(
+		device, 0, usbip.DirIn, setup[:], 64,
+	)
+	require.Equal(t, versionedInputReportStall, disposition,
+		"ID-aware unsupported reports must STALL")
+	binary.LittleEndian.PutUint16(setup[2:4], 0x0101)
+	_, _, disposition = versionedInputReportRequest(
+		device, 0, usbip.DirIn, setup[:], 64,
+	)
+	require.Equal(t, versionedInputReportStall, disposition,
+		"ID-aware devices must not inherit the legacy report 0x01 fallback")
+
+	binary.LittleEndian.PutUint16(setup[2:4], 0x0105)
+	binary.LittleEndian.PutUint16(setup[4:6], 0x0001)
+	_, _, disposition = versionedInputReportRequest(
+		device, 0, usbip.DirIn, setup[:], 64,
+	)
+	require.Equal(t, versionedInputReportStall, disposition,
+		"a supported HID report cannot target the vendor interface")
+	binary.LittleEndian.PutUint16(setup[4:6], 0x0100)
+	_, _, disposition = versionedInputReportRequest(
+		device, 0, usbip.DirIn, setup[:], 64,
+	)
+	require.Equal(t, versionedInputReportStall, disposition,
+		"wIndex high-byte aliases must not reach the HID interface")
+	binary.LittleEndian.PutUint16(setup[4:6], 0x0000)
+	_, _, disposition = versionedInputReportRequest(
+		device, 0, usbip.DirIn, setup[:], 64,
+	)
+	require.Equal(t, versionedInputReportSnapshot, disposition,
+		"valid HID interface zero must retain versioned serialization")
 }
 
 func TestEndpointWorkerUnlinkCompactsLaterReservations(t *testing.T) {
@@ -1186,6 +1308,59 @@ func TestEndpointSchedulersPrecreateDescriptorKnownFastPaths(t *testing.T) {
 	require.True(t, interrupt.unlink(1))
 }
 
+func TestEndpointWorkersBindExactInterfaceAlternateParameters(t *testing.T) {
+	desc := &usbdesc.Descriptor{
+		Device: usbdesc.DeviceDescriptor{Speed: 2},
+		Interfaces: []usbdesc.InterfaceConfig{
+			{
+				Descriptor: usbdesc.InterfaceDescriptor{
+					BInterfaceNumber: 3, BAlternateSetting: 1,
+				},
+				Endpoints: []usbdesc.EndpointDescriptor{{
+					BEndpointAddress: 0x81, BMAttributes: 0x02,
+					WMaxPacketSize: 64, BInterval: 1,
+				}},
+			},
+			{
+				Descriptor: usbdesc.InterfaceDescriptor{
+					BInterfaceNumber: 3, BAlternateSetting: 2,
+				},
+				Endpoints: []usbdesc.EndpointDescriptor{{
+					BEndpointAddress: 0x81, BMAttributes: 0x03,
+					WMaxPacketSize: 8, BInterval: 4,
+				}},
+			},
+		},
+	}
+	device := &schedulerTestDevice{desc: desc}
+	ctx, cancel := context.WithCancel(context.Background())
+	schedulers := newEndpointSchedulers(ctx, device,
+		newResponseWriter(discardResponseWriter{}, nil), nil)
+	defer func() {
+		cancel()
+		schedulers.close()
+	}()
+	bulkBinding := endpointDescriptorBinding{
+		interfaceNumber: 3, alternateSetting: 1,
+		descriptor: &desc.Interfaces[0].Endpoints[0],
+	}
+	interruptBinding := endpointDescriptorBinding{
+		interfaceNumber: 3, alternateSetting: 2,
+		descriptor: &desc.Interfaces[1].Endpoints[0],
+	}
+	bulkWorker := schedulers.workerForBinding(
+		bulkBinding, usbip.DirIn, genericInWorker)
+	interruptWorker := schedulers.workerForBinding(
+		interruptBinding, usbip.DirIn, interruptInWorker)
+	require.NotNil(t, bulkWorker)
+	require.NotNil(t, interruptWorker)
+	require.NotSame(t, bulkWorker, interruptWorker)
+	require.Equal(t, 64, bulkWorker.maxPacket)
+	require.Equal(t, time.Millisecond, bulkWorker.interval)
+	require.Equal(t, 8, interruptWorker.maxPacket)
+	require.Equal(t, 4*time.Millisecond, interruptWorker.interval)
+}
+
 func TestPrecreatedFastAdmissionsDoNotTakeWorkerMapLock(t *testing.T) {
 	base := &schedulerTestDevice{desc: fastPathCompositeDescriptor()}
 	device := &generationSchedulerTestDevice{schedulerTestDevice: base}
@@ -1370,8 +1545,17 @@ func TestServerEndpointDiagnosticsSnapshotIsExternallyReachable(t *testing.T) {
 
 	snapshot := server.EndpointDiagnosticsSnapshot()
 	require.Len(t, snapshot.Connections, 1)
-	require.Len(t, snapshot.Connections[0].Endpoints, 1)
-	endpoint := snapshot.Connections[0].Endpoints[0]
+	var endpoint USBIPEndpointDiagnostics
+	found := false
+	for _, candidate := range snapshot.Connections[0].Endpoints {
+		if candidate.Endpoint == 4 && candidate.Direction == usbip.DirIn &&
+			candidate.Kind == "interrupt-in" {
+			endpoint = candidate
+			found = true
+			break
+		}
+	}
+	require.True(t, found)
 	require.Equal(t, uint32(4), endpoint.Endpoint)
 	require.Equal(t, "interrupt-in", endpoint.Kind)
 	require.Equal(t, uint64(1), endpoint.QueueAge.Count)
@@ -1451,7 +1635,9 @@ func BenchmarkInterruptClaimEncodeRetSubmitWrite(b *testing.B) {
 	// Warm every worker-owned response buffer before measuring the steady path.
 	require.True(b, worker.enqueue(1, 64, nil, nil, base))
 	idx := worker.claimNext()
-	require.True(b, worker.processInterruptIn(timer, idx))
+	completed, retain := worker.processInterruptIn(timer, idx)
+	require.True(b, completed)
+	require.False(b, retain)
 	worker.finishCurrent(idx, true)
 
 	b.ReportAllocs()
@@ -1464,7 +1650,8 @@ func BenchmarkInterruptClaimEncodeRetSubmitWrite(b *testing.B) {
 			b.Fatal("enqueue failed")
 		}
 		idx = worker.claimNext()
-		if !worker.processInterruptIn(timer, idx) {
+		completed, retain = worker.processInterruptIn(timer, idx)
+		if !completed || retain {
 			b.Fatal("interrupt service failed")
 		}
 		worker.finishCurrent(idx, true)

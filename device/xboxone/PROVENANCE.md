@@ -1,114 +1,659 @@
-# Xbox One body-codec provenance and uncertainty ledger
+# MS-GIPUSB codec provenance and uncertainty ledger
 
-Audit date: 2026-08-29.
+Audit date: 2026-09-02; downstream packet boundary, retained atomic execution
+owner, canonical mixed-packet batch composition, dormant external-identity gate,
+and extended initialization compatibility rechecked 2026-08-31 through
+2026-09-02.
 
-## Clean-room treatment
+## Implementation provenance
 
-The implementation in this directory was written as an original Go API from
-documented byte-level observations. No xone, PadForge, HIDMaestro, or other
-project source text, control flow, data structure, or API was copied. The xone
-files below were used only as pinned evidence of protocol facts. Tests use
-independently written, minimal byte vectors.
+Except for the narrowly scoped extended initialization compatibility frame
+recorded below, the normative claims, constants, and test vectors added or
+retained by this tranche were checked only against Microsoft MS-GIPUSB revision
+1.0, the official Microsoft GIP documentation download, and the Open
+Specifications pages listed below. No xone, xow, xpad, xpadneo, PadForge,
+HIDMaestro, Switch2Connect, capture, or bundled binary was consulted as an
+implementation source for those normative protocol portions.
 
-The pinned xone files carry `SPDX-License-Identifier: GPL-2.0-or-later`, and the
-[pinned repository license](https://github.com/medusalix/xone/blob/3484f603484782dd7551c64e5a33fc602b127051/LICENSE)
-is GPLv2. VIIPER is distributed under GPL-3.0-or-later in its root
-`LICENSE.txt`. This provenance record does not relicense upstream expression or
-claim that protocol facts are upstream code.
+Historical note: commit `21b51a1` introduced the pre-existing package and its
+ledger identified pinned xone files as protocol-fact evidence while stating
+that its Go API was independently written. That history remains visible in
+Git. This revision supersedes xone as the authority for the surviving header,
+input, motor, and sequence facts, removes the xone-only Guide body and startup
+stop assumptions, and does not intentionally retain upstream expression.
 
-PadForge and HIDMaestro were not inputs to these codecs. In particular, no
-bundled binary was reverse engineered or treated as a wire oracle.
+Microsoft's Open Specifications notice permits making copies to develop
+implementations and distributing portions as necessary to document those
+implementations. The same notice reserves other rights and calls out possible
+patent and trademark considerations. This file records protocol provenance; it
+does not grant a USB VID, PID, trademark right, patent license, device
+credential, or right to present as a Microsoft-manufactured product.
 
-## Pinned sources
+## Pinned official sources
 
-- xone commit
-  [`3484f603484782dd7551c64e5a33fc602b127051`](https://github.com/medusalix/xone/commit/3484f603484782dd7551c64e5a33fc602b127051)
-- xone
-  [`driver/gamepad.c` lines 30-79](https://github.com/medusalix/xone/blob/3484f603484782dd7551c64e5a33fc602b127051/driver/gamepad.c#L30-L79)
-  for button masks, the 14-byte base input body, motor mask bits, and the
-  nine-byte rumble body
-- xone
-  [`driver/gamepad.c` lines 145-158](https://github.com/medusalix/xone/blob/3484f603484782dd7551c64e5a33fc602b127051/driver/gamepad.c#L145-L158)
-  for the observed all-motor startup stop and its `0xff` duration / `0xeb`
-  repeat bytes
-- xone
-  [`driver/gamepad.c` lines 254-300](https://github.com/medusalix/xone/blob/3484f603484782dd7551c64e5a33fc602b127051/driver/gamepad.c#L254-L300)
-  for base input parsing and the capability-dependent Share offset
-- xone
-  [`bus/protocol.c` lines 24-46](https://github.com/medusalix/xone/blob/3484f603484782dd7551c64e5a33fc602b127051/bus/protocol.c#L24-L46)
-  for virtual-key `0x5b`, virtual-key command `0x07`, and option bits
-- xone
-  [`bus/protocol.c` lines 1187-1207](https://github.com/medusalix/xone/blob/3484f603484782dd7551c64e5a33fc602b127051/bus/protocol.c#L1187-L1207)
-  for the exact two-byte virtual-key body and separate Guide dispatch
-- xone
-  [`bus/protocol.c` lines 187-291](https://github.com/medusalix/xone/blob/3484f603484782dd7551c64e5a33fc602b127051/bus/protocol.c#L187-L291)
-  for the observed varint/header encoder and decoder
-- xone
-  [`bus/protocol.c` lines 293-346](https://github.com/medusalix/xone/blob/3484f603484782dd7551c64e5a33fc602b127051/bus/protocol.c#L293-L346)
-  for non-zero transmit sequences
-- xone
-  [`auth/auth.c`](https://github.com/medusalix/xone/blob/3484f603484782dd7551c64e5a33fc602b127051/auth/auth.c)
-  as evidence that authentication is a stateful protocol boundary, not a
-  constant announce or descriptor payload
-- Microsoft
-  [`GameInputRumbleParams`](https://learn.microsoft.com/en-us/gaming/gdk/docs/reference/input/gameinput/structs/gameinputrumbleparams)
-  for the public Windows semantic names low-frequency, high-frequency,
-  left-trigger, and right-trigger
+- [MS-GIPUSB landing page and Open Specifications notice](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-gipusb/e7c90904-5e21-426e-b9ad-d82adeee0dbc),
+  published 2024-09-16 as protocol revision 1.0.
+- Official `MS-GIPUSB-240916.docx`, SHA-256
+  `810F2841AF3FD832E5EBBDFB581D67413DDA5914364E713AEB35D63483D6D9B0`.
+  Relevant normative locations:
+  - section 2.2.10 and tables 12 through 14: fixed header, data classes, and
+    flags;
+  - section 2.2.10.3 and table 15: sequence pools and reserved zero;
+  - section 2.2.10.4 and table 16: data-class MTUs and extended lengths;
+  - sections 2.2.1.1 through 2.2.1.3 and table 27: VID/PID matching,
+    primary Device ID, and the exact Hello message;
+  - sections 2.2.3 through 2.2.9 and tables 4 through 11: USB control
+    requests, strings, Microsoft OS descriptors, device/configuration/data
+    interface descriptors, and interrupt endpoints;
+  - sections 2.2.2 and 3.1.5.5.3 through 3.1.5.5.5, tables 34 through
+    40: metadata exchange, Metadata Complete, Set Device State, and device
+    states;
+  - section 3.1.5.6.1 and table 56: Direct Motor Command;
+  - section 3.1.5.6.1.1 and table 57: standard Gamepad Input Report;
+  - section 3.1.5.5.7 and tables 41 through 42: Guide LED command, pattern
+    domain, and intensity range;
+  - section 1.3.4: mandatory first current-state report after Start;
+  - section 3.1.5.5.6: Guide Button Status prose;
+  - sections 3.1.5.1 through 3.1.5.3: ACK behavior, fragmented reliable
+    transmission, even downstream headers, and message coalescing;
+  - section 3.1.1 and figure 6: Arrival, Idle, Active, Off, reset, and
+    controller state transitions;
+  - sections 3.1.5.6.1.2 through 3.1.5.6.1.4: custom data, extensions,
+    Console Function Map/Share, and overflow constraints.
+- Official `GIPDocumentation.zip`, SHA-256
+  `BFE0E08D5915A09375CB7909F3ACF35A1BF35A9E48C293969C62879FDDD517CF`.
+  Relevant contained documents:
+  - `H001419 - Original GIP Spec.docx`, SHA-256
+    `27A664B206FC4B2C5B0DB8E4DDA7C7575ECA2DDAA18318376CDEFC984526ED37`;
+  - `GIP Metadata Compiler.docx`, SHA-256
+    `B0474BD13C01D6644AB489F4E56A6A8D08CB38614581203BB4D641B373CA2858`;
+  - `GIP Metadata Specification.docx`, SHA-256
+    `6836F5DF8805FA49FD32B87A3111DAD3BEA13207D5962E5592FE3D117140C011`;
+  - `XInputHID Documentation.docx`, SHA-256
+    `AAF46FC046BF46F730313FBC00757D76F800246A9683166AB5EEE36BFF55829B`.
+  The ordinary-gamepad binary layout in `official_gamepad_metadata.go` is an
+  independent Go implementation of the documented `Metadata.cs`,
+  `DeviceMetadata.cs`, `MessageMetadata.cs`, and `SerializationUtilities.cs`
+  algorithms. The compiler document's three validation methods are empty, so
+  VIIPER applies its own strict structural and semantic validator before the
+  generated bytes can cross the existing identity-bound metadata seam. The
+  "Security" section of `H001419 - Original GIP Spec.docx` further says that a
+  controller talking to Windows PC over USB should add opt-out GUID
+  `7a34ce77-7de2-45c6-8ca4-0042c08bd94a` to `SupportedInterfaces`, after which
+  the host succeeds the security exchange by default. Both in-package PC
+  gamepad variants include that exact serialized GUID; this is not a console
+  authentication implementation.
+- [USB 2.0 Specification](https://www.usb.org/document-library/usb-20-specification),
+  official USB-IF package `usb_20_20250603.zip`, SHA-256
+  `5FE9C53C04033818AF396E8852B3ACBCA5C3A76BA92FAB549FD81CD0EA7B3692`;
+  contained `usb_20.pdf`, SHA-256
+  `D39698A33486C399124AF92BD02E4F978FD9A836B5CF4E52E6E4633EB1D89F61`.
+  Relevant normative locations are sections 5.7.4 (printed page 51), 9.3.4,
+  9.4.1, 9.4.5, 9.4.7, and 9.4.9. Section 5.7.4 permits the host to service
+  an interrupt endpoint sooner than its requested interval, down to 1 ms at
+  full speed. On 2026-09-02 an independent audit fetched the official ZIP
+  afresh and verified both hashes above. This supports investigating a bounded
+  1/2 ms virtual-host service policy; it does not prove Windows GIP exposes
+  distinct readings at that rate or establish an end-to-end latency result.
+- [GIP data-interface endpoint descriptors, table 11](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-gipusb/e77f6af7-481d-4d86-b72a-848cb233e3d6)
+  require interval values of at least 4 ms. [Device Qualifier behavior](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-gipusb/86149e9c-ff03-4eb7-a10b-c074c22a7e01)
+  requires a STALL identifying full-speed operation. Thus changing the
+  descriptor to 1/2 ms, or advertising high speed solely to reinterpret byte
+  `4` as 1 ms, is not the published GIP descriptor path. usbip-win2 0.9.7.7
+  `drivers/ude/wsk_receive.cpp`, `to_high_speed_interval` and configuration
+  patching, converts full-speed interval `4` to high-speed-encoded `6`,
+  preserving 4 ms. A descriptor byte without its speed/transform is ambiguous.
+- [Direct Motor Command, section 3.1.5.6.1](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-gipusb/ee8c5b28-e8da-4cc4-bb48-17781b8371af).
+- [Gamepad Input Report, section 3.1.5.6.1.1](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-gipusb/ff8092de-b56e-4bbc-8e6e-71957afa9172).
+  Rechecked 2026-09-02: the section recommends change-only reports and suppression
+  of idle stick noise. The retained journal suppresses identical ordinary
+  publications and parks when no report is pending; it preserves explicit
+  KeepAlive requests and does not introduce a transport-level deadzone.
+- [Status Device Command, section 3.1.5.5.2](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-gipusb/97ec033b-af57-4dad-9b6c-580bdd1b2971).
+  Rechecked 2026-09-02: periodic status is required every second for the first
+  ten seconds, then every twenty seconds. The local timer anchors to delivery
+  of START status, retains exact failed-delivery retries, and resets its next
+  deadline on successful status delivery. That delivery-based anchoring and
+  no-catch-up policy are explicit local scheduling choices. Charging/battery-
+  type change events remain an open implementation gate, not covered by the
+  periodic timer. Tests are software evidence, not hardware conformance.
+- [Guide LED command, section 3.1.5.5.7](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-gipusb/ec312389-2e05-4915-85ed-0e8fe9c3d33b).
+- [GIP Payload Length MTUs, section 2.2.10.4](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-gipusb/738f56b9-1ee3-4ddc-a223-8de0bedc9310).
+- [Reliable Large Message Transmission, section 3.1.5.2](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-gipusb/b7af910e-a999-40ad-a645-df110961477b).
+- [Message Summary, section 3.1.5.4](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-gipusb/c66cee2f-7728-4ec1-8f3c-e9ab3aa4d696).
+- [Startup Gamepad Input Report requirement, section 1.3.4](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-gipusb/ca627aac-f587-462f-bd25-7899f8892fba).
+- [USB String Descriptors, section 2.2.4](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-gipusb/6f923d8d-df4b-4415-9bc2-c94d07607daa).
+- [USB Device Descriptor, table 7](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-gipusb/d326fff6-60c1-4354-be28-895321df4357).
 
-## Facts implemented
+The local DOCX hash is the byte-level evidence pin. Microsoft Learn pages are
+linked for review convenience and can be updated independently.
 
-| Fact | Implementation |
+On 2026-08-31, the MS-GIPUSB DOCX and GIP documentation ZIP were fetched afresh
+from the official URLs above. The DOCX, ZIP, and all four listed contained DOCX
+SHA-256 values matched these pins exactly.
+
+### Extended initialization compatibility provenance
+
+MS-GIPUSB's message summary permits a 15-byte Set Device State form but does
+not define that body's fields. On 2026-09-02, a portable Windows hardware run
+captured this exact primary-device interrupt-OUT message immediately after the
+metadata exchange:
+
+`05 20 02 0f 06 00 00 00 00 00 00 55 53 00 00 00 00 00 00`
+
+The packet log was
+`viiper-xboxone-raw-b34-2026-09-02.packets.log`, SHA-256
+`1009498079902B7CF390D8B937339700B5A4AC987CF7BD8D792AC730E7BA2B7B`;
+the corresponding ordinary log, SHA-256
+`A2E0ABB628A8DB726D673FC3776B43C5A106986B572A4A40264D02E19E7CD9E0`,
+records that the former decoder rejected the frame and closed the retained
+transport.
+
+SDL's independently maintained GIP host implementation corroborates the exact
+15-byte payload at pinned revision
+`c71abd08605b8bb7078372307a93274725c99fe0` in
+`src/joystick/hidapi/SDL_hidapi_gip.c`: it identifies feature bit 7 as extended
+Set Device State, sends the byte-identical body as part of its initialization
+sequence, explicitly calls the body undocumented/unknown, and then sends the
+ordinary one-byte Start separately. The local hifihedgehog reference at pinned
+revision `d98c5804a9d20b0d96e993741797878c86b8f1e1` independently contains the
+same sequence.
+
+VIIPER therefore recognizes only that exact body as a compatibility
+initialization probe, acknowledges it without changing lifecycle state, and
+continues to require the documented one-byte Start. Every mutated byte and
+every other 15-byte body remains rejected. This is a byte-level interoperability
+exception, not an inferred definition of state 6 or the reserved bytes; no SDL
+control flow or source expression was copied.
+
+The subsequent portable b35 run proved that change at the next boundary. Its
+packet log, SHA-256
+`8BE91BFF3295802D60F46A7F6014106E1797635405BAB143C5F8242FC7B2574C`,
+records the extended frame, distinct one-byte Start, Guide LED command, and
+ongoing upstream input reports. The corresponding ordinary log, SHA-256
+`B23162B07BFC64FD7F9140D3E0E4B5BFF7930694DD02612C809234C5782D6847`,
+shows that the next teardown was instead an unsupported Security command. The
+captured `06 30 01 3a ...` header is system Command 6 with ACME and a 58-byte
+payload; its body is deliberately not reproduced or interpreted here.
+
+That result was checked against the freshly downloaded official
+`GIPDocumentation.zip`, whose SHA-256 again matched the pinned value above.
+The "Security" section of `H001419 - Original GIP Spec.docx` explicitly directs
+Windows-PC USB controllers to advertise the PC opt-out GUID and states that the
+host then succeeds security by default. This evidence drives the metadata fix;
+it does not authorize a security-exchange implementation.
+
+The portable b36 run proved the distinction on this Windows host. Its packet
+log, SHA-256
+`3B3D984C240F427B0A11E9DAE15CA97D4D25AA73B257902AB7CA39D06F23B898`,
+contains the 214-byte Console Function Map metadata, the extended
+initialization frame, distinct Start, Guide LED, and continuous input. The b35
+58-byte ACME Security Data request is absent. Windows instead sends exactly
+`06 20 01 02 01 00`; the corresponding ordinary log, SHA-256
+`E74A21E4C438B9A5651C4CB1AF6810657ABF6514C0753F96484006EE7A4F5190`,
+records teardown only because that completion marker was not yet decoded.
+
+Microsoft's original specification calls the non-fragmented system Command 6,
+flags `0x20`, two-byte form "Security Data Complete" and says it completes the
+security transfer handshake. The pinned Linux xpad implementation independently
+defines the identical six-byte `xboxone_auth_done` vector (`01 00` body) and
+uses it in working Xbox One initialization. VIIPER consequently recognizes
+only that exact form as a lifecycle-neutral Active-state completion. This is
+not an authentication implementation: ACME, fragments, arbitrary bodies, and
+all challenge/response Security data remain rejected.
+
+### Canonical broker bridge provenance
+
+The DS4Windows 24-byte semantic input seam and the project-owned 72-byte CFBK
+v1 feedback seam are private cross-repository contracts, not MS-GIPUSB wire
+claims. Their golden vectors are checked in both repositories. The four motor
+names, enable bitmap, percentage domain, duration-zero cancellation, and 10 ms
+duration/delay units used by the feedback translation come from MS-GIPUSB
+revision 1.0 section 3.1.5.6.1/table 56 above. Mapping percentages into the
+normalized CFBK domain, distinguishing lease-retaining `Neutral` from persona
+clear intent, and capping TTL by command duration are explicit local safety
+policies. `ClearOutputs` is intentionally not classified by action name:
+recoverable configuration-loss/reset clears become `Neutral`, while only the
+separately authenticated disconnect clear becomes terminal `Stop`.
+
+The pinned PadForge, HIDMaestro, Switch2Connect, Linux xpad/xone/xpadneo, and
+SDL trees were reviewed only as independent audit/corroboration inputs for the
+larger production task. No source expression from them was copied into
+`canonical_feedback.go`, the retained semantic-wire adapter, or their tests.
+In particular, Switch2Connect's Xbox backend is opaque, HIDMaestro's companion
+surface is two-body XUSB-oriented, and Linux xpad's public force-feedback path
+does not establish four independently application-visible actuators. Those
+projects therefore supply no normative fact or implementation donor for this
+private bridge; the Microsoft specification and the existing project-owned
+canonical contracts remain authoritative.
+
+The exact pins, observed licenses, permitted treatment, and residual risks are
+recorded in the repository-wide
+[`controller-platform-provenance-ledger-2026-08-29.md`](../../docs/architecture/controller-platform-provenance-ledger-2026-08-29.md).
+The focused audit used PadForge stable
+`0794fd01bd19f4c096b982ffc824b88bce5ed743`, HIDMaestro stable
+`46054b862830fcec7bc98d72ccb7c4f0c0179fb1`, Switch2Connect
+`4487322a306f04efa27682e3f3a508635a84fd98`, xone
+`3484f603484782dd7551c64e5a33fc602b127051`, Linux xpad
+`cf72cbb39da84b6f02f90c07f33b102fc10b16f0`, xpadneo
+`3acca9f5e211edb601000bb64767b78b2468f787`, and SDL
+`c71abd08605b8bb7078372307a93274725c99fe0` under the roles and license
+restrictions in that ledger.
+
+## Normative facts implemented
+
+| Source fact | Implementation |
 | --- | --- |
-| Base input body has seven little-endian 16-bit fields | `input_body.go` exact 14-byte codec |
-| Base buttons occupy bits 2 through 15 in the pinned map | named Boolean mapping; bits 0-1 rejected |
-| Guide is a separate two-byte virtual-key body with key `0x5b` | strict Guide body codec; base encoder rejects Guide |
-| Share is not in the base body and depends on reported interfaces/extensions | explicit semantic field; base encoder rejects Share |
-| Rumble body has one unknown byte, mask, four magnitudes, and three timing bytes | `rumble_body.go` exact nine-byte codec |
-| Motor mask maps right/high, left/low, right trigger, left trigger to bits 0-3 | `MotorMask` constants and channel-basis tests |
-| xone emits an all-enabled zero-magnitude startup stop with `ff/00/eb` timing | `NewPinnedStopRumbleBody` and exact-vector test |
-| Transmit sequence zero is skipped | `SequenceCounter` emits 1-255 and wraps to 1 |
+| A normal single-packet header is four bytes | `header.go` exact-length codec |
+| MessageType is a three-bit class plus five-bit message number | typed `DataClass` and bounded message number |
+| data classes 4 through 7 and Flags bit 3 are reserved | fail-closed decode and encode validation |
+| Fragment and InitFrag alter the header grammar | rejected by the single-packet-only type |
+| sequence ID zero is reserved | header validation and `SequenceCounter` |
+| Metadata Response, Hello, and Status use the Global sequence pool; Gamepad Input uses a unique pool | composed persona owns one transactional Global counter and a distinct Gamepad Input counter |
+| Command/Low/Standard MTU is 64 bytes including the header | maximum 60-byte payload for a four-byte header |
+| a controller data packet can coalesce multiple complete messages | fixed-capacity, ordered, failure-atomic supported-message packet decoder; dormant whole-vector execution for self-contained feedback and a canonical persona-backed batch with at most one lifecycle/ACK-governed member |
+| primary USB and Hello VID/PID must match | one private profile identity feeds both encoders |
+| a primary Device ID has high bytes `00 00 FF FB` | strict identity and Hello validation |
+| the Hello is system Command 2 with a 28-byte payload | exact 32-byte profile-bound Hello codec |
+| RF, Security, and GIP versions in Hello are `1.0` | fixed fields and strict decode |
+| firmware `0.0.0.0` is invalid | profile and Hello rejection |
+| GIP USB uses the MSFT100 descriptor and default vendor code `0x90` | exact table 5 bytes |
+| the extended compatible ID is `XGIP10` | exact 40-byte table 6 descriptor |
+| controller USB class/subclass/protocol is `FF/47/D0` | device and data-interface descriptor bytes |
+| controller data endpoints are 64-byte interrupt OUT 01 and IN 81 | exact 32-byte configuration tree |
+| data endpoint intervals are at least 4 ms | explicit caller values with bounds validation |
+| table-4 controller EP0 requests have distinct Default, Addressed, and Configured validity | transactional `USBControlPlane` admission/state matrix |
+| control-pipe endpoint wIndex should use direction zero, but a device may accept either direction bit | EP0 `0000`/`0080` aliasing only; every non-zero high byte stalls |
+| Default Control Pipe Halt is optional and not recommended | EP0 status/clear remain available, while setting the unsupported feature stalls |
+| SetConfiguration resets endpoint Halt even when reselecting the same configuration | delivered reconfiguration clears all modeled endpoint-halt state |
+| Device Qualifier, controller-only interface requests, Extended Properties, and every unlisted request stall | explicit fail-closed EP0 classification |
+| Device/Configuration/LANGID descriptors may be truncated to host `wLength`; MSFT100 and XGIP10 use exact requests | private fixed-capacity EP0 response construction |
+| a new controller's Status Device message is system Command 3 with a four-byte payload when Events Present is clear | strict no-events body and full-message codec |
+| Status sub-fields have reserved/deprecated power, charge, and battery-type values | typed fields and fail-closed validation |
+| the no-events Extended Status field reserves bits 7:2 and payload bytes 2:3 | strict decode and canonical zero encode |
+| a wired no-battery device reports Full Power (or Powering Off), Not Charging, Battery Absent, Critically Low | explicit narrow helper; no inferred battery policy |
+| Metadata Request is exact primary system Command 4 with no payload | strict host-command decoder |
+| fragmented metadata uses one sequence, six-byte headers, first/final ACME, and Metadata Complete | identity-bound transactional metadata transfer |
+| a host can ACK without an ACME request and reports total sequential contiguous bytes so gaps are resent | decoded requested/unsolicited progress, duplicate, and rewind dispositions |
+| a controller targeting Windows PC over USB should advertise `IDevAuthPCOptOut` (`7a34ce77-7de2-45c6-8ca4-0042c08bd94a`) and the host then succeeds security by default | the strict in-package base and Console Function Map metadata compilers include the exact little-endian GUID |
+| Security Data Complete is exact system Command 6, flags `0x20`, two-byte data and working Linux xpad emits body `01 00` as `xboxone_auth_done` | only `06 20 SS 02 01 00` is an Active-state lifecycle-neutral completion; every authentication-data form remains unsupported and fails closed |
+| Protocol Control ACK is system Command 1 with a nine-byte body | exact body/full-message codec from downloadable original-spec table 4-14 |
+| ACK body contains code zero, referenced MessageType, System/Index-only flags, 32-bit contiguous offset, and 16-bit remaining buffer | strict fields, reserved-code/flag rejection, and metadata progress bridge |
+| current libraries request ACK every 60 ms during reliable transmission | monotonic middle-fragment ACME selection and final-admission upgrade |
+| reliable-message ACK timeout is one second | delivery-based saturating monotonic deadline and terminal fault |
+| Arrival sends only Hello every 500 ms until a defined host response | lifecycle cadence and state gating |
+| START requires the first current-state input report | ordered Active-entry actions |
+| OFF/RESET requires powering-off Status, no other traffic, then a 500 ms wait | ordered terminal actions and deadline |
+| QUIESCE clears output state | Active-state clear-output action |
+| Direct Motor is message `09 00 SS 09` | `DirectMotorHeader` and exact vectors |
+| Gamepad Input is message `20 00 SS 0e` | `GamepadInputHeader` and exact vectors |
+| Direct Motor and standard Gamepad Input use exact uncoalesced 13-byte and 18-byte envelopes | strict atomic full-message codecs and exhaustive header-domain tests |
+| standard input is fourteen bytes and little-endian | `input_body.go` exact codec |
+| input low bit 0 is reserved; bit 1 is Keep Alive | strict reserved check and report-envelope field |
+| triggers are unsigned 10-bit values; sticks are signed 16-bit | bounds-checked trigger and exact stick codecs |
+| Guide and Share are absent from the standard payload | base-form rejection instead of silent loss; typed Guide and Console Function Map paths stay separate |
+| Guide status is system Command 7 with payload status `0`/`1` and `VK_LWIN` (`5B`) | strict `guide_status.go` full-message codec |
+| Share uses an eighteen-byte Console Function Map, function ID 1, and expands the gamepad payload to 32 bytes | canonical Share-capable input codec and metadata profile |
+| Direct Motor byte 0 is command `0x00` | fixed encoder value and strict decoder check |
+| motor bitmap bits 7:4 are mandatory zero | strict bitmap validation |
+| four motor levels are percentages from 0 through 100 | named fields and strict bounds |
+| duration/delay use 10 ms units; repeat is a count | raw byte fields with documented units |
+| duration zero cancels all motors and ignores levels | validated `IsCancellation` semantics |
+| Guide LED is primary system Command 10 with selector zero and a three-byte payload | strict body/full-message codec |
+| Guide LED patterns are `00`, `01`, `02`, `03`, `04`, and `0D`; intensity is 0 through 47 percent | closed typed pattern domain and exhaustive bounds tests |
+| sequence counters run 1 through 255 and wrap without emitting zero | exhaustive transactional wrap test |
 
-## Local safety inferences
+## Explicit implementation policies
 
-These are explicitly VIIPER policy, not protocol claims:
+These are local safety or API choices, not additional wire claims:
 
-- Opposite directions on one D-pad axis are rejected.
-- Reserved input bits, the unknown rumble byte, and unknown motor-mask bits
-  fail closed.
-- A non-zero magnitude on a disabled motor is rejected to prevent stale channel
-  data from leaking through later translation.
-- Guide down state is accepted only as `0` or `1`.
-- An explicit stop selects every known motor and sets every magnitude to zero;
-  a zero enable mask is not assumed to cancel a prior effect.
-- Authentication is unavailable unless a provider is explicitly installed.
+- Exact-size codecs never truncate a larger slice.
+- Reserved values and unsupported framing fail closed.
+- The four independent D-pad bits are preserved; SOCD policy is outside the
+  protocol codec.
+- A motor level is not rejected solely because its bitmap bit is clear; the
+  official table does not make that combination malformed.
+- A body must validate before it can be classified as a cancellation.
+- `IsCancellation` follows the normative duration-zero rule even when Delay or
+  Repeat are non-zero. `IsCanonicalImmediateStop` additionally requires zero
+  Delay and Repeat only for locally generated canonical output; it must not be
+  used to interpret host cancellation.
+- Guide and Share remain in the semantic model so callers cannot lose them
+  accidentally. Share reaches GIP only when the strict official metadata
+  compiler issued the matching Console Function Map variant; externally bound
+  bytes cannot acquire that capability by resemblance.
+- Guide transitions use the separately sourced Command 7 wire form and a
+  local allocation-free ordered edge ring. The queue ownership, saturation
+  backpressure, retry transfer, and reset normalization are VIIPER lifecycle
+  policy rather than claims copied from the protocol sources.
+- Keep Alive remains in the wire report envelope rather than masquerading as
+  an application control in the transport-neutral state.
+- Authentication provider output is cleared on every failed boundary and its
+  unused success tail is zeroed.
+- The zero-value controller profile cannot emit descriptors or Hello bytes.
+- Descriptor power and intervals are explicit caller facts; no hardware value
+  is inferred.
+- EP0 mutation occurs only after claim, exact response/status admission, and
+  delivered resolution. Reset/disconnect/reconnect use strict successor
+  generations, clear volatile state, and cannot overtake a claim. This is an
+  offline model; one future backend fence must still coordinate GIP lifecycle,
+  sequence pools, input presentation, and output neutralization.
+- Manufacturer, Product, and Serial descriptor requests remain explicit
+  stalls on the legacy control plane. The dormant external-identity gate can
+  serve caller-supplied values only after exact one-shot authorization; this
+  is no default identity, production registration, or ownership proof.
+- A real Configured-to-Addressed `SET_CONFIGURATION(0)` transition derives one
+  same-generation typed output clear only after delivered EP0 completion.
+  Failed EP0 delivery and idempotent configuration zero derive none. Local
+  clear failure retains the exact epoch, self-wakes a paced retry, and fences
+  generation boundaries. All of that clear policy is VIIPER safety behavior,
+  not an additional MS-GIPUSB wire requirement.
+- Metadata bytes are accepted only through an opaque identity-bound compiled
+  blob. Binding owns a copy but is not semantic validation.
+- Metadata packets and sequence values use claim/admit/resolve. Metadata
+  claims expose no bytes; final `AdmitAndCopy` overwrites the writer buffer from
+  the private committed record and can only upgrade a due ACME bit. Only
+  delivered resolution commits offset, completion, ACK state, or sequence
+  consumption; defer/write failure retains an exact mandatory retry.
+- The reliable transfer accepts decoded contiguous-byte progress only for the
+  exact generation/message/sequence/local-transfer epoch. Requested and
+  source-valid unsolicited ACKs can advance progress, produce an idempotent
+  duplicate, or rewind a gap; ACKs behind the accepted high-water mark fail
+  closed. Generation and local transfer epoch remain local transaction
+  context; message, sequence, progress, and receiver-buffer space are decoded
+  from the official Protocol Control body.
+- Lifecycle decisions use a fixed-capacity pending action list with one
+  claim/admit/resolve cursor. Failure retries only the current action;
+  intermediate delivery advances the cursor, while state, cadence/deadline,
+  and reset generation commit only after final-action delivery. The state
+  machine never performs transport or hardware actions.
+- A successfully admitted lifecycle claim is an exclusive execution lease
+  identified by transport generation, transition epoch, claim token, cursor,
+  and action. Reset cannot overtake it; an asynchronous executor must complete,
+  fail with no possible late effect, or synchronously cancel/drain and resolve
+  it before reset actions begin.
+- Each BeginMetadata claim burns a never-reused local transfer allocation
+  before the claim escapes; active state still commits only after delivered
+  resolution. Completion/failure callbacks carry both transport and transfer
+  generation, so a repeated request, interrupted start, or reset cannot create
+  a generation ABA.
+- STOP and reset boundaries add bounded logical output revocation as a local
+  fail-safe policy. Normal upstream publication is gated first, privileged
+  startup/status messages run while gated, and START reopens normal
+  publication only after the mandatory current-state input report. This is an
+  integration contract, not an added MS-GIPUSB wire requirement.
+- The optional 500 ms lost-START assumption is not used. An explicit START is
+  required as a fail-closed local policy.
+- `ControllerPersonaEngine` is a local composition policy, not a new wire
+  claim. Its one serialized claim lane, authoritative transport generation,
+  pre-claim construction, nested final fences, mandatory immutable retries,
+  and one-clear-epoch behavior combine source-defined messages without
+  changing their bytes.
+- Sequence-dependent wire construction completes before a sequence claim.
+  Lifecycle emission sources and hidden inner ownership are checked before a
+  lifecycle claim. Retry, Admit, and Resolve validate every nested owner before
+  mutating any inner owner. These are local failure-atomicity rules justified
+  by the backend cancellation/retry requirements, not statements from
+  MS-GIPUSB.
+- A metadata-timeout failure Hello retires only that exact faulted transfer
+  when the Hello resolves delivered. The following 500 ms Arrival cadence is
+  the source-defined Hello cadence; tying cleanup to the delivered failure
+  action is a local stale-state prevention rule.
+- External USB reset/disconnect each create one logical clear epoch, and an
+  exact retry keeps that epoch. Host protocol RESET does not manufacture a
+  second clear at its final transport reset because its ordered lifecycle has
+  already delivered the clear. Epoch exhaustion fails before the boundary
+  rather than wrapping. This is a local output-ownership policy.
+- The standalone downstream classifier accepts one exact message. The packet
+  decoder uses only each validated four-byte header's declared length to walk
+  all complete supported messages in a 64-byte packet. It returns no prefix on
+  any later failure and copies typed values into fixed local storage. It does
+  not infer USB aggregate boundaries, reassemble fragments, or supply receive
+  duplicate/replay policy.
+- The dormant packet execution owner and persona-backed batch composition are
+  local transaction policy, not MS-GIPUSB wire rules. Standalone selection
+  admits complete fixed-capacity Direct Motor / Guide LED vectors. The batch
+  composition additionally obtains one exact lifecycle cursor or reliable-ACK
+  disposition from the existing canonical `ControllerPersonaEngine`; it does
+  not copy the engine or create a second mapping stack. Whole-vector preflight
+  precedes external effect, final admission repeats it, one participant receives
+  the exact vector atomically in wire order, and packet identity is retained
+  across deferred/failed/cancelled retry. More than one context-bearing member
+  fails before mutation because the current canonical owners expose one claim.
+  STOP/OFF/RESET plus any sibling also fails before mutation because the first
+  selected cursor only gates upstream and the mandatory clear is a successor;
+  QUIESCE is distinct because its selected cursor is already the clear.
+  A local terminal credential fences Execute/Cancel before persona resolution,
+  removing the admitted-Deferred snapshot race; an impossible post-selection
+  vector invariant retains the acquired persona claim under permanent
+  quarantine. Panic, deadline ambiguity, ACK-context expiry, owner divergence,
+  or failed cancellation/drain never becomes an ordinary retry.
+- GIP wire-producing lifecycle cursors are locally held while USB is not
+  Configured; local gate/clear/terminal cursors may still run. This composes
+  the table-4 endpoint availability model with lifecycle ownership without
+  adding a GIP wire rule.
+- Modeled interrupt endpoint Halt gates only that endpoint's GIP direction;
+  the opposite direction and local actions remain available. This is the
+  local composition of table-4 feature state with the fixed `01`/`81`
+  endpoints. START is the only admitted host command whose first lifecycle
+  action emits upstream wire, so that path proves IN availability before
+  lifecycle/sequence ownership; downstream-only feedback is not over-gated.
+- `DormantRetainedUSBAdapter` is a local transport-integration policy, not a
+  new protocol source. Its one-slot EP0/`81`/`01` lanes, 254-byte maximum EP0
+  response, unchanged 64-byte interrupt bounds, sessionless construction,
+  exact import capability, late semantic-input sample, level-triggered
+  readiness, and nonwrapping ticket/generation policy preserve the existing
+  coordinator and official descriptor routes without adding a second mapping
+  or wire engine. The 254 value is the largest even length representable by a
+  USB string descriptor's one-byte `bLength`; it does not enlarge request
+  slabs. EP0 IN continues to interpret the host's `wLength` as a maximum:
+  smaller values truncate, while lawful self-consistent values above 254
+  receive the complete 254-byte descriptor rather than being rejected.
+- `ImportResetLease`, the retained scheduler's two-phase drain/reopen, and the
+  adapter's reset-specific local fence/neutral methods are VIIPER lifecycle
+  safety policy, not an MS-GIPUSB or generic USB/IP wire requirement. They
+  prove how one independently authenticated reset would drain predecessor
+  control/IN/OUT and local work, advance the canonical generation, deliver one
+  successor clear, and reopen exactly. Terminal close/cancel authority is not
+  reused. usbip-win2 0.9.7.7 contains a UdeCx reset callback implementation,
+  but its registration is commented out because its special server request
+  returned `EPIPE`; its registered power callbacks send no server notification.
+  The dormant capability therefore establishes no production reset source.
+- Local feedback execution receives only the canonical typed persona action.
+  Direct Motor retains all four independently enabled actuator percentages;
+  no DualSense, Switch, or other physical-device mapping is inferred here.
+  One drain, one separately authorized disconnect clear, deadline-bounded
+  terminal calls, and quarantine on ambiguity are local lifecycle safety rules.
+- The dormant canonical feedback executor's explicit clear intent, private
+  persona-generation rebind, reversible reset drain, permanent terminal drain,
+  and exact retry after a proven publisher rejection are project-owned safety
+  policy. A publisher error is valid only when it proves that no byte was
+  accepted and no late publication can occur. An IPC transport with an
+  uncertain completion must be closed and drained at a higher session boundary;
+  uncertainty is not converted into an ordinary retry here.
+- A canonical Complete or Retire error retains the exact adapter slot and
+  quarantines the import. This prevents one ownership ledger from advertising
+  reuse while the coordinator/engine may still own the claim; it is not a wire
+  behavior.
 
-## Unknowns intentionally not implemented
+## Source contradictions and unknowns
 
-1. Windows-visible USB identity, descriptors, endpoints, interface association,
-   authentication gating, and XInput/GameInput enumeration behavior need an
-   owned Windows capture and an API-visibility oracle.
-2. GIP header parsing is not yet safe to call strict. In the pinned reference,
-   even-length padding is encoded as an additional varint continuation byte,
-   while the header-length calculation counts a zero chunk offset differently
-   from the varint encoder. A capture is required to decide the canonical
-   zero-offset and padding grammar before accepting hostile input.
-3. Receive sequence ordering, retry, duplicate, reset, and replay-window rules
-   are not established. Only the observed non-zero transmit allocator exists.
-4. Share placement varies with advertised interfaces and dynamic-latency input;
-   this package refuses to guess an extension body.
-5. The valid magnitude range, duration/delay/repeat units, rollover behavior,
-   and host stop variants are not established. Values remain raw bytes.
-6. Authentication certificate provenance, credential ownership, key handling,
-   and complete handshake behavior are outside this package. The default is
-   intentionally unavailable.
+1. Section 2.2.10.4 first states that Payload Length excludes the header and
+   then labels Command/Low/Standard MTU as 64 bytes. Table 12 resolves the
+   resulting interpretation risk by explicitly defining maximum Payload
+   Length as MTU minus header length; the four-byte codec therefore caps these
+   payloads at 60 bytes. Section 3.1.5.6.1.2 independently says an input
+   message including its header must not exceed 64 bytes.
+2. Section 2.2.10.1 calls Command message number `0x1f` reserved, while section
+   3.1.5.5.9.2 defines Debug Command messages with type `0x1f`. The generic
+   five-bit header codec accepts it; no Debug implementation exists.
+3. The consolidated MS-GIPUSB prose identifies Guide Button Status as system
+   command `0x07` and the Xbox button as VKEY `0x5b` but omits the two payload
+   bytes' order. The pinned official documentation package supplies the
+   status-then-VKEY form and canonical `0`/`1` values used by
+   `guide_status.go`; the production adapter retains every transition in its
+   bounded ordered edge owner instead of folding Guide into the base report.
+4. MS-GIPUSB 1.0's consolidated document omits the nine Protocol Control
+   payload bytes, but the same official download's pinned
+   `H001419 - Original GIP Spec.docx` publishes them in table 4-14 and repeated
+   USB traces. The implementation cites that older downloadable table and
+   rejects every formerly assigned non-zero ControlCode.
+5. The official metadata-compiler source establishes a serializer and the
+   ordinary-gamepad golden blob, but its three validation methods are empty.
+   Byte-equivalent compiler output alone is not accepted as semantic metadata
+   validation. The current identity-bound external blob seam remains.
+6. The specification defines sequence pools. This tranche defines only
+   transactional egress allocation/retry and a local reset-generation fence;
+   it does not define receive duplicate, delay, or replay handling.
+7. Generic single-packet header parsing does not prove a message is declared
+   by a device's metadata or valid for a particular lifecycle state. The
+   controller packet decoder preserves multiple supported messages in wire
+   order, but a USB aggregate boundary is still not invented as a packet
+   boundary. The dormant atomic owner covers only packets consisting entirely
+   of self-contained Direct Motor/Guide LED actions. The canonical persona has
+   no multi-claim transaction for lifecycle/ACK packet members, and the current
+   single-claim engine must not be copied or prefix-committed to imitate one.
+8. Share requires the Console Function Map extension, interface GUID, and
+   expanded metadata/input lengths as one coupled capability. The strict
+   official metadata compiler issues that complete variant and the production
+   factory uses it; opaque externally bound bytes cannot acquire Share support
+   merely by resembling the official blob.
+9. Host API delivery of independent impulse motors, game compatibility, and
+   Windows binding are not established by a wire codec.
+10. The USB device descriptor requires Manufacturer, Product, and 32-hex-digit
+   Serial Number strings, and section 2.2.4 requires index 3 to contain the
+   Device ID. The dormant gate accepts rather than generates those values. It
+   uses the restrictive local normalization `%016x` for the 64-bit numeric
+   Device ID; this is identified as an inference, may reject other serial
+   conventions, and is not serial-generation or uniqueness evidence.
+11. Externally compiled metadata remains opaque. The package cannot verify
+    firmware matching, required system commands, interface/type selection, or
+    Windows-PC security policy for that external path. The separate strict
+    in-package official gamepad compiler does validate those coupled fields and
+    now always includes the official Windows-PC security opt-out interface.
+12. The official source lists a 15-byte Set Device State variant in the message
+    summary but does not define that payload in the Set Device State table. The
+    exact Windows-captured and SDL-corroborated initialization body recorded
+    above is accepted as a lifecycle-neutral compatibility probe. All other
+    15-byte bodies are rejected, and neither byte `0x06` nor the reserved bytes
+    are assigned guessed semantics.
+13. A complete raw persona still needs a lawful VID/PID, exact strings,
+    semantically validated metadata, the selected authentication/security policy, actual
+    status/event policy, actual backend USB suspend/reset integration across
+    EP0, GIP lifecycle, sequences, input and feedback, Windows binding, and
+    conformance evidence. None is inferred from Microsoft's example IDs or
+    metadata.
+14. Authentication/security behavior is intentionally unavailable. No console
+    security compatibility is claimed or attempted.
+15. The offline composed persona implements delivered-only physical-output
+    revocation for an actual Configured-to-Addressed transition, and the dormant
+    retained boundary now proves an exact whole-device reset transaction when
+    supplied an authenticated reset capability. usbip-win2 0.9.7.7 does not
+    expose that reset callback to VIIPER, and its power callbacks provide no
+    server notification. USB suspend/resume, backend reset notification, and a
+    complete production power lifecycle therefore remain blocked.
+16. The composed downstream receive path has no proven duplicate, delayed, or
+    out-of-order sequence policy. Direct Motor and Guide LED are classified and
+    can be carried through a dormant whole-vector atomic participant, but remain
+    blocked from production integration until the adapter supplies a
+    source-justified replay policy and a real transport boundary.
+17. The explicit authenticated production factory now registers the retained
+    persona outside the generic device registry. Its versioned `X1BR` broker
+    commits input only after persona acceptance and canonical feedback only
+    after an exact DS4Windows consumer ACK. Construction is dormant until
+    ConsumerReady; a separate authenticated activation performs USB/IP attach.
+    The one-shot persona cannot reopen its stream after an ambiguous failure.
+    This implementation result is not Windows binding, API visibility, or
+    hardware evidence.
+18. No independently validated Windows binding or hardware
+    conformance result follows from composing the offline state machines.
+19. The retained owner is not a generic receive reassembler or a hardware
+    executor. Its expected authority/device facts assume the sole trusted
+    in-process reservation authority; they are not an external security
+    boundary. The explicit production import path does not itself prove
+    Windows compatibility or latency.
 
-## Capture gate for the next layer
+## Verification status
 
-Before adding a USB persona or GIP frame parser, collect one owned Windows trace
-containing enumeration, successful authentication with legitimately controlled
-credentials/hardware, neutral input, one basis event for every button/axis,
-Guide and Share, four independent rumble basis vectors, explicit stop, timing
-variation, disconnect, and reconnect. Correlate that trace with simultaneous
-XInput and GameInput observations. Only captured byte sequences may become
-golden vectors; malformed and boundary variants must then be tested before any
-USB/IP registration is enabled.
+### Dated update: Windows Direct Motor repeat, 2026-09-02
+
+The Desktop b40 capture observed exact messages
+`09 00 01 09 00 0f 00 00 00 00 ff 00 eb` and
+`09 00 05 09 00 0f 00 00 0f 0f ff 00 eb`.
+The first is neutral motor state; the second carries 15-percent body levels.
+Both contain a nonzero repeat count. The prior production single-frame
+executor rejected them before they could enter the canonical feedback lane.
+These are sanitized local Windows output bytes, not controller firmware,
+credentials, or copied device identity.
+
+[Microsoft Direct Motor Command table 56](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-gipusb/ee8c5b28-e8da-4cc4-bb48-17781b8371af)
+defines Duration/Delay in 10-ms units, zero Duration as cancellation, and
+Repeat zero as one play with positive values giving additional repetitions.
+The independent program owner combines contiguous zero-delay repeats, rather
+than changing the protocol byte decoder or treating `EB` as a magic constant.
+Nonzero Delay phase placement is still not established by this evidence.
+
+`timed_feedback_executor_test.go` replays the two exact bodies, preserves the
+four-channel basis, and uses Go's isolated virtual-time test facility for
+renewal/expiry/replacement/reset/stop, stale generation, failure/panic, and
+late-acknowledgement checks. These are simulation/race-test results. The
+dated `controller-platform-validation-2026-09-02.md` ledger separately records
+the portable b41 Windows observations and remaining hardware gaps.
+
+### usbip-win2 0.9.7.7 retirement and opaque import locations
+
+Source: <https://github.com/vadimgrn/usbip-win2>, locally pinned at
+`7c219953101cc5d0ec9a0bcb3eb87259cf72bedd` in
+`_references/usbip-win2-0.9.7.7`. The previously recorded component license is
+BSD-2-Clause. This follow-up rechecked source facts; it did not execute copied
+binaries, change the pinned installed driver, or copy controller identity.
+
+`drivers/ude/wsk_receive.cpp:703` requests reattach on receiver loss;
+`device.cpp:792` preserves the location and `persistent.cpp:454` schedules its
+first delayed attempt at 30 seconds. The initial attach-once flag is separate
+from this later device lifetime. `stop_attach_attempts` cancels existing queued
+requests and does not latch a prohibition against future enqueue. Consequently
+socket close alone is not proof of permanent Windows-side retirement.
+
+The CLI and native attachment use an opaque bus-ID string
+(`userspace/usbip/usbip.cpp:68`, `userspace/libusbip/src/vhci.cpp:42`,
+`drivers/ude/context.cpp:22`). The kernel sends the saved string and requires
+the import response to match (`drivers/ude/vhci_ioctl.cpp:83,121`); numeric
+busnum/devnum independently form the transfer device ID (`:155`). Reconnect
+preserves the string (`persistent.cpp:334`). A fresh public alias per exact
+registration, at most 31 ASCII bytes plus NUL and separate from the secret
+removal capability, is therefore source-supported. This design is now
+implemented as a 29-byte `x1-` plus canonical base32 alias from independent
+128-bit randomness. Exact publication/list/import/native/CLI tests, no numeric
+fallback, reuse and restart tests pass offline. Portable validation beyond the
+30-second reconnect boundary remains pending. This does not by itself
+eliminate queued retry work or prove immediate Windows port removal.
+
+Further read-only audit found no existing exact-location retirement fence:
+`include/usbip/vhci.h:112-115` gives PLUGOUT only size and port;
+`drivers/ude/vhci_ioctl.cpp:653-658` resolves the current device by that port,
+without comparing alias, generation or source. STOP_ATTACH_ATTEMPTS hashes the
+supplied location to 32 bits (`vhci_ioctl.cpp:583-599`); queued matching compares
+only that hash (`persistent.cpp:96-109`). Cancellation does not prohibit future
+enqueue or synchronously drain timer disposal (`persistent.cpp:463-489`).
+The unplugged event is emitted before later retry enqueue (`device.cpp:601`
+versus `:792-795`), and the stop operation runs on a parallel queue. A queue
+roundtrip, event, handle close or observed absent port is therefore not proof
+that every old retry producer has finished. VHCI-wide removal would affect all
+controllers and is not an acceptable per-controller workaround. Exact neutral
+and server removal plus stale-alias refusal remain the safe current policy;
+prompt native job retirement needs a separately reviewed primitive or lifetime
+policy, not an assumed property of socket close. No driver change was made.
+
+### Historical pre-hardware tranche
+
+All descriptor, codec, EP0, transfer, lifecycle, composed-persona, dormant
+whole-vector packet-owner, retained-owner, and exact-reset transaction results
+are offline unit/fuzz/race/allocation-test evidence only.
+Descriptor byte generation, EP0 state simulation, exact input emission, typed
+feedback classification, and a scripted local executor are neither
+registration nor binding.
+No USB device was registered, no driver was installed, no controller was
+opened, and no output was sent to hardware while producing this tranche.
+Hardware and Windows API verification remain blocked behind the
+complete-persona and safety review gates in the production prompt.

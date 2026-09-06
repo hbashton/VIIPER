@@ -6,7 +6,7 @@ For configuration files, VIIPER supports `JSON`, `YAML`, and `TOML` formats.
 
 ## Environment Variables
 
-All command-line flags have corresponding environment variables for easier deployment and configuration management.
+Most command-line flags have corresponding environment variables for easier deployment and configuration management. The explicit `--key-file` and `--config-only` options intentionally have no environment-variable aliases.
 
 ### Global Configuration
 
@@ -20,11 +20,11 @@ All command-line flags have corresponding environment variables for easier deplo
 
 | Environment Variable | CLI Flag | Default | Description |
 |---------------------|----------|---------|-------------|
-| `VIIPER_USB_ADDR` | `--usb.addr` | `:3241` | USBIP server listen address |
+| `VIIPER_USB_ADDR` | `--usb.addr` | `127.0.0.1:3241` | USBIP server listen address |
 | `VIIPER_API_ADDR` | `--api.addr` | `:3242` | API server listen address |
 | `VIIPER_API_DEVICE_HANDLER_TIMEOUT` | `--api.device-handler-timeout` | `5s` | Device handler auto-cleanup timeout |
 | `VIIPER_API_AUTO_ATTACH_LOCAL_CLIENT` | `--api.auto-attach-local-client` | `true` | Auto-attach exported devices to local usbip client |
-| `VIIPER_API_REQUIRE_LOCALHOST_AUTH` | `--api.require-localhost-auth` | `false` | Require authentication even for localhost connections |
+| `VIIPER_API_REQUIRE_LOCALHOST_AUTH` | `--api.require-local-host-auth` | `false` | Require authentication even for localhost connections |
 | `VIIPER_CONNECTION_TIMEOUT` | `--connection-timeout` | `30s` | Connection operation timeout |
 
 ### Proxy Configuration
@@ -58,6 +58,22 @@ To use a specific configuration file when starting VIIPER, pass the --config fla
 viiper --config ./server.json server
 ```
 
+For an isolated configuration selection, use `--config-only` together with
+exactly one command-line `--config` specifying an absolute `.json`, `.yaml`,
+`.yml`, or `.toml` file:
+
+```powershell
+.\viiper.exe --config-only --config 'C:\Lab\server.json' --update-notify=none server
+```
+
+The file must already exist, be a readable regular file with no linked/reparse
+ancestors, and contain valid configuration. A missing, unreadable, or malformed
+file fails closed; no fallback location is consulted. JSON and YAML must contain
+one document with an object/mapping root. `VIIPER_CONFIG` alone does not satisfy
+this explicit selection. Environment variables and other CLI flags still override
+values in the chosen file. This is not whole-server isolation: use an explicit
+key file, disable update checks, and control log destinations separately.
+
 If --config is not provided, VIIPER will search for configuration in this order and first-found is used for each format:
 
 1. Working directory: server.(json|yaml|yml|toml), proxy.(json|yaml|yml|toml), viiper.(json|yaml|yml|toml), config.(json|yaml|yml|toml)
@@ -67,7 +83,12 @@ If --config is not provided, VIIPER will search for configuration in this order 
 ## Authentication and Security
 
 VIIPER requires authentication for remote (non-localhost) connections
-to prevent unauthorized device creation.  
+to prevent unauthorized device creation.
+
+That authentication applies to the management API, not the USB/IP protocol.
+USB/IP binds to `127.0.0.1:3241` by default because its port is unauthenticated.
+Expose it remotely only through a trusted tunnel, host firewall, or equivalent
+authenticated network boundary.
 
 The password file is _intentionally_ separated from the main configuration
 
@@ -82,10 +103,18 @@ VIIPER generates a random 16-character password on first start and displays it i
 - **Custom passwords:** You can edit `viiper.key.txt` and replace it with any password of any length
 - **Encryption:** All authenticated connections use fast ChaCha20-Poly1305 encryption with unique session keys
 
+An optional `server --key-file <absolute-path>` selects a deployment-owned key
+file without reading or writing the default password location. Explicit invalid,
+unreadable, or empty key files fail closed; only a missing file is generated,
+using exclusive creation so an existing key cannot be overwritten. This does
+not isolate other configuration, logging, update-cache, or tray-startup behavior.
+See [the server key-file option](server.md#--key-file) for a local lab example and
+the limits of `--config` and `--update-notify=none`.
+
 ### Localhost Exemption
 
 By default, clients connecting from `localhost`, `127.0.0.1`, or `::1` do NOT require authentication (they can optionally provide it).  
-To require authentication even for localhost connections, use `--api.require-localhost-auth=true`.
+To require authentication even for localhost connections, use `--api.require-local-host-auth=true`.
 
 ### Remote Connections
 
@@ -105,7 +134,7 @@ All remote clients MUST authenticate using the password from `viiper.key.txt`.
         "auto-attach-local-client": true
     },
     "usb": {
-        "addr": ":3241"
+        "addr": "127.0.0.1:3241"
     },
     "connection-timeout": "30s"
     }
@@ -127,7 +156,7 @@ All remote clients MUST authenticate using the password from `viiper.key.txt`.
 
     ```bash
     export VIIPER_LOG_LEVEL=debug
-    export VIIPER_USB_ADDR=:3241
+    export VIIPER_USB_ADDR=127.0.0.1:3241
     export VIIPER_API_ADDR=:3242
     export VIIPER_LOG_FILE=/var/log/viiper.log
     ```
@@ -153,7 +182,7 @@ User=viiper
 Group=viiper
 Environment="VIIPER_LOG_LEVEL=info"
 Environment="VIIPER_LOG_FILE=/var/log/viiper/viiper.log"
-Environment="VIIPER_USB_ADDR=:3241"
+Environment="VIIPER_USB_ADDR=127.0.0.1:3241"
 Environment="VIIPER_API_ADDR=:3242"
 ExecStart=/usr/local/bin/viiper server
 Restart=on-failure

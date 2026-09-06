@@ -16,36 +16,73 @@ import (
 )
 
 type Xbox360 struct {
-	input            *inputpresentation.FixedReportScheduler[InputState]
-	inputSignal      chan struct{}
-	rumbleDispatchMu sync.Mutex
-	rumbleMu         sync.Mutex
-	rumbleFunc       func(XRumbleState)
-	rumbleState      XRumbleState
-	rumbleSeen       bool
-	descriptor       usb.Descriptor
+	input                     *inputpresentation.FixedReportScheduler[InputState]
+	inputSignal               chan struct{}
+	inputLifecycleMu          sync.Mutex
+	producerMu                sync.Mutex
+	producerActive            bool
+	compatProducerUsed        bool
+	retiredCompatibilityLease inputpresentation.FixedReportProducerLease
+	resyncMu                  sync.Mutex
+	pendingResync             InputState
+	pendingResyncAt           time.Time
+	hasPendingResync          bool
+	maximumOrderedAge         time.Duration
+	rumbleDispatchMu          sync.Mutex
+	rumbleMu                  sync.Mutex
+	rumbleFunc                func(XRumbleState)
+	rumbleState               XRumbleState
+	rumbleSeen                bool
+	descriptor                usb.Descriptor
 }
 
 var _ inputpresentation.Source = (*Xbox360)(nil)
+var _ inputpresentation.AdmissionSource = (*Xbox360)(nil)
 
 type Xbox360CreateOptions struct {
-	SubType *uint8 `json:"subType"`
+	SubType                       *uint8 `json:"subType"`
+	MaximumOrderedAgeMilliseconds *int64 `json:"maximumOrderedAgeMilliseconds"`
 }
 
 // New returns a new Xbox360 device.
 func New(o *device.CreateOptions) (*Xbox360, error) {
+	var args Xbox360CreateOptions
+	if o != nil && o.DeviceSpecific != "" {
+		if err := json.Unmarshal([]byte(o.DeviceSpecific), &args); err != nil {
+			return nil, fmt.Errorf("invalid JSON payload: %w", err)
+		}
+	}
+
+	var maximumOrderedAge time.Duration
+	if args.MaximumOrderedAgeMilliseconds != nil {
+		milliseconds := *args.MaximumOrderedAgeMilliseconds
+		if milliseconds < 1 || milliseconds > 60_000 {
+			return nil, errors.New("maximumOrderedAgeMilliseconds must be from 1 through 60000")
+		}
+		maximumOrderedAge = time.Duration(milliseconds) * time.Millisecond
+	}
+
 	neutral := *NewInputState()
-	input, err := inputpresentation.NewFixedReportScheduler(
-		20, neutral,
-		func(state *InputState, destination []byte) int {
-			return state.BuildReportInto(destination)
-		}, xbox360InputTransition, time.Now())
+	encode := func(state *InputState, destination []byte) int {
+		return state.BuildReportInto(destination)
+	}
+	var input *inputpresentation.FixedReportScheduler[InputState]
+	var err error
+	if maximumOrderedAge > 0 {
+		input, err = inputpresentation.NewFixedReportSchedulerWithMaximumOrderedAge(
+			20, neutral, encode, xbox360InputTransition,
+			maximumOrderedAge, time.Now())
+	} else {
+		input, err = inputpresentation.NewFixedReportSchedulerWithOverflowFault(
+			20, neutral, encode, xbox360InputTransition, time.Now())
+	}
 	if err != nil {
 		return nil, fmt.Errorf("create input scheduler: %w", err)
 	}
 	d := &Xbox360{
-		descriptor: MakeDescriptor(),
-		input:      input,
+		descriptor:        MakeDescriptor(),
+		input:             input,
+		maximumOrderedAge: maximumOrderedAge,
 	}
 	if o != nil {
 		if o.IDVendor != nil {
@@ -54,15 +91,8 @@ func New(o *device.CreateOptions) (*Xbox360, error) {
 		if o.IDProduct != nil {
 			d.descriptor.Device.IDProduct = *o.IDProduct
 		}
-		if o.DeviceSpecific != "" {
-			var args Xbox360CreateOptions
-			err := json.Unmarshal([]byte(o.DeviceSpecific), &args)
-			if err != nil {
-				return nil, fmt.Errorf("invalid JSON payload: %w", err)
-			}
-			if args.SubType != nil {
-				d.descriptor.Interfaces[0].ClassDescriptors[0].Payload[2] = *args.SubType
-			}
+		if args.SubType != nil {
+			d.descriptor.Interfaces[0].ClassDescriptors[0].Payload[2] = *args.SubType
 		}
 	}
 	d.inputSignal = make(chan struct{}, 1)
@@ -88,14 +118,165 @@ func (x *Xbox360) SetRumbleCallback(f func(XRumbleState)) {
 
 // UpdateInputState updates the device's current input state (thread-safe).
 func (x *Xbox360) UpdateInputState(state InputState) bool {
-	accepted := x.input.Publish(state, time.Now())
-	if !accepted {
+	x.producerMu.Lock()
+	defer x.producerMu.Unlock()
+	if x.producerActive {
+		// The library compatibility surface and raw stream are alternative
+		// producers. Interleaving them would make producer retirement ambiguous.
 		return false
 	}
+	x.compatProducerUsed = true
+	_, disposition := x.publishInputStateWithLease(
+		x.input.ProducerLease(), state, time.Now())
+	return disposition.Accepted()
+}
+
+func (x *Xbox360) acquireInputProducer() (
+	inputpresentation.FixedReportProducerLease, bool,
+) {
+	x.producerMu.Lock()
+	if x.producerActive {
+		x.producerMu.Unlock()
+		return inputpresentation.FixedReportProducerLease{}, false
+	}
+	retiredCompatibilityProducer := false
+	x.inputLifecycleMu.Lock()
+	lease := x.input.ProducerLease()
+	if x.compatProducerUsed {
+		compatibilityLease := lease
+		var retired bool
+		lease, retired = x.input.RetireProducerLease(lease, time.Now())
+		if !retired {
+			x.inputLifecycleMu.Unlock()
+			x.producerMu.Unlock()
+			return inputpresentation.FixedReportProducerLease{}, false
+		}
+		x.clearInputResynchronization()
+		x.retiredCompatibilityLease = compatibilityLease
+		retiredCompatibilityProducer = true
+	}
+	x.producerActive = true
+	x.compatProducerUsed = false
+	x.inputLifecycleMu.Unlock()
+	x.producerMu.Unlock()
+	if retiredCompatibilityProducer {
+		x.signalInput()
+	}
+	return lease, true
+}
+
+func (x *Xbox360) releaseInputProducer() {
+	x.producerMu.Lock()
+	if !x.producerActive {
+		x.producerMu.Unlock()
+		return
+	}
+	x.inputLifecycleMu.Lock()
+	x.clearInputResynchronization()
+	// Every Xbox360 scheduler mutation is serialized by inputLifecycleMu. The
+	// lease read and retirement therefore identify one exact current epoch even
+	// if USB reset or final admission raced with producer disconnect.
+	currentLease := x.input.ProducerLease()
+	_, retired := x.input.RetireProducerLease(currentLease, time.Now())
+	if retired {
+		x.retiredCompatibilityLease =
+			inputpresentation.FixedReportProducerLease{}
+	}
+	x.inputLifecycleMu.Unlock()
+	x.producerActive = false
+	x.producerMu.Unlock()
+	if retired {
+		x.signalInput()
+	}
+}
+
+func (x *Xbox360) publishInputStateWithLease(
+	lease inputpresentation.FixedReportProducerLease, state InputState,
+	receivedAt time.Time,
+) (inputpresentation.FixedReportProducerLease,
+	inputpresentation.FixedReportPublishDisposition) {
+	x.inputLifecycleMu.Lock()
+	defer x.inputLifecycleMu.Unlock()
+	disposition := x.input.PublishWithLease(lease, state, receivedAt)
+	if disposition.Accepted() {
+		x.signalInput()
+		return lease, disposition
+	}
+
+	currentLease := x.input.ProducerLease()
+	if lease == x.retiredCompatibilityLease {
+		return currentLease, disposition
+	}
+	switch disposition {
+	case inputpresentation.FixedReportPublishFaultedOverflow,
+		inputpresentation.FixedReportPublishRejectedNeutralPending:
+		x.stageInputResynchronization(state, receivedAt)
+		x.signalInput()
+		return currentLease, disposition
+	case inputpresentation.FixedReportPublishRejectedStaleProducer,
+		inputpresentation.FixedReportPublishRejectedResynchronizationRequired:
+		snapshot := x.input.Snapshot()
+		if snapshot.MandatoryNeutral || snapshot.Resynchronization {
+			x.stageInputResynchronization(state, receivedAt)
+			x.signalInput()
+			return currentLease, disposition
+		}
+		// A stale lease with no fault state is a USB presentation boundary.
+		// Adopt its successor for the next stream frame, but never replay this
+		// frame: it may have been captured before CLEAR_HALT/SET_INTERFACE or
+		// SET_CONFIGURATION retired the old generation.
+		return currentLease, disposition
+	default:
+		return currentLease, disposition
+	}
+}
+
+func (x *Xbox360) signalInput() {
 	select {
 	case x.inputSignal <- struct{}{}:
 	default:
 	}
+}
+
+func (x *Xbox360) stageInputResynchronization(state InputState,
+	receivedAt time.Time) {
+	x.resyncMu.Lock()
+	if !x.hasPendingResync || !receivedAt.Before(x.pendingResyncAt) {
+		x.pendingResync = state
+		x.pendingResyncAt = receivedAt
+		x.hasPendingResync = true
+	}
+	x.resyncMu.Unlock()
+}
+
+func (x *Xbox360) clearInputResynchronization() {
+	x.resyncMu.Lock()
+	x.pendingResync = InputState{}
+	x.pendingResyncAt = time.Time{}
+	x.hasPendingResync = false
+	x.resyncMu.Unlock()
+}
+
+// tryPublishInputResynchronizationLocked requires inputLifecycleMu. It is
+// called only by the presentation owner after a mandatory neutral commits, so
+// a producer callback cannot race a direct resynchronization or clear a newer
+// staged snapshot.
+func (x *Xbox360) tryPublishInputResynchronizationLocked() bool {
+	x.resyncMu.Lock()
+	defer x.resyncMu.Unlock()
+	if !x.hasPendingResync {
+		return false
+	}
+	disposition := x.input.Resynchronize(x.input.ProducerLease(),
+		x.pendingResync, x.pendingResyncAt)
+	if disposition !=
+		inputpresentation.FixedReportPublishAcceptedResynchronization {
+		return false
+	}
+	x.pendingResync = InputState{}
+	x.pendingResyncAt = time.Time{}
+	x.hasPendingResync = false
+	x.signalInput()
 	return true
 }
 
@@ -142,9 +323,14 @@ func xbox360InputTransition(previous, next InputState) bool {
 func (x *Xbox360) buildInputReport() []byte {
 	report := make([]byte, 20)
 	claim := x.ClaimInputPresentation(report, time.Now())
-	if claim.Valid() {
-		x.ResolveInputPresentation(claim, inputpresentation.OutcomeCommit, time.Now())
+	if !claim.Valid() || !x.CanAdmitInputPresentation(claim, time.Now()) {
+		if claim.Valid() {
+			x.ResolveInputPresentation(claim,
+				inputpresentation.OutcomeDefer, time.Now())
+		}
+		return nil
 	}
+	x.ResolveInputPresentation(claim, inputpresentation.OutcomeCommit, time.Now())
 	return report
 }
 
@@ -155,13 +341,21 @@ func (x *Xbox360) BuildInputReportInto(destination []byte) int {
 	if !claim.Valid() {
 		return 0
 	}
+	if !x.CanAdmitInputPresentation(claim, time.Now()) {
+		x.ResolveInputPresentation(claim, inputpresentation.OutcomeDefer,
+			time.Now())
+		return 0
+	}
 	x.ResolveInputPresentation(claim, inputpresentation.OutcomeCommit, time.Now())
 	return claim.Size
 }
 
 func (x *Xbox360) ClaimInputPresentation(destination []byte,
 	selectedAt time.Time) inputpresentation.Claim {
-	return x.input.ClaimInputPresentation(destination, selectedAt)
+	x.inputLifecycleMu.Lock()
+	claim := x.input.ClaimInputPresentation(destination, selectedAt)
+	x.inputLifecycleMu.Unlock()
+	return claim
 }
 
 // OwnsInputPresentationEndpoint confines the semantic input journal to the
@@ -177,12 +371,39 @@ func (x *Xbox360) InputPresentationGeneration() uint64 {
 
 func (x *Xbox360) ResolveInputPresentation(claim inputpresentation.Claim,
 	outcome inputpresentation.Outcome, completedAt time.Time) bool {
-	return x.input.ResolveInputPresentation(claim, outcome, completedAt)
+	x.inputLifecycleMu.Lock()
+	resolved := x.input.ResolveInputPresentation(claim, outcome, completedAt)
+	if resolved && outcome == inputpresentation.OutcomeCommit {
+		x.tryPublishInputResynchronizationLocked()
+	}
+	x.inputLifecycleMu.Unlock()
+	return resolved
+}
+
+// CanAdmitInputPresentation revalidates the scheduler-owned claim at the
+// transport's final write boundary. Compatibility mode still revokes stale
+// tokens and retired generations; an explicitly configured maximum age also
+// faults stale ordered history before USB/IP exposes bytes.
+func (x *Xbox360) CanAdmitInputPresentation(claim inputpresentation.Claim,
+	admittedAt time.Time) bool {
+	x.inputLifecycleMu.Lock()
+	accepted := x.input.CanAdmitInputPresentation(claim, admittedAt)
+	x.inputLifecycleMu.Unlock()
+	return accepted
 }
 
 func (x *Xbox360) RetireInputPresentationGeneration(generation uint64,
 	retiredAt time.Time) bool {
-	return x.input.RetireInputPresentationGeneration(generation, retiredAt)
+	x.inputLifecycleMu.Lock()
+	retired := x.input.RetireInputPresentationGeneration(generation, retiredAt)
+	if retired {
+		// A staged snapshot belongs to the producer/presentation lifecycle in
+		// which it was captured. Leaving it outside the scheduler generation
+		// fence could let a later, unrelated fault resynchronize old state.
+		x.clearInputResynchronization()
+	}
+	x.inputLifecycleMu.Unlock()
+	return retired
 }
 
 func (x *Xbox360) InputSchedulerSnapshot() inputpresentation.FixedReportSchedulerSnapshot {
@@ -327,7 +548,14 @@ func (x *Xbox360) GetDescriptor() *usb.Descriptor {
 }
 
 func (x *Xbox360) GetDeviceSpecificArgs() map[string]any {
-	return map[string]any{"subType": x.descriptor.Interfaces[0].ClassDescriptors[0].Payload[2]}
+	args := map[string]any{
+		"subType": x.descriptor.Interfaces[0].ClassDescriptors[0].Payload[2],
+	}
+	if x.maximumOrderedAge > 0 {
+		args["maximumOrderedAgeMilliseconds"] =
+			x.maximumOrderedAge.Milliseconds()
+	}
+	return args
 }
 
 func (x *Xbox360) HandleControl(bmRequestType, bRequest uint8, wValue, wIndex, wLength uint16, _ []byte) ([]byte, bool) {

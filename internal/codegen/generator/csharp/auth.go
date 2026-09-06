@@ -11,6 +11,7 @@ const authHelperTemplate = `// Auto-generated VIIPER C# Client Library
 // DO NOT EDIT - This file is generated from the VIIPER server codebase
 
 using System;
+using System.Buffers.Binary;
 using System.IO;
 using System.Net.Sockets;
 using System.Security.Cryptography;
@@ -26,10 +27,10 @@ namespace Viiper.Client;
 /// </summary>
 internal static class ViiperAuth
 {
-    private const string HandshakeMagic = "eVI1\0";
+    private const string HandshakeMagic = "eVI2\0";
     private const int NonceSize = 32;
-    private const string AuthContext = "VIIPER-Auth-v1";
-    private const string SessionContext = "VIIPER-Session-v1";
+    private const string AuthContext = "VIIPER-Auth-v2";
+    private const string SessionContext = "VIIPER-Session-v2";
     private const int PBKDF2Iterations = 100000;
     private const string PBKDF2Salt = "VIIPER-Key-v1";
 
@@ -122,7 +123,8 @@ internal static class ViiperAuth
             
             var buffer = new byte[4096];
             int bytesRead;
-            while ((bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length, cancellationToken)) > 0)
+            while (errorBuilder.Length < 4096 &&
+                (bytesRead = await stream.ReadAsync(buffer, 0, 4096 - errorBuilder.Length, cancellationToken)) > 0)
             {
                 errorBuilder.Append(Encoding.UTF8.GetString(buffer, 0, bytesRead));
             }
@@ -178,13 +180,18 @@ internal static class ViiperAuth
 
 /// <summary>
 /// Encrypted stream wrapper using ChaCha20-Poly1305
-/// Requires .NET 5+ for ChaCha20Poly1305 support
+/// V2 client: sends nonce domain 0, accepts only domain 1 in strict sequence.
 /// </summary>
 internal class EncryptedStream : Stream
 {
     private readonly Stream _innerStream;
     private readonly byte[] _sessionKey;
+    private const int MaxPacketSize = 2 * 1024 * 1024;
+    private readonly SemaphoreSlim _readGate = new(1, 1);
+    private readonly SemaphoreSlim _writeGate = new(1, 1);
     private ulong _sendCounter = 0;
+    private ulong _recvCounter = 0;
+    private int _failed;
     private byte[] _recvBuffer = Array.Empty<byte>();
     private int _recvBufferPos = 0;
 
@@ -216,38 +223,25 @@ internal class EncryptedStream : Stream
 
     public override async Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
     {
-        var nonce = new byte[12];
-        var counterBytes = BitConverter.GetBytes(_sendCounter);
-        if (BitConverter.IsLittleEndian)
+        _ = buffer.AsMemory(offset, count); // Validate before acquiring the gate.
+        if (count == 0) return;
+        if (count > MaxPacketSize - 28) throw new ArgumentOutOfRangeException(nameof(count));
+        await _writeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
-            Array.Reverse(counterBytes); // Convert to big-endian
+            ThrowIfFailed();
+            if (_sendCounter == ulong.MaxValue) throw new InvalidDataException("Encrypted counter exhausted");
+            var packet = new byte[4 + 12 + count + 16];
+            BinaryPrimitives.WriteUInt32BigEndian(packet.AsSpan(0, 4), (uint)(packet.Length - 4));
+            // Bytes 4..7 are the client direction domain (zero).
+            BinaryPrimitives.WriteUInt64BigEndian(packet.AsSpan(8, 8), _sendCounter++);
+            using var chacha = new ChaCha20Poly1305(_sessionKey);
+            chacha.Encrypt(packet.AsSpan(4, 12), buffer.AsSpan(offset, count),
+                packet.AsSpan(16, count), packet.AsSpan(16 + count, 16));
+            await _innerStream.WriteAsync(packet, 0, packet.Length, cancellationToken).ConfigureAwait(false);
         }
-        Buffer.BlockCopy(counterBytes, 0, nonce, 4, 8);
-        _sendCounter++;
-
-        // Encrypt with ChaCha20-Poly1305
-        var plaintext = new byte[count];
-        Buffer.BlockCopy(buffer, offset, plaintext, 0, count);
-        
-        var ciphertext = new byte[count];
-        var tag = new byte[16];
-        
-        using var chacha = new ChaCha20Poly1305(_sessionKey);
-        chacha.Encrypt(nonce, plaintext, ciphertext, tag);
-        
-        var packet = new byte[nonce.Length + ciphertext.Length + tag.Length];
-        Buffer.BlockCopy(nonce, 0, packet, 0, nonce.Length);
-        Buffer.BlockCopy(ciphertext, 0, packet, nonce.Length, ciphertext.Length);
-        Buffer.BlockCopy(tag, 0, packet, nonce.Length + ciphertext.Length, tag.Length);
-        
-        var lengthBytes = BitConverter.GetBytes((uint)packet.Length);
-        if (BitConverter.IsLittleEndian)
-        {
-            Array.Reverse(lengthBytes); // Convert to big-endian
-        }
-        
-        await _innerStream.WriteAsync(lengthBytes, 0, 4, cancellationToken);
-        await _innerStream.WriteAsync(packet, 0, packet.Length, cancellationToken);
+        catch { FailClosed(); throw; }
+        finally { _writeGate.Release(); }
     }
 
     public override int Read(byte[] buffer, int offset, int count)
@@ -257,55 +251,54 @@ internal class EncryptedStream : Stream
 
     public override async Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
     {
-        if (_recvBufferPos >= _recvBuffer.Length)
+        _ = buffer.AsMemory(offset, count);
+        if (count == 0) return 0;
+        await _readGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
-            var lengthBytes = new byte[4];
-            try
+            ThrowIfFailed();
+            while (_recvBufferPos >= _recvBuffer.Length)
             {
-                await ReadExactlyAsync(_innerStream, lengthBytes, cancellationToken);
+                var lengthBytes = new byte[4];
+                // Only an EOF before the first header byte is a clean stream end.
+                if (await _innerStream.ReadAsync(lengthBytes, 0, 1, cancellationToken).ConfigureAwait(false) == 0)
+                    return 0;
+                await _innerStream.ReadExactlyAsync(lengthBytes.AsMemory(1), cancellationToken).ConfigureAwait(false);
+                var packetLength = BinaryPrimitives.ReadUInt32BigEndian(lengthBytes);
+                if (packetLength < 28 || packetLength > MaxPacketSize)
+                    throw new InvalidDataException("Invalid encrypted record length");
+                var packet = new byte[packetLength];
+                await ReadExactlyAsync(_innerStream, packet, cancellationToken).ConfigureAwait(false);
+                if (_recvCounter == ulong.MaxValue ||
+                    BinaryPrimitives.ReadUInt32BigEndian(packet.AsSpan(0, 4)) != 1 ||
+                    BinaryPrimitives.ReadUInt64BigEndian(packet.AsSpan(4, 8)) != _recvCounter)
+                    throw new InvalidDataException("Invalid encrypted record sequence or direction");
+                var plaintext = new byte[packet.Length - 28];
+                using var chacha = new ChaCha20Poly1305(_sessionKey);
+                chacha.Decrypt(packet.AsSpan(0, 12), packet.AsSpan(12, plaintext.Length),
+                    packet.AsSpan(12 + plaintext.Length, 16), plaintext);
+                _recvCounter++;
+                _recvBuffer = plaintext;
+                _recvBufferPos = 0;
             }
-            catch (EndOfStreamException)
-            {
-                return 0;
-            }
-            
-            if (BitConverter.IsLittleEndian)
-            {
-                Array.Reverse(lengthBytes);
-            }
-            var packetLength = BitConverter.ToUInt32(lengthBytes, 0);
-            
-            if (packetLength > 2 * 1024 * 1024) // 2MB max
-            {
-                throw new InvalidDataException($"Packet too large: {packetLength}");
-            }
-            
-            var packet = new byte[packetLength];
-            await ReadExactlyAsync(_innerStream, packet, cancellationToken);
-            
-            var nonce = new byte[12];
-            Buffer.BlockCopy(packet, 0, nonce, 0, 12);
-            
-            var ciphertextLength = packet.Length - 12 - 16;
-            var ciphertext = new byte[ciphertextLength];
-            Buffer.BlockCopy(packet, 12, ciphertext, 0, ciphertextLength);
-            
-            var tag = new byte[16];
-            Buffer.BlockCopy(packet, 12 + ciphertextLength, tag, 0, 16);
-            
-            var plaintext = new byte[ciphertextLength];
-            using var chacha = new ChaCha20Poly1305(_sessionKey);
-            chacha.Decrypt(nonce, ciphertext, tag, plaintext);
-            
-            _recvBuffer = plaintext;
-            _recvBufferPos = 0;
+            var bytesToCopy = Math.Min(count, _recvBuffer.Length - _recvBufferPos);
+            Buffer.BlockCopy(_recvBuffer, _recvBufferPos, buffer, offset, bytesToCopy);
+            _recvBufferPos += bytesToCopy;
+            return bytesToCopy;
         }
-        
-        var bytesToCopy = Math.Min(count, _recvBuffer.Length - _recvBufferPos);
-        Buffer.BlockCopy(_recvBuffer, _recvBufferPos, buffer, offset, bytesToCopy);
-        _recvBufferPos += bytesToCopy;
-        
-        return bytesToCopy;
+        catch { FailClosed(); throw; }
+        finally { _readGate.Release(); }
+    }
+
+    private void ThrowIfFailed()
+    {
+        if (Volatile.Read(ref _failed) != 0) throw new IOException("Encrypted connection is closed");
+    }
+
+    private void FailClosed()
+    {
+        Interlocked.Exchange(ref _failed, 1);
+        try { _innerStream.Dispose(); } catch { /* Preserve the original record error. */ }
     }
 
     private static async Task ReadExactlyAsync(Stream stream, byte[] buffer, CancellationToken cancellationToken)
@@ -331,6 +324,7 @@ internal class EncryptedStream : Stream
     {
         if (disposing)
         {
+            Interlocked.Exchange(ref _failed, 1);
             _innerStream?.Dispose();
         }
         base.Dispose(disposing);

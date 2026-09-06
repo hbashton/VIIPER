@@ -5,7 +5,7 @@ package main
 #include <stdlib.h>
 
 typedef struct {
-	char* addr; // default "0.0.0.0:3241"
+	char* addr; // default "127.0.0.1:3241"
 	uint64_t connection_timeout_ms; // default 30000 (30s)
 	uint64_t device_handler_connect_timeout_ms; // default 5000 (5s)
 	uint32_t write_batch_flush_interval_ms; // default 1 (1ms)
@@ -51,7 +51,7 @@ func NewUSBServer(config *C.USBServerConfig, outHandle *C.USBServerHandle, logCa
 	writeBatchFlushInterval := time.Duration(config.write_batch_flush_interval_ms) * time.Millisecond
 
 	if addr == "" {
-		addr = ":3241"
+		addr = "127.0.0.1:3241"
 	}
 	if connectionTimeout == 0 {
 		connectionTimeout = 30 * time.Second

@@ -12,7 +12,7 @@ import (
 	"github.com/Alia5/VIIPER/virtualbus"
 	"github.com/stretchr/testify/assert"
 
-	_ "github.com/Alia5/VIIPER/internal/registry" // Register devices
+	_ "github.com/Alia5/VIIPER/internal/devicecatalog" // Register devices
 )
 
 func TestInputReports(t *testing.T) {

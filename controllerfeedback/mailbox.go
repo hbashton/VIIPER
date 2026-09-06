@@ -25,12 +25,21 @@ const (
 	ClaimRelease
 )
 
-// ClaimCursor independently remembers application and release delivery. A
-// frame can be claimed while fresh and must still produce one release when
-// that same revision later expires. The zero value is ready for use.
+// ClaimCursor independently remembers completed application and release
+// delivery. Exactly one claim may be in flight. Claim and Complete form a
+// serialized single-consumer contract. On first use a cursor binds its pointer
+// identity and mailbox; a bound cursor must not be copied or reused for another
+// mailbox. The zero value is ready.
 type ClaimCursor struct {
-	Revision        uint64
-	ReleaseRevision uint64
+	AppliedRevision          uint64
+	ReleasedRevision         uint64
+	nextToken                uint64
+	inFlightToken            uint64
+	inFlightRevision         uint64
+	inFlightDisposition      ClaimDisposition
+	inFlightCompletesRelease bool
+	ownerMailbox             *Mailbox
+	self                     *ClaimCursor
 }
 
 // Publish admits frame when it is valid and newer than the current ordering
@@ -49,6 +58,9 @@ func (mailbox *Mailbox) Publish(frame Frame) bool {
 	mailbox.latest = frame
 	mailbox.hasValue = true
 	mailbox.revision++
+	if mailbox.revision == 0 {
+		mailbox.revision = 1
+	}
 	return true
 }
 
@@ -80,35 +92,112 @@ func (mailbox *Mailbox) ReadFresh(nowMicroseconds uint64) (Frame, uint64, bool) 
 	return mailbox.latest, mailbox.revision, true
 }
 
-// Claim returns each fresh revision once as ClaimFrame. If that revision is
-// expired or implausibly future-dated, it returns ClaimRelease exactly once,
-// including when the frame was previously claimed while fresh. Translators
-// must handle ClaimRelease by locally zeroing all physical actuators outside
-// the mailbox lock.
+// Claim reserves each fresh revision as ClaimFrame. If that revision is
+// expired or implausibly future-dated, it reserves ClaimRelease, including
+// when the frame was previously completed while fresh. A claim does not
+// advance either completion watermark. Translators perform physical I/O
+// outside the mailbox lock and then call Complete with the exact non-zero
+// token. One cursor is for one serialized consumer.
 func (mailbox *Mailbox) Claim(nowMicroseconds uint64,
-	cursor *ClaimCursor) (Frame, ClaimDisposition) {
+	cursor *ClaimCursor) (Frame, ClaimDisposition, uint64) {
 	if mailbox == nil || cursor == nil {
-		return Frame{}, ClaimNone
+		return Frame{}, ClaimNone, 0
+	}
+	if cursor.self == nil {
+		cursor.self = cursor
+		cursor.ownerMailbox = mailbox
+	} else if cursor.self != cursor || cursor.ownerMailbox != mailbox {
+		return Frame{}, ClaimNone, 0
 	}
 
 	mailbox.mu.Lock()
 	defer mailbox.mu.Unlock()
-	if !mailbox.hasValue {
-		return Frame{}, ClaimNone
+	if !mailbox.hasValue || cursor.inFlightToken != 0 {
+		return Frame{}, ClaimNone, 0
 	}
 	if mailbox.latest.FreshAt(nowMicroseconds) {
-		if cursor.Revision == mailbox.revision {
-			return Frame{}, ClaimNone
+		if cursor.AppliedRevision == mailbox.revision {
+			return Frame{}, ClaimNone, 0
 		}
-		cursor.Revision = mailbox.revision
-		return mailbox.latest, ClaimFrame
+		token := beginClaim(cursor, mailbox.revision, ClaimFrame,
+			mailbox.latest.Command == CommandStop)
+		return mailbox.latest, ClaimFrame, token
 	}
-	if cursor.ReleaseRevision == mailbox.revision {
-		return Frame{}, ClaimNone
+	if cursor.ReleasedRevision == mailbox.revision {
+		return Frame{}, ClaimNone, 0
 	}
-	cursor.Revision = mailbox.revision
-	cursor.ReleaseRevision = mailbox.revision
-	return Frame{}, ClaimRelease
+	token := beginClaim(cursor, mailbox.revision, ClaimRelease, true)
+	return Frame{}, ClaimRelease, token
+}
+
+// CanDeliver revalidates the exact claim immediately before a bounded,
+// nonblocking physical-output admission. A newer publication, an expired
+// ClaimFrame, or a ClaimRelease whose revision became fresh makes the old
+// claim ineligible. The caller must still Complete(false) in a defer and
+// retry. This check cannot make blocking I/O safe past the frame deadline;
+// admission needs deadline-derived cancellation and one serialized writer.
+func (mailbox *Mailbox) CanDeliver(cursor *ClaimCursor, token uint64,
+	nowMicroseconds uint64) bool {
+	if mailbox == nil || cursor == nil || token == 0 ||
+		cursor.self != cursor || cursor.inFlightToken != token ||
+		cursor.ownerMailbox != mailbox ||
+		(cursor.inFlightDisposition != ClaimFrame &&
+			cursor.inFlightDisposition != ClaimRelease) {
+		return false
+	}
+
+	mailbox.mu.Lock()
+	defer mailbox.mu.Unlock()
+	if !mailbox.hasValue || mailbox.revision != cursor.inFlightRevision {
+		return false
+	}
+	if cursor.inFlightDisposition == ClaimFrame {
+		return mailbox.latest.FreshAt(nowMicroseconds)
+	}
+	return mailbox.latest.ExpiredAt(nowMicroseconds)
+}
+
+// Complete resolves the exact in-flight claim. Failed delivery clears only
+// the reservation, so unchanged feedback remains retryable. Successful
+// delivery advances the relevant completion watermarks. Invalid, zero, stale,
+// and duplicate tokens fail closed without disturbing a valid in-flight claim.
+func (mailbox *Mailbox) Complete(cursor *ClaimCursor, token uint64,
+	delivered bool) bool {
+	if mailbox == nil || cursor == nil || token == 0 ||
+		cursor.self != cursor ||
+		cursor.inFlightToken != token ||
+		cursor.ownerMailbox != mailbox ||
+		(cursor.inFlightDisposition != ClaimFrame &&
+			cursor.inFlightDisposition != ClaimRelease) {
+		return false
+	}
+
+	if delivered {
+		cursor.AppliedRevision = cursor.inFlightRevision
+		if cursor.inFlightCompletesRelease {
+			cursor.ReleasedRevision = cursor.inFlightRevision
+		}
+	}
+
+	cursor.inFlightToken = 0
+	cursor.inFlightRevision = 0
+	cursor.inFlightDisposition = ClaimNone
+	cursor.inFlightCompletesRelease = false
+	return true
+}
+
+func beginClaim(cursor *ClaimCursor, revision uint64,
+	disposition ClaimDisposition, completesRelease bool) uint64 {
+	token := cursor.nextToken + 1
+	if token == 0 {
+		token = 1
+	}
+	cursor.nextToken = token
+	cursor.inFlightToken = token
+	cursor.inFlightRevision = revision
+	cursor.inFlightDisposition = disposition
+	cursor.inFlightCompletesRelease = completesRelease
+	return token
 }
 
 func newer(candidate, current Frame) bool {

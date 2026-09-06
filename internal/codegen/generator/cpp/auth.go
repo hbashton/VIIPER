@@ -66,6 +66,9 @@ const authImplTemplate = `// Auto-generated VIIPER C++ Client Library - Authenti
 #include <vector>
 #include <array>
 #include <memory>
+#include <mutex>
+#include <atomic>
+#include <limits>
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
 #include <openssl/rand.h>
@@ -80,12 +83,13 @@ namespace detail {
 // Crypto Constants
 // ============================================================================
 
-constexpr const char* HANDSHAKE_MAGIC = "eVI1\x00";
+constexpr const char* HANDSHAKE_MAGIC = "eVI2\x00";
 constexpr size_t NONCE_SIZE = 32;
-constexpr const char* AUTH_CONTEXT = "VIIPER-Auth-v1";
-constexpr const char* SESSION_CONTEXT = "VIIPER-Session-v1";
+constexpr const char* AUTH_CONTEXT = "VIIPER-Auth-v2";
+constexpr const char* SESSION_CONTEXT = "VIIPER-Session-v2";
 constexpr const char* PBKDF2_SALT = "VIIPER-Key-v1";
 constexpr uint32_t PBKDF2_ITERATIONS = 100000;
+constexpr size_t MAX_PACKET_SIZE = 2 * 1024 * 1024;
 
 // ============================================================================
 // OpenSSL-based Crypto Utilities
@@ -172,7 +176,44 @@ private:
     Socket socket_;
     ChaCha20Poly1305 cipher_;
     uint64_t send_counter_ = 0;
+    uint64_t recv_counter_ = 0;
+    std::mutex send_mutex_;
+    std::mutex recv_mutex_;
+    std::atomic<bool> failed_{false};
     std::vector<uint8_t> recv_buffer_;
+
+    Error fail_record() {
+        failed_.store(true);
+        return Error("Invalid encrypted record or closed encrypted connection");
+    }
+
+    // Called with recv_mutex_ held. Returns false only for EOF before a header.
+    Result<bool> read_record() {
+        if (failed_.load()) return fail_record();
+        uint8_t len_buf[4] = {};
+        auto first = socket_.recv(len_buf, 1);
+        if (first.is_error()) return fail_record();
+        if (first.value() == 0) return false;
+        if (socket_.recv_exact(len_buf + 1, 3).is_error()) return fail_record();
+        uint32_t packet_len = (uint32_t(len_buf[0]) << 24) | (uint32_t(len_buf[1]) << 16) |
+                              (uint32_t(len_buf[2]) << 8) | uint32_t(len_buf[3]);
+        if (packet_len < 28 || packet_len > MAX_PACKET_SIZE) return fail_record();
+        std::vector<uint8_t> packet(packet_len);
+        if (socket_.recv_exact(packet.data(), packet.size()).is_error()) return fail_record();
+        uint64_t counter = 0;
+        for (int i = 4; i < 12; ++i) counter = (counter << 8) | packet[i];
+        if (packet[0] != 0 || packet[1] != 0 || packet[2] != 0 || packet[3] != 1 ||
+            counter != recv_counter_ || recv_counter_ == std::numeric_limits<uint64_t>::max())
+            return fail_record();
+        const size_t size = packet_len - 28;
+        // Keep a non-null output pointer even for a valid empty record.
+        std::vector<uint8_t> plaintext(size + 1);
+        if (!cipher_.decrypt(packet.data(), packet.data() + 12, size,
+                packet.data() + 12 + size, plaintext.data())) return fail_record();
+        ++recv_counter_;
+        recv_buffer_.insert(recv_buffer_.end(), plaintext.begin(), plaintext.begin() + size);
+        return true;
+    }
 
 public:
     EncryptedSocket(Socket&& socket, const std::array<uint8_t, 32>& session_key)
@@ -184,6 +225,10 @@ public:
     }
 
     Result<void> send(const uint8_t* data, size_t size) {
+        if (size == 0) return Result<void>();
+        std::lock_guard<std::mutex> lock(send_mutex_);
+        if (failed_.load() || size > MAX_PACKET_SIZE - 28 ||
+            send_counter_ == std::numeric_limits<uint64_t>::max()) return fail_record();
         uint8_t nonce[12] = {0};
         for (int i = 0; i < 8; ++i) {
             nonce[4 + i] = (send_counter_ >> (56 - i * 8)) & 0xff;
@@ -208,78 +253,41 @@ public:
         packet.append(reinterpret_cast<char*>(ciphertext.data()), ciphertext.size());
         packet.append(reinterpret_cast<char*>(tag), 16);
 
-        return socket_.send(packet);
+        auto result = socket_.send(packet);
+        if (result.is_error()) failed_.store(true);
+        return result;
     }
 
     Result<size_t> recv(uint8_t* buffer, size_t size) {
-        std::vector<uint8_t> len_buf(4);
-        auto read_result = socket_.recv_exact(len_buf.data(), 4);
-        if (read_result.is_error()) {
-            if (read_result.error().message == "connection closed") {
-                return 0; // Return 0 bytes on EOF
-            }
-            return read_result.error();
+        if (size == 0) return size_t(0);
+        std::lock_guard<std::mutex> lock(recv_mutex_);
+        if (failed_.load()) return fail_record();
+        while (recv_buffer_.empty()) {
+            auto result = read_record();
+            if (result.is_error()) return result.error();
+            if (!result.value()) return size_t(0);
         }
-
-        uint32_t packet_len = (len_buf[0] << 24) | (len_buf[1] << 16) | 
-                             (len_buf[2] << 8) | len_buf[3];
-
-        if (packet_len > 2 * 1024 * 1024) {
-            return Error("Packet too large");
-        }
-
-        std::vector<uint8_t> packet(packet_len);
-        read_result = socket_.recv_exact(packet.data(), packet_len);
-        if (read_result.is_error()) return read_result.error();
-
-        if (packet_len < 28) return Error("Packet too small");
-
-        const uint8_t* nonce = packet.data();
-        const uint8_t* ciphertext = packet.data() + 12;
-        size_t ct_len = packet_len - 12 - 16;
-        const uint8_t* tag = packet.data() + 12 + ct_len;
-
-        std::vector<uint8_t> plaintext(ct_len);
-        if (!cipher_.decrypt(nonce, ciphertext, ct_len, tag, plaintext.data())) {
-            return Error("Decryption failed");
-        }
-
-        size_t to_copy = (ct_len < size) ? ct_len : size;
-        std::memcpy(buffer, plaintext.data(), to_copy);
+        size_t to_copy = std::min(size, recv_buffer_.size());
+        std::memcpy(buffer, recv_buffer_.data(), to_copy);
+        recv_buffer_.erase(recv_buffer_.begin(), recv_buffer_.begin() + to_copy);
         return to_copy;
     }
 
     Result<std::string> recv_line() {
-        std::vector<uint8_t> len_buf(4);
-        auto read_result = socket_.recv_exact(len_buf.data(), 4);
-        if (read_result.is_error()) {
-            return read_result.error();
+        std::lock_guard<std::mutex> lock(recv_mutex_);
+        if (failed_.load()) return fail_record();
+        for (;;) {
+            auto end = std::find(recv_buffer_.begin(), recv_buffer_.end(), '\n');
+            if (end != recv_buffer_.end()) {
+                std::string line(recv_buffer_.begin(), end);
+                recv_buffer_.erase(recv_buffer_.begin(), end + 1);
+                return line;
+            }
+            if (recv_buffer_.size() > MAX_PACKET_SIZE) return fail_record();
+            auto result = read_record();
+            if (result.is_error()) return result.error();
+            if (!result.value()) return Error("connection closed before receiving a line");
         }
-
-        uint32_t packet_len = (len_buf[0] << 24) | (len_buf[1] << 16) | 
-                             (len_buf[2] << 8) | len_buf[3];
-
-        if (packet_len > 2 * 1024 * 1024) {
-            return Error("Packet too large");
-        }
-
-        std::vector<uint8_t> packet(packet_len);
-        read_result = socket_.recv_exact(packet.data(), packet_len);
-        if (read_result.is_error()) return read_result.error();
-
-        if (packet_len < 28) return Error("Packet too small");
-
-        const uint8_t* nonce = packet.data();
-        const uint8_t* ciphertext = packet.data() + 12;
-        size_t ct_len = packet_len - 12 - 16;
-        const uint8_t* tag = packet.data() + 12 + ct_len;
-
-        std::vector<uint8_t> plaintext(ct_len);
-        if (!cipher_.decrypt(nonce, ciphertext, ct_len, tag, plaintext.data())) {
-            return Error("Decryption failed");
-        }
-
-        return std::string(reinterpret_cast<char*>(plaintext.data()), plaintext.size());
     }
 
     Socket& get_socket() { return socket_; }
@@ -306,10 +314,8 @@ inline Result<std::unique_ptr<EncryptedSocket>> perform_handshake(Socket&& socke
     );
 
     std::array<uint8_t, NONCE_SIZE> client_nonce;
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_int_distribution<> dis(0, 255);
-    for (auto& byte : client_nonce) byte = static_cast<uint8_t>(dis(gen));
+    if (RAND_bytes(client_nonce.data(), static_cast<int>(client_nonce.size())) != 1)
+        return Error("Failed to generate handshake nonce");
 
     std::array<uint8_t, 32> auth_tag;
     std::vector<uint8_t> auth_data;
@@ -330,12 +336,7 @@ inline Result<std::unique_ptr<EncryptedSocket>> perform_handshake(Socket&& socke
     if (recv_result.is_error()) return recv_result.error();
 
     if (response[0] != 'O' || response[1] != 'K' || response[2] != '\0') {
-        // Try to read error message
-        auto error_data = socket.recv_line();
-        if (error_data.is_error()) {
-            return Error("Invalid handshake response");
-        }
-        return Error("Authentication failed: " + error_data.value());
+        return Error("Authentication rejected; client and server must both support VIIPER auth v2");
     }
 
     std::array<uint8_t, NONCE_SIZE> server_nonce;

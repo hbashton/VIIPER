@@ -5,14 +5,19 @@ import (
 	"net"
 	"sync"
 	"time"
+
+	"github.com/Alia5/VIIPER/virtualbus"
 )
 
-// deviceStreamKey identifies the lifetime of one virtual device. Bus and
-// device identifiers can eventually be reused, so the monotonically increasing
-// generation in deviceStreamOwnership remains authoritative across reconnects.
+// deviceStreamKey identifies one exact VirtualBus.Add incarnation. Generation
+// orders reconnects only within that incarnation; the opaque bus/token pair
+// prevents a stale handler for a removed address from closing or superseding a
+// successor which reused the same bus/device numbers.
 type deviceStreamKey struct {
-	busID uint32
-	devID string
+	busID             uint32
+	devID             string
+	bus               *virtualbus.VirtualBus
+	registrationToken uint64
 }
 
 // deviceStreamCoordinator gives each virtual device exactly one current API
@@ -48,13 +53,51 @@ type deviceStreamLease struct {
 	finishOnce   sync.Once
 }
 
+func (c *deviceStreamCoordinator) deleteTerminalStateLocked(
+	key deviceStreamKey,
+	state *deviceStreamOwnership,
+) {
+	if state == nil || c.streams[key] != state || state.active ||
+		state.conn != nil || state.done != nil || state.finalizeTimer != nil ||
+		state.cleanupTimer != nil {
+		return
+	}
+	delete(c.streams, key)
+}
+
+func invokeDeviceStreamCallback(callback func()) {
+	if callback == nil {
+		return
+	}
+	defer func() {
+		_ = recover()
+	}()
+	callback()
+}
+
 func (c *deviceStreamCoordinator) claim(key deviceStreamKey,
 	conn net.Conn) *deviceStreamLease {
+	return c.claimWithPolicy(key, conn, true)
+}
+
+// A production Xbox incarnation has one feedback consumer. A second request
+// may not close that consumer while the retained owner is draining.
+func (c *deviceStreamCoordinator) claimExclusive(key deviceStreamKey,
+	conn net.Conn) *deviceStreamLease {
+	return c.claimWithPolicy(key, conn, false)
+}
+
+func (c *deviceStreamCoordinator) claimWithPolicy(key deviceStreamKey,
+	conn net.Conn, replace bool) *deviceStreamLease {
 	c.mu.Lock()
 	if c.streams == nil {
 		c.streams = make(map[deviceStreamKey]*deviceStreamOwnership)
 	}
 	state := c.streams[key]
+	if !replace && state != nil && state.active {
+		c.mu.Unlock()
+		return nil
+	}
 	if state == nil {
 		state = &deviceStreamOwnership{}
 		c.streams[key] = state
@@ -147,7 +190,7 @@ func (l *deviceStreamLease) finish(reconnectGrace, cleanupDelay time.Duration,
 			c.mu.Lock()
 			defer c.mu.Unlock()
 			currentState := c.streams[l.key]
-			if currentState == nil || currentState.active ||
+			if currentState != state || currentState.active ||
 				currentState.generation != generation || currentState.finalized {
 				return
 			}
@@ -156,19 +199,19 @@ func (l *deviceStreamLease) finish(reconnectGrace, cleanupDelay time.Duration,
 			if deviceContext != nil {
 				select {
 				case <-deviceContext.Done():
+					c.deleteTerminalStateLocked(l.key, currentState)
 					return
 				default:
 				}
 			}
-			if finalizeCurrent != nil {
-				finalizeCurrent()
-			}
+			invokeDeviceStreamCallback(finalizeCurrent)
+			c.deleteTerminalStateLocked(l.key, currentState)
 		})
 		state.cleanupTimer = time.AfterFunc(cleanupDelay, func() {
 			c.mu.Lock()
 			defer c.mu.Unlock()
 			currentState := c.streams[l.key]
-			if currentState == nil || currentState.active ||
+			if currentState != state || currentState.active ||
 				currentState.generation != generation {
 				return
 			}
@@ -179,20 +222,18 @@ func (l *deviceStreamLease) finish(reconnectGrace, cleanupDelay time.Duration,
 					currentState.finalizeTimer = nil
 				}
 				currentState.finalized = true
-				if finalizeCurrent != nil {
-					finalizeCurrent()
-				}
+				invokeDeviceStreamCallback(finalizeCurrent)
 			}
 			if deviceContext != nil {
 				select {
 				case <-deviceContext.Done():
+					c.deleteTerminalStateLocked(l.key, currentState)
 					return
 				default:
 				}
 			}
-			if cleanup != nil {
-				cleanup()
-			}
+			invokeDeviceStreamCallback(cleanup)
+			c.deleteTerminalStateLocked(l.key, currentState)
 		})
 		c.mu.Unlock()
 	})
@@ -213,6 +254,7 @@ func (l *deviceStreamLease) abandon() {
 			state.active = false
 			state.conn = nil
 			state.done = nil
+			c.deleteTerminalStateLocked(l.key, state)
 		}
 		c.mu.Unlock()
 	})
@@ -238,12 +280,15 @@ func (c *deviceStreamCoordinator) scheduleCleanup(key deviceStreamKey,
 	if state.cleanupTimer != nil {
 		state.cleanupTimer.Stop()
 	}
+	// A repeated schedule for the same exact registration supersedes any timer
+	// callback which already fired but is waiting for the coordinator lock.
+	state.generation++
 	generation := state.generation
 	state.cleanupTimer = time.AfterFunc(delay, func() {
 		c.mu.Lock()
 		defer c.mu.Unlock()
 		current := c.streams[key]
-		if current == nil || current.active ||
+		if current != state || current.active ||
 			current.generation != generation {
 			return
 		}
@@ -251,13 +296,13 @@ func (c *deviceStreamCoordinator) scheduleCleanup(key deviceStreamKey,
 		if deviceContext != nil {
 			select {
 			case <-deviceContext.Done():
+				c.deleteTerminalStateLocked(key, current)
 				return
 			default:
 			}
 		}
-		if cleanup != nil {
-			cleanup()
-		}
+		invokeDeviceStreamCallback(cleanup)
+		c.deleteTerminalStateLocked(key, current)
 	})
 	c.mu.Unlock()
 }

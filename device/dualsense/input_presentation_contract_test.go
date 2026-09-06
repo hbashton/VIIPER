@@ -66,6 +66,57 @@ func TestInputPresentationCommitIsExactlyOnce(t *testing.T) {
 	}
 }
 
+func TestInputPresentationRetirementRefreshesEP0BeforeSuccessorClaim(
+	t *testing.T,
+) {
+	dev := newInputPresentationTestDevice(t)
+	base := dev.input.timestampBase.Add(10 * time.Millisecond)
+	press := neutralInputState()
+	press.Buttons = ButtonCross
+	if !dev.input.updateAt(&press, 0, base) {
+		t.Fatal("press was not accepted")
+	}
+	var report [InputReportSize]byte
+	claim := dev.ClaimInputPresentation(report[:], base.Add(time.Millisecond))
+	if !claim.Valid() || !dev.ResolveInputPresentation(
+		claim, inputpresentation.OutcomeCommit, base.Add(2*time.Millisecond)) {
+		t.Fatal("press was not committed")
+	}
+	var pressed [InputReportSize]byte
+	_, pressedVersion := dev.SnapshotInputReportInto(pressed[:])
+	if pressed[8]&byte(ButtonCross) == 0 {
+		t.Fatal("precondition: committed snapshot is not pressed")
+	}
+
+	release := neutralInputState()
+	if !dev.input.updateAt(&release, 0, base.Add(3*time.Millisecond)) {
+		t.Fatal("release was not accepted")
+	}
+	if !dev.RetireInputPresentationGeneration(
+		claim.Generation, base.Add(4*time.Millisecond)) {
+		t.Fatal("presentation generation was not retired")
+	}
+	var current [InputReportSize]byte
+	_, currentVersion := dev.SnapshotInputReportInto(current[:])
+	if currentVersion == pressedVersion ||
+		dev.InputReportSnapshotCurrent(pressedVersion) {
+		t.Fatalf("retirement did not invalidate EP0 snapshot: %d -> %d",
+			pressedVersion, currentVersion)
+	}
+	if current[8]&byte(ButtonCross) != 0 {
+		t.Fatalf("EP0 retained a pre-retirement press: % x", current[:11])
+	}
+
+	successor := dev.ClaimInputPresentation(
+		report[:], base.Add(5*time.Millisecond))
+	if !successor.Valid() || successor.Generation == claim.Generation {
+		t.Fatalf("successor claim=%+v retired=%+v", successor, claim)
+	}
+	if report[8]&byte(ButtonCross) != 0 {
+		t.Fatalf("successor replayed a retired press: % x", report[:11])
+	}
+}
+
 func TestInputPresentationRejectsInvalidResolutionWithoutMutatingActiveClaim(
 	t *testing.T,
 ) {

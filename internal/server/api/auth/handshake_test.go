@@ -180,7 +180,7 @@ func TestFullHandshake(t *testing.T) {
 		clientNonce[i] = byte(i)
 	}
 	mac := hmac.New(sha256.New, validKey)
-	_, _ = mac.Write([]byte("VIIPER-Auth-v1"))
+	_, _ = mac.Write([]byte("VIIPER-Auth-v2"))
 	_, _ = mac.Write(clientNonce)
 	clientAuth := mac.Sum(nil)
 
@@ -217,7 +217,7 @@ func TestFullHandshake(t *testing.T) {
 			writer:      bytes.NewBuffer(nil),
 			key:         validKey,
 			isClient:    false,
-			expectedErr: fmt.Errorf("discard handshake magic: EOF"),
+			expectedErr: fmt.Errorf("read handshake magic: EOF"),
 		},
 		{
 			name:   "Err closed writer",
@@ -237,7 +237,7 @@ func TestFullHandshake(t *testing.T) {
 			writer:      bytes.NewBuffer(nil),
 			key:         validKey,
 			isClient:    false,
-			expectedErr: fmt.Errorf("read client nonce: unexpected EOF"),
+			expectedErr: auth.ErrUnsupportedAuthVersion,
 		},
 		{
 			name:        "Err invalid password",

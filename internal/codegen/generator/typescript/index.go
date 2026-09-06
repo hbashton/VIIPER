@@ -8,6 +8,7 @@ import (
 	"text/template"
 
 	"github.com/Alia5/VIIPER/internal/codegen/common"
+	"github.com/Alia5/VIIPER/internal/codegen/meta"
 )
 
 const indexTemplate = `{{writeFileHeaderTS}}
@@ -20,7 +21,8 @@ export * as Xbox360 from './devices/Xbox360';
 `
 
 const deviceIndexTemplate = `{{writeFileHeaderTS}}
-export * from './{{.PascalName}}Input';
+{{if .HasInput}}export * from './{{.PascalName}}Input';
+{{end}}
 {{if .HasOutput}}export * from './{{.PascalName}}Output';
 {{end}}export * from './{{.PascalName}}Constants';
 {{if .HasMeta}}export * from './{{.PascalName}}Meta';
@@ -43,22 +45,16 @@ func generateIndex(logger *slog.Logger, srcDir string) error {
 	return nil
 }
 
-func generateDeviceIndex(logger *slog.Logger, deviceDir, deviceName string) error {
+func generateDeviceIndex(logger *slog.Logger, deviceDir, deviceName string, md *meta.Metadata) error {
 	logger.Debug("Generating device index.ts", "device", deviceName)
 
 	pascalName := common.ToPascalCase(deviceName)
 
-	hasOutput := false
-	outputPath := filepath.Join(deviceDir, pascalName+"Output.ts")
-	if _, err := os.Stat(outputPath); err == nil {
-		hasOutput = true
-	}
-
-	hasMeta := false
-	metaPath := filepath.Join(deviceDir, pascalName+"Meta.ts")
-	if _, err := os.Stat(metaPath); err == nil {
-		hasMeta = true
-	}
+	// Use the same metadata as the emitters. Stale files from an earlier
+	// generation must not advertise a wire protocol that no longer exists.
+	hasInput := md.WireTags != nil && md.WireTags.GetTag(deviceName, "c2s") != nil
+	hasOutput := md.WireTags != nil && md.WireTags.GetTag(deviceName, "s2c") != nil
+	hasMeta := len(md.DeviceStructs[deviceName]) != 0
 
 	f, err := os.Create(filepath.Join(deviceDir, "index.ts"))
 	if err != nil {
@@ -72,10 +68,12 @@ func generateDeviceIndex(logger *slog.Logger, deviceDir, deviceName string) erro
 
 	data := struct {
 		PascalName string
+		HasInput   bool
 		HasOutput  bool
 		HasMeta    bool
 	}{
 		PascalName: pascalName,
+		HasInput:   hasInput,
 		HasOutput:  hasOutput,
 		HasMeta:    hasMeta,
 	}

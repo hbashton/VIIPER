@@ -394,7 +394,10 @@ For a higher-level experience, see the Go client in `/apiclient/`.
 ## How this relates to USBIP
 
 The VIIPER API controls which virtual devices exist and exposes a device stream for live input/feedback.  
-Separately, the USBIP server (default `:3241`) makes these devices attachable from USBIP clients.
+Separately, the USBIP server (default `127.0.0.1:3241`) makes these devices
+attachable from a local USBIP client. USB/IP is not covered by API
+authentication; remote exposure requires an explicitly configured address and
+a trusted tunnel/firewall boundary.
 
 Typical flow:
 

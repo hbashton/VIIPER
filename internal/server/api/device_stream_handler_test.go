@@ -24,11 +24,13 @@ import (
 func TestDeviceStreamHandler_Dispatch(t *testing.T) {
 	cfg := srvusb.ServerConfig{Addr: "127.0.0.1:0"}
 	srv := srvusb.New(cfg, slog.Default(), log.NewRaw(nil))
+	t.Cleanup(func() { require.NoError(t, srv.Close()) })
 	logger := slog.Default()
 
 	bus, err := virtualbus.NewWithBusID(90001)
 	require.NoError(t, err)
 	require.NoError(t, srv.AddBus(bus))
+	t.Cleanup(func() { require.NoError(t, srv.RemoveBus(bus.BusID())) })
 	dev, err := keyboard.New(nil)
 	require.NoError(t, err)
 	devCtx, err := bus.Add(dev)

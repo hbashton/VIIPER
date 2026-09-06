@@ -165,12 +165,37 @@ separate stale-edge fence.
 The probe does not start VIIPER, create a bus/device, attach USB/IP, initialize
 SDL, or claim that an external process shares its QPC identity. A live wrapper
 must still perform provenance preflight, create an isolated in-process server,
-prove the exact virtual-controller identity, supply a real stable USB/IP
-lifecycle generation, give the probe exclusive ownership of a new V5 stream
-starting at sequence zero, and give the SDL observer exclusive main-thread
-event-queue ownership. The concrete SDL consumer is available only in a
-Windows CGO build with the same latency tag. No current `0.9.7.7` live baseline
-has been captured by this landing-zone change.
+prove the exact virtual-controller identity, give the probe exclusive ownership
+of a new V5 stream starting at sequence zero, and give the SDL observer
+exclusive main-thread event-queue ownership. The concrete SDL consumer is
+available only in a Windows CGO build with the same latency tag.
+
+An opt-in server method, `InputLatencyImportGeneration`, now exposes the exact
+active import lease already assigned by the USB/IP server for one bus/device
+identity. The lease advances on every successful reimport and disappears on
+disconnect. A wrapper can therefore use it as the probe lifecycle source
+without inventing a generation or changing the production hot path. The method
+does not exist in an ordinary release build.
+
+There is still no executable live wrapper or USB/IP-only report mode. `Runner`
+requires both the `usbip` baseline and a distinctly named candidate, so passing
+the same USB/IP implementation twice would be false evidence rather than a
+baseline workaround. Consequently there is no valid current command that emits
+the declared live report, and no current `0.9.7.7` live baseline has been
+captured by this landing-zone change.
+
+The eventual no-install procedure must use a clean source revision and a single
+Windows CGO process built with both `release` and `viiper_latency`; a normal
+`release` VIIPER lacks the broker/terminal hooks. That process must use unused
+loopback ports and an
+authenticated stream, snapshot the SDL gamepad set, create and auto-attach one
+isolated V5 virtual DualSense through the already installed `0.9.7.7` driver,
+bind the newly observed controller and returned USB/IP import lease to the same
+bus/device, run the canonical schedule, finish neutral, detach only the returned
+USB/IP port, remove its device and bus, and prove both the port and PnP identity
+are gone before accepting the artifact. A virtual-controller arrival is
+machine-global, so this cannot be described as non-disruptive while games,
+streaming software, remappers, or other controller consumers are active.
 
 The future backend adapter must use the identical workload, observer, clock,
 controller identity checks, and runtime provenance. Only after the live wrapper

@@ -20,6 +20,8 @@ type DeviceHandler interface {
 var (
 	deviceRegistry   = make(map[string]DeviceHandler)
 	deviceRegistryMu sync.RWMutex
+	streamRegistry   = make(map[string]StreamHandlerFunc)
+	streamRegistryMu sync.RWMutex
 )
 
 // RegisterDevice registers a device type for dynamic creation and handler dispatch.
@@ -53,11 +55,27 @@ func ListDeviceTypes() []string {
 // GetStreamHandler retrieves the stream handler for a registered device type.
 // Returns nil if not found. Name lookup is case-insensitive.
 func GetStreamHandler(name string) StreamHandlerFunc {
+	streamRegistryMu.RLock()
+	stream := streamRegistry[toLower(name)]
+	streamRegistryMu.RUnlock()
+	if stream != nil {
+		return stream
+	}
 	handler := GetRegistration(name)
 	if handler == nil {
 		return nil
 	}
 	return handler.StreamHandler()
+}
+
+// RegisterStreamHandler registers transport handling for an explicitly
+// constructed device without making that device generically creatable. It is
+// used by retained personas whose construction requires typed one-shot
+// authority that cannot be represented by deviceSpecific JSON.
+func RegisterStreamHandler(name string, handler StreamHandlerFunc) {
+	streamRegistryMu.Lock()
+	defer streamRegistryMu.Unlock()
+	streamRegistry[toLower(name)] = handler
 }
 
 func toLower(s string) string {

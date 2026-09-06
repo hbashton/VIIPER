@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -31,6 +32,26 @@ type controlLifecycleTestDevice struct {
 
 type immediateInterruptInTestDevice struct {
 	desc *usbdesc.Descriptor
+}
+
+type activeEndpointTestDevice struct {
+	desc          *usbdesc.Descriptor
+	transferCalls atomic.Uint32
+}
+
+func (d *activeEndpointTestDevice) HandleTransfer(
+	context.Context, uint32, uint32, []byte,
+) []byte {
+	d.transferCalls.Add(1)
+	return []byte{0x5a}
+}
+
+func (d *activeEndpointTestDevice) GetDescriptor() *usbdesc.Descriptor {
+	return d.desc
+}
+
+func (d *activeEndpointTestDevice) GetDeviceSpecificArgs() map[string]any {
+	return nil
 }
 
 func (d *immediateInterruptInTestDevice) HandleTransfer(
@@ -167,6 +188,555 @@ func TestProcessSubmitTracksInterfaceAlternateSetting(t *testing.T) {
 	assert.Equal(t, [][2]uint8{{2, 1}, {2, 0}}, dev.altEvents)
 }
 
+func TestProcessSubmitTracksDescriptorConfigurationValue(t *testing.T) {
+	desc := &usbdesc.Descriptor{
+		Configuration: usbdesc.ConfigurationDescriptor{
+			BConfigurationValue: 4,
+		},
+		Interfaces: []usbdesc.InterfaceConfig{{
+			Descriptor: usbdesc.InterfaceDescriptor{
+				BInterfaceNumber: 0,
+			},
+			Endpoints: []usbdesc.EndpointDescriptor{{
+				BEndpointAddress: 0x81,
+				BMAttributes:     0x03,
+			}},
+		}},
+	}
+	dev := &altSettingTestDevice{desc: desc}
+	server := New(ServerConfig{}, nil, nil)
+	getConfiguration := []byte{
+		usbReqTypeStandardFromDevice, usbReqGetConfiguration,
+		0, 0, 0, 0, 1, 0,
+	}
+	setConfigurationZero := []byte{
+		usbReqTypeStandardToDevice, usbReqSetConfiguration,
+		0, 0, 0, 0, 0, 0,
+	}
+	setConfigurationFour := []byte{
+		usbReqTypeStandardToDevice, usbReqSetConfiguration,
+		4, 0, 0, 0, 0, 0,
+	}
+	clearEndpointHalt := []byte{
+		usbReqTypeStandardToEndpoint, usbReqClearFeature,
+		0, 0, 0x81, 0, 0, 0,
+	}
+
+	assert.Equal(t, []byte{4}, server.processSubmit(
+		context.Background(), dev, 0, 0, getConfiguration, nil))
+	require.True(t, server.parseControlLifecycleSetup(
+		dev, clearEndpointHalt).accepted)
+	server.processSubmit(context.Background(), dev, 0, 0,
+		setConfigurationZero, nil)
+	assert.Equal(t, []byte{0}, server.processSubmit(
+		context.Background(), dev, 0, 0, getConfiguration, nil))
+	require.False(t, server.parseControlLifecycleSetup(
+		dev, clearEndpointHalt).accepted,
+		"an unconfigured device exposed an active endpoint")
+	server.processSubmit(context.Background(), dev, 0, 0,
+		setConfigurationFour, nil)
+	assert.Equal(t, []byte{4}, server.processSubmit(
+		context.Background(), dev, 0, 0, getConfiguration, nil))
+	require.True(t, server.parseControlLifecycleSetup(
+		dev, clearEndpointHalt).accepted)
+}
+
+func TestManagementRepliesUseDescriptorConfigurationValue(t *testing.T) {
+	desc := &usbdesc.Descriptor{
+		Device: usbdesc.DeviceDescriptor{
+			BNumConfigurations: 1,
+		},
+		Configuration: usbdesc.ConfigurationDescriptor{
+			BConfigurationValue: 4,
+		},
+		Interfaces: []usbdesc.InterfaceConfig{{
+			Descriptor: usbdesc.InterfaceDescriptor{
+				BInterfaceNumber: 0,
+			},
+		}},
+	}
+	dev := &altSettingTestDevice{desc: desc}
+	bus := virtualbus.New(253)
+	defer bus.Close() //nolint:errcheck
+	_, err := bus.Add(dev)
+	require.NoError(t, err)
+	server := New(ServerConfig{},
+		slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
+	require.NoError(t, server.AddBus(bus))
+
+	t.Run("device list", func(t *testing.T) {
+		serverConn, clientConn := net.Pipe()
+		defer serverConn.Close() //nolint:errcheck
+		defer clientConn.Close() //nolint:errcheck
+		require.NoError(t,
+			clientConn.SetDeadline(time.Now().Add(2*time.Second)))
+		errCh := make(chan error, 1)
+		go func() { errCh <- server.handleDevList(serverConn) }()
+		// Management header (8), device-count header (4), exported-device
+		// fixed record (312), and one interface tuple (4).
+		var response [328]byte
+		require.NoError(t, usbip.ReadExactly(clientConn, response[:]))
+		assert.Equal(t, byte(4), response[12+309])
+		require.NoError(t, <-errCh)
+	})
+
+	t.Run("import", func(t *testing.T) {
+		serverConn, clientConn := net.Pipe()
+		defer serverConn.Close() //nolint:errcheck
+		defer clientConn.Close() //nolint:errcheck
+		require.NoError(t,
+			clientConn.SetDeadline(time.Now().Add(2*time.Second)))
+		type importResult struct {
+			release func()
+			err     error
+		}
+		resultCh := make(chan importResult, 1)
+		go func() {
+			_, release, err := server.handleImport(serverConn)
+			resultCh <- importResult{release: release, err: err}
+		}()
+		var request [busIDSize]byte
+		copy(request[:], "253-1")
+		_, err = clientConn.Write(request[:])
+		require.NoError(t, err)
+		var response [8 + 312]byte
+		require.NoError(t, usbip.ReadExactly(clientConn, response[:]))
+		assert.Equal(t, byte(4), response[8+309])
+		result := <-resultCh
+		require.NoError(t, result.err)
+		require.NotNil(t, result.release)
+		result.release()
+	})
+}
+
+func TestUrbStreamStallsRejectedLifecycleRequest(t *testing.T) {
+	dev := newResetPresentationTestDevice(t)
+	bus := virtualbus.New(252)
+	defer bus.Close() //nolint:errcheck
+	_, err := bus.Add(dev)
+	require.NoError(t, err)
+	server := New(ServerConfig{},
+		slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
+	require.NoError(t, server.AddBus(bus))
+	serverConn, clientConn := net.Pipe()
+	defer serverConn.Close() //nolint:errcheck
+	require.NoError(t, clientConn.SetDeadline(time.Now().Add(2*time.Second)))
+	errCh := make(chan error, 1)
+	go func() { errCh <- server.handleUrbStream(serverConn, dev) }()
+
+	cmd := usbip.CmdSubmit{
+		Basic: usbip.HeaderBasic{
+			Command: usbip.CmdSubmitCode,
+			Seqnum:  91,
+			Dir:     usbip.DirOut,
+			Ep:      0,
+		},
+		NumberOfPackets: -1,
+		Setup: [8]byte{
+			usbReqTypeStandardToDevice, usbReqSetConfiguration,
+			2, 0, 0, 0, 0, 0,
+		},
+	}
+	require.NoError(t, cmd.Write(clientConn))
+	var response [retSubmitHeaderSize]byte
+	require.NoError(t, usbip.ReadExactly(clientConn, response[:]))
+	assert.Equal(t, uint32(usbip.RetSubmitCode),
+		binary.BigEndian.Uint32(response[0:4]))
+	assert.Equal(t, uint32(91), binary.BigEndian.Uint32(response[4:8]))
+	assert.Equal(t, int32(errPipe),
+		int32(binary.BigEndian.Uint32(response[20:24])))
+	assert.Zero(t, binary.BigEndian.Uint32(response[24:28]))
+
+	require.NoError(t, clientConn.Close())
+	require.Error(t, <-errCh)
+}
+
+func TestUrbStreamVersionedGetReportEnforcesIDAndHIDInterfaceOwnership(
+	t *testing.T,
+) {
+	base := newVersionedInputTestDevice()
+	dev := &versionedInputIDTestDevice{versionedInputTestDevice: base}
+	bus := virtualbus.New(251)
+	defer bus.Close() //nolint:errcheck
+	_, err := bus.Add(dev)
+	require.NoError(t, err)
+	server := New(ServerConfig{},
+		slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
+	require.NoError(t, server.AddBus(bus))
+	serverConn, clientConn := net.Pipe()
+	defer serverConn.Close() //nolint:errcheck
+	require.NoError(t, clientConn.SetDeadline(time.Now().Add(2*time.Second)))
+	errCh := make(chan error, 1)
+	go func() { errCh <- server.handleUrbStream(serverConn, dev) }()
+
+	submit := func(seq uint32, reportID uint8, wIndex uint16) (
+		int32, uint32, []byte,
+	) {
+		t.Helper()
+		var setup [8]byte
+		setup[0] = hidReqTypeIn
+		setup[1] = hidReqGetReport
+		binary.LittleEndian.PutUint16(setup[2:4],
+			uint16(0x01)<<8|uint16(reportID))
+		binary.LittleEndian.PutUint16(setup[4:6], wIndex)
+		binary.LittleEndian.PutUint16(setup[6:8], 64)
+		command := usbip.CmdSubmit{
+			Basic: usbip.HeaderBasic{
+				Command: usbip.CmdSubmitCode, Seqnum: seq,
+				Dir: usbip.DirIn, Ep: 0,
+			},
+			TransferBufferLen: 64,
+			NumberOfPackets:   -1,
+			Setup:             setup,
+		}
+		require.NoError(t, command.Write(clientConn))
+		var response [retSubmitHeaderSize]byte
+		require.NoError(t, usbip.ReadExactly(clientConn, response[:]))
+		require.Equal(t, uint32(usbip.RetSubmitCode),
+			binary.BigEndian.Uint32(response[0:4]))
+		require.Equal(t, seq, binary.BigEndian.Uint32(response[4:8]))
+		status := int32(binary.BigEndian.Uint32(response[20:24]))
+		actual := binary.BigEndian.Uint32(response[24:28])
+		payload := make([]byte, actual)
+		if actual != 0 {
+			require.NoError(t, usbip.ReadExactly(clientConn, payload))
+		}
+		return status, actual, payload
+	}
+
+	for _, test := range []struct {
+		name     string
+		reportID uint8
+		wIndex   uint16
+	}{
+		{name: "unsupported ID", reportID: 0x01, wIndex: 0x0000},
+		{name: "vendor interface", reportID: 0x05, wIndex: 0x0001},
+		{name: "high-byte interface alias", reportID: 0x05, wIndex: 0x0100},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			status, actual, payload := submit(
+				100+uint32(len(test.name)), test.reportID, test.wIndex)
+			require.Equal(t, int32(errPipe), status)
+			require.Zero(t, actual)
+			require.Empty(t, payload)
+		})
+	}
+
+	status, actual, payload := submit(200, 0x05, 0x0000)
+	require.Zero(t, status)
+	require.Equal(t, uint32(64), actual)
+	require.Len(t, payload, 64)
+	require.Equal(t, byte(0x05), payload[0])
+	require.Equal(t, uint64(1), base.snapshotCalls.Load(),
+		"stalled requests must not reach the snapshot source")
+
+	require.NoError(t, clientConn.Close())
+	require.Error(t, <-errCh)
+}
+
+func TestUrbStreamLifecycleRequiresExactControlEnvelope(t *testing.T) {
+	device := newPresentationTestDevice()
+	device.desc = &usbdesc.Descriptor{
+		Device: usbdesc.DeviceDescriptor{Speed: 2},
+		Configuration: usbdesc.ConfigurationDescriptor{
+			BConfigurationValue: 1,
+		},
+		Interfaces: []usbdesc.InterfaceConfig{{
+			Descriptor: usbdesc.InterfaceDescriptor{
+				BInterfaceNumber: 0, BAlternateSetting: 0,
+			},
+			Endpoints: []usbdesc.EndpointDescriptor{
+				{
+					BEndpointAddress: 0x01, BMAttributes: 0x02,
+					WMaxPacketSize: 64, BInterval: 1,
+				},
+				{
+					BEndpointAddress: 0x84, BMAttributes: 0x03,
+					WMaxPacketSize: 64, BInterval: 4,
+				},
+			},
+		}},
+	}
+	bus := virtualbus.New(253)
+	defer bus.Close() //nolint:errcheck
+	_, err := bus.Add(device)
+	require.NoError(t, err)
+	server := New(ServerConfig{},
+		slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
+	require.NoError(t, server.AddBus(bus))
+	serverConn, clientConn := net.Pipe()
+	defer serverConn.Close() //nolint:errcheck
+	require.NoError(t,
+		clientConn.SetDeadline(time.Now().Add(2*time.Second)))
+	errCh := make(chan error, 1)
+	go func() { errCh <- server.handleUrbStream(serverConn, device) }()
+
+	submit := func(seq, dir, ep uint32, setup [8]byte,
+		payload []byte) (int32, uint32) {
+		t.Helper()
+		cmd := usbip.CmdSubmit{
+			Basic: usbip.HeaderBasic{
+				Command: usbip.CmdSubmitCode, Seqnum: seq,
+				Dir: dir, Ep: ep,
+			},
+			TransferBufferLen: uint32(len(payload)),
+			NumberOfPackets:   -1,
+			Setup:             setup,
+		}
+		require.NoError(t, cmd.Write(clientConn))
+		if len(payload) != 0 {
+			_, err := clientConn.Write(payload)
+			require.NoError(t, err)
+		}
+		var response [retSubmitHeaderSize]byte
+		require.NoError(t, usbip.ReadExactly(clientConn, response[:]))
+		return int32(binary.BigEndian.Uint32(response[20:24])),
+			binary.BigEndian.Uint32(response[24:28])
+	}
+
+	setConfigurationOne := [8]byte{
+		usbReqTypeStandardToDevice, usbReqSetConfiguration,
+		1, 0, 0, 0, 0, 0,
+	}
+	setConfigurationZero := setConfigurationOne
+	setConfigurationZero[2] = 0
+	require.Equal(t, uint64(1), device.generation.Load())
+	require.Equal(t, uint8(1), server.getDeviceConfiguration(device))
+
+	status, actual := submit(101, usbip.DirOut, 1,
+		setConfigurationZero, []byte{0xa5})
+	require.Zero(t, status)
+	require.Equal(t, uint32(1), actual)
+	require.Equal(t, uint64(1), device.generation.Load(),
+		"non-control reserved setup bytes retired presentation")
+	require.Equal(t, uint8(1), server.getDeviceConfiguration(device))
+	device.mu.Lock()
+	require.Equal(t, [][]byte{{0xa5}}, device.isoOutPayloads,
+		"active non-control OUT did not reach the device")
+	device.mu.Unlock()
+
+	clearInputHalt := [8]byte{
+		usbReqTypeStandardToEndpoint, usbReqClearFeature,
+		0, 0, 0x84, 0, 0, 0,
+	}
+	for index, setup := range [][8]byte{
+		setConfigurationZero, clearInputHalt,
+	} {
+		status, actual = submit(102+uint32(index), usbip.DirIn, 0,
+			setup, nil)
+		require.Equal(t, int32(errPipe), status)
+		require.Zero(t, actual)
+		require.Equal(t, uint64(1), device.generation.Load(),
+			"DirIn EP0 submit retired presentation")
+		require.Equal(t, uint8(1), server.getDeviceConfiguration(device))
+	}
+
+	status, actual = submit(104, usbip.DirOut, 0,
+		setConfigurationZero, []byte{0x5a})
+	require.Equal(t, int32(errPipe), status)
+	require.Zero(t, actual)
+	require.Equal(t, uint64(1), device.generation.Load(),
+		"mismatched EP0 data stage retired presentation")
+	require.Equal(t, uint8(1), server.getDeviceConfiguration(device))
+
+	status, actual = submit(105, usbip.DirOut, 0,
+		setConfigurationOne, nil)
+	require.Zero(t, status)
+	require.Zero(t, actual)
+	require.Equal(t, uint64(2), device.generation.Load(),
+		"exact lifecycle request did not retire exactly once")
+	require.Equal(t, uint8(1), server.getDeviceConfiguration(device))
+
+	require.NoError(t, clientConn.Close())
+	require.Error(t, <-errCh)
+}
+
+func TestUrbStreamAdmitsOnlyConfiguredActiveAlternateEndpoint(t *testing.T) {
+	desc := &usbdesc.Descriptor{
+		Device: usbdesc.DeviceDescriptor{Speed: 2},
+		Configuration: usbdesc.ConfigurationDescriptor{
+			BConfigurationValue: 1,
+		},
+		Interfaces: []usbdesc.InterfaceConfig{
+			{Descriptor: usbdesc.InterfaceDescriptor{
+				BInterfaceNumber: 0, BAlternateSetting: 0,
+			}},
+			{
+				Descriptor: usbdesc.InterfaceDescriptor{
+					BInterfaceNumber: 0, BAlternateSetting: 1,
+				},
+				Endpoints: []usbdesc.EndpointDescriptor{
+					{
+						BEndpointAddress: 0x81, BMAttributes: 0x02,
+						WMaxPacketSize: 64, BInterval: 1,
+					},
+					{
+						BEndpointAddress: 0x01, BMAttributes: 0x02,
+						WMaxPacketSize: 64, BInterval: 1,
+					},
+					{
+						BEndpointAddress: 0x02, BMAttributes: 0x01,
+						WMaxPacketSize: 8, BInterval: 1,
+					},
+				},
+			},
+			{
+				Descriptor: usbdesc.InterfaceDescriptor{
+					BInterfaceNumber: 0, BAlternateSetting: 2,
+				},
+				Endpoints: []usbdesc.EndpointDescriptor{{
+					BEndpointAddress: 0x81, BMAttributes: 0x03,
+					WMaxPacketSize: 8, BInterval: 4,
+				}},
+			},
+		},
+	}
+	dev := &activeEndpointTestDevice{desc: desc}
+	bus := virtualbus.New(254)
+	defer bus.Close() //nolint:errcheck
+	_, err := bus.Add(dev)
+	require.NoError(t, err)
+	server := New(ServerConfig{},
+		slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
+	require.NoError(t, server.AddBus(bus))
+	serverConn, clientConn := net.Pipe()
+	defer serverConn.Close() //nolint:errcheck
+	require.NoError(t, clientConn.SetDeadline(time.Now().Add(2*time.Second)))
+	errCh := make(chan error, 1)
+	go func() { errCh <- server.handleUrbStream(serverConn, dev) }()
+
+	submit := func(seq uint32, dir, ep, length uint32,
+		setup [8]byte) (int32, uint32, []byte) {
+		t.Helper()
+		cmd := usbip.CmdSubmit{
+			Basic: usbip.HeaderBasic{
+				Command: usbip.CmdSubmitCode, Seqnum: seq,
+				Dir: dir, Ep: ep,
+			},
+			TransferBufferLen: length,
+			NumberOfPackets:   -1,
+			Setup:             setup,
+		}
+		require.NoError(t, cmd.Write(clientConn))
+		var header [retSubmitHeaderSize]byte
+		require.NoError(t, usbip.ReadExactly(clientConn, header[:]))
+		status := int32(binary.BigEndian.Uint32(header[20:24]))
+		actual := binary.BigEndian.Uint32(header[24:28])
+		payload := make([]byte, actual)
+		if actual > 0 {
+			require.NoError(t, usbip.ReadExactly(clientConn, payload))
+		}
+		return status, actual, payload
+	}
+	setInterface := func(seq uint32, alt uint8) int32 {
+		status, _, _ := submit(seq, usbip.DirOut, 0, 0, [8]byte{
+			usbReqTypeStandardFromInterface, usbReqSetInterface,
+			alt, 0, 0, 0, 0, 0,
+		})
+		return status
+	}
+	setConfiguration := func(seq uint32, value uint8) int32 {
+		status, _, _ := submit(seq, usbip.DirOut, 0, 0, [8]byte{
+			usbReqTypeStandardToDevice, usbReqSetConfiguration,
+			value, 0, 0, 0, 0, 0,
+		})
+		return status
+	}
+	submitInput := func(seq uint32) (int32, uint32, []byte) {
+		return submit(seq, usbip.DirIn, 1, 64, [8]byte{})
+	}
+	submitOutput := func(seq, ep uint32, payload []byte,
+		iso bool) (int32, uint32, []byte) {
+		t.Helper()
+		packetCount := int32(-1)
+		if iso {
+			packetCount = 1
+		}
+		cmd := usbip.CmdSubmit{
+			Basic: usbip.HeaderBasic{
+				Command: usbip.CmdSubmitCode, Seqnum: seq,
+				Dir: usbip.DirOut, Ep: ep,
+			},
+			TransferBufferLen: uint32(len(payload)),
+			NumberOfPackets:   packetCount,
+		}
+		require.NoError(t, cmd.Write(clientConn))
+		_, err := clientConn.Write(payload)
+		require.NoError(t, err)
+		if iso {
+			descriptor := usbip.IsoPacketDescriptor{
+				Length: uint32(len(payload)),
+			}
+			require.NoError(t, descriptor.Write(clientConn))
+		}
+		var header [retSubmitHeaderSize]byte
+		require.NoError(t, usbip.ReadExactly(clientConn, header[:]))
+		status := int32(binary.BigEndian.Uint32(header[20:24]))
+		actual := binary.BigEndian.Uint32(header[24:28])
+		var descriptorWire []byte
+		if iso {
+			descriptorWire = make([]byte, usbip.IsoPacketDescriptorSize)
+			require.NoError(t,
+				usbip.ReadExactly(clientConn, descriptorWire))
+		}
+		return status, actual, descriptorWire
+	}
+
+	status, actual, _ := submitInput(1)
+	assert.Equal(t, int32(errPipe), status)
+	assert.Zero(t, actual)
+	assert.Zero(t, dev.transferCalls.Load())
+
+	assert.Zero(t, setInterface(2, 1))
+	bindingOne, found := server.activeEndpointBinding(dev, 1, usbip.DirIn)
+	require.True(t, found)
+	assert.Equal(t, uint8(1), bindingOne.alternateSetting)
+	status, actual, payload := submitInput(3)
+	assert.Zero(t, status)
+	assert.Equal(t, uint32(1), actual)
+	assert.Equal(t, []byte{0x5a}, payload)
+	assert.Equal(t, uint32(1), dev.transferCalls.Load())
+	status, actual, _ = submitOutput(4, 1, []byte{0x11, 0x22}, false)
+	assert.Zero(t, status)
+	assert.Equal(t, uint32(2), actual)
+	assert.Equal(t, uint32(2), dev.transferCalls.Load())
+
+	assert.Zero(t, setConfiguration(5, 0))
+	status, actual, _ = submitInput(6)
+	assert.Equal(t, int32(errPipe), status)
+	assert.Zero(t, actual)
+	assert.Equal(t, uint32(2), dev.transferCalls.Load())
+	status, actual, _ = submitOutput(7, 1, []byte{0x33}, false)
+	assert.Equal(t, int32(errPipe), status)
+	assert.Zero(t, actual)
+	status, actual, descriptorWire := submitOutput(
+		8, 2, []byte{0x44}, true)
+	assert.Equal(t, int32(errPipe), status)
+	assert.Zero(t, actual)
+	require.Len(t, descriptorWire, usbip.IsoPacketDescriptorSize)
+	assert.Equal(t, int32(errPipe), int32(binary.BigEndian.Uint32(
+		descriptorWire[12:16])))
+	assert.Equal(t, uint32(2), dev.transferCalls.Load())
+
+	assert.Zero(t, setConfiguration(9, 1))
+	status, _, _ = submitInput(10)
+	assert.Equal(t, int32(errPipe), status,
+		"reconfiguration did not restore alternate setting zero")
+	assert.Zero(t, setInterface(11, 2))
+	bindingTwo, found := server.activeEndpointBinding(dev, 1, usbip.DirIn)
+	require.True(t, found)
+	assert.Equal(t, uint8(2), bindingTwo.alternateSetting)
+	assert.Equal(t, uint16(8), bindingTwo.descriptor.WMaxPacketSize)
+	status, actual, payload = submitInput(12)
+	assert.Zero(t, status)
+	assert.Equal(t, uint32(1), actual)
+	assert.Equal(t, []byte{0x5a}, payload)
+	assert.Equal(t, uint32(3), dev.transferCalls.Load())
+
+	require.NoError(t, clientConn.Close())
+	require.Error(t, <-errCh)
+}
+
 func TestProcessSubmitResolvesLogicalHIDInterfaceBeforeDeviceDispatch(t *testing.T) {
 	desc := &usbdesc.Descriptor{Interfaces: []usbdesc.InterfaceConfig{
 		{Descriptor: usbdesc.InterfaceDescriptor{
@@ -204,13 +774,13 @@ func TestProcessSubmitClearFeatureResetsOnlyKnownEndpoint(t *testing.T) {
 			Descriptor: usbdesc.InterfaceDescriptor{
 				BInterfaceNumber: 1, BAlternateSetting: 1, BInterfaceClass: 0x01,
 			},
-			Endpoints: []usbdesc.EndpointDescriptor{{BEndpointAddress: 0x01, BMAttributes: 0x05}},
+			Endpoints: []usbdesc.EndpointDescriptor{{BEndpointAddress: 0x01, BMAttributes: 0x03}},
 		},
 		{
 			Descriptor: usbdesc.InterfaceDescriptor{
 				BInterfaceNumber: 2, BAlternateSetting: 1, BInterfaceClass: 0x01,
 			},
-			Endpoints: []usbdesc.EndpointDescriptor{{BEndpointAddress: 0x82, BMAttributes: 0x05}},
+			Endpoints: []usbdesc.EndpointDescriptor{{BEndpointAddress: 0x82, BMAttributes: 0x03}},
 		},
 	}}
 	dev := &controlLifecycleTestDevice{altSettingTestDevice: &altSettingTestDevice{desc: desc}}

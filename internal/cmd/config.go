@@ -154,6 +154,12 @@ func buildMapFromStruct(t reflect.Type) map[string]any {
 }
 
 func defaultValueForField(t reflect.Type, def string) any {
+	// An optional pointer without a default is intentionally absent. Emitting
+	// an empty key-file value would turn an omitted override into an invalid
+	// explicit path when the generated configuration is read back.
+	if t.Kind() == reflect.Pointer && def == "" {
+		return nil
+	}
 	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}

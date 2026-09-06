@@ -7,8 +7,10 @@ import (
 	"log/slog"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/Alia5/VIIPER/device"
+	"github.com/Alia5/VIIPER/internal/inputpresentation"
 	"github.com/Alia5/VIIPER/internal/server/api"
 	"github.com/Alia5/VIIPER/usb"
 )
@@ -75,8 +77,9 @@ func (h *handler) CreateDevice(o *device.CreateOptions) (usb.Device, error) {
 
 func (h *handler) StreamHandler() api.StreamHandlerFunc {
 	return func(conn net.Conn, devPtr *usb.Device, logger *slog.Logger) error {
+		ownsStream := false
 		defer func() {
-			if devPtr == nil || *devPtr == nil {
+			if !ownsStream || devPtr == nil || *devPtr == nil {
 				return
 			}
 			ns2, ok := (*devPtr).(*NS2Pro)
@@ -101,6 +104,12 @@ func (h *handler) StreamHandler() api.StreamHandlerFunc {
 		if !ok {
 			return fmt.Errorf("device is not ns2pro")
 		}
+		producerLease, acquired := ns2.acquireInputProducer()
+		if !acquired {
+			return fmt.Errorf("ns2pro input producer is already connected")
+		}
+		ownsStream = true
+		defer ns2.releaseInputProducer()
 
 		clearOutputCallback := ns2.SetOutputCallback(func(feedback OutputState) {
 			data, err := feedback.MarshalBinary()
@@ -123,12 +132,33 @@ func (h *handler) StreamHandler() api.StreamHandlerFunc {
 				}
 				return fmt.Errorf("read input state: %w", err)
 			}
+			receivedAt := time.Now()
 
 			var state InputState
 			if err := state.UnmarshalBinary(buf); err != nil {
 				return fmt.Errorf("unmarshal input state: %w", err)
 			}
-			ns2.UpdateInputState(state)
+			var disposition inputpresentation.FixedReportPublishDisposition
+			producerLease, disposition = ns2.publishInputStateWithLease(
+				producerLease, state, receivedAt)
+			switch disposition {
+			case inputpresentation.FixedReportPublishAcceptedOrdered,
+				inputpresentation.FixedReportPublishAcceptedContinuous,
+				inputpresentation.FixedReportPublishAcceptedResynchronization:
+				continue
+			case inputpresentation.FixedReportPublishFaultedOverflow,
+				inputpresentation.FixedReportPublishRejectedNeutralPending,
+				inputpresentation.FixedReportPublishRejectedResynchronizationRequired,
+				inputpresentation.FixedReportPublishRejectedStaleProducer:
+				// The lifecycle owner presents a mandatory neutral and then the
+				// freshest staged complete snapshot. A stale frame at a USB
+				// boundary is deliberately discarded; the returned lease is for
+				// the next raw frame only.
+				continue
+			default:
+				return fmt.Errorf("publish ns2pro input state: disposition %d",
+					disposition)
+			}
 		}
 	}
 }

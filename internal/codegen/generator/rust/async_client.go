@@ -177,6 +177,7 @@ impl AsyncViiperClient {
             stream.write_all(p.as_bytes()).await?;
         }
         stream.write_all(b"\0").await?;
+        stream.flush().await?;
 
         let mut buf = Vec::new();
         stream.read_to_end(&mut buf).await?;
@@ -234,6 +235,7 @@ impl AsyncDeviceStream {
         
         let handshake = format!("bus/{}/{}\0", bus_id, dev_id);
         write_stream.write_all(handshake.as_bytes()).await?;
+        write_stream.flush().await?;
         
         Ok(Self { 
             read_stream: std::sync::Arc::new(tokio::sync::Mutex::new(read_stream)),
@@ -251,6 +253,7 @@ impl AsyncDeviceStream {
         let bytes = input.to_bytes();
         let mut stream = self.write_stream.lock().await;
         stream.write_all(&bytes).await?;
+        stream.flush().await?;
         Ok(())
     }
 
@@ -266,7 +269,10 @@ impl AsyncDeviceStream {
     ) -> Result<(), ViiperError> {
         let bytes = input.to_bytes();
         let mut stream = self.write_stream.lock().await;
-        tokio::time::timeout(timeout, stream.write_all(&bytes))
+        tokio::time::timeout(timeout, async {
+            stream.write_all(&bytes).await?;
+            stream.flush().await
+        })
             .await
             .map_err(|_| ViiperError::Timeout)?
             .map_err(Into::into)
@@ -329,6 +335,7 @@ impl AsyncDeviceStream {
     pub async fn send_raw(&self, data: &[u8]) -> Result<(), ViiperError> {
         let mut stream = self.write_stream.lock().await;
         stream.write_all(data).await?;
+        stream.flush().await?;
         Ok(())
     }
 

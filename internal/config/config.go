@@ -23,6 +23,7 @@ type Log struct {
 type CLI struct {
 	// Global
 	ConfigPath   string       `help:"Path to configuration file (json|yaml|toml)" name:"config" env:"VIIPER_CONFIG"`
+	ConfigOnly   bool         `help:"Load only the explicit absolute --config file; never search default locations"`
 	UpdateNotify UpdateNotify `help:"Update notification level: none, stable, prerelease" default:"stable" env:"VIIPER_UPDATE_NOTIFY"`
 	Log          `embed:"" prefix:"log."`
 	codegenCommand

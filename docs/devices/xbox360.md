@@ -24,6 +24,18 @@ operating systems and games understand out of the box.
 
     - `{"type":"xbox360", "deviceSpecific": {"subType": 7}}`
 
+    `maximumOrderedAgeMilliseconds` is an optional strict presentation policy:
+
+    - `{"type":"xbox360", "deviceSpecific": {"maximumOrderedAgeMilliseconds": 17}}`
+
+    It must be a whole number from 1 through 60000. When omitted, the bounded
+    transition journal has no ordered-age deadline, but capacity overflow still
+    purges ambiguous history, presents a mandatory neutral, rotates the producer
+    lease, and requires one fresh-state resynchronization. When supplied, an
+    ordered item reaching the declared age uses the same fail-closed contract.
+    The value is a caller-owned workload policy; VIIPER deliberately supplies
+    no default. Durations, not absolute timestamps, cross the API boundary.
+
     ### Subtypes
 
     | Subtype                                   | Value |
@@ -60,6 +72,17 @@ operating systems and games understand out of the box.
         - Sticks: LX, LY, RX, RY: int16 each (8 bytes)  
           0 is center, -32768 is min, 32767 is max
         - Reserved: there are 6 reserved bytes at the end of the report. For most subtypes, these will be zeroed, but a few subtypes do put data here.
+
+    Exactly one raw input-stream connection owns publication at a time. A
+    second producer is rejected rather than racing the first. When that stream
+    ends, VIIPER invalidates its producer lease, purges its unpresented history,
+    and places one neutral report ahead of a successor producer. A complete
+    successor state captured after retirement is staged until that neutral
+    commits, then becomes the explicit resynchronization baseline. The USB
+    presentation generation itself is not rotated merely because the raw
+    producer reconnects. A USB presentation-generation retirement also purges
+    any device-level staged resynchronization snapshot, so recovery state from
+    the retired generation cannot become eligible after a later fault.
 
     ### Rumble Feedback
 
