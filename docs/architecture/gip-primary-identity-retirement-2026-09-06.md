@@ -53,3 +53,23 @@ updated to distinct identities without weakening stale capability assertions.
 
 These are synthetic transport tests. They do not alone certify Windows PnP
 teardown, physical Switch 2 reconnection, game compatibility or latency.
+
+## Personal Windows acceptance after the synthetic tests
+
+A portable build from `f39b732`, with the DS4Windows b79 factory/client, passed
+five neutral-only native create/remove cycles, including two simultaneous
+Windows.Gaming.Input gamepads. Removing the second preserved the first pad's
+visibility and semantic-input acknowledgements. All five exact USB instances
+were observed started/problem-zero and then absent through Windows Config
+Manager, not just gone from USB/IP. Removal plus 100 ms polling observation
+took 120.8–124.9 ms in these samples. Activation ACKs took 2,090–2,144 ms;
+neither number is input latency. This does not certify physical controller
+reconnection or the complete multi-controller game matrix.
+
+The post-removal broker log also exposed delayed retries of retired aliases.
+usbip-win2 0.9.7.7's PLUGIN_HARDWARE_ONCE suppresses initial failure retry only;
+its device-disconnect path can separately enqueue delayed reattachment. The
+five test-owned retry locations were stopped through the supported per-location
+CLI, without numeric detach or stop-all. Automatic production retry cleanup
+remains open and needs an exact retirement-bound lifecycle integration; a
+single early cancellation before native teardown finishes is not sufficient.
