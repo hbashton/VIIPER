@@ -14,8 +14,8 @@ import (
 	"sync"
 	"time"
 
-	"fyne.io/systray"
 	"github.com/Alia5/VIIPER/internal/codegen/common"
+	"github.com/Alia5/VIIPER/internal/tray/systray"
 	"golang.org/x/sys/windows/registry"
 )
 

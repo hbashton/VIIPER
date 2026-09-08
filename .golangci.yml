@@ -42,6 +42,12 @@ linters:
   exclusions:
     presets: []
     rules:
+    # Preserve Win32/upstream names in the two explicitly pinned dependency
+    # files. Correctness checks and the existing test lint policy are unchanged.
+    - path: internal/tray/systray/systray(_windows)?\.go$
+      text: 'ST1003:'
+      linters:
+      - staticcheck
     - path: node_modules
       linters:
       - govet
