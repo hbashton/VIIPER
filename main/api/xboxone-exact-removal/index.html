@@ -23,7 +23,7 @@
     
     
       
-        <title>E2E Latency Benchmarks - VIIPER Documentation</title>
+        <title>Exact production Xbox One removal - VIIPER Documentation</title>
       
     
     
@@ -76,7 +76,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#e2e-latency-benchmarks" class="md-skip">
+        <a href="#exact-production-xbox-one-removal" class="md-skip">
           Skip to content
         </a>
       
@@ -113,7 +113,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              E2E Latency Benchmarks
+              Exact production Xbox One removal
             
           </span>
         </div>
@@ -287,7 +287,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../../api/overview/" class="md-tabs__link">
+        <a href="../overview/" class="md-tabs__link">
           
   
   
@@ -827,7 +827,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../api/overview/" class="md-nav__link">
+      <a href="../overview/" class="md-nav__link">
         
   
   
@@ -1590,71 +1590,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#transport-neutral-ab-landing-zone" class="md-nav__link">
+  <a href="#native-activation-retry-policy-september-5-source-follow-up" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Transport-neutral A/B landing zone
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Transport-neutral A/B landing zone">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#evidence-boundaries" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Evidence boundaries
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#comparison-contract" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Comparison contract
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#statistics-and-policy" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Statistics and policy
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#remaining-live-adapter-work" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Remaining live-adapter work
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#aggregate-go-benchmark" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Aggregate Go benchmark
+        Native activation retry policy (September 5 source follow-up)
       
     </span>
   </a>
@@ -1662,54 +1601,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#output" class="md-nav__link">
+  <a href="#native-activation-cancellation-september-5-source-follow-up" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Output
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#scope-methodology" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Scope / Methodology
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#benchtime-mode" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Benchtime Mode
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#running" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Running
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#notes" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Notes
+        Native activation cancellation (September 5 source follow-up)
       
     </span>
   </a>
@@ -1736,358 +1631,152 @@
   
 
 
-<h1 id="e2e-latency-benchmarks">E2E Latency Benchmarks</h1>
-<h2 id="transport-neutral-ab-landing-zone">Transport-neutral A/B landing zone</h2>
-<p><code>_testing/e2e/latency</code> is the source-only evidence and policy layer for comparing
-the installed USB/IP path with a future transport. It does not import, install,
-or require a native driver. Its deterministic probe tests run on an ordinary Go
-development machine:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="n">go</span> <span class="n">test</span> <span class="p">./</span><span class="n">_testing</span><span class="p">/</span><span class="n">e2e</span><span class="p">/</span><span class="n">latency</span>
+<h1 id="exact-production-xbox-one-removal">Exact production Xbox One removal</h1>
+<p>The authenticated <code>bus/{id}/add-authorized-xboxone</code> response includes a
+top-level <code>removalToken</code>. It is a fresh 256-bit <code>crypto/rand</code> nonce encoded as
+exactly 64 lowercase hexadecimal characters. This is a creation-only secret:
+it is not in ordinary device listings, descriptors, device-specific arguments,
+input, feedback, or API diagnostics.</p>
+<p>The same creation receipt includes <code>usbipBusId</code>, an independent public
+per-registration export alias, and <code>removalTimeoutMilliseconds</code>, the actual
+normal server close budget rounded upward. The timeout is a positive integer
+at most 300000; unsupported configurations are rejected before production
+creation rather than clamped. The normal CLI default is 90000 milliseconds
+(three times its 30-second connection timeout).</p>
+<p><code>usbipBusId</code> is <code>x1-</code> followed by 26 canonical lowercase unpadded base32
+characters from 16 independent cryptographically random bytes (29 ASCII
+bytes total). Its final character is one of <code>a/e/i/m/q/u/y/4</code>. It is not
+derived from the secret removal token. The immutable alias is installed before
+registration publication, including descriptor admission; aliases already
+reserved by unpublished registrations also fail the collision check.</p>
+<p>USB/IP DEVLIST, IMPORT reply, native Windows attach, and Linux/Windows CLI
+attach all preserve this exact export identity. Protected production imports
+accept no numeric bus-device fallback. Stale aliases therefore cannot select a
+different controller after numeric address reuse, bus reuse, or server restart.
+Numeric USB/IP bus/device fields and the resulting URB transfer device ID are
+unchanged. Generic and explicitly dormant/test registrations remain numeric.</p>
+<p>The production registry binds the nonce once to the unique lifetime channel
+of the successful <code>VirtualBus.Add</code>. Neither numeric address reuse, bus-number
+reuse, server restart, nor re-adding the same device pointer transfers that
+authority. No predictable local counter is used as the secret.</p>
+<p>Send the following over an authenticated API session:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>bus/{busId}/{devId}/remove-authorized-xboxone {"version":1,"removalToken":"&lt;captured 64-character token&gt;"}
 </code></pre></div>
-<p>This is currently infrastructure, not a checked-in live latency result. A fake
-probe passing these tests proves that scheduling, timestamp validation,
-aggregation, and policy work without a device; it does not prove the latency of
-USB/IP or a candidate transport.</p>
-<h3 id="evidence-boundaries">Evidence boundaries</h3>
-<p>Every capture declares one of these profiles, and the strict parser requires
-exactly its ordered timestamps:</p>
-<table>
-<thead>
-<tr>
-<th>Profile</th>
-<th>Required monotonic stages</th>
-<th>Intended use</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>api-to-consumer</code></td>
-<td>client published, broker received, transport admitted, virtual pad observed</td>
-<td>Existing live API-write-to-SDL comparison</td>
-</tr>
-<tr>
-<td><code>physical-to-consumer</code></td>
-<td>physical input read, then every <code>api-to-consumer</code> stage</td>
-<td>Later DS4Windows-to-game qualification</td>
-</tr>
-<tr>
-<td><code>recovery-to-consumer</code></td>
-<td>recovery triggered, transport ready, client published, broker received, transport admitted, virtual pad observed</td>
-<td>Explicit reconnect/re-enumeration exercises</td>
-</tr>
-</tbody>
-</table>
-<p>The current live measurement boundary is <code>api-to-consumer</code>. It must not publish
-or synthesize a <code>physical-input-read</code> timestamp. That broader profile becomes
-valid only after a physical-reader adapter supplies a real stamp from the same
-machine-wide monotonic clock. Similarly, an API-to-consumer result must not be
-described as physical-controller latency.</p>
-<p>The clock name, identity, and frequency are part of each transport's provenance.
-Raw ticks are retained. The harness rejects a clock mismatch, absent or
-out-of-order stage, overflow, lifecycle generation change on a healthy sample,
-or recovery sample without an explicitly triggered advancing generation. It
-computes end-to-end and adjacent-stage durations itself; probe implementations
-cannot submit a precomputed latency.</p>
-<p>Because the two transport descriptors must identify the same machine-wide
-stage clock, successful captures must also advance globally in recorded block
-order. A locally well-formed timeline whose first tick overlaps or precedes the
-prior capture's final tick is rejected as reordered or regressing evidence.</p>
-<p>Consumer events have a separate stale-edge fence. The workload identifies that
-event clock, and every sample records a fence immediately before publication
-plus the exact observed control, transition, and event timestamp. The observed
-event must be newer than its fence, and every fence must be newer than the
-preceding observation globally across both transport arms and all blocks. The
-event clock is admission evidence only; it is never subtracted from the stage
-clock.</p>
-<h3 id="comparison-contract">Comparison contract</h3>
-<p>Live adapters implement only the <code>Probe</code> interface:</p>
-<ol>
-<li><code>Describe</code> returns the exact runtime implementation, version, build identity,
-   clock, sorted artifact SHA-256 identities, and relevant configuration.</li>
-<li><code>Capture</code> performs one requested press or release and returns raw stage and
-   lifecycle evidence.</li>
-</ol>
-<p>The baseline descriptor must be named <code>usbip</code> and match the canonical release
-baseline version <code>0.9.7.7</code>; the candidate name must be different.
-The runner records both descriptors before measurement and checks them again
-afterward so runtime drift fails the artifact. The common session also records
-the VIIPER source revision and dirty bit, Go/OS/architecture, hostname, harness
-contract version, and run label. The shared workload binds both arms to the
-same controller type and VID/PID, control, authenticated encrypted API endpoint,
-and exact observer name, version, and binary SHA-256.</p>
-<p>Admission deep-copies every artifact and configuration slice returned by
-<code>Describe</code>; the probe cannot mutate a shared backing array to rewrite that
-snapshot. A second freshly copied descriptor for each arm is retained in the
-JSON after capture. Provenance failures and drift verdicts are recomputed from
-those before/after records by both <code>ParseReport</code> and <code>RequirePass</code>.</p>
-<p>One cycle uses four counterbalanced transport blocks. <code>ABBA</code> runs USB/IP,
-candidate, candidate, USB/IP; <code>BAAB</code> reverses that orientation. Odd cycle
-indices must use ABBA and even indices BAAB. The declared
-sample pairs are divided between each transport's two blocks, with continuous
-per-transport sequence numbers. Each block receives exactly 16 separate
-unmeasured warmup pairs.</p>
-<p>To avoid repeatedly landing on one phase of a 1 ms service interval, every
-request carries a 2 ms base dwell plus the deterministic offsets <code>0, 125000,
-250000, 375000, 500000, 625000, 750000, 875000</code> ns. The plan retains the vector
-and the SHA-256 of its comma-separated decimal representation. A live probe may
-sleep before the measured boundary; it must not add this dwell to the measured
-interval.</p>
-<p>The eight offsets, their order and hash, the 2 ms base dwell, the 16 warmup
-pairs, and the four-block orientation are canonical release methodology. A
-different vector with a matching self-generated hash, a zero/changed dwell, a
-zero/changed warmup, or a cycle/orientation mismatch is rejected rather than
-accepted as a different release workload.</p>
-<p>The completion time is captured immediately after <code>Probe.Capture</code> returns and
-compared with the effective context deadline using the same monotonic <code>time</code>
-domain that created it. A canceled parent/context, clock regression, or return
-at or after the deadline remains a failed capture even if the probe returns a
-nil error and otherwise valid evidence.</p>
-<h3 id="statistics-and-policy">Statistics and policy</h3>
-<p>Raw press and release samples remain in the JSON evidence. The report computes
-nearest-rank p50, p90, p95, p99, p99.9, maximum, arithmetic mean, and population
-jitter for press, release, and combined end-to-end latency. It also computes
-each adjacent stage distribution and candidate-minus-USB/IP deltas and ratios.</p>
-<p>Healthy and recovery samples never share a distribution:</p>
-<ul>
-<li><code>healthy</code> means one stable, nonzero transport generation from capture start to
-  virtual observation. It is enabled by default and fails on capture/warmup
-  errors or insufficient press/release counts.</li>
-<li><code>recovery</code> requires an explicit disruption reason and generation advance. It
-  is collected and reported separately. The plan binds one exact expected
-  scenario/reason across both arms. Within each transport block, every sample's
-  generation-before must equal the preceding generation-after; healthy samples
-  never advance it and recovery samples do. Reused, skipped-backward, or
-  mismatched scenario evidence is rejected. Recovery remains diagnostic by
-  default.</li>
-</ul>
-<p>The default healthy candidate ceilings are 4 ms p95, 8 ms p99, and 20 ms max.
-Same-machine non-regression allowances are 1 ms p95, 2 ms p99, and 5 ms max over
-USB/IP. A policy can additionally require a lower mean, p95, or p99. Those
-strict-improvement switches should be used in a multi-cycle balanced matrix;
-one passing cycle is descriptive evidence for that run, not a universal
-superiority claim.</p>
-<p>These defaults are the minimum release policy, not editable suggestions inside
-an artifact. Release parsing rejects a dirty-source allowance, fewer than 256
-pairs, tolerated capture failures, disabled absolute/comparative gates, or any
-numeric ceiling/regression allowance looser than the defaults. Higher sample
-counts, lower limits, and strict-improvement requirements are accepted as
-stronger policies.</p>
-<p>If recovery is enabled as a release gate, it inherits the same conservative
-canonical 256-pair, no-failure, absolute, and comparative floor; every value may
-only be tightened. No independently reviewed recovery budget exists yet, so the
-harness does not invent looser numbers. Enabling recovery without its expected
-scenario or without complete evidence cannot produce a passing artifact.</p>
-<p><code>ParseReport</code> rejects unknown or trailing JSON and recomputes sample durations,
-stage spans, aggregates, comparisons, provenance failures, and verdict from the
-raw ticks and post-run snapshots. <code>RequirePass</code> performs the same strict
-round-trip/recomputation rather than trusting an in-memory verdict field.
-The default policy also rejects a dirty source tree. Retain the full JSON and
-the exact external trace or marker artifacts used by a live probe; this source-
-only layer does not claim that JSON alone is tamper-proof.</p>
-<h3 id="remaining-live-adapter-work">Remaining live-adapter work</h3>
-<p>The source-bound Windows USB/IP probe core now binds an authenticated, freshly
-opened DualSense V5 stream to an event-driven SDL observation and supplies the
-four truthful <code>api-to-consumer</code> stages. Broker receipt and successful terminal
-USB/IP presentation commit are opt-in hooks compiled only with
-<code>-tags viiper_latency</code>; normal builds inline empty hooks and probe construction
-fails immediately. All stage timestamps use the exact QPC identity of the
-single in-process server/client harness, while SDL's event clock remains a
-separate stale-edge fence.</p>
-<p>The probe does not start VIIPER, create a bus/device, attach USB/IP, initialize
-SDL, or claim that an external process shares its QPC identity. A live wrapper
-must still perform provenance preflight, create an isolated in-process server,
-prove the exact virtual-controller identity, give the probe exclusive ownership
-of a new V5 stream starting at sequence zero, and give the SDL observer
-exclusive main-thread event-queue ownership. The concrete SDL consumer is
-available only in a Windows CGO build with the same latency tag.</p>
-<p>An opt-in server method, <code>InputLatencyImportGeneration</code>, now exposes the exact
-active import lease already assigned by the USB/IP server for one bus/device
-identity. The lease advances on every successful reimport and disappears on
-disconnect. A wrapper can therefore use it as the probe lifecycle source
-without inventing a generation or changing the production hot path. The method
-does not exist in an ordinary release build.</p>
-<p>There is still no executable live wrapper or USB/IP-only report mode. <code>Runner</code>
-requires both the <code>usbip</code> baseline and a distinctly named candidate, so passing
-the same USB/IP implementation twice would be false evidence rather than a
-baseline workaround. Consequently there is no valid current command that emits
-the declared live report, and no current <code>0.9.7.7</code> live baseline has been
-captured by this landing-zone change.</p>
-<p>The eventual no-install procedure must use a clean source revision and a single
-Windows CGO process built with both <code>release</code> and <code>viiper_latency</code>; a normal
-<code>release</code> VIIPER lacks the broker/terminal hooks. That process must use unused
-loopback ports and an
-authenticated stream, snapshot the SDL gamepad set, create and auto-attach one
-isolated V5 virtual DualSense through the already installed <code>0.9.7.7</code> driver,
-bind the newly observed controller and returned USB/IP import lease to the same
-bus/device, run the canonical schedule, finish neutral, detach only the returned
-USB/IP port, remove its device and bus, and prove both the port and PnP identity
-are gone before accepting the artifact. A virtual-controller arrival is
-machine-global, so this cannot be described as non-disruptive while games,
-streaming software, remappers, or other controller consumers are active.</p>
-<p>The future backend adapter must use the identical workload, observer, clock,
-controller identity checks, and runtime provenance. Only after the live wrapper
-runs both adapters from the same current revision should their artifacts be
-compared.</p>
-<h2 id="aggregate-go-benchmark">Aggregate Go benchmark</h2>
-<p>The script <code>viiper/_testing/e2e/scripts/lat_bench.go</code> runs (or parses) end‑to‑end input latency benchmarks and produces enriched output (table, markdown, or JSON).</p>
-<p>It groups repeated cycles when <code>-count &gt; 1</code> and uses the single press E2E measurement (<code>E2E-InputDelay</code>) as the 100% baseline.</p>
-<h2 id="output">Output</h2>
-<table>
-<thead>
-<tr>
-<th>Column</th>
-<th>Meaning</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Benchmark</td>
-<td>Name of the sub benchmark</td>
-</tr>
-<tr>
-<td>Count</td>
-<td>Iterations performed (from Go bench output; affected by <code>-benchtime</code>)</td>
-</tr>
-<tr>
-<td>ns/op</td>
-<td>Nanoseconds per operation (direct Go benchmark figure)</td>
-</tr>
-<tr>
-<td>% of Full</td>
-<td>Relative to <code>E2E-InputDelay</code> (single press baseline)</td>
-</tr>
-<tr>
-<td>Client Share %</td>
-<td>Portion attributed to the (go) client write phase (for E2E rows)</td>
-</tr>
-<tr>
-<td>Latency Share %</td>
-<td>Remainder attributed to transport + virtual device/host stack + tight device polling loop</td>
-</tr>
-</tbody>
-</table>
-<p><code>E2E-PressAndRelease</code> includes both press and release cycles, so it is expected to be ~2× the single press and thus can exceed 100% in <code>% of Full</code>.</p>
-<h2 id="scope-methodology">Scope / Methodology</h2>
-<ul>
-<li>All benchmarks included here are executed against a VIIPER server on the same host (localhost).<br />
-  They therefore measure in-process client emission plus local USBIP stack + emulated device processing only.<br />
-  Remote/network USBIP attachment will add network RTT and jitter which is intentionally excluded from these baseline figures.</li>
-<li>Benchmarks use a single emulated Xbox360 controller device.<br />
-  Other devices might produce slightly different results depending on USB report size and VIIPER-InputState size.</li>
-<li>Benchmarks use a single button press, which is enough as clients/VIIPER always produce a full report of the devices state.  </li>
-</ul>
-<h2 id="benchtime-mode">Benchtime Mode</h2>
-<p>Runs use a fixed-iteration benchtime (e.g. <code>-benchtime=1000x</code>, <code>-benchtime=10000x</code>) rather than time-based (e.g. <code>2s</code>).  </p>
-<h2 id="running">Running</h2>
-<p>From repository root:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nb">cd</span><span class="w"> </span>testing/e2e
-<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="c1"># Single run, 1000 fixed iterations per sub benchmark</span>
-<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>go<span class="w"> </span>run<span class="w"> </span>./scripts/lat_bench.go<span class="w"> </span>-benchtime<span class="o">=</span>1000x<span class="w"> </span>-count<span class="o">=</span><span class="m">1</span><span class="w"> </span>-format<span class="w"> </span>markdown
-</code></pre></div>
-<p>Results (Arch Linux / SteamDeck Kernel / Steam Deck LCD / Go 1.25+, 10k iterations):</p>
-<table>
-<thead>
-<tr>
-<th>Benchmark</th>
-<th>Count</th>
-<th>ns/op</th>
-<th>% of Full</th>
-<th>Client Share %</th>
-<th>Latency Share %</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>1_Go-Client-Write</td>
-<td>10000</td>
-<td>10668</td>
-<td>11.98</td>
-<td>100.00</td>
-<td>0.00</td>
-</tr>
-<tr>
-<td>2_InputDelay-Without-Client</td>
-<td>10000</td>
-<td>74154</td>
-<td>83.25</td>
-<td>0.00</td>
-<td>100.00</td>
-</tr>
-<tr>
-<td>3_E2E-InputDelay</td>
-<td>10000</td>
-<td>89078</td>
-<td>100.00</td>
-<td>11.98</td>
-<td>88.02</td>
-</tr>
-<tr>
-<td>4_E2E-PressAndRelease</td>
-<td>10000</td>
-<td>184870</td>
-<td>207.54</td>
-<td>11.54</td>
-<td>88.46</td>
-</tr>
-</tbody>
-</table>
-<p>Example output (Windows / AMD Ryzen 9 3900X / Go 1.25+, 10k iterations):</p>
-<table>
-<thead>
-<tr>
-<th>Benchmark</th>
-<th>Count</th>
-<th>ns/op</th>
-<th>% of Full</th>
-<th>Client Share %</th>
-<th>Latency Share %</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>1_Go-Client-Write</td>
-<td>10000</td>
-<td>27933</td>
-<td>16.60</td>
-<td>100.00</td>
-<td>0.00</td>
-</tr>
-<tr>
-<td>2_InputDelay-Without-Client</td>
-<td>10000</td>
-<td>133724</td>
-<td>79.45</td>
-<td>0.00</td>
-<td>100.00</td>
-</tr>
-<tr>
-<td>3_E2E-InputDelay</td>
-<td>10000</td>
-<td>168307</td>
-<td>100.00</td>
-<td>16.60</td>
-<td>83.40</td>
-</tr>
-<tr>
-<td>4_E2E-PressAndRelease</td>
-<td>10000</td>
-<td>331439</td>
-<td>196.93</td>
-<td>16.86</td>
-<td>83.14</td>
-</tr>
-</tbody>
-</table>
-<p>Variability across repeated measurement runs has been negligible.<br />
-Use a larger <code>-count</code> if you want to increase the number of runs.</p>
-<h2 id="notes">Notes</h2>
-<ul>
-<li>Memory statistics from Go benchmarks are intentionally omitted.</li>
-<li><code>% of Full</code> falls back to the largest ns/op if the baseline row is missing.</li>
-<li>All benchmarking must run with parallelism 1 in underlying benches.</li>
-<li>Benchmarks use a tight polling loop using SDL3 to detect input state changes on the emulated device.</li>
-<li>Benchmarks must be run without an already running VIIPER server instance.</li>
-</ul>
+<p>The same closed capability payload is required for
+<code>bus/{busId}/{devId}/stream-authorized-xboxone</code> and
+<code>bus/{busId}/{devId}/activate-authorized-xboxone</code>. The former is a NUL-terminated
+stream command followed by unchanged X1BR v1 framing; the latter returns
+<code>version:1</code>, the exact public <code>usbipBusId</code>, a positive <code>usbipPort</code>, and
+<code>usbipOwnerSerial</code> (empty for pinned native 0.9.7.7). Legacy address-only broker
+opening is rejected for Xbox. Duplicate authorized streams cannot displace the
+consumer; activation revalidates both registration and consumer after native
+I/O. Registration leases cover only synchronous lifecycle transitions, never
+network/native I/O or acquisition of the stream-coordinator mutex.</p>
+<p>The request schema is closed and bounded to 256 bytes. Both fields are required;
+unknown fields, duplicate fields, case-folded names, wrong types, unsupported
+versions, noncanonical tokens, and trailing JSON are rejected. Authentication
+is checked before parsing or lookup. The route never echoes token material in
+an error.</p>
+<p>Responses are <code>{"version":1,"removed":true}</code> or
+<code>{"version":1,"removed":false}</code>. A missing/already-gone target or a validly
+formed token which does not authorize the captured incarnation returns false
+without touching any successor. False is not a new proof of neutralization.</p>
+<p>For a matching live incarnation, the server fences further retained stream
+registration for that exact Add, captures and cancels only its existing USB
+streams, and joins their existing retained lifecycle. The feedback consumer
+must remain alive during this request so <code>DisconnectNeutral</code> can receive its
+exact canonical Stop acknowledgement. Only after successful joining does
+the operation complete exact registration removal. A concurrent safe one-shot
+retirement may already have removed that same registration; this still counts
+as true for the closer which captured it live. Concurrent callers may join
+the result or observe that the registration is already gone.</p>
+<p>Rejected/ambiguous feedback, drain or transport failures, and incomplete joins
+return a conflict instead of claiming success. Quarantined owner/admission
+proofs stay with their existing lifecycle owners. The exact close fence cannot
+be reopened by a late stream completion. Normal registration cancellation
+cleans up idle close bookkeeping, including when this API was never called.</p>
+<p>The join budget is the server's existing retained close deadline: normally
+three times <code>ConnectionTimeout</code>, using a five-second lifecycle fallback when
+unset (15 seconds total), or an already-established server shutdown deadline.
+Clients need a compatible bounded response timeout; a client timeout is not
+permission to attempt numeric device, bus, or port cleanup.</p>
+<p>This API does <strong>not</strong> prove that a Windows USB/IP port has been permanently
+detached or that saved-location auto-reattach has been canceled. In pinned
+usbip-win2 0.9.7.7, receiver socket loss can schedule another attach by the
+saved export location. The independent export alias makes such an old retry
+fail lookup instead of selecting a numeric-address successor. No client-side
+numeric port detach is authorized by this behavior. Token-bound broker stream
+and activation admission remain necessary alongside alias-safe USB selection;
+an export alias is public routing identity, not API authentication.</p>
+<h3 id="native-activation-retry-policy-september-5-source-follow-up">Native activation retry policy (September 5 source follow-up)</h3>
+<p>Windows native production Xbox activation now uses pinned 0.9.7.7's
+<code>PLUGIN_HARDWARE_ONCE</code>. The request/response layout, exact export alias and
+positive-port validation are unchanged. If the initial native call fails,
+it must not also schedule a background import after the creation transaction
+has reported failure and rolled back. Legacy numeric exports keep ordinary
+<code>PLUGIN_HARDWARE</code>; no global driver retry setting is changed.</p>
+<p>This operation does <strong>not</strong> cancel reattachment after a successful import later
+loses its broker connection. Source review confirms that receiver teardown
+schedules those requests separately. Exact stale-location retry cancellation
+remains an open cleanup gate; neither a fixed delay nor a saved numeric port
+proves the driver has finished creating its retry work. In particular, calling
+the location-based <code>STOP_ATTACH_ATTEMPTS</code> before that work exists can return
+zero and still be followed by a retry. Do not report such a zero as permanent
+retirement, or use global Stop/Detach All to conceal this gap.</p>
+<p>The five new fake-native call-boundary tests and <code>go test ./...</code> pass. No
+hardware operation is performed by these tests, and the running portable b56
+broker has not been replaced with this source follow-up.</p>
+<h3 id="native-activation-cancellation-september-5-source-follow-up">Native activation cancellation (September 5 source follow-up)</h3>
+<p>Native attach now opens an overlapped driver handle and owns one manual-reset
+completion event, pinned payload and <code>OVERLAPPED</code> structure. Cancellation uses
+<code>CancelIoEx</code> with that exact non-null structure; neither all-handle cancellation
+nor port-number detach is used. The helper observes the operation's actual
+completion and joins any cancellation callback before releasing its event,
+buffer or outer driver handle. Pending/incomplete observations cannot retire
+that storage. A success which wins cancellation retains its returned port as
+evidence; cancellation is not falsely reported as native removal.</p>
+<p>This follows Microsoft's <a href="https://learn.microsoft.com/en-us/windows/win32/api/ioapiset/nf-ioapiset-cancelioex">CancelIoEx contract</a>
+and <a href="https://learn.microsoft.com/en-us/windows/win32/api/ioapiset/nf-ioapiset-getoverlappedresult">GetOverlappedResult completion rules</a>.
+The configured API <code>ConnectionTimeout</code> (30-second fallback when unset/nonpositive)
+requests activation cancellation; it is <strong>not a hard native completion bound</strong>.
+A driver which delays or cannot complete cancellation can still retain the
+in-flight operation. Request/registration cancellation and the deadline prevent
+that operation from subsequently committing a successful activation response.
+The existing API request context does not independently observe a peer closing
+its management socket while the handler is executing; that event alone is not
+claimed as an immediate cancellation source.</p>
+<p>Before native submission, activation rejects an already-canceled request without
+consuming the ready owner. Once reserved, the operation retains its reservation
+through actual native completion and cancellation cleanup. Cancellation removes
+only the captured registration through the existing retained stream drain/Stop
+ACK lifecycle. A reused numeric address cannot select a successor. Incomplete
+cleanup returns conflict and remains fenced, not successful removal. Commit
+revalidates context, exact registration and feedback-consumer readiness. Normal
+non-cancellation attach errors retain the prior same-owner retry policy.</p>
+<p>Six new native-operation tests and five new handler tests cover pending abort,
+late success/ERROR_NOT_FOUND, callback/storage lifetime, malformed responses,
+pre-cancellation, deadline propagation, duplicate activation while cancellation
+is pending, and exact-registration replacement. The prior ABI tests now exercise
+the same production helper; the obsolete synchronous helper was removed.
+<code>go test ./... -count=1</code>, <code>go vet ./...</code>, and ten race-enabled repetitions of
+native/activation regressions pass. These tests use fake native calls and real
+loopback authenticated broker streams, not the installed driver.</p>
+<p>Successful-retired-import retry cleanup is still a distinct open gate. Pinned
+0.9.7.7 handles imported-device queries and retry cancellation on a parallel
+queue, separately from detach/retry creation. Cancellation matches a 32-bit
+location hash (zero selects all), not an opaque native attachment identity.
+Neither observing absence nor canceling zero current retries establishes that
+future retry work cannot appear. No speculative native cleanup operation was
+added. This source is not in the running portable b56 payload.</p>
+<p>When a positive <code>BusCleanupTimeout</code> is configured, creating an initially empty
+bus schedules the same exact bus/empty-incarnation cleanup used after device
+removal. A rejected factory therefore does not require numeric bus deletion by
+the client. Initial zero-timeout embedding behavior remains unchanged.</p>
+<p>Source-backed in-process coverage includes real production broker/retained USB
+Stop ACK success, rejection, wrong correlation, socket loss, late import
+registration, close timeout, duplicate-import Busy isolation, registration
+cleanup, stale address/bus reuse, token isolation, schema validation, and
+concurrent idempotent removal. These tests do not access physical hardware.</p>
 
 
 

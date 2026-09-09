@@ -2116,6 +2116,17 @@ This is done by specifying it as part of the device options.</p>
 <ul>
 <li><code>{"type":"xbox360", "deviceSpecific": {"subType": 7}}</code></li>
 </ul>
+<p><code>maximumOrderedAgeMilliseconds</code> is an optional strict presentation policy:</p>
+<ul>
+<li><code>{"type":"xbox360", "deviceSpecific": {"maximumOrderedAgeMilliseconds": 17}}</code></li>
+</ul>
+<p>It must be a whole number from 1 through 60000. When omitted, the bounded
+transition journal has no ordered-age deadline, but capacity overflow still
+purges ambiguous history, presents a mandatory neutral, rotates the producer
+lease, and requires one fresh-state resynchronization. When supplied, an
+ordered item reaching the declared age uses the same fail-closed contract.
+The value is a caller-owned workload policy; VIIPER deliberately supplies
+no default. Durations, not absolute timestamps, cross the API boundary.</p>
 <h3 id="subtypes">Subtypes</h3>
 <table>
 <thead>
@@ -2206,6 +2217,16 @@ This is done by specifying it as part of the device options.</p>
 </ul>
 </li>
 </ul>
+<p>Exactly one raw input-stream connection owns publication at a time. A
+second producer is rejected rather than racing the first. When that stream
+ends, VIIPER invalidates its producer lease, purges its unpresented history,
+and places one neutral report ahead of a successor producer. A complete
+successor state captured after retirement is staged until that neutral
+commits, then becomes the explicit resynchronization baseline. The USB
+presentation generation itself is not rotated merely because the raw
+producer reconnects. A USB presentation-generation retirement also purges
+any device-level staged resynchronization snapshot, so recovery state from
+the retired generation cannot become eligible after a later fault.</p>
 <h3 id="rumble-feedback">Rumble Feedback</h3>
 <ul>
 <li>2-byte packets:<ul>

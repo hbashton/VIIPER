@@ -23,7 +23,7 @@
     
     
       
-        <title>E2E Latency Benchmarks - VIIPER Documentation</title>
+        <title>Xbox One dormant receive-framing gate - VIIPER Documentation</title>
       
     
     
@@ -76,7 +76,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#e2e-latency-benchmarks" class="md-skip">
+        <a href="#xbox-one-dormant-receive-framing-gate" class="md-skip">
           Skip to content
         </a>
       
@@ -113,7 +113,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              E2E Latency Benchmarks
+              Xbox One dormant receive-framing gate
             
           </span>
         </div>
@@ -1590,71 +1590,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#transport-neutral-ab-landing-zone" class="md-nav__link">
+  <a href="#outcome" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Transport-neutral A/B landing zone
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Transport-neutral A/B landing zone">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#evidence-boundaries" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Evidence boundaries
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#comparison-contract" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Comparison contract
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#statistics-and-policy" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Statistics and policy
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#remaining-live-adapter-work" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Remaining live-adapter work
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#aggregate-go-benchmark" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Aggregate Go benchmark
+        Outcome
       
     </span>
   </a>
@@ -1662,10 +1601,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#output" class="md-nav__link">
+  <a href="#three-boundaries-which-must-not-be-conflated" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Output
+        Three boundaries which must not be conflated
       
     </span>
   </a>
@@ -1673,10 +1612,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#scope-methodology" class="md-nav__link">
+  <a href="#source-evidence-and-license-treatment" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Scope / Methodology
+        Source evidence and license treatment
       
     </span>
   </a>
@@ -1684,10 +1623,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#benchtime-mode" class="md-nav__link">
+  <a href="#gate-contract" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Benchtime Mode
+        Gate contract
       
     </span>
   </a>
@@ -1695,10 +1634,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#running" class="md-nav__link">
+  <a href="#why-reassembly-is-not-implemented-in-this-tranche" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Running
+        Why reassembly is not implemented in this tranche
       
     </span>
   </a>
@@ -1706,10 +1645,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#notes" class="md-nav__link">
+  <a href="#validation-and-remaining-blockers" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Notes
+        Validation and remaining blockers
       
     </span>
   </a>
@@ -1736,358 +1675,168 @@
   
 
 
-<h1 id="e2e-latency-benchmarks">E2E Latency Benchmarks</h1>
-<h2 id="transport-neutral-ab-landing-zone">Transport-neutral A/B landing zone</h2>
-<p><code>_testing/e2e/latency</code> is the source-only evidence and policy layer for comparing
-the installed USB/IP path with a future transport. It does not import, install,
-or require a native driver. Its deterministic probe tests run on an ordinary Go
-development machine:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="n">go</span> <span class="n">test</span> <span class="p">./</span><span class="n">_testing</span><span class="p">/</span><span class="n">e2e</span><span class="p">/</span><span class="n">latency</span>
-</code></pre></div>
-<p>This is currently infrastructure, not a checked-in live latency result. A fake
-probe passing these tests proves that scheduling, timestamp validation,
-aggregation, and policy work without a device; it does not prove the latency of
-USB/IP or a candidate transport.</p>
-<h3 id="evidence-boundaries">Evidence boundaries</h3>
-<p>Every capture declares one of these profiles, and the strict parser requires
-exactly its ordered timestamps:</p>
-<table>
-<thead>
-<tr>
-<th>Profile</th>
-<th>Required monotonic stages</th>
-<th>Intended use</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>api-to-consumer</code></td>
-<td>client published, broker received, transport admitted, virtual pad observed</td>
-<td>Existing live API-write-to-SDL comparison</td>
-</tr>
-<tr>
-<td><code>physical-to-consumer</code></td>
-<td>physical input read, then every <code>api-to-consumer</code> stage</td>
-<td>Later DS4Windows-to-game qualification</td>
-</tr>
-<tr>
-<td><code>recovery-to-consumer</code></td>
-<td>recovery triggered, transport ready, client published, broker received, transport admitted, virtual pad observed</td>
-<td>Explicit reconnect/re-enumeration exercises</td>
-</tr>
-</tbody>
-</table>
-<p>The current live measurement boundary is <code>api-to-consumer</code>. It must not publish
-or synthesize a <code>physical-input-read</code> timestamp. That broader profile becomes
-valid only after a physical-reader adapter supplies a real stamp from the same
-machine-wide monotonic clock. Similarly, an API-to-consumer result must not be
-described as physical-controller latency.</p>
-<p>The clock name, identity, and frequency are part of each transport's provenance.
-Raw ticks are retained. The harness rejects a clock mismatch, absent or
-out-of-order stage, overflow, lifecycle generation change on a healthy sample,
-or recovery sample without an explicitly triggered advancing generation. It
-computes end-to-end and adjacent-stage durations itself; probe implementations
-cannot submit a precomputed latency.</p>
-<p>Because the two transport descriptors must identify the same machine-wide
-stage clock, successful captures must also advance globally in recorded block
-order. A locally well-formed timeline whose first tick overlaps or precedes the
-prior capture's final tick is rejected as reordered or regressing evidence.</p>
-<p>Consumer events have a separate stale-edge fence. The workload identifies that
-event clock, and every sample records a fence immediately before publication
-plus the exact observed control, transition, and event timestamp. The observed
-event must be newer than its fence, and every fence must be newer than the
-preceding observation globally across both transport arms and all blocks. The
-event clock is admission evidence only; it is never subtracted from the stage
-clock.</p>
-<h3 id="comparison-contract">Comparison contract</h3>
-<p>Live adapters implement only the <code>Probe</code> interface:</p>
+<h1 id="xbox-one-dormant-receive-framing-gate">Xbox One dormant receive-framing gate</h1>
+<p>Audit and implementation date: 2026-08-31.</p>
+<h2 id="outcome">Outcome</h2>
+<p>VIIPER does <strong>not</strong> yet have a production-safe general GIP fragment
+reassembler or downstream replay window. The available sources establish the
+fragment header grammar and strict contiguous receive behavior for reliable
+large messages, but they do not establish a general rule which distinguishes a
+delayed downstream duplicate from a later lawful message after an eight-bit
+sequence wraps. None of the downstream message families currently accepted by
+<code>DecodeControllerDownstreamPacket</code> lawfully requires fragmentation.</p>
+<p>The implemented prerequisite is therefore deliberately smaller:
+<code>DormantControllerDownstreamReceiveFramingGate</code> accepts exactly one complete,
+non-fragmented, 1-through-64-byte packet already supported by the canonical
+decoder. It reduces accepted transport scratch to the existing fixed-capacity
+typed packet and hands that value off once. Reliable-fragment, extended-header,
+unsupported-family, malformed, and replay-unprovable outcomes have distinct
+typed blockers. Rejected bytes and partially decoded prefixes are never
+retained.</p>
+<p>The gate is dormant. No registry, USB device, descriptor, server, public
+library, interrupt-OUT adapter, CLI, or production persona constructs it.</p>
+<h2 id="three-boundaries-which-must-not-be-conflated">Three boundaries which must not be conflated</h2>
 <ol>
-<li><code>Describe</code> returns the exact runtime implementation, version, build identity,
-   clock, sorted artifact SHA-256 identities, and relevant configuration.</li>
-<li><code>Capture</code> performs one requested press or release and returns raw stage and
-   lifecycle evidence.</li>
+<li><strong>USB/IP stream framing.</strong> <code>internal/server/usb/urb_stream.go</code> reads the
+   declared OUT payload with <code>usbip.ReadExactly</code> before it calls a device. The
+   <code>usb.InterruptOutTransactionRequest</code> therefore contains one complete
+   non-isochronous interrupt submission, not an arbitrary TCP receive chunk.</li>
+<li><strong>One USB data packet.</strong> The controller data endpoint is a 64-byte interrupt
+   endpoint. A packet may coalesce several complete GIP messages, so
+   <code>DecodeControllerDownstreamPacket</code> walks each validated declared length and
+   rejects the whole packet on any later error.</li>
+<li><strong>GIP reliable-message fragmentation.</strong> A GIP message larger than its data
+   class MTU uses Fragment/InitFrag, a variable payload length, a total-length
+   or offset field, one sequence for all fragments, acknowledgements, and a
+   protocol-specific terminal handshake. This is protocol reassembly across
+   complete USB packets; it is not USB/IP stream reassembly.</li>
 </ol>
-<p>The baseline descriptor must be named <code>usbip</code> and match the canonical release
-baseline version <code>0.9.7.7</code>; the candidate name must be different.
-The runner records both descriptors before measurement and checks them again
-afterward so runtime drift fails the artifact. The common session also records
-the VIIPER source revision and dirty bit, Go/OS/architecture, hostname, harness
-contract version, and run label. The shared workload binds both arms to the
-same controller type and VID/PID, control, authenticated encrypted API endpoint,
-and exact observer name, version, and binary SHA-256.</p>
-<p>Admission deep-copies every artifact and configuration slice returned by
-<code>Describe</code>; the probe cannot mutate a shared backing array to rewrite that
-snapshot. A second freshly copied descriptor for each arm is retained in the
-JSON after capture. Provenance failures and drift verdicts are recomputed from
-those before/after records by both <code>ParseReport</code> and <code>RequirePass</code>.</p>
-<p>One cycle uses four counterbalanced transport blocks. <code>ABBA</code> runs USB/IP,
-candidate, candidate, USB/IP; <code>BAAB</code> reverses that orientation. Odd cycle
-indices must use ABBA and even indices BAAB. The declared
-sample pairs are divided between each transport's two blocks, with continuous
-per-transport sequence numbers. Each block receives exactly 16 separate
-unmeasured warmup pairs.</p>
-<p>To avoid repeatedly landing on one phase of a 1 ms service interval, every
-request carries a 2 ms base dwell plus the deterministic offsets <code>0, 125000,
-250000, 375000, 500000, 625000, 750000, 875000</code> ns. The plan retains the vector
-and the SHA-256 of its comma-separated decimal representation. A live probe may
-sleep before the measured boundary; it must not add this dwell to the measured
-interval.</p>
-<p>The eight offsets, their order and hash, the 2 ms base dwell, the 16 warmup
-pairs, and the four-block orientation are canonical release methodology. A
-different vector with a matching self-generated hash, a zero/changed dwell, a
-zero/changed warmup, or a cycle/orientation mismatch is rejected rather than
-accepted as a different release workload.</p>
-<p>The completion time is captured immediately after <code>Probe.Capture</code> returns and
-compared with the effective context deadline using the same monotonic <code>time</code>
-domain that created it. A canceled parent/context, clock regression, or return
-at or after the deadline remains a failed capture even if the probe returns a
-nil error and otherwise valid evidence.</p>
-<h3 id="statistics-and-policy">Statistics and policy</h3>
-<p>Raw press and release samples remain in the JSON evidence. The report computes
-nearest-rank p50, p90, p95, p99, p99.9, maximum, arithmetic mean, and population
-jitter for press, release, and combined end-to-end latency. It also computes
-each adjacent stage distribution and candidate-minus-USB/IP deltas and ratios.</p>
-<p>Healthy and recovery samples never share a distribution:</p>
+<p>The gate composes only boundaries 1 and 2. Treating a USB/IP reader chunk as a
+GIP fragment, or treating one USB submission sequence as a GIP replay token,
+would invent a protocol relationship.</p>
+<h2 id="source-evidence-and-license-treatment">Source evidence and license treatment</h2>
+<p>Normative protocol facts come from Microsoft Gaming Input Protocol USB
+Extension revision 1.0, published 2024-09-16:</p>
 <ul>
-<li><code>healthy</code> means one stable, nonzero transport generation from capture start to
-  virtual observation. It is enabled by default and fails on capture/warmup
-  errors or insufficient press/release counts.</li>
-<li><code>recovery</code> requires an explicit disruption reason and generation advance. It
-  is collected and reported separately. The plan binds one exact expected
-  scenario/reason across both arms. Within each transport block, every sample's
-  generation-before must equal the preceding generation-after; healthy samples
-  never advance it and recovery samples do. Reused, skipped-backward, or
-  mismatched scenario evidence is rejected. Recovery remains diagnostic by
-  default.</li>
+<li><a href="https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-gipusb/9c679e2d-9af0-433b-a43a-527b8976f166">GIP data interface</a>: interface 0 has 64-byte interrupt OUT endpoint <code>01</code> and interrupt IN endpoint <code>81</code>.</li>
+<li><a href="https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-gipusb/738f56b9-1ee3-4ddc-a223-8de0bedc9310">Payload MTUs</a>: Command, Low Latency, and Standard Latency use a 64-byte MTU; payload length excludes the header and is a bounded base-128 variable field.</li>
+<li><a href="https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-gipusb/b7af910e-a999-40ad-a645-df110961477b">Reliable large-message transmission</a>: all fragments use the same non-zero sequence; the first fragment carries total payload length, later fragments carry offsets, and downstream receivers must support the defined six-byte formats.</li>
+<li><a href="https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-gipusb/5a4be035-9e20-4350-b81a-a08627a985ca">Reliable-message acknowledgement</a>: a receiver which sees a noncontiguous offset reports its sequential contiguous byte count, discards fragments beyond the expected offset, and requires sequential resend.</li>
+<li><a href="https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-gipusb/ee8c5b28-e8da-4cc4-bb48-17781b8371af">Direct Motor</a> and <a href="https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-gipusb/ec312389-2e05-4915-85ed-0e8fe9c3d33b">Guide LED</a>: the supported output commands are fixed 13-byte and 7-byte single-packet messages with wrapping non-zero Command sequence IDs.</li>
+<li><a href="https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-gipusb/c80f7fe9-623c-4b8c-a95f-6f39e35a9345">Messages metadata array</a>: USB messages should not request strict downstream <code>+1</code> sequencing; without that declaration downstream sequence changes are not guaranteed to be monotonic. This prevents a general replay/window rule from being inferred from sequence distance alone.</li>
 </ul>
-<p>The default healthy candidate ceilings are 4 ms p95, 8 ms p99, and 20 ms max.
-Same-machine non-regression allowances are 1 ms p95, 2 ms p99, and 5 ms max over
-USB/IP. A policy can additionally require a lower mean, p95, or p99. Those
-strict-improvement switches should be used in a multi-cycle balanced matrix;
-one passing cycle is descriptive evidence for that run, not a universal
-superiority claim.</p>
-<p>These defaults are the minimum release policy, not editable suggestions inside
-an artifact. Release parsing rejects a dirty-source allowance, fewer than 256
-pairs, tolerated capture failures, disabled absolute/comparative gates, or any
-numeric ceiling/regression allowance looser than the defaults. Higher sample
-counts, lower limits, and strict-improvement requirements are accepted as
-stronger policies.</p>
-<p>If recovery is enabled as a release gate, it inherits the same conservative
-canonical 256-pair, no-failure, absolute, and comparative floor; every value may
-only be tightened. No independently reviewed recovery budget exists yet, so the
-harness does not invent looser numbers. Enabling recovery without its expected
-scenario or without complete evidence cannot produce a passing artifact.</p>
-<p><code>ParseReport</code> rejects unknown or trailing JSON and recomputes sample durations,
-stage spans, aggregates, comparisons, provenance failures, and verdict from the
-raw ticks and post-run snapshots. <code>RequirePass</code> performs the same strict
-round-trip/recomputation rather than trusting an in-memory verdict field.
-The default policy also rejects a dirty source tree. Retain the full JSON and
-the exact external trace or marker artifacts used by a live probe; this source-
-only layer does not claim that JSON alone is tamper-proof.</p>
-<h3 id="remaining-live-adapter-work">Remaining live-adapter work</h3>
-<p>The source-bound Windows USB/IP probe core now binds an authenticated, freshly
-opened DualSense V5 stream to an event-driven SDL observation and supplies the
-four truthful <code>api-to-consumer</code> stages. Broker receipt and successful terminal
-USB/IP presentation commit are opt-in hooks compiled only with
-<code>-tags viiper_latency</code>; normal builds inline empty hooks and probe construction
-fails immediately. All stage timestamps use the exact QPC identity of the
-single in-process server/client harness, while SDL's event clock remains a
-separate stale-edge fence.</p>
-<p>The probe does not start VIIPER, create a bus/device, attach USB/IP, initialize
-SDL, or claim that an external process shares its QPC identity. A live wrapper
-must still perform provenance preflight, create an isolated in-process server,
-prove the exact virtual-controller identity, give the probe exclusive ownership
-of a new V5 stream starting at sequence zero, and give the SDL observer
-exclusive main-thread event-queue ownership. The concrete SDL consumer is
-available only in a Windows CGO build with the same latency tag.</p>
-<p>An opt-in server method, <code>InputLatencyImportGeneration</code>, now exposes the exact
-active import lease already assigned by the USB/IP server for one bus/device
-identity. The lease advances on every successful reimport and disappears on
-disconnect. A wrapper can therefore use it as the probe lifecycle source
-without inventing a generation or changing the production hot path. The method
-does not exist in an ordinary release build.</p>
-<p>There is still no executable live wrapper or USB/IP-only report mode. <code>Runner</code>
-requires both the <code>usbip</code> baseline and a distinctly named candidate, so passing
-the same USB/IP implementation twice would be false evidence rather than a
-baseline workaround. Consequently there is no valid current command that emits
-the declared live report, and no current <code>0.9.7.7</code> live baseline has been
-captured by this landing-zone change.</p>
-<p>The eventual no-install procedure must use a clean source revision and a single
-Windows CGO process built with both <code>release</code> and <code>viiper_latency</code>; a normal
-<code>release</code> VIIPER lacks the broker/terminal hooks. That process must use unused
-loopback ports and an
-authenticated stream, snapshot the SDL gamepad set, create and auto-attach one
-isolated V5 virtual DualSense through the already installed <code>0.9.7.7</code> driver,
-bind the newly observed controller and returned USB/IP import lease to the same
-bus/device, run the canonical schedule, finish neutral, detach only the returned
-USB/IP port, remove its device and bus, and prove both the port and PnP identity
-are gone before accepting the artifact. A virtual-controller arrival is
-machine-global, so this cannot be described as non-disruptive while games,
-streaming software, remappers, or other controller consumers are active.</p>
-<p>The future backend adapter must use the identical workload, observer, clock,
-controller identity checks, and runtime provenance. Only after the live wrapper
-runs both adapters from the same current revision should their artifacts be
-compared.</p>
-<h2 id="aggregate-go-benchmark">Aggregate Go benchmark</h2>
-<p>The script <code>viiper/_testing/e2e/scripts/lat_bench.go</code> runs (or parses) end‑to‑end input latency benchmarks and produces enriched output (table, markdown, or JSON).</p>
-<p>It groups repeated cycles when <code>-count &gt; 1</code> and uses the single press E2E measurement (<code>E2E-InputDelay</code>) as the 100% baseline.</p>
-<h2 id="output">Output</h2>
+<p>The independently pinned xone tree was audited at
+<code>3484f603484782dd7551c64e5a33fc602b127051</code>. It is GPL-2.0-or-later. Only
+behavioral and protocol facts were used; no xone source expression was copied.
+The relevant local files were <code>_references/xone/bus/protocol.c</code> and
+<code>_references/xone/transport/wired.c</code>. They corroborate these observations:</p>
+<ul>
+<li>wired receive buffers are bounded to one 64-byte packet;</li>
+<li>payload length and total/offset fields are decoded separately;</li>
+<li>a first fragment starts a bounded allocation and later fragments target an
+  offset; and</li>
+<li>command equality and total-length bounds are checked.</li>
+</ul>
+<p>That implementation does not supply the stronger production authority VIIPER
+would need here: it does not establish a general downstream replay window, and
+its fragment copy path is not an exact proof for overlap, filled-range, stale
+sequence, or post-terminal duplicate policy. Those omissions are evidence to
+stay fail-closed, not behavior to reproduce.</p>
+<h2 id="gate-contract">Gate contract</h2>
+<p>Construction requires a non-zero external generation and receive epoch. The
+repository intentionally has no issuer for those values. One gate has a
+monotonic state:</p>
+<p><code>Fresh -&gt; Claiming -&gt; Accepted -&gt; Taken</code></p>
+<p>or</p>
+<p><code>Fresh -&gt; Claiming -&gt; Blocked</code></p>
+<p>An invalid credential before handoff changes <code>Accepted</code> to <code>Quarantined</code>.
+There is no reset. Any concurrent or later Claim on the same lifetime returns
+<code>ControllerDownstreamReceiveReplayUnprovable</code> and the preconstructed
+<code>ErrControllerDownstreamReceiveReplayUnprovable</code>. Constructing a second gate is
+not authenticated successor evidence and must not be presented as replay
+support.</p>
+<p>The first Claim delegates directly to <code>DecodeControllerDownstreamPacket</code>:</p>
 <table>
 <thead>
 <tr>
-<th>Column</th>
-<th>Meaning</th>
+<th>Canonical result</th>
+<th>Typed gate result</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td>Benchmark</td>
-<td>Name of the sub benchmark</td>
+<td>complete supported packet</td>
+<td>private exact claim</td>
 </tr>
 <tr>
-<td>Count</td>
-<td>Iterations performed (from Go bench output; affected by <code>-benchtime</code>)</td>
+<td><code>ErrFragmentedHeader</code></td>
+<td><code>ReliableFragment</code> blocker</td>
 </tr>
 <tr>
-<td>ns/op</td>
-<td>Nanoseconds per operation (direct Go benchmark figure)</td>
+<td><code>ErrExtendedPayloadLength</code></td>
+<td><code>ExtendedFraming</code> blocker</td>
 </tr>
 <tr>
-<td>% of Full</td>
-<td>Relative to <code>E2E-InputDelay</code> (single press baseline)</td>
+<td>unsupported complete family</td>
+<td><code>UnsupportedMessage</code> blocker</td>
 </tr>
 <tr>
-<td>Client Share %</td>
-<td>Portion attributed to the (go) client write phase (for E2E rows)</td>
+<td>every other decode failure</td>
+<td><code>Malformed</code> blocker</td>
 </tr>
 <tr>
-<td>Latency Share %</td>
-<td>Remainder attributed to transport + virtual device/host stack + tight device polling loop</td>
+<td>second/concurrent Claim</td>
+<td><code>ReplayUnprovable</code> blocker</td>
 </tr>
 </tbody>
 </table>
-<p><code>E2E-PressAndRelease</code> includes both press and release cycles, so it is expected to be ~2× the single press and thus can exceed 100% in <code>% of Full</code>.</p>
-<h2 id="scope-methodology">Scope / Methodology</h2>
+<p>No prefix result escapes if a later coalesced message fails. No raw slice is
+stored. <code>TakeExactPacket</code> authenticates owner address, generation, epoch,
+private token, and message count, then returns the fixed-capacity typed packet
+by value once. A foreign or forged credential quarantines that exact gate and
+cannot clean or affect another owner.</p>
+<p>Claim and Take perform no I/O and allocate zero on the warm accepted path.
+The fragment and extended-framing blocker paths also allocate zero. The
+constructor is cold and creates the one owner object. Diagnostics are
+lock-free and never expose retained packet contents.</p>
+<h2 id="why-reassembly-is-not-implemented-in-this-tranche">Why reassembly is not implemented in this tranche</h2>
+<p>The current canonical downstream families are Metadata Request, Set Device
+State, Protocol Control ACK, Direct Motor, and Guide LED. Their accepted wire
+forms fit one 64-byte packet. The large-message families named by the source
+are metadata responses, security, and extended commands; there is no current
+downstream decoder, lifecycle owner, or executor for their reassembled payload.
+Adding a generic byte assembler would therefore create raw payload authority
+with no legal canonical consumer.</p>
+<p>Even a byte-perfect assembler would not close terminal replay. GIP sequence is
+eight-bit, non-zero, and wrapping. The reliable-fragment rules authenticate the
+fragments of one active transfer, but the reviewed material does not define a
+general receive window after that transfer retires. VIIPER also does not expose
+an authenticated connection/lifecycle credential which proves when a reused
+sequence starts a successor transfer. Accepting matching bytes, accepting a
+USB/IP submission number as a GIP token, or choosing an arbitrary sequence
+distance would all be guesses.</p>
+<h2 id="validation-and-remaining-blockers">Validation and remaining blockers</h2>
+<p>Offline tests cover complete/coalesced handoff, source-scratch mutation,
+fragment after a valid prefix, extended framing, malformed and unsupported
+packets, zero identities, foreign/stale/copied credentials, exact at-most-once
+concurrent Claim/Take, concurrent snapshots, warm-path allocations, repeated
+stress, race detection, and fuzz invariants.</p>
+<p>Production remains blocked on all of the following:</p>
 <ul>
-<li>All benchmarks included here are executed against a VIIPER server on the same host (localhost).<br />
-  They therefore measure in-process client emission plus local USBIP stack + emulated device processing only.<br />
-  Remote/network USBIP attachment will add network RTT and jitter which is intentionally excluded from these baseline figures.</li>
-<li>Benchmarks use a single emulated Xbox360 controller device.<br />
-  Other devices might produce slightly different results depending on USB report size and VIIPER-InputState size.</li>
-<li>Benchmarks use a single button press, which is enough as clients/VIIPER always produce a full report of the devices state.  </li>
+<li>an exact production issuer for connection generation and receive-transfer
+  epoch;</li>
+<li>a source-defined downstream replay/window and sequence-wrap retirement rule;</li>
+<li>an exact bounded reassembler with filled-range/overlap/gap/timeout and
+  terminal-handshake ownership;</li>
+<li>canonical decoders and lifecycle owners for any large downstream family;</li>
+<li>composition with the existing interrupt-OUT response/worker transaction
+  without executing effects under response-writer ownership; and</li>
+<li>production identity, descriptor, Windows binding, hardware feedback, and
+  end-to-end conformance evidence.</li>
 </ul>
-<h2 id="benchtime-mode">Benchtime Mode</h2>
-<p>Runs use a fixed-iteration benchtime (e.g. <code>-benchtime=1000x</code>, <code>-benchtime=10000x</code>) rather than time-based (e.g. <code>2s</code>).  </p>
-<h2 id="running">Running</h2>
-<p>From repository root:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nb">cd</span><span class="w"> </span>testing/e2e
-<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="c1"># Single run, 1000 fixed iterations per sub benchmark</span>
-<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>go<span class="w"> </span>run<span class="w"> </span>./scripts/lat_bench.go<span class="w"> </span>-benchtime<span class="o">=</span>1000x<span class="w"> </span>-count<span class="o">=</span><span class="m">1</span><span class="w"> </span>-format<span class="w"> </span>markdown
-</code></pre></div>
-<p>Results (Arch Linux / SteamDeck Kernel / Steam Deck LCD / Go 1.25+, 10k iterations):</p>
-<table>
-<thead>
-<tr>
-<th>Benchmark</th>
-<th>Count</th>
-<th>ns/op</th>
-<th>% of Full</th>
-<th>Client Share %</th>
-<th>Latency Share %</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>1_Go-Client-Write</td>
-<td>10000</td>
-<td>10668</td>
-<td>11.98</td>
-<td>100.00</td>
-<td>0.00</td>
-</tr>
-<tr>
-<td>2_InputDelay-Without-Client</td>
-<td>10000</td>
-<td>74154</td>
-<td>83.25</td>
-<td>0.00</td>
-<td>100.00</td>
-</tr>
-<tr>
-<td>3_E2E-InputDelay</td>
-<td>10000</td>
-<td>89078</td>
-<td>100.00</td>
-<td>11.98</td>
-<td>88.02</td>
-</tr>
-<tr>
-<td>4_E2E-PressAndRelease</td>
-<td>10000</td>
-<td>184870</td>
-<td>207.54</td>
-<td>11.54</td>
-<td>88.46</td>
-</tr>
-</tbody>
-</table>
-<p>Example output (Windows / AMD Ryzen 9 3900X / Go 1.25+, 10k iterations):</p>
-<table>
-<thead>
-<tr>
-<th>Benchmark</th>
-<th>Count</th>
-<th>ns/op</th>
-<th>% of Full</th>
-<th>Client Share %</th>
-<th>Latency Share %</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>1_Go-Client-Write</td>
-<td>10000</td>
-<td>27933</td>
-<td>16.60</td>
-<td>100.00</td>
-<td>0.00</td>
-</tr>
-<tr>
-<td>2_InputDelay-Without-Client</td>
-<td>10000</td>
-<td>133724</td>
-<td>79.45</td>
-<td>0.00</td>
-<td>100.00</td>
-</tr>
-<tr>
-<td>3_E2E-InputDelay</td>
-<td>10000</td>
-<td>168307</td>
-<td>100.00</td>
-<td>16.60</td>
-<td>83.40</td>
-</tr>
-<tr>
-<td>4_E2E-PressAndRelease</td>
-<td>10000</td>
-<td>331439</td>
-<td>196.93</td>
-<td>16.86</td>
-<td>83.14</td>
-</tr>
-</tbody>
-</table>
-<p>Variability across repeated measurement runs has been negligible.<br />
-Use a larger <code>-count</code> if you want to increase the number of runs.</p>
-<h2 id="notes">Notes</h2>
-<ul>
-<li>Memory statistics from Go benchmarks are intentionally omitted.</li>
-<li><code>% of Full</code> falls back to the largest ns/op if the baseline row is missing.</li>
-<li>All benchmarking must run with parallelism 1 in underlying benches.</li>
-<li>Benchmarks use a tight polling loop using SDL3 to detect input state changes on the emulated device.</li>
-<li>Benchmarks must be run without an already running VIIPER server instance.</li>
-</ul>
+<p>This gate closes only the failure-atomic framing handoff for already-supported
+complete packets. It does not clear any general reassembly, replay, USB/IP,
+Xbox binding, output, latency, or hardware blocker.</p>
 
 
 

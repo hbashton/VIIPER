@@ -2498,7 +2498,10 @@ Any language with raw TCP support works.</p>
 <p>For a higher-level experience, see the Go client in <code>/apiclient/</code>.</p>
 <h2 id="how-this-relates-to-usbip">How this relates to USBIP</h2>
 <p>The VIIPER API controls which virtual devices exist and exposes a device stream for live input/feedback.<br />
-Separately, the USBIP server (default <code>:3241</code>) makes these devices attachable from USBIP clients.</p>
+Separately, the USBIP server (default <code>127.0.0.1:3241</code>) makes these devices
+attachable from a local USBIP client. USB/IP is not covered by API
+authentication; remote exposure requires an explicitly configured address and
+a trusted tunnel/firewall boundary.</p>
 <p>Typical flow:</p>
 <ol>
 <li>Create a bus</li>

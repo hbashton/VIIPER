@@ -1969,7 +1969,7 @@
 <p>Aside from passing CLI flags, VIIPER can also be configured via environment variables and configuration files.</p>
 <p>For configuration files, VIIPER supports <code>JSON</code>, <code>YAML</code>, and <code>TOML</code> formats.</p>
 <h2 id="environment-variables">Environment Variables</h2>
-<p>All command-line flags have corresponding environment variables for easier deployment and configuration management.</p>
+<p>Most command-line flags have corresponding environment variables for easier deployment and configuration management. The explicit <code>--key-file</code> and <code>--config-only</code> options intentionally have no environment-variable aliases.</p>
 <h3 id="global-configuration">Global Configuration</h3>
 <table>
 <thead>
@@ -2015,7 +2015,7 @@
 <tr>
 <td><code>VIIPER_USB_ADDR</code></td>
 <td><code>--usb.addr</code></td>
-<td><code>:3241</code></td>
+<td><code>127.0.0.1:3241</code></td>
 <td>USBIP server listen address</td>
 </tr>
 <tr>
@@ -2038,7 +2038,7 @@
 </tr>
 <tr>
 <td><code>VIIPER_API_REQUIRE_LOCALHOST_AUTH</code></td>
-<td><code>--api.require-localhost-auth</code></td>
+<td><code>--api.require-local-host-auth</code></td>
 <td><code>false</code></td>
 <td>Require authentication even for localhost connections</td>
 </tr>
@@ -2093,6 +2093,18 @@ Generate a starter file (default configuration) with:</p>
 <p>To use a specific configuration file when starting VIIPER, pass the --config flag (or set the <code>VIIPER_CONFIG</code> environment variable):</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>viiper<span class="w"> </span>--config<span class="w"> </span>./server.json<span class="w"> </span>server
 </code></pre></div>
+<p>For an isolated configuration selection, use <code>--config-only</code> together with
+exactly one command-line <code>--config</code> specifying an absolute <code>.json</code>, <code>.yaml</code>,
+<code>.yml</code>, or <code>.toml</code> file:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="p">.\</span><span class="n">viiper</span><span class="p">.</span><span class="n">exe</span> <span class="p">-</span><span class="n">-config-only</span> <span class="p">-</span><span class="n">-config</span> <span class="s1">'C:\Lab\server.json'</span> <span class="p">-</span><span class="n">-update-notify</span><span class="p">=</span><span class="n">none</span> <span class="n">server</span>
+</code></pre></div>
+<p>The file must already exist, be a readable regular file with no linked/reparse
+ancestors, and contain valid configuration. A missing, unreadable, or malformed
+file fails closed; no fallback location is consulted. JSON and YAML must contain
+one document with an object/mapping root. <code>VIIPER_CONFIG</code> alone does not satisfy
+this explicit selection. Environment variables and other CLI flags still override
+values in the chosen file. This is not whole-server isolation: use an explicit
+key file, disable update checks, and control log destinations separately.</p>
 <p>If --config is not provided, VIIPER will search for configuration in this order and first-found is used for each format:</p>
 <ol>
 <li>Working directory: server.(json|yaml|yml|toml), proxy.(json|yaml|yml|toml), viiper.(json|yaml|yml|toml), config.(json|yaml|yml|toml)</li>
@@ -2101,7 +2113,11 @@ Generate a starter file (default configuration) with:</p>
 </ol>
 <h2 id="authentication-and-security">Authentication and Security</h2>
 <p>VIIPER requires authentication for remote (non-localhost) connections
-to prevent unauthorized device creation.  </p>
+to prevent unauthorized device creation.</p>
+<p>That authentication applies to the management API, not the USB/IP protocol.
+USB/IP binds to <code>127.0.0.1:3241</code> by default because its port is unauthenticated.
+Expose it remotely only through a trusted tunnel, host firewall, or equivalent
+authenticated network boundary.</p>
 <p>The password file is <em>intentionally</em> separated from the main configuration</p>
 <p><strong>Password File:</strong> <code>viiper.key.txt</code>  </p>
 <ul>
@@ -2116,9 +2132,16 @@ VIIPER generates a random 16-character password on first start and displays it i
 <li><strong>Custom passwords:</strong> You can edit <code>viiper.key.txt</code> and replace it with any password of any length</li>
 <li><strong>Encryption:</strong> All authenticated connections use fast ChaCha20-Poly1305 encryption with unique session keys</li>
 </ul>
+<p>An optional <code>server --key-file &lt;absolute-path&gt;</code> selects a deployment-owned key
+file without reading or writing the default password location. Explicit invalid,
+unreadable, or empty key files fail closed; only a missing file is generated,
+using exclusive creation so an existing key cannot be overwritten. This does
+not isolate other configuration, logging, update-cache, or tray-startup behavior.
+See <a href="../server/#--key-file">the server key-file option</a> for a local lab example and
+the limits of <code>--config</code> and <code>--update-notify=none</code>.</p>
 <h3 id="localhost-exemption">Localhost Exemption</h3>
 <p>By default, clients connecting from <code>localhost</code>, <code>127.0.0.1</code>, or <code>::1</code> do NOT require authentication (they can optionally provide it).<br />
-To require authentication even for localhost connections, use <code>--api.require-localhost-auth=true</code>.</p>
+To require authentication even for localhost connections, use <code>--api.require-local-host-auth=true</code>.</p>
 <h3 id="remote-connections">Remote Connections</h3>
 <p>All remote clients MUST authenticate using the password from <code>viiper.key.txt</code>.</p>
 <h2 id="configuration-examples">Configuration Examples</h2>
@@ -2126,59 +2149,59 @@ To require authentication even for localhost connections, use <code>--api.requir
 <div class="tabbed-content">
 <div class="tabbed-block">
 <p>Server:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="p">{</span>
-<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="nt">"api"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">    </span><span class="nt">"addr"</span><span class="p">:</span><span class="w"> </span><span class="s2">":3242"</span><span class="p">,</span>
-<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="w">    </span><span class="nt">"device-handler-connect-timeout"</span><span class="p">:</span><span class="w"> </span><span class="s2">"5s"</span><span class="p">,</span>
-<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="w">    </span><span class="nt">"auto-attach-local-client"</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span>
-<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="p">},</span>
-<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="nt">"usb"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="w">    </span><span class="nt">"addr"</span><span class="p">:</span><span class="w"> </span><span class="s2">":3241"</span>
-<a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a><span class="p">},</span>
-<a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a><span class="nt">"connection-timeout"</span><span class="p">:</span><span class="w"> </span><span class="s2">"30s"</span>
-<a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a><span class="p">}</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="p">{</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="nt">"api"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">    </span><span class="nt">"addr"</span><span class="p">:</span><span class="w"> </span><span class="s2">":3242"</span><span class="p">,</span>
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="w">    </span><span class="nt">"device-handler-connect-timeout"</span><span class="p">:</span><span class="w"> </span><span class="s2">"5s"</span><span class="p">,</span>
+<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="w">    </span><span class="nt">"auto-attach-local-client"</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span>
+<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="p">},</span>
+<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="nt">"usb"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a><span class="w">    </span><span class="nt">"addr"</span><span class="p">:</span><span class="w"> </span><span class="s2">"127.0.0.1:3241"</span>
+<a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a><span class="p">},</span>
+<a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a><span class="nt">"connection-timeout"</span><span class="p">:</span><span class="w"> </span><span class="s2">"30s"</span>
+<a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a><span class="p">}</span>
 </code></pre></div>
 <p>Proxy:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="p">{</span>
-<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="nt">"listen-addr"</span><span class="p">:</span><span class="w"> </span><span class="s2">":3241"</span><span class="p">,</span>
-<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="nt">"upstream-addr"</span><span class="p">:</span><span class="w"> </span><span class="s2">"127.0.0.1:3242"</span><span class="p">,</span>
-<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="nt">"connection-timeout"</span><span class="p">:</span><span class="w"> </span><span class="s2">"30s"</span>
-<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="p">}</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="p">{</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="nt">"listen-addr"</span><span class="p">:</span><span class="w"> </span><span class="s2">":3241"</span><span class="p">,</span>
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="nt">"upstream-addr"</span><span class="p">:</span><span class="w"> </span><span class="s2">"127.0.0.1:3242"</span><span class="p">,</span>
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="nt">"connection-timeout"</span><span class="p">:</span><span class="w"> </span><span class="s2">"30s"</span>
+<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="p">}</span>
 </code></pre></div>
 </div>
 <div class="tabbed-block">
 <p>Create a <code>.env</code> file or export variables:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="nb">export</span><span class="w"> </span><span class="nv">VIIPER_LOG_LEVEL</span><span class="o">=</span>debug
-<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="nb">export</span><span class="w"> </span><span class="nv">VIIPER_USB_ADDR</span><span class="o">=</span>:3241
-<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="nb">export</span><span class="w"> </span><span class="nv">VIIPER_API_ADDR</span><span class="o">=</span>:3242
-<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="nb">export</span><span class="w"> </span><span class="nv">VIIPER_LOG_FILE</span><span class="o">=</span>/var/log/viiper.log
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="nb">export</span><span class="w"> </span><span class="nv">VIIPER_LOG_LEVEL</span><span class="o">=</span>debug
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="nb">export</span><span class="w"> </span><span class="nv">VIIPER_USB_ADDR</span><span class="o">=</span><span class="m">127</span>.0.0.1:3241
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="nb">export</span><span class="w"> </span><span class="nv">VIIPER_API_ADDR</span><span class="o">=</span>:3242
+<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="nb">export</span><span class="w"> </span><span class="nv">VIIPER_LOG_FILE</span><span class="o">=</span>/var/log/viiper.log
 </code></pre></div>
 <p>Then run:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>viiper<span class="w"> </span>server
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>viiper<span class="w"> </span>server
 </code></pre></div>
 </div>
 </div>
 </div>
 <h3 id="systemd-service">Systemd Service</h3>
 <p>Example systemd service file for running VIIPER as a service:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="k">[Unit]</span>
-<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="na">Description</span><span class="o">=</span><span class="s">VIIPER USBIP Server</span>
-<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="na">After</span><span class="o">=</span><span class="s">network.target</span>
-<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a>
-<a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="k">[Service]</span>
-<a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="na">Type</span><span class="o">=</span><span class="s">simple</span>
-<a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a><span class="na">User</span><span class="o">=</span><span class="s">viiper</span>
-<a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a><span class="na">Group</span><span class="o">=</span><span class="s">viiper</span>
-<a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a><span class="na">Environment</span><span class="o">=</span><span class="s">"VIIPER_LOG_LEVEL=info"</span>
-<a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a><span class="na">Environment</span><span class="o">=</span><span class="s">"VIIPER_LOG_FILE=/var/log/viiper/viiper.log"</span>
-<a id="__codelineno-7-11" name="__codelineno-7-11" href="#__codelineno-7-11"></a><span class="na">Environment</span><span class="o">=</span><span class="s">"VIIPER_USB_ADDR=:3241"</span>
-<a id="__codelineno-7-12" name="__codelineno-7-12" href="#__codelineno-7-12"></a><span class="na">Environment</span><span class="o">=</span><span class="s">"VIIPER_API_ADDR=:3242"</span>
-<a id="__codelineno-7-13" name="__codelineno-7-13" href="#__codelineno-7-13"></a><span class="na">ExecStart</span><span class="o">=</span><span class="s">/usr/local/bin/viiper server</span>
-<a id="__codelineno-7-14" name="__codelineno-7-14" href="#__codelineno-7-14"></a><span class="na">Restart</span><span class="o">=</span><span class="s">on-failure</span>
-<a id="__codelineno-7-15" name="__codelineno-7-15" href="#__codelineno-7-15"></a><span class="na">RestartSec</span><span class="o">=</span><span class="s">5s</span>
-<a id="__codelineno-7-16" name="__codelineno-7-16" href="#__codelineno-7-16"></a>
-<a id="__codelineno-7-17" name="__codelineno-7-17" href="#__codelineno-7-17"></a><span class="k">[Install]</span>
-<a id="__codelineno-7-18" name="__codelineno-7-18" href="#__codelineno-7-18"></a><span class="na">WantedBy</span><span class="o">=</span><span class="s">multi-user.target</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="k">[Unit]</span>
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="na">Description</span><span class="o">=</span><span class="s">VIIPER USBIP Server</span>
+<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="na">After</span><span class="o">=</span><span class="s">network.target</span>
+<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a>
+<a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a><span class="k">[Service]</span>
+<a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a><span class="na">Type</span><span class="o">=</span><span class="s">simple</span>
+<a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a><span class="na">User</span><span class="o">=</span><span class="s">viiper</span>
+<a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a><span class="na">Group</span><span class="o">=</span><span class="s">viiper</span>
+<a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a><span class="na">Environment</span><span class="o">=</span><span class="s">"VIIPER_LOG_LEVEL=info"</span>
+<a id="__codelineno-8-10" name="__codelineno-8-10" href="#__codelineno-8-10"></a><span class="na">Environment</span><span class="o">=</span><span class="s">"VIIPER_LOG_FILE=/var/log/viiper/viiper.log"</span>
+<a id="__codelineno-8-11" name="__codelineno-8-11" href="#__codelineno-8-11"></a><span class="na">Environment</span><span class="o">=</span><span class="s">"VIIPER_USB_ADDR=127.0.0.1:3241"</span>
+<a id="__codelineno-8-12" name="__codelineno-8-12" href="#__codelineno-8-12"></a><span class="na">Environment</span><span class="o">=</span><span class="s">"VIIPER_API_ADDR=:3242"</span>
+<a id="__codelineno-8-13" name="__codelineno-8-13" href="#__codelineno-8-13"></a><span class="na">ExecStart</span><span class="o">=</span><span class="s">/usr/local/bin/viiper server</span>
+<a id="__codelineno-8-14" name="__codelineno-8-14" href="#__codelineno-8-14"></a><span class="na">Restart</span><span class="o">=</span><span class="s">on-failure</span>
+<a id="__codelineno-8-15" name="__codelineno-8-15" href="#__codelineno-8-15"></a><span class="na">RestartSec</span><span class="o">=</span><span class="s">5s</span>
+<a id="__codelineno-8-16" name="__codelineno-8-16" href="#__codelineno-8-16"></a>
+<a id="__codelineno-8-17" name="__codelineno-8-17" href="#__codelineno-8-17"></a><span class="k">[Install]</span>
+<a id="__codelineno-8-18" name="__codelineno-8-18" href="#__codelineno-8-18"></a><span class="na">WantedBy</span><span class="o">=</span><span class="s">multi-user.target</span>
 </code></pre></div>
 <h2 id="configuration-priority">Configuration Priority</h2>
 <p>When both CLI flags and environment variables are set, CLI flags take precedence:</p>

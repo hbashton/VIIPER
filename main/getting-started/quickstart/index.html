@@ -2088,7 +2088,7 @@
 </code></pre></div>
 <p>This starts two services:</p>
 <ul>
-<li><strong>USBIP Server</strong> on port <code>3241</code> (standard USBIP protocol)</li>
+<li><strong>USBIP Server</strong> on <code>127.0.0.1:3241</code> (standard USBIP protocol)</li>
 <li><strong>VIIPER API Server</strong> on port <code>3242</code> (management and device interactions)</li>
 </ul>
 <div class="admonition warning">
@@ -2104,6 +2104,13 @@ Linux (root/systemd): <code>/etc/viiper/viiper.key.txt</code></p>
 </ul>
 <p>All authenticated connections use <strong>ChaCha20-Poly1305 encryption</strong> to protect against man-in-the-middle attacks.</p>
 <p>You can change the password at any time by editing <code>viiper.key.txt</code>.</p>
+</div>
+<div class="admonition warning">
+<p class="admonition-title">USB/IP is local-only by default</p>
+<p>The password and encryption above protect the API, not the separate USB/IP
+protocol. USB/IP listens only on <code>127.0.0.1:3241</code> by default. If you
+explicitly bind it to a non-loopback address, place it behind a trusted
+tunnel, host firewall, or equivalent authenticated network boundary.</p>
 </div>
 <div class="admonition tip">
 <p class="admonition-title">Auto-attach Feature</p>
@@ -2248,11 +2255,11 @@ See: <a href="../../api/overview/">API Reference</a> for complete documentation.
 <h3 id="server-wont-start">Server Won't Start</h3>
 <p><strong>Port already in use:</strong></p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="c1"># Use custom ports</span>
-<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>viiper<span class="w"> </span>server<span class="w"> </span>--usb.addr<span class="o">=</span>:9000<span class="w"> </span>--api.addr<span class="o">=</span>:9001
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>viiper<span class="w"> </span>server<span class="w"> </span>--usb.addr<span class="o">=</span><span class="m">127</span>.0.0.1:9000<span class="w"> </span>--api.addr<span class="o">=</span>:9001
 </code></pre></div>
 <p><strong>Permission denied (Linux):</strong></p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="c1"># Use ports above 1024 or run with sudo</span>
-<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>viiper<span class="w"> </span>server<span class="w"> </span>--usb.addr<span class="o">=</span>:3241<span class="w"> </span>--api.addr<span class="o">=</span>:3242
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>viiper<span class="w"> </span>server<span class="w"> </span>--usb.addr<span class="o">=</span><span class="m">127</span>.0.0.1:3241<span class="w"> </span>--api.addr<span class="o">=</span>:3242
 </code></pre></div>
 <h3 id="auto-attach-not-working">Auto-Attach Not Working</h3>
 <p>VIIPER will check prerequisites at startup when auto-attach is enabled and log warnings if requirements are missing.</p>
