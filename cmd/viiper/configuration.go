@@ -34,7 +34,7 @@ func configurationOptions(args []string) ([]kong.Option, bool, error) {
 	jsonPaths, yamlPaths, tomlPaths := configpaths.ConfigCandidatePaths(findUserConfig(args))
 	return []kong.Option{
 		kong.Configuration(kong.JSON, jsonPaths...),
-		kong.Configuration(kongyaml.Loader, yamlPaths...),
+		kong.Configuration(compatibleYAMLLoader, yamlPaths...),
 		kong.Configuration(kongtoml.Loader, tomlPaths...),
 	}, false, nil
 }
@@ -120,7 +120,7 @@ func loadExclusiveConfig(path string) (kong.Resolver, error) {
 		if err := decoder.Decode(&extra); err != io.EOF {
 			return nil, fmt.Errorf("explicit YAML configuration must contain exactly one document")
 		}
-		loader = kongyaml.Loader
+		loader = compatibleYAMLLoader
 	case ".toml":
 		loader = kongtoml.Loader
 	default:
@@ -131,4 +131,17 @@ func loadExclusiveConfig(path string) (kong.Resolver, error) {
 		return nil, fmt.Errorf("invalid explicit configuration %s: %w", path, err)
 	}
 	return resolver, nil
+}
+
+// Keep VIIPER's v0.2.0 YAML contract while using the explicitly licensed upstream
+// revision. Its new optional Validate hook rejects formerly accepted nested
+// mappings and unused compatibility keys. Resolve itself is unchanged; exposing
+// only that method preserves loading/flag precedence without changing the strict
+// explicit-file framing checks above or any JSON/TOML validation.
+func compatibleYAMLLoader(reader io.Reader) (kong.Resolver, error) {
+	resolver, err := kongyaml.Loader(reader)
+	if err != nil {
+		return nil, err
+	}
+	return kong.ResolverFunc(resolver.Resolve), nil
 }

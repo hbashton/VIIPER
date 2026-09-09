@@ -6,7 +6,7 @@ require (
 	fyne.io/systray v1.12.1
 	github.com/alecthomas/kong v1.15.0
 	github.com/alecthomas/kong-toml v0.4.0
-	github.com/alecthomas/kong-yaml v0.2.0
+	github.com/alecthomas/kong-yaml v0.2.1-0.20240409173824-a56dc1466c79
 	github.com/ncruces/zenity v0.10.14
 	github.com/pelletier/go-toml v1.9.5
 	github.com/stretchr/testify v1.11.1
