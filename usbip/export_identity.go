@@ -34,7 +34,7 @@ func ValidProductionXboxOneBusID(value string) bool {
 		return false
 	}
 	for _, value := range value[3:] {
-		if !(value >= 'a' && value <= 'z') && !(value >= '2' && value <= '7') {
+		if (value < 'a' || value > 'z') && (value < '2' || value > '7') {
 			return false
 		}
 	}

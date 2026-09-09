@@ -292,7 +292,7 @@ func TestManagementRepliesUseDescriptorConfigurationValue(t *testing.T) {
 		}
 		resultCh := make(chan importResult, 1)
 		go func() {
-			_, release, err := server.handleImport(serverConn)
+			release, err := server.handleImport(serverConn)
 			resultCh <- importResult{release: release, err: err}
 		}()
 		var request [busIDSize]byte

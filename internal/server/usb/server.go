@@ -1143,21 +1143,10 @@ func serverTerminalTreeHasFailure(terminalErr error, depth uint8) bool {
 			return serverTerminalTreeHasFailure(cause, depth+1)
 		}
 	}
-	return !(isClientDisconnect(terminalErr) ||
-		errors.Is(terminalErr, net.ErrClosed) ||
-		errors.Is(terminalErr, io.ErrClosedPipe) ||
-		errors.Is(terminalErr, context.Canceled))
-}
-
-func (s *Server) registerRetainedStream(
-	cancel context.CancelFunc,
-) (uint64, bool) {
-	if s == nil || cancel == nil {
-		return 0, false
-	}
-	s.serverLifecycleMu.Lock()
-	defer s.serverLifecycleMu.Unlock()
-	return s.registerRetainedStreamLocked(cancel, nil)
+	return !isClientDisconnect(terminalErr) &&
+		!errors.Is(terminalErr, net.ErrClosed) &&
+		!errors.Is(terminalErr, io.ErrClosedPipe) &&
+		!errors.Is(terminalErr, context.Canceled)
 }
 
 func (s *Server) registerRetainedStreamLocked(
@@ -1428,13 +1417,14 @@ func (s *Server) handleDevList(conn net.Conn) error {
 	return nil
 }
 
-func (s *Server) handleImport(conn net.Conn) (usb.Device, func(), error) {
+func (s *Server) handleImport(conn net.Conn) (func(), error) {
 	selection, err := s.readImportSelection(conn)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	defer selection.releaseRetainedCallbacks()
-	return s.completeLegacyImport(conn, selection)
+	_, release, err := s.completeLegacyImport(conn, selection)
+	return release, err
 }
 
 type importSelection struct {
@@ -2168,37 +2158,6 @@ func (s *Server) cleanupRetainedDeviceAdmission(
 	// sampled owner identity, limits, and quarantine proof until Server.Close;
 	// deleting it here would let that wrapper recreate a clean admission and
 	// bypass the predecessor's failure.
-}
-
-// rejectRetainedDevice bounds a broken pre-session callback to one invocation
-// for a concrete device object. Go cannot cancel arbitrary user code after a
-// callback deadline, so a timeout/panic permanently removes that object from
-// subsequent DEVLIST/import callback paths on this server.
-func (s *Server) rejectRetainedDevice(dev usb.Device, failure error) {
-	if s == nil || failure == nil {
-		return
-	}
-	deviceReference, valid := exactRetainedImportOwnerReference(dev)
-	if !valid {
-		return
-	}
-	s.retainedFailureMu.Lock()
-	if s.retainedDeviceAdmissions == nil {
-		s.retainedDeviceAdmissions = make(
-			map[retainedDeviceAdmissionKey]*retainedDeviceAdmission)
-	}
-	reference := retainedDeviceAdmissionKey{device: deviceReference}
-	admission := s.retainedDeviceAdmissions[reference]
-	if admission == nil {
-		admission = &retainedDeviceAdmission{reference: dev}
-		s.retainedDeviceAdmissions[reference] = admission
-	}
-	s.retainedFailureMu.Unlock()
-	admission.mu.Lock()
-	if admission.failure == nil {
-		admission.failure = failure
-	}
-	admission.mu.Unlock()
 }
 
 func (s *Server) completeLegacyImport(

@@ -874,8 +874,3 @@ func writeVersionedInputReportResponse(
 		}
 	}
 }
-
-func endpointIsInterrupt(desc *usb.Descriptor, ep, dir uint32) bool {
-	endpoint, found := findEndpointDescriptor(desc, ep, dir)
-	return found && endpoint.BMAttributes&0x03 == 0x03
-}

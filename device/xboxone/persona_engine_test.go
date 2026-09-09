@@ -113,6 +113,25 @@ func makePersonaActive(
 	return engine, 7
 }
 
+func TestControllerPersonaNonzeroInitialClockRejectsEarlierHelloPoll(t *testing.T) {
+	engine := newTestControllerPersonaEngine(t, []byte{0xaa}, 500)
+	configurePersonaUSB(t, engine, 500)
+	before := engine.Snapshot()
+	if _, present, err := engine.ClaimPoll(499); !errors.Is(err, ErrNonMonotonicControllerPersonaClock) || present {
+		t.Fatalf("pre-origin poll = (%t, %v)", present, err)
+	}
+	if after := engine.Snapshot(); after != before {
+		t.Fatalf("rejected poll changed lifecycle: before=%+v after=%+v", before, after)
+	}
+	hello, present, err := engine.ClaimPoll(500)
+	if err != nil || !present || hello.Action() != ControllerPersonaSendHello {
+		t.Fatalf("origin Hello = (%+v, %t, %v)", hello, present, err)
+	}
+	if _, err := DecodeHelloMessage(deliverPersonaClaim(t, engine, hello, 500)); err != nil {
+		t.Fatalf("origin Hello wire = %v", err)
+	}
+}
+
 func TestControllerPersonaVerticalSliceLifecycleMetadataInputAndFeedback(t *testing.T) {
 	engine := newTestControllerPersonaEngine(t, []byte{0xaa, 0xbb, 0xcc}, 0)
 	if got := engine.Snapshot(); got.Generation != 1 || !got.Attached ||

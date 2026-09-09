@@ -1,6 +1,6 @@
 package usb
 
-// Observer is a cold lifecycle notification, never a replacement for import
+// SetFailedImportObserver installs a cold lifecycle notification, never a replacement for import
 // authentication. Called outside all topology/retained locks, before replying
 // with the ordinary no-device error (no fabricated protocol/version errors).
 func (s *Server) SetFailedImportObserver(observer func(string)) {

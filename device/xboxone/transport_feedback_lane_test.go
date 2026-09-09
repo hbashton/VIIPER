@@ -9,8 +9,9 @@ import (
 	"github.com/Alia5/VIIPER/internal/retainedusb"
 )
 
-func beginTestCoordinatorFeedback(t *testing.T, c *controllerPersonaTransportCoordinator, wire []byte, now uint64) controllerPersonaLocalLease {
+func beginTestCoordinatorFeedback(t *testing.T, c *controllerPersonaTransportCoordinator, wire []byte) controllerPersonaLocalLease {
 	t.Helper()
+	const now uint64 = 10
 	ticket, err := c.stageInterruptOut(wire)
 	if err != nil {
 		t.Fatal(err)
@@ -36,10 +37,10 @@ func TestControllerPersonaTransportFeedbackLaneAllowsInputGuideAndStatus(t *test
 	}
 	for name, wire := range map[string][]byte{"motor": testCoordinatorDirectMotorWire(t, 1, testDirectMotorBody()), "led": led[:]} {
 		t.Run(name, func(t *testing.T) {
-			c := newTestControllerPersonaTransportCoordinator(t, []byte{1}, 0)
+			c := newTestControllerPersonaTransportCoordinator(t, []byte{1})
 			makeTestCoordinatorActive(t, c)
 			before, _ := c.snapshot()
-			lease := beginTestCoordinatorFeedback(t, c, wire, 10)
+			lease := beginTestCoordinatorFeedback(t, c, wire)
 			for i := 0; i < 256; i++ {
 				want := GamepadInputReportV1{State: InputStateV1{A: i%2 == 0, LeftStickX: int16(i + 1)}}
 				_, gotWire := admitAndCompleteTestSemanticIN(t, c, uint64(i+11), want)
@@ -84,10 +85,10 @@ func TestControllerPersonaTransportFeedbackLaneAllowsInputGuideAndStatus(t *test
 func TestControllerPersonaTransportFeedbackLaneCompletionPreservesAdmittedIN(t *testing.T) {
 	for _, outcome := range []ControllerPersonaOutcome{ControllerPersonaDelivered, ControllerPersonaDeferred, ControllerPersonaDeliveryFailed, ControllerPersonaExecutionCancelled} {
 		t.Run(string(rune('0'+outcome)), func(t *testing.T) {
-			c := newTestControllerPersonaTransportCoordinator(t, []byte{1}, 0)
+			c := newTestControllerPersonaTransportCoordinator(t, []byte{1})
 			makeTestCoordinatorActive(t, c)
 			motor := testDirectMotorBody()
-			lease := beginTestCoordinatorFeedback(t, c, testCoordinatorDirectMotorWire(t, 1, motor), 10)
+			lease := beginTestCoordinatorFeedback(t, c, testCoordinatorDirectMotorWire(t, 1, motor))
 			ticket, err := c.stageInterruptIn(64)
 			if err != nil {
 				t.Fatal(err)
@@ -134,10 +135,10 @@ func TestControllerPersonaTransportFeedbackLaneCompletionPreservesAdmittedIN(t *
 func TestControllerPersonaTransportFeedbackLaneBothRetriesRemainExact(t *testing.T) {
 	for _, feedbackFirst := range []bool{false, true} {
 		t.Run(map[bool]string{false: "input-first", true: "feedback-first"}[feedbackFirst], func(t *testing.T) {
-			c := newTestControllerPersonaTransportCoordinator(t, []byte{1}, 0)
+			c := newTestControllerPersonaTransportCoordinator(t, []byte{1})
 			makeTestCoordinatorActive(t, c)
 			motor := testDirectMotorBody()
-			lease := beginTestCoordinatorFeedback(t, c, testCoordinatorDirectMotorWire(t, 1, motor), 10)
+			lease := beginTestCoordinatorFeedback(t, c, testCoordinatorDirectMotorWire(t, 1, motor))
 			ticket, err := c.stageInterruptIn(64)
 			if err != nil {
 				t.Fatal(err)
@@ -185,9 +186,9 @@ func TestControllerPersonaTransportFeedbackLaneBothRetriesRemainExact(t *testing
 }
 
 func TestControllerPersonaTransportFeedbackLaneKeepsControlAndSTOPFenced(t *testing.T) {
-	c := newTestControllerPersonaTransportCoordinator(t, []byte{1}, 0)
+	c := newTestControllerPersonaTransportCoordinator(t, []byte{1})
 	makeTestCoordinatorActive(t, c)
-	lease := beginTestCoordinatorFeedback(t, c, testCoordinatorDirectMotorWire(t, 1, testDirectMotorBody()), 10)
+	lease := beginTestCoordinatorFeedback(t, c, testCoordinatorDirectMotorWire(t, 1, testDirectMotorBody()))
 	control, err := c.stageControl(testUSBSetup(usbRequestTypeDeviceOut, usbRequestSetConfiguration, 0, 0, 0))
 	if err != nil {
 		t.Fatal(err)
@@ -358,12 +359,12 @@ func TestRetainedFeedbackDetachmentSignalsReadinessWithoutPublication(t *testing
 }
 
 func TestControllerPersonaTransportFeedbackLaneWarmedPathAllocatesZero(t *testing.T) {
-	c := newTestControllerPersonaTransportCoordinator(t, []byte{1}, 0)
+	c := newTestControllerPersonaTransportCoordinator(t, []byte{1})
 	makeTestCoordinatorActive(t, c)
 	wire := testCoordinatorDirectMotorWire(t, 1, testDirectMotorBody())
 	var scratch [64]byte
 	allocations := testing.AllocsPerRun(1000, func() {
-		lease := beginTestCoordinatorFeedback(t, c, wire, 10)
+		lease := beginTestCoordinatorFeedback(t, c, wire)
 		ticket, err := c.stageInterruptIn(64)
 		if err != nil {
 			t.Fatal(err)

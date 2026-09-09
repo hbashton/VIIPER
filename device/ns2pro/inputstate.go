@@ -109,12 +109,6 @@ func (o *OutputState) UnmarshalBinary(data []byte) error {
 	return nil
 }
 
-func (s InputState) buildCommonReport(counter, motionTimestamp uint32, features uint8, meta MetaState) []byte {
-	b := make([]byte, InputReportSize)
-	s.buildCommonReportInto(b, counter, motionTimestamp, features, meta)
-	return b
-}
-
 func (s InputState) buildCommonReportInto(destination []byte, counter,
 	motionTimestamp uint32, features uint8, meta MetaState,
 ) int {

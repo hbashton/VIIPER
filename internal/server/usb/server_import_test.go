@@ -116,7 +116,7 @@ func TestHandleImportRejectsUnterminatedBusIDWithoutPanic(t *testing.T) {
 	require.NoError(t, clientConn.SetDeadline(time.Now().Add(time.Second)))
 	result := make(chan error, 1)
 	go func() {
-		_, _, err := server.handleImport(serverConn)
+		_, err := server.handleImport(serverConn)
 		result <- err
 	}()
 
@@ -211,7 +211,7 @@ func performTestImport(t *testing.T, server *Server, busID string) testImportRes
 	require.NoError(t, clientConn.SetDeadline(time.Now().Add(time.Second)))
 	result := make(chan testImportResult, 1)
 	go func() {
-		_, release, err := server.handleImport(serverConn)
+		release, err := server.handleImport(serverConn)
 		result <- testImportResult{release: release, err: err}
 		_ = serverConn.Close()
 	}()

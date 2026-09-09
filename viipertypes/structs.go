@@ -92,8 +92,8 @@ type DeviceCreateRequest struct {
 	DeviceSpecific map[string]any `json:"deviceSpecific,omitempty"`
 }
 
-// Named child DTOs preserve the JSON contract while making its complete
-// structure available to the generated client libraries.
+// XboxOneAuthorizedIdentityV1 preserves the JSON identity contract while making
+// its complete structure available to the generated client libraries.
 type XboxOneAuthorizedIdentityV1 struct {
 	VendorID         uint16 `json:"vendorId"`
 	ProductID        uint16 `json:"productId"`

@@ -80,7 +80,7 @@ func ValidProductionRemovalToken(token string) bool {
 		return false
 	}
 	for i := range len(token) {
-		if !(token[i] >= '0' && token[i] <= '9') && !(token[i] >= 'a' && token[i] <= 'f') {
+		if (token[i] < '0' || token[i] > '9') && (token[i] < 'a' || token[i] > 'f') {
 			return false
 		}
 	}

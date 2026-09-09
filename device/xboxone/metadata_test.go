@@ -47,13 +47,12 @@ func deliverMetadataClaim(
 	claim MetadataPacketClaim,
 	dst []byte,
 	nowMS uint64,
-) MetadataPacketAdmission {
+) {
 	t.Helper()
-	admission := admitMetadataClaim(t, transfer, claim, dst, nowMS)
+	admitMetadataClaim(t, transfer, claim, dst, nowMS)
 	if err := transfer.Resolve(claim, MetadataPacketDelivered, nowMS); err != nil {
 		t.Fatalf("Resolve delivered: %v", err)
 	}
-	return admission
 }
 
 func metadataACK(
@@ -61,7 +60,7 @@ func metadataACK(
 	transfer *MetadataTransfer,
 	contiguous uint16,
 	nowMS uint64,
-) (ReliableAcknowledgement, ReliableAcknowledgementDisposition) {
+) ReliableAcknowledgementDisposition {
 	t.Helper()
 	ack, ok := transfer.AcknowledgementIdentity()
 	if !ok {
@@ -72,7 +71,7 @@ func metadataACK(
 	if err != nil {
 		t.Fatalf("Acknowledge: %v", err)
 	}
-	return ack, disposition
+	return disposition
 }
 
 func TestMetadataSinglePacketOwnsBlobAndFinalAdmissionCopiesExactBytes(t *testing.T) {
@@ -200,7 +199,7 @@ func TestMetadataFragmentedHandshakeIsByteExact(t *testing.T) {
 	if got := [6]byte(initial[:6]); got != [6]byte{0x04, 0xf0, 0x12, 0x3a, 0xbd, 0x00} {
 		t.Fatalf("initial header = % x", got)
 	}
-	if _, disposition := metadataACK(t, &transfer, 58, 1); disposition != ReliableAcknowledgementProgress {
+	if disposition := metadataACK(t, &transfer, 58, 1); disposition != ReliableAcknowledgementProgress {
 		t.Fatalf("initial ACK disposition = %d", disposition)
 	}
 

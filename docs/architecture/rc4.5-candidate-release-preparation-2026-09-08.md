@@ -76,3 +76,96 @@ probe must all be updated together; the old 0.1.2 artifact is not this build.
 
 The candidate should be inspected through PE metadata, Go build information,
 plain help and content hashes. No server startup is required for those checks.
+
+## Public RC pipeline preparation, 2026-09-09
+
+The previously compiled `6205074` tester binary was local evidence, not an
+already published release. At this audit, public `v0.1.2` pointed to
+`f5d097b7e4a11d72df9e1627046923b17ef8ff5e`; the RC source was 21 commits
+ahead with no divergent main commits. The intended new tag is
+`v0.1.3-rc4.5`, not stable `v0.1.3`.
+
+The release workflow now validates the complete semantic tag before builds.
+A prerelease identifier, including `-rc4.5`, sets both `prerelease: true` and
+`draft: true` and disables client registry publication. Maintainers inspect the
+draft assets before explicitly publishing it. Stable tags retain normal
+non-draft releases and optional registry publication. Hyphens inside build
+metadata alone do not turn a stable semantic version into a prerelease.
+The pure release-policy helper includes stable, RC, metadata and malformed-tag
+regressions and does not contact GitHub.
+
+The shared build/test jobs pin Go `1.27.0`, matching the locally validated
+toolchain. Its availability is confirmed by the
+[official Go release history](https://go.dev/doc/devel/release#go1.27.0).
+This is a reproducibility pin, not a claim that it is the latest Go patch.
+Release-tag tests now run alongside the existing coverage tests. Formatting
+the three previously reported cmd/tray-scope files changed Windows CRLF to LF
+only; there was no tracked functional delta. Broader CI lint remains a
+separate release gate; the earlier scoped lint result is not a whole-repository
+lint pass.
+
+Every executable and library archive now includes the full VIIPER GPL text,
+fresh dependency notices, `VIIPER-SYSTRAY-NOTICE.md`, and the copied complete
+`VIIPER-SYSTRAY-LICENSE.txt`. The executable build checks that generated notices
+contain the pinned kong-yaml MIT grant and the full copied systray license.
+Windows executable archives additionally contain `BUILD-INFO.json`, recording
+the actual executable SHA-256 and length, PE versions, UTC build timestamp,
+GitHub run/attempt, all four notice hashes, and embedded Go module/build
+information. Admission requires the current source commit, an unmodified tree,
+Go 1.27.0, the release tag, trimpath, CGO disabled, and the intended target.
+Windows/amd64 also records a help-only smoke result; ARM64 metadata inspection
+does not attempt to run an ARM64 binary on an x64 runner. No signing claim is
+made by the release or snapshot instructions.
+
+Publication order must prevent two different same-version binaries from
+being presented as the tested DS4Windows dependency:
+
+1. Commit reviewed source, fast-forward main without rewriting its history,
+   and create the annotated RC tag. A main push also triggers the existing
+   development-snapshot workflow; that does not substitute for the tagged RC.
+2. Let the tag workflow finish its draft, then download its actual Windows
+   amd64 archive. Validate its executable, `BUILD-INFO.json`, notices and tag
+   commit. Do not overwrite that executable with the older local tester build.
+3. Attach a matching exact-commit `git archive --format=zip --prefix=VIIPER/`
+   source archive and SHA-256 manifest to the draft, then publish the verified
+   prerelease. Do not rerun the release creation job after manual publication
+   without reviewing its draft/asset-update behavior.
+4. Repin DS4Windows to this one authoritative CI executable and all new
+   provenance/notice/source hashes before building and publishing DS4Windows.
+   A previous tester SHA does not prove the new CI bytes were tested.
+
+These workflow changes alone do not publish a release, change an installed
+broker, or establish controller/driver acceptance for newly compiled bytes.
+
+### Local pre-publication acceptance of the pipeline changes
+
+- Release policy: four test methods covering 21 tag cases pass; malformed
+  command-line input exits nonzero, while stable metadata containing a hyphen
+  remains stable. The actual RC emits draft/prerelease true and registry false.
+- `actionlint v1.7.12` passes the three edited release/build/snapshot workflows.
+  The old unreachable Windows-tool step in the Linux-only test job was removed
+  because it referenced a matrix that did not exist. Shellcheck/pyflakes were
+  not invoked by that local actionlint command.
+- A fresh license report and the exact workflow notice-validation block pass.
+  The actual provenance block, using the prior known candidate as an offline
+  fixture, accepts its source/hash/versions and rejects a different expected
+  commit. That fixture is not a claim that the new source has been compiled.
+- Full `go test -tags release -count=1 ./...` passes on Windows/amd64 with
+  Go 1.27.0 and CGO disabled after lint cleanup. Evidence log:
+  `rc45-full-release-accepted.log` in the local tester kit's build directory.
+- Full Linux-target `golangci-lint v2.13.1 run ./...` passes with zero issues
+  using `GOOS=linux GOARCH=amd64 CGO_ENABLED=0`, without changed exclusions or
+  disabled checks. Evidence: `rc45-full-linux-target-lint-accepted.log`.
+  This is cross-target static analysis, not execution of Linux tests or proof
+  of the Linux CGO shared-library build; the real CI jobs remain required.
+
+The broader lint pass initially found 51 non-format findings plus 125
+Windows-CRLF-only formatter findings. Cleanup retains production callbacks,
+error propagation and protocol values; it removes only globally unreferenced
+private helpers, ignored private return values and redundant assignments or
+constant parameters. Test-only fixed defaults replace parameters that every
+existing caller supplied identically; assertions and scenarios remain intact.
+Additional tests exercise foreign IN/OUT session authorities, non-next reset
+generations, a nonzero persona clock with backward-time rejection, and unknown
+endpoint/direction cases. Diagnosed formatter normalization introduces no
+tracked structural changes outside deliberately edited files.

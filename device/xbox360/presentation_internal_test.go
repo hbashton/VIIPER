@@ -338,7 +338,7 @@ func TestUSBRetirementPurgesStagedResynchronizationAcrossLaterFault(t *testing.T
 	}
 	newRecovery := InputState{Buttons: ButtonA, LX: 222}
 	newRecoveryAt := base.Add(300 * time.Microsecond)
-	lease, disposition = dev.publishInputStateWithLease(lease, newRecovery,
+	_, disposition = dev.publishInputStateWithLease(lease, newRecovery,
 		newRecoveryAt)
 	require.Equal(t, inputpresentation.FixedReportPublishFaultedOverflow,
 		disposition)
@@ -378,7 +378,7 @@ func TestNewestStagedSnapshotWinsNeutralCommitResynchronization(t *testing.T) {
 			base.Add(time.Duration(index)*time.Microsecond))
 	}
 	initial := InputState{Buttons: ButtonA, LX: 1}
-	lease, disposition := dev.publishInputStateWithLease(lease, initial,
+	_, disposition := dev.publishInputStateWithLease(lease, initial,
 		base.Add(100*time.Microsecond))
 	require.Equal(t, inputpresentation.FixedReportPublishFaultedOverflow,
 		disposition)

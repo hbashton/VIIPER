@@ -280,7 +280,8 @@ func (executor *ControllerPersonaCanonicalFeedbackExecutor) ResetNeutral(
 		ControllerPersonaCanonicalFeedbackRecoverableNeutral, deadline)
 	executor.mu.Lock()
 	executor.inFlight = false
-	if executor.state == canonicalFeedbackExecutorResetNeutralizing {
+	switch executor.state {
+	case canonicalFeedbackExecutorResetNeutralizing:
 		if err == nil {
 			executor.binding = successor
 			executor.authorizedPersonaGeneration = execution.Generation
@@ -288,7 +289,7 @@ func (executor *ControllerPersonaCanonicalFeedbackExecutor) ResetNeutral(
 		} else {
 			executor.state = canonicalFeedbackExecutorResetDrained
 		}
-	} else if executor.state == canonicalFeedbackExecutorTerminalDraining {
+	case canonicalFeedbackExecutorTerminalDraining:
 		// CancelAndDrain may upgrade a timed-out reset terminal while the
 		// synchronous publisher is returning. Preserve its permanent fence.
 		// An accepted neutral still rotates the private generation so the
@@ -297,7 +298,7 @@ func (executor *ControllerPersonaCanonicalFeedbackExecutor) ResetNeutral(
 			executor.binding = successor
 			executor.authorizedPersonaGeneration = execution.Generation
 		}
-	} else {
+	default:
 		err = errors.Join(err, ErrCanonicalFeedbackExecutorState)
 	}
 	executor.mu.Unlock()

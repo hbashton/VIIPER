@@ -47,7 +47,8 @@ type xboxOneRetryContext struct {
 	registration virtualbus.DeviceMeta
 }
 
-// The actual native/command attach boundary consumes this exact registration.
+// WithXboxOneRetryCleanup supplies the exact registration consumed by the
+// actual native/command attach boundary.
 // Test attach implementations do not acquire a real driver cleanup obligation.
 func WithXboxOneRetryCleanup(ctx context.Context, s *Server, registration virtualbus.DeviceMeta) context.Context {
 	return context.WithValue(ctx, xboxOneRetryContextKey{}, xboxOneRetryContext{s, registration})

@@ -9,10 +9,9 @@ import (
 func newTestControllerPersonaTransportCoordinator(
 	t *testing.T,
 	metadata []byte,
-	nowMS uint64,
 ) *controllerPersonaTransportCoordinator {
 	t.Helper()
-	engine := newTestControllerPersonaEngine(t, metadata, nowMS)
+	engine := newTestControllerPersonaEngine(t, metadata, 0)
 	coordinator, err := newControllerPersonaTransportCoordinator(engine)
 	if err != nil {
 		t.Fatal(err)
@@ -25,7 +24,7 @@ func admitAndCompleteTestControl(
 	coordinator *controllerPersonaTransportCoordinator,
 	setup []byte,
 	nowMS uint64,
-) controllerPersonaTransportAdmission {
+) {
 	t.Helper()
 	ticket, err := coordinator.stageControl(setup)
 	if err != nil {
@@ -42,15 +41,14 @@ func admitAndCompleteTestControl(
 	if err := coordinator.completeResponse(ticket, true, nowMS); err != nil {
 		t.Fatal(err)
 	}
-	return admission
 }
 
 func configureTestControllerPersonaTransport(
 	t *testing.T,
 	coordinator *controllerPersonaTransportCoordinator,
-	nowMS uint64,
 ) {
 	t.Helper()
+	const nowMS uint64 = 0
 	admitAndCompleteTestControl(t, coordinator,
 		testUSBSetup(usbRequestTypeDeviceOut, usbRequestSetAddress, 1, 0, 0),
 		nowMS)
@@ -115,9 +113,9 @@ func admitAndCompleteTestSemanticIN(
 func deliverTestCoordinatorHello(
 	t *testing.T,
 	coordinator *controllerPersonaTransportCoordinator,
-	nowMS uint64,
 ) {
 	t.Helper()
+	const nowMS uint64 = 1
 	admission, wire := admitAndCompleteTestIN(t, coordinator, nowMS)
 	if admission.action != ControllerPersonaSendHello {
 		t.Fatalf("first IN action = %d", admission.action)
@@ -132,8 +130,8 @@ func makeTestCoordinatorActive(
 	coordinator *controllerPersonaTransportCoordinator,
 ) {
 	t.Helper()
-	configureTestControllerPersonaTransport(t, coordinator, 0)
-	deliverTestCoordinatorHello(t, coordinator, 1)
+	configureTestControllerPersonaTransport(t, coordinator)
+	deliverTestCoordinatorHello(t, coordinator)
 	startTicket, err := coordinator.stageInterruptOut(
 		[]byte{0x05, 0x20, 0x02, 0x01, byte(SetDeviceStateStart)})
 	if err != nil {
@@ -194,7 +192,7 @@ func testCoordinatorDirectMotorWire(t *testing.T, sequence uint8, body RumbleBod
 }
 
 func TestControllerPersonaTransportStagingCannotPreclaimOrChooseOrder(t *testing.T) {
-	coordinator := newTestControllerPersonaTransportCoordinator(t, []byte{1}, 0)
+	coordinator := newTestControllerPersonaTransportCoordinator(t, []byte{1})
 	before, ok := coordinator.snapshot()
 	if !ok {
 		t.Fatal("coordinator snapshot unavailable")
@@ -241,8 +239,8 @@ func TestControllerPersonaTransportStagingCannotPreclaimOrChooseOrder(t *testing
 }
 
 func TestControllerPersonaTransportOUTWaitsBehindMandatoryEgress(t *testing.T) {
-	coordinator := newTestControllerPersonaTransportCoordinator(t, []byte{1}, 0)
-	configureTestControllerPersonaTransport(t, coordinator, 0)
+	coordinator := newTestControllerPersonaTransportCoordinator(t, []byte{1})
+	configureTestControllerPersonaTransport(t, coordinator)
 	motor := testDirectMotorBody()
 	outTicket, err := coordinator.stageInterruptOut(
 		testCoordinatorDirectMotorWire(t, 0x41, motor))
@@ -301,8 +299,8 @@ func TestControllerPersonaTransportOUTWaitsBehindMandatoryEgress(t *testing.T) {
 func TestControllerPersonaTransportLocalConsumerCannotPreclaimUpstream(
 	t *testing.T,
 ) {
-	coordinator := newTestControllerPersonaTransportCoordinator(t, []byte{1}, 0)
-	configureTestControllerPersonaTransport(t, coordinator, 0)
+	coordinator := newTestControllerPersonaTransportCoordinator(t, []byte{1})
+	configureTestControllerPersonaTransport(t, coordinator)
 	before, _ := coordinator.snapshot()
 	orderBefore := coordinator.nextOrder
 	if lease, present, err := coordinator.admitLocal(1); err != nil || present ||
@@ -340,9 +338,9 @@ func TestControllerPersonaTransportLocalConsumerCannotPreclaimUpstream(
 func TestControllerPersonaTransportSTARTTransfersWireToINWithoutACKResolution(
 	t *testing.T,
 ) {
-	coordinator := newTestControllerPersonaTransportCoordinator(t, []byte{1}, 0)
-	configureTestControllerPersonaTransport(t, coordinator, 0)
-	deliverTestCoordinatorHello(t, coordinator, 1)
+	coordinator := newTestControllerPersonaTransportCoordinator(t, []byte{1})
+	configureTestControllerPersonaTransport(t, coordinator)
+	deliverTestCoordinatorHello(t, coordinator)
 	startTicket, err := coordinator.stageInterruptOut(
 		[]byte{0x05, 0x20, 0x02, 0x01, byte(SetDeviceStateStart)})
 	if err != nil {
@@ -381,9 +379,9 @@ func TestControllerPersonaTransportSTARTTransfersWireToINWithoutACKResolution(
 func TestControllerPersonaTransportINFailureRetainsByteExactRetryAheadOfEP0(
 	t *testing.T,
 ) {
-	coordinator := newTestControllerPersonaTransportCoordinator(t, []byte{1}, 0)
-	configureTestControllerPersonaTransport(t, coordinator, 0)
-	deliverTestCoordinatorHello(t, coordinator, 1)
+	coordinator := newTestControllerPersonaTransportCoordinator(t, []byte{1})
+	configureTestControllerPersonaTransport(t, coordinator)
+	deliverTestCoordinatorHello(t, coordinator)
 	startTicket, err := coordinator.stageInterruptOut(
 		[]byte{0x05, 0x20, 0x02, 0x01, byte(SetDeviceStateStart)})
 	if err != nil {
@@ -457,9 +455,9 @@ func TestControllerPersonaTransportINFailureRetainsByteExactRetryAheadOfEP0(
 }
 
 func TestControllerPersonaTransportLocalRetryCannotBeOvertaken(t *testing.T) {
-	coordinator := newTestControllerPersonaTransportCoordinator(t, []byte{1}, 0)
-	configureTestControllerPersonaTransport(t, coordinator, 0)
-	deliverTestCoordinatorHello(t, coordinator, 1)
+	coordinator := newTestControllerPersonaTransportCoordinator(t, []byte{1})
+	configureTestControllerPersonaTransport(t, coordinator)
+	deliverTestCoordinatorHello(t, coordinator)
 	firstMotor := testDirectMotorBody()
 	firstTicket, err := coordinator.stageInterruptOut(
 		testCoordinatorDirectMotorWire(t, 0x31, firstMotor))
@@ -595,9 +593,9 @@ func TestControllerPersonaTransportMetadataACKUsesLocalDeliveryBoundary(t *testi
 }
 
 func TestControllerPersonaTransportMetadataPacketPrecedesNewOUT(t *testing.T) {
-	coordinator := newTestControllerPersonaTransportCoordinator(t, []byte{0xaa}, 0)
-	configureTestControllerPersonaTransport(t, coordinator, 0)
-	deliverTestCoordinatorHello(t, coordinator, 1)
+	coordinator := newTestControllerPersonaTransportCoordinator(t, []byte{0xaa})
+	configureTestControllerPersonaTransport(t, coordinator)
+	deliverTestCoordinatorHello(t, coordinator)
 	request, err := coordinator.stageInterruptOut([]byte{0x04, 0x20, 0x01, 0x00})
 	if err != nil {
 		t.Fatal(err)
@@ -650,9 +648,9 @@ func TestControllerPersonaTransportMetadataPacketPrecedesNewOUT(t *testing.T) {
 func TestControllerPersonaTransportFailedOUTIsFencedUntilGenerationReset(
 	t *testing.T,
 ) {
-	coordinator := newTestControllerPersonaTransportCoordinator(t, []byte{1}, 0)
-	configureTestControllerPersonaTransport(t, coordinator, 0)
-	deliverTestCoordinatorHello(t, coordinator, 1)
+	coordinator := newTestControllerPersonaTransportCoordinator(t, []byte{1})
+	configureTestControllerPersonaTransport(t, coordinator)
+	deliverTestCoordinatorHello(t, coordinator)
 	motor := testDirectMotorBody()
 	ticket, err := coordinator.stageInterruptOut(
 		testCoordinatorDirectMotorWire(t, 0x55, motor))
@@ -771,7 +769,7 @@ func TestControllerPersonaTransportFailedOUTIsFencedUntilGenerationReset(
 func TestControllerPersonaTransportConfigurationLossRoutesOneDeliveredClear(
 	t *testing.T,
 ) {
-	coordinator := newTestControllerPersonaTransportCoordinator(t, []byte{1}, 0)
+	coordinator := newTestControllerPersonaTransportCoordinator(t, []byte{1})
 	makeTestCoordinatorActive(t, coordinator)
 	motorBody := testDirectMotorBody()
 	motorTicket, err := coordinator.stageInterruptOut(
@@ -908,8 +906,8 @@ func TestControllerPersonaTransportSTARTInitialInputUsesLatestFinalAdmissionValu
 	if err != nil {
 		t.Fatal(err)
 	}
-	configureTestControllerPersonaTransport(t, coordinator, 0)
-	deliverTestCoordinatorHello(t, coordinator, 1)
+	configureTestControllerPersonaTransport(t, coordinator)
+	deliverTestCoordinatorHello(t, coordinator)
 	startTicket, err := coordinator.stageInterruptOut(
 		[]byte{0x05, 0x20, 0x02, 0x01, byte(SetDeviceStateStart)})
 	if err != nil {
@@ -1002,9 +1000,9 @@ func TestControllerPersonaTransportSTARTInitialInputUsesLatestFinalAdmissionValu
 func TestControllerPersonaTransportResetRetiresEveryStagedLaneAtomically(
 	t *testing.T,
 ) {
-	coordinator := newTestControllerPersonaTransportCoordinator(t, []byte{1}, 0)
-	configureTestControllerPersonaTransport(t, coordinator, 0)
-	deliverTestCoordinatorHello(t, coordinator, 1)
+	coordinator := newTestControllerPersonaTransportCoordinator(t, []byte{1})
+	configureTestControllerPersonaTransport(t, coordinator)
+	deliverTestCoordinatorHello(t, coordinator)
 	controlTicket, err := coordinator.stageControl(
 		testUSBSetup(usbRequestTypeDeviceIn,
 			usbRequestGetConfiguration, 0, 0, 1))
@@ -1114,7 +1112,7 @@ func TestControllerPersonaTransportResetRetiresEveryStagedLaneAtomically(
 func TestControllerPersonaTransportInputIsSelectedAfterWaitNotAtStage(
 	t *testing.T,
 ) {
-	coordinator := newTestControllerPersonaTransportCoordinator(t, []byte{1}, 0)
+	coordinator := newTestControllerPersonaTransportCoordinator(t, []byte{1})
 	makeTestCoordinatorActive(t, coordinator)
 	inTicket, err := coordinator.stageInterruptIn(
 		ControllerPersonaMaximumWireSize)
@@ -1175,7 +1173,7 @@ func TestControllerPersonaTransportExhaustionNeverCreatesUntrackedClaim(
 	t *testing.T,
 ) {
 	t.Run("endpoint ticket token before staging", func(t *testing.T) {
-		coordinator := newTestControllerPersonaTransportCoordinator(t, []byte{1}, 0)
+		coordinator := newTestControllerPersonaTransportCoordinator(t, []byte{1})
 		before, _ := coordinator.snapshot()
 		coordinator.nextTicketToken = ^uint64(0)
 		if _, err := coordinator.stageControl(
@@ -1193,8 +1191,8 @@ func TestControllerPersonaTransportExhaustionNeverCreatesUntrackedClaim(
 	})
 
 	t.Run("selection order before poll", func(t *testing.T) {
-		coordinator := newTestControllerPersonaTransportCoordinator(t, []byte{1}, 0)
-		configureTestControllerPersonaTransport(t, coordinator, 0)
+		coordinator := newTestControllerPersonaTransportCoordinator(t, []byte{1})
+		configureTestControllerPersonaTransport(t, coordinator)
 		ticket, err := coordinator.stageInterruptIn(
 			ControllerPersonaMaximumWireSize)
 		if err != nil {
@@ -1215,9 +1213,9 @@ func TestControllerPersonaTransportExhaustionNeverCreatesUntrackedClaim(
 	})
 
 	t.Run("response order before IN admission", func(t *testing.T) {
-		coordinator := newTestControllerPersonaTransportCoordinator(t, []byte{1}, 0)
-		configureTestControllerPersonaTransport(t, coordinator, 0)
-		deliverTestCoordinatorHello(t, coordinator, 1)
+		coordinator := newTestControllerPersonaTransportCoordinator(t, []byte{1})
+		configureTestControllerPersonaTransport(t, coordinator)
+		deliverTestCoordinatorHello(t, coordinator)
 		start, err := coordinator.stageInterruptOut(
 			[]byte{0x05, 0x20, 0x02, 0x01, byte(SetDeviceStateStart)})
 		if err != nil {
@@ -1250,9 +1248,9 @@ func TestControllerPersonaTransportExhaustionNeverCreatesUntrackedClaim(
 	})
 
 	t.Run("local token before local admission", func(t *testing.T) {
-		coordinator := newTestControllerPersonaTransportCoordinator(t, []byte{1}, 0)
-		configureTestControllerPersonaTransport(t, coordinator, 0)
-		deliverTestCoordinatorHello(t, coordinator, 1)
+		coordinator := newTestControllerPersonaTransportCoordinator(t, []byte{1})
+		configureTestControllerPersonaTransport(t, coordinator)
+		deliverTestCoordinatorHello(t, coordinator)
 		ticket, err := coordinator.stageInterruptOut(
 			testCoordinatorDirectMotorWire(t, 0x20, testDirectMotorBody()))
 		if err != nil {
@@ -1279,9 +1277,9 @@ func TestControllerPersonaTransportExhaustionNeverCreatesUntrackedClaim(
 	})
 
 	t.Run("local order before local admission", func(t *testing.T) {
-		coordinator := newTestControllerPersonaTransportCoordinator(t, []byte{1}, 0)
-		configureTestControllerPersonaTransport(t, coordinator, 0)
-		deliverTestCoordinatorHello(t, coordinator, 1)
+		coordinator := newTestControllerPersonaTransportCoordinator(t, []byte{1})
+		configureTestControllerPersonaTransport(t, coordinator)
+		deliverTestCoordinatorHello(t, coordinator)
 		ticket, err := coordinator.stageInterruptOut(
 			testCoordinatorDirectMotorWire(t, 0x21, testDirectMotorBody()))
 		if err != nil {
@@ -1308,9 +1306,9 @@ func TestControllerPersonaTransportExhaustionNeverCreatesUntrackedClaim(
 	})
 
 	t.Run("selection order before immutable retry claim", func(t *testing.T) {
-		coordinator := newTestControllerPersonaTransportCoordinator(t, []byte{1}, 0)
-		configureTestControllerPersonaTransport(t, coordinator, 0)
-		deliverTestCoordinatorHello(t, coordinator, 1)
+		coordinator := newTestControllerPersonaTransportCoordinator(t, []byte{1})
+		configureTestControllerPersonaTransport(t, coordinator)
+		deliverTestCoordinatorHello(t, coordinator)
 		ticket, err := coordinator.stageInterruptOut(
 			testCoordinatorDirectMotorWire(t, 0x22, testDirectMotorBody()))
 		if err != nil {
@@ -1357,7 +1355,7 @@ func TestControllerPersonaTransportExhaustionNeverCreatesUntrackedClaim(
 }
 
 func TestControllerPersonaTransportRejectsForgedDuplicateAndBusyTickets(t *testing.T) {
-	coordinator := newTestControllerPersonaTransportCoordinator(t, []byte{1}, 0)
+	coordinator := newTestControllerPersonaTransportCoordinator(t, []byte{1})
 	ticket, err := coordinator.stageInterruptIn(
 		ControllerPersonaMaximumWireSize)
 	if err != nil {
@@ -1388,9 +1386,9 @@ func TestControllerPersonaTransportRejectsForgedDuplicateAndBusyTickets(t *testi
 }
 
 func TestControllerPersonaTransportAuthenticatesLocalLeaseCompletion(t *testing.T) {
-	coordinator := newTestControllerPersonaTransportCoordinator(t, []byte{1}, 0)
-	configureTestControllerPersonaTransport(t, coordinator, 0)
-	deliverTestCoordinatorHello(t, coordinator, 1)
+	coordinator := newTestControllerPersonaTransportCoordinator(t, []byte{1})
+	configureTestControllerPersonaTransport(t, coordinator)
+	deliverTestCoordinatorHello(t, coordinator)
 	motor := testDirectMotorBody()
 	ticket, err := coordinator.stageInterruptOut(
 		testCoordinatorDirectMotorWire(t, 0x72, motor))
@@ -1414,7 +1412,7 @@ func TestControllerPersonaTransportAuthenticatesLocalLeaseCompletion(t *testing.
 		t.Fatalf("pre-completion snapshot = %+v", before)
 	}
 	activeBefore := coordinator.activeLocal
-	other := newTestControllerPersonaTransportCoordinator(t, []byte{1}, 0)
+	other := newTestControllerPersonaTransportCoordinator(t, []byte{1})
 	forgedToken := lease
 	forgedToken.token++
 	wrongOwner := lease
@@ -1525,7 +1523,7 @@ func TestControllerPersonaTransportConcurrentSameInstanceInterleavings(
 	t *testing.T,
 ) {
 	t.Run("stage and retire every lane", func(t *testing.T) {
-		coordinator := newTestControllerPersonaTransportCoordinator(t, []byte{1}, 0)
+		coordinator := newTestControllerPersonaTransportCoordinator(t, []byte{1})
 		before, _ := coordinator.snapshot()
 		type stageResult struct {
 			lane   controllerPersonaTransportLane
@@ -1637,8 +1635,8 @@ func TestControllerPersonaTransportConcurrentSameInstanceInterleavings(
 	})
 
 	t.Run("control admission races retirement", func(t *testing.T) {
-		coordinator := newTestControllerPersonaTransportCoordinator(t, []byte{1}, 0)
-		configureTestControllerPersonaTransport(t, coordinator, 0)
+		coordinator := newTestControllerPersonaTransportCoordinator(t, []byte{1})
+		configureTestControllerPersonaTransport(t, coordinator)
 		deadline := time.NewTimer(10 * time.Second)
 		defer deadline.Stop()
 		type admitResult struct {
@@ -1705,7 +1703,7 @@ func TestControllerPersonaTransportConcurrentSameInstanceInterleavings(
 }
 
 func TestControllerPersonaTransportStageAndRetireDoNotAllocate(t *testing.T) {
-	coordinator := newTestControllerPersonaTransportCoordinator(t, []byte{1}, 0)
+	coordinator := newTestControllerPersonaTransportCoordinator(t, []byte{1})
 	allocations := testing.AllocsPerRun(1000, func() {
 		ticket, err := coordinator.stageInterruptIn(
 			ControllerPersonaMaximumWireSize)

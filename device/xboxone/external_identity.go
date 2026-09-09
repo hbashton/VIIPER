@@ -210,9 +210,9 @@ func buildExternalUSBIdentityDescriptorSet(
 			}
 			for index := range value.value {
 				character := value.value[index]
-				if !((character >= '0' && character <= '9') ||
-					(character >= 'a' && character <= 'f') ||
-					(character >= 'A' && character <= 'F')) {
+				if (character < '0' || character > '9') &&
+					(character < 'a' || character > 'f') &&
+					(character < 'A' || character > 'F') {
 					return externalUSBIdentityDescriptorSet{}, fmt.Errorf(
 						"%w: serial contains a non-hexadecimal byte",
 						ErrInvalidExternalUSBIdentityStrings)

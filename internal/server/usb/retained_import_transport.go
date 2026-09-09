@@ -877,11 +877,12 @@ func retainedEnvelopeForSubmission(
 		bindingGeneration: bindingGeneration,
 	}
 	copy(envelope.setup[:], setup)
-	if direction == usbip.DirIn {
+	switch direction {
+	case usbip.DirIn:
 		envelope.direction = retainedusb.DirectionIn
-	} else if direction == usbip.DirOut {
+	case usbip.DirOut:
 		envelope.direction = retainedusb.DirectionOut
-	} else {
+	default:
 		return retainedSubmissionEnvelope{}, false
 	}
 

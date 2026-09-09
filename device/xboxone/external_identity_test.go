@@ -65,13 +65,12 @@ func deliverAuthorizedUSBString(
 	t *testing.T,
 	engine *ControllerPersonaEngine,
 	index byte,
-	language uint16,
 	wLength uint16,
 ) (ControllerPersonaClaim, []byte) {
 	t.Helper()
 	claim, err := engine.ClaimUSBControl(testUSBSetup(
 		usbRequestTypeDeviceIn, usbRequestGetDescriptor,
-		uint16(usbDescriptorTypeString)<<8|uint16(index), language, wLength))
+		uint16(usbDescriptorTypeString)<<8|uint16(index), USBEnglishUnitedStatesLanguageID, wLength))
 	if err != nil {
 		t.Fatalf("ClaimUSBControl index %d: %v", index, err)
 	}
@@ -109,7 +108,7 @@ func TestAuthorizedControllerPersonaServesOnlyBoundIdentityStrings(t *testing.T)
 	}
 	for _, test := range tests {
 		claim, got := deliverAuthorizedUSBString(t, engine, test.index,
-			USBEnglishUnitedStatesLanguageID, 0xffff)
+			0xffff)
 		if claim.USBResponseKind() != test.kind {
 			t.Fatalf("index %d kind = %d, want %d",
 				test.index, claim.USBResponseKind(), test.kind)
@@ -121,7 +120,7 @@ func TestAuthorizedControllerPersonaServesOnlyBoundIdentityStrings(t *testing.T)
 	}
 
 	_, truncated := deliverAuthorizedUSBString(t, engine, 2,
-		USBEnglishUnitedStatesLanguageID, 5)
+		5)
 	wantProduct := testOnlyEncodeUSBStringDescriptor("Pro Pad")
 	if string(truncated) != string(wantProduct[:5]) {
 		t.Fatalf("truncated product = % x, want % x", truncated, wantProduct[:5])
@@ -317,7 +316,7 @@ func TestExternalUSBIdentityStringValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, got := deliverAuthorizedUSBString(t, engine, 2,
-		USBEnglishUnitedStatesLanguageID, 0xffff)
+		0xffff)
 	if want := testOnlyEncodeUSBStringDescriptor(strings.Product); string(got) != string(want) {
 		t.Fatalf("supplementary descriptor = % x, want % x", got, want)
 	}
@@ -335,7 +334,7 @@ func TestExternalUSBIdentityStringValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, got = deliverAuthorizedUSBString(t, engine, 2,
-		USBEnglishUnitedStatesLanguageID, 0xffff)
+		0xffff)
 	if len(got) != usbMaximumStringDescriptorSize {
 		t.Fatalf("maximum descriptor length = %d", len(got))
 	}
@@ -556,7 +555,7 @@ func TestControllerIdentityAuthorizationCopyForgeABAAndFailure(t *testing.T) {
 			t.Fatalf("copied plane string error = %v", err)
 		}
 		if _, got := deliverAuthorizedUSBString(t, engine, 1,
-			USBEnglishUnitedStatesLanguageID, 0xffff); len(got) == 0 {
+			0xffff); len(got) == 0 {
 			t.Fatal("canonical engine lost string authority after copy attempts")
 		}
 	})

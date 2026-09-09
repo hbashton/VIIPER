@@ -402,7 +402,7 @@ func (owner *ControllerPersonaDownstreamPacketBatchOwner) Resolve(
 	if err != nil {
 		return err
 	}
-	personaOutcome := ControllerPersonaDeliveryFailed
+	var personaOutcome ControllerPersonaOutcome
 	switch outcome {
 	case ControllerDownstreamPacketDelivered:
 		personaOutcome = ControllerPersonaDelivered

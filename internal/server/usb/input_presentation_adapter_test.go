@@ -610,7 +610,7 @@ func TestModernPresentationSourceDoesNotConsumeAuxiliaryInterruptEndpoints(
 			)
 
 			require.True(t, worker.enqueue(
-				uint32(800+endpoint), 64, nil, nil, time.Now()))
+				800+endpoint, 64, nil, nil, time.Now()))
 			recorder.waitForWrites(t, 1)
 			require.Zero(t, device.token.Load(),
 				"auxiliary endpoint consumed the main presentation journal")
@@ -1138,7 +1138,7 @@ func BenchmarkInterruptPresentationClaimRetSubmitWrite(b *testing.B) {
 	completed, retain := worker.processInterruptIn(timer, idx)
 	require.True(b, completed)
 	require.False(b, retain)
-	worker.finishCurrent(idx, true)
+	worker.finishCurrentWithRetention(idx, true, false)
 
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -1154,7 +1154,7 @@ func BenchmarkInterruptPresentationClaimRetSubmitWrite(b *testing.B) {
 		if !completed || retain {
 			b.Fatal("interrupt service failed")
 		}
-		worker.finishCurrent(idx, true)
+		worker.finishCurrentWithRetention(idx, true, false)
 	}
 	b.StopTimer()
 	require.Equal(b, uint64(b.N+1), device.completed)

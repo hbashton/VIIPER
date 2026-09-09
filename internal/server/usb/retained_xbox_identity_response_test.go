@@ -48,7 +48,7 @@ func (*retainedXboxIdentityLocalExecutor) DisconnectNeutral(
 
 func newRetainedXboxMaximumStringAdapter(
 	t *testing.T,
-) (*xboxone.DormantRetainedUSBAdapter, retainedusb.ImportLease, []byte) {
+) (*xboxone.DormantRetainedUSBAdapter, []byte) {
 	t.Helper()
 	identity := xboxone.ControllerIdentity{
 		VendorID: 0xf00d, ProductID: 0xbeef, DeviceReleaseBCD: 0x0102,
@@ -118,7 +118,7 @@ func newRetainedXboxMaximumStringAdapter(
 	for offset := 2; offset < len(wire); offset += 2 {
 		binary.LittleEndian.PutUint16(wire[offset:offset+2], 0x0800)
 	}
-	return adapter, lease, wire
+	return adapter, wire
 }
 
 func retainedXboxProductStringEnvelope(
@@ -212,7 +212,7 @@ func assertRetainedXboxResponseAndRequestGeometry(
 func TestDormantRetainedXboxQueuesWindowsInterruptInPipelineWithoutENOSPC(
 	t *testing.T,
 ) {
-	adapter, _, _ := newRetainedXboxMaximumStringAdapter(t)
+	adapter, _ := newRetainedXboxMaximumStringAdapter(t)
 	scheduler := newRetainedXboxIdentityScheduler(t, adapter, io.Discard)
 
 	for offset := uint32(0); offset < retainedusb.MaximumQueueDepth; offset++ {
@@ -238,7 +238,7 @@ func TestDormantRetainedXboxQueuesWindowsInterruptInPipelineWithoutENOSPC(
 }
 
 func TestDormantRetainedXboxAuthorizedMaximumStringEndToEnd(t *testing.T) {
-	adapter, _, want := newRetainedXboxMaximumStringAdapter(t)
+	adapter, want := newRetainedXboxMaximumStringAdapter(t)
 	recorder := newRecordingWriter()
 	scheduler := newRetainedXboxIdentityScheduler(t, adapter, recorder)
 	assertRetainedXboxResponseAndRequestGeometry(t, adapter, scheduler)
@@ -306,7 +306,7 @@ func TestDormantRetainedXboxAuthorizedMaximumStringEndToEnd(t *testing.T) {
 }
 
 func TestDormantRetainedXboxMaximumStringWarmPathAllocatesZero(t *testing.T) {
-	adapter, _, _ := newRetainedXboxMaximumStringAdapter(t)
+	adapter, _ := newRetainedXboxMaximumStringAdapter(t)
 	scheduler := newRetainedXboxIdentityScheduler(t, adapter, io.Discard)
 	assertRetainedXboxResponseAndRequestGeometry(t, adapter, scheduler)
 	var sequence uint32 = 2000

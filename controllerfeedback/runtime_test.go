@@ -58,7 +58,7 @@ func TestRuntimeArbitrationUsesFixedPriorityAndStopsBeforeFallback(t *testing.T)
 	if !ok {
 		t.Fatal("writer acquisition failed")
 	}
-	preview := runtimeDeliverNext(t, &runtime, writer, 1_000, true)
+	preview := runtimeDeliverNext(t, &runtime, writer, 1_000)
 	if preview.Disposition != DeliveryFrame ||
 		preview.Origin != PublicationOriginTestPreview ||
 		preview.Frame.BodyLow != 400 {
@@ -86,7 +86,7 @@ func TestRuntimeArbitrationUsesFixedPriorityAndStopsBeforeFallback(t *testing.T)
 	if !runtime.Complete(writer, retryToken, true, 1_001) {
 		t.Fatal("successful stop completion failed")
 	}
-	game := runtimeDeliverNext(t, &runtime, writer, 1_001, true)
+	game := runtimeDeliverNext(t, &runtime, writer, 1_001)
 	if game.Origin != PublicationOriginNativeGame || game.Frame.BodyLow != 300 ||
 		game.DeliveryEpoch == preview.DeliveryEpoch {
 		t.Fatalf("game fallback=%+v", game)
@@ -105,7 +105,7 @@ func TestRuntimeExpiryProducesOneRetryableStopPerAdmittedEpoch(t *testing.T) {
 	if !ok {
 		t.Fatal("writer acquisition failed")
 	}
-	applied := runtimeDeliverNext(t, &runtime, writer, 1_049, true)
+	applied := runtimeDeliverNext(t, &runtime, writer, 1_049)
 	stop, stopToken := runtimeClaimAndAdmit(t, &runtime, writer, 1_050)
 	if stop.Disposition != DeliveryStop ||
 		stop.DeliveryEpoch != applied.DeliveryEpoch {
@@ -175,7 +175,7 @@ func TestRuntimeSupersededUnadmittedFrameCannotReachFinalAdmission(t *testing.T)
 	if !runtime.Complete(writer, oldToken, false, 1_000) {
 		t.Fatal("superseded claim cancellation failed")
 	}
-	preview := runtimeDeliverNext(t, &runtime, writer, 1_000, true)
+	preview := runtimeDeliverNext(t, &runtime, writer, 1_000)
 	if preview.Disposition != DeliveryFrame ||
 		preview.Origin != PublicationOriginTestPreview ||
 		preview.Frame.BodyLow != 900 {
@@ -220,7 +220,7 @@ func TestRuntimeWriterLeaseIsSoleGenerationFencedAndCopySafe(t *testing.T) {
 		runtime.Complete(first, token, false, 1_000) {
 		t.Fatal("retired writer remained usable")
 	}
-	replay := runtimeDeliverNext(t, &runtime, successor, 1_000, true)
+	replay := runtimeDeliverNext(t, &runtime, successor, 1_000)
 	if replay.Disposition != DeliveryFrame {
 		t.Fatal("successor writer did not receive current state")
 	}
@@ -238,7 +238,7 @@ func TestRuntimeNewTargetGenerationStopsOldAndCannotLeak(t *testing.T) {
 	if !ok {
 		t.Fatal("old writer acquisition failed")
 	}
-	old := runtimeDeliverNext(t, &runtime, oldWriter, 1_000, true)
+	old := runtimeDeliverNext(t, &runtime, oldWriter, 1_000)
 	newFrame := runtimeFrame(1)
 	newFrame.DeviceGeneration = 2
 	newFrame.BodyLow = 200
@@ -246,7 +246,7 @@ func TestRuntimeNewTargetGenerationStopsOldAndCannotLeak(t *testing.T) {
 		PublicationOriginProfileEffect, newFrame)) {
 		t.Fatal("new generation publish failed")
 	}
-	stop := runtimeDeliverNext(t, &runtime, oldWriter, 1_000, true)
+	stop := runtimeDeliverNext(t, &runtime, oldWriter, 1_000)
 	if stop.Disposition != DeliveryStop || stop.DeviceGeneration != 1 ||
 		stop.DeliveryEpoch != old.DeliveryEpoch {
 		t.Fatalf("old generation stop=%+v", stop)
@@ -264,7 +264,7 @@ func TestRuntimeNewTargetGenerationStopsOldAndCannotLeak(t *testing.T) {
 	if !ok {
 		t.Fatal("new writer acquisition failed")
 	}
-	current := runtimeDeliverNext(t, &runtime, newWriter, 1_000, true)
+	current := runtimeDeliverNext(t, &runtime, newWriter, 1_000)
 	if current.Disposition != DeliveryFrame || current.DeviceGeneration != 2 ||
 		current.Frame.BodyLow != 200 {
 		t.Fatalf("new generation delivery=%+v", current)
@@ -307,7 +307,7 @@ func TestRuntimeSteadyStateHotPathDoesNotAllocate(t *testing.T) {
 	if !ok {
 		t.Fatal("writer acquisition failed")
 	}
-	runtimeDeliverNext(t, &runtime, writer, 1_000, true)
+	runtimeDeliverNext(t, &runtime, writer, 1_000)
 	sequence := uint64(1)
 	cycle := func() {
 		sequence++
@@ -356,10 +356,10 @@ func runtimeClaimAndAdmit(t *testing.T, runtime *Runtime,
 }
 
 func runtimeDeliverNext(t *testing.T, runtime *Runtime,
-	writer *WriterLease, nowMicroseconds uint64, delivered bool) Delivery {
+	writer *WriterLease, nowMicroseconds uint64) Delivery {
 	t.Helper()
 	delivery, token := runtimeClaimAndAdmit(t, runtime, writer, nowMicroseconds)
-	if !runtime.Complete(writer, token, delivered, nowMicroseconds) {
+	if !runtime.Complete(writer, token, true, nowMicroseconds) {
 		t.Fatal("completion failed")
 	}
 	return delivery

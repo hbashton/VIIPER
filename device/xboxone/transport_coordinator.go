@@ -652,7 +652,7 @@ func (coordinator *controllerPersonaTransportCoordinator) admitInterruptInWithGu
 		claim, err := coordinator.engine.ClaimInput(nowMS, input)
 		if err == nil {
 			if err := coordinator.setPendingLocked(
-				claim, false, selectionOrder); err != nil {
+				claim, selectionOrder); err != nil {
 				return controllerPersonaTransportAdmission{}, err
 			}
 		} else if !controllerPersonaTransportTemporarilyUnavailable(err) {
@@ -824,7 +824,7 @@ func (coordinator *controllerPersonaTransportCoordinator) materializeNextEgressL
 		claim, err := coordinator.engine.ClaimNextLifecycleAction(nowMS)
 		if err == nil {
 			return false, coordinator.setPendingLocked(
-				claim, false, selectionOrder)
+				claim, selectionOrder)
 		}
 		if controllerPersonaTransportTemporarilyUnavailable(err) {
 			return false, nil
@@ -843,7 +843,7 @@ func (coordinator *controllerPersonaTransportCoordinator) materializeNextEgressL
 			claim, err := coordinator.engine.ClaimMetadataPacket(nowMS)
 			if err == nil {
 				return false, coordinator.setPendingLocked(
-					claim, false, selectionOrder)
+					claim, selectionOrder)
 			}
 			if controllerPersonaTransportTemporarilyUnavailable(err) {
 				return false, nil
@@ -857,7 +857,7 @@ func (coordinator *controllerPersonaTransportCoordinator) materializeNextEgressL
 	}
 	claim, present, err := coordinator.engine.ClaimPoll(nowMS)
 	if err == nil && present {
-		return false, coordinator.setPendingLocked(claim, false, selectionOrder)
+		return false, coordinator.setPendingLocked(claim, selectionOrder)
 	}
 	if err != nil && !controllerPersonaTransportTemporarilyUnavailable(err) {
 		return false, err
@@ -878,7 +878,7 @@ func (coordinator *controllerPersonaTransportCoordinator) materializeRetryLocked
 	}
 	claim, err := coordinator.engine.ClaimRetry(nowMS)
 	if err == nil {
-		return coordinator.setPendingLocked(claim, false, selectionOrder)
+		return coordinator.setPendingLocked(claim, selectionOrder)
 	}
 	// An ACK retry which reaches its exact deadline retires itself and faults
 	// the reliable transfer. ClaimPoll, later in this same serialized boundary,
@@ -899,7 +899,6 @@ func controllerPersonaTransportTemporarilyUnavailable(err error) bool {
 
 func (coordinator *controllerPersonaTransportCoordinator) setPendingLocked(
 	claim ControllerPersonaClaim,
-	fromHostCommand bool,
 	selectionOrder uint64,
 ) error {
 	if !claim.Valid() || coordinator.pending.claim.Valid() {
@@ -914,7 +913,6 @@ func (coordinator *controllerPersonaTransportCoordinator) setPendingLocked(
 	}
 	coordinator.pending = controllerPersonaPendingAction{
 		claim: claim, route: route, selectionOrder: selectionOrder,
-		fromHostCommand: fromHostCommand,
 	}
 	return nil
 }
@@ -923,7 +921,7 @@ func (coordinator *controllerPersonaTransportCoordinator) setPendingGuideLocked(
 	claim ControllerPersonaClaim,
 	selectionOrder uint64,
 ) error {
-	if err := coordinator.setPendingLocked(claim, false, selectionOrder); err != nil {
+	if err := coordinator.setPendingLocked(claim, selectionOrder); err != nil {
 		return err
 	}
 	if claim.Action() != ControllerPersonaSendGuideButtonStatus || claim.Size() == 0 {
@@ -989,7 +987,7 @@ func (coordinator *controllerPersonaTransportCoordinator) completeResponse(
 				// control transition, so it retains the control selection order.
 				// admitLocal still allocates a distinct execution order.
 				if err := coordinator.setPendingLocked(
-					clear, false, active.selectionOrder); err != nil {
+					clear, active.selectionOrder); err != nil {
 					return err
 				}
 			}
@@ -1209,7 +1207,7 @@ func (coordinator *controllerPersonaTransportCoordinator) beginUSBReset(
 	// transition succeeds; failures leave both ledgers unchanged.
 	coordinator.pending = controllerPersonaPendingAction{}
 	if err := coordinator.setPendingLocked(
-		claim, false, selectionOrder); err != nil {
+		claim, selectionOrder); err != nil {
 		return err
 	}
 	// A successful authoritative generation boundary owns retirement of every
@@ -1400,7 +1398,7 @@ func (coordinator *controllerPersonaTransportCoordinator) completeLocal(
 			return ErrControllerPersonaInvariantViolation
 		}
 		if err := coordinator.setPendingLocked(
-			retry, false, selectionOrder); err != nil {
+			retry, selectionOrder); err != nil {
 			return err
 		}
 	}

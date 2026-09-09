@@ -1638,7 +1638,7 @@ func BenchmarkInterruptClaimEncodeRetSubmitWrite(b *testing.B) {
 	completed, retain := worker.processInterruptIn(timer, idx)
 	require.True(b, completed)
 	require.False(b, retain)
-	worker.finishCurrent(idx, true)
+	worker.finishCurrentWithRetention(idx, true, false)
 
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -1654,7 +1654,7 @@ func BenchmarkInterruptClaimEncodeRetSubmitWrite(b *testing.B) {
 		if !completed || retain {
 			b.Fatal("interrupt service failed")
 		}
-		worker.finishCurrent(idx, true)
+		worker.finishCurrentWithRetention(idx, true, false)
 	}
 	b.StopTimer()
 	require.Equal(b, uint64(b.N+1), device.presented)

@@ -21,7 +21,8 @@ const (
 	authContext    = "VIIPER-Auth-v2"
 )
 
-// V1 reused AEAD nonces between directions. Never reinterpret or downgrade it.
+// ErrUnsupportedAuthVersion rejects V1, which reused AEAD nonces between
+// directions. Never reinterpret or downgrade it.
 var ErrUnsupportedAuthVersion = errors.New("VIIPER authenticated protocol v2 required; update the client and server together")
 
 // ReadClientNonce reads client nonce from handshake

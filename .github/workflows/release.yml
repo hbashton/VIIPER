@@ -10,7 +10,26 @@ permissions:
     id-token: write
 
 jobs:
+    release-policy:
+        name: Classify and validate release tag
+        runs-on: ubuntu-latest
+        permissions:
+            contents: read
+        outputs:
+            prerelease: ${{ steps.policy.outputs.prerelease }}
+            draft: ${{ steps.policy.outputs.draft }}
+            publish_client_registries: ${{ steps.policy.outputs.publish_client_registries }}
+        steps:
+            - uses: actions/checkout@v6
+            - name: Test release policy
+              run: python3 .github/scripts/release-policy.py --self-test
+            - name: Classify tag
+              id: policy
+              shell: bash
+              run: python3 .github/scripts/release-policy.py "$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+
     build:
+        needs: release-policy
         uses: ./.github/workflows/build_base.yml
         secrets: inherit
         with:
@@ -27,6 +46,7 @@ jobs:
 
     client-libraries:
         name: Client library smoke builds and pack
+        needs: release-policy
         uses: ./.github/workflows/clients_ci.yml
         with:
             artifact_suffix: "-Release"
@@ -35,7 +55,7 @@ jobs:
 
     create-release:
         name: Create Release
-        needs: [build, generate-changelog, client-libraries]
+        needs: [release-policy, build, generate-changelog, client-libraries]
         runs-on: ubuntu-latest
         steps:
             - name: Checkout code
@@ -112,7 +132,7 @@ jobs:
                       <details>
                       <summary><b>Windows (DS4Windows)</b></summary>
 
-                      Install with the signed DS4Windows all-in-one installer,
+                      Install with the matching DS4Windows all-in-one installer,
                       or use **Settings > VIIPER Virtual Controller Support >
                       Install / Repair**. The standalone Windows script is
                       developer-only so it cannot create a competing backend.
@@ -127,14 +147,15 @@ jobs:
                       Installs / updates to `/usr/local/bin/viiper`
                       </details>
                   files: release_files/*
-                  prerelease: false
-                  draft: false
+                  prerelease: ${{ needs.release-policy.outputs.prerelease == 'true' }}
+                  draft: ${{ needs.release-policy.outputs.draft == 'true' }}
               env:
                   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     publish-client-registries:
         name: Publish client libraries (best effort)
-        needs: create-release
+        needs: [release-policy, create-release]
+        if: ${{ needs.release-policy.outputs.publish_client_registries == 'true' }}
         runs-on: ubuntu-latest
         continue-on-error: true
         permissions:

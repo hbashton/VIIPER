@@ -937,12 +937,13 @@ func (adapter *DormantRetainedUSBAdapter) Complete(
 	adapter.mu.Unlock()
 
 	var completionErr error
-	if slot.completion == dormantRetainedUSBCompletionStall {
+	switch slot.completion {
+	case dormantRetainedUSBCompletionStall:
 		completionErr = adapter.coordinator.retire(slot.coordinator)
-	} else if slot.completion == dormantRetainedUSBCompletionCoordinator {
+	case dormantRetainedUSBCompletionCoordinator:
 		completionErr = adapter.coordinator.completeResponse(
 			slot.coordinator, delivered, nowMS)
-	} else {
+	default:
 		completionErr = errDormantRetainedUSBInvalidPreparation
 	}
 	localRequired := completionErr == nil && delivered &&
@@ -1757,21 +1758,20 @@ func (adapter *DormantRetainedUSBAdapter) ResetAndRestart(
 				local, execution, deadline)
 		})
 	}
-	completionMS := nowMS
 	if err != nil || time.Now().After(deadline) {
 		if err == nil {
 			err = errDormantRetainedUSBDeadline
 		}
-		var completeErr error
-		completionMS, completeErr = adapter.completeLocalAt(
+		_, completeErr := adapter.completeLocalAt(
 			localLease, ControllerPersonaDeliveryFailed, nowMS)
 		err = errors.Join(err, completeErr)
 		adapter.finishResetQuarantined(reset, err)
 		result.State = retainedusb.ImportResetQuarantined
 		return result, err
 	}
-	if completionMS, err = adapter.completeLocalAt(
-		localLease, ControllerPersonaDelivered, nowMS); err != nil {
+	completionMS, err := adapter.completeLocalAt(
+		localLease, ControllerPersonaDelivered, nowMS)
+	if err != nil {
 		adapter.finishResetQuarantined(reset, err)
 		result.State = retainedusb.ImportResetQuarantined
 		return result, err
@@ -2080,20 +2080,19 @@ func (adapter *DormantRetainedUSBAdapter) DisconnectNeutral(
 	} else {
 		err = runControllerPersonaDisconnectNeutral(local, execution, deadline)
 	}
-	completionMS := nowMS
 	if err != nil || time.Now().After(deadline) {
 		if err == nil {
 			err = errDormantRetainedUSBDeadline
 		}
-		var completeErr error
-		completionMS, completeErr = adapter.completeLocalAt(
+		_, completeErr := adapter.completeLocalAt(
 			localLease, ControllerPersonaDeliveryFailed, nowMS)
 		err = errors.Join(err, completeErr)
 		adapter.finishDisconnectQuarantined(err)
 		return result, err
 	}
-	if completionMS, err = adapter.completeLocalAt(
-		localLease, ControllerPersonaDelivered, nowMS); err != nil {
+	completionMS, err := adapter.completeLocalAt(
+		localLease, ControllerPersonaDelivered, nowMS)
+	if err != nil {
 		adapter.finishDisconnectQuarantined(err)
 		return result, err
 	}

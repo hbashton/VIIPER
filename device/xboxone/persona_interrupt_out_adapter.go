@@ -583,14 +583,15 @@ func (adapter *DormantControllerPersonaInterruptOutAdapter) RunPending(
 	}()
 
 	retryBlocked := false
-	if slot.usbClaim.Result == usb.InterruptOutTransactionAccepted {
+	switch slot.usbClaim.Result {
+	case usb.InterruptOutTransactionAccepted:
 		retryBlocked, runErr = adapter.runAcceptedWork(
 			slot, outcome, executeDeadline, drainDeadline)
-	} else if slot.usbClaim.Result == usb.InterruptOutTransactionStall {
+	case usb.InterruptOutTransactionStall:
 		if !adapter.beginResolution() || !adapter.prepareFinish() {
 			runErr = ErrControllerPersonaInterruptOutQuarantined
 		}
-	} else {
+	default:
 		runErr = ErrControllerPersonaInterruptOutClaim
 	}
 	return adapter.finishWork(ticket, retryBlocked, runErr)

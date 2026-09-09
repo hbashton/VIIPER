@@ -5,12 +5,11 @@ import (
 	"fmt"
 )
 
-const (
-	// SemanticInputWireVersion is the private DS4Windows-to-VIIPER contract.
-	// It is deliberately distinct from the public GIP wire protocol.
-	SemanticInputWireVersion uint16 = 1
-	SemanticInputWireSize           = 24
-)
+// SemanticInputWireVersion is the private DS4Windows-to-VIIPER contract.
+// It is deliberately distinct from the public GIP wire protocol.
+const SemanticInputWireVersion uint16 = 1
+
+const SemanticInputWireSize = 24
 
 const (
 	semanticButtonMenu uint32 = 1 << iota

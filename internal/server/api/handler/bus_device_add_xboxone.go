@@ -178,7 +178,7 @@ func requireXboxOneJSONEOF(decoder *json.Decoder) error {
 	var trailing any
 	if err := decoder.Decode(&trailing); err != io.EOF {
 		if err == nil {
-			return fmt.Errorf("Xbox One factory payload has trailing JSON")
+			return fmt.Errorf("xbox one factory payload has trailing JSON")
 		}
 		return fmt.Errorf("invalid trailing Xbox One factory JSON: %v", err)
 	}

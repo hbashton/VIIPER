@@ -144,7 +144,7 @@ func (device *transactionalControlTestDevice) ClaimControlTransaction(
 		return usbdesc.ControlTransactionClaim{}, errTransactionalControlTestClaim
 	}
 
-	result := usbdesc.ControlTransactionUnhandled
+	var result usbdesc.ControlTransactionResult
 	data := []byte(nil)
 	configuration := byte(0)
 	configurationValid := false
@@ -353,10 +353,9 @@ func submitTransactionalControl(
 	connection net.Conn,
 	seq, direction uint32,
 	setup [8]byte,
-	out []byte,
 ) transactionalControlResponse {
 	t.Helper()
-	length := uint32(len(out))
+	length := uint32(0)
 	if direction == usbip.DirIn {
 		length = uint32(binary.LittleEndian.Uint16(setup[6:8]))
 	}
@@ -370,10 +369,6 @@ func submitTransactionalControl(
 		Setup:             setup,
 	}
 	require.NoError(t, command.Write(connection))
-	if len(out) != 0 {
-		_, err := connection.Write(out)
-		require.NoError(t, err)
-	}
 	var header [retSubmitHeaderSize]byte
 	require.NoError(t, usbip.ReadExactly(connection, header[:]))
 	response := transactionalControlResponse{
@@ -476,33 +471,33 @@ func TestTransactionalControlOwnsEP0BeforeGenericAndLegacyHandling(t *testing.T)
 
 	descriptor := submitTransactionalControl(t, stream.client, 1, usbip.DirIn,
 		transactionalControlSetup(usbReqTypeStandardFromDevice,
-			usbReqGetDescriptor, 0x0100, 0, 4), nil)
+			usbReqGetDescriptor, 0x0100, 0, 4))
 	require.Zero(t, descriptor.status)
 	require.Equal(t, uint32(4), descriptor.actual)
 	require.Equal(t, []byte{0xa4, 0xb5, 0xc6, 0xd7}, descriptor.data)
 
 	status := submitTransactionalControl(t, stream.client, 2, usbip.DirIn,
 		transactionalControlSetup(usbReqTypeStandardFromDevice,
-			usbReqGetStatus, 0, 0, 2), nil)
+			usbReqGetStatus, 0, 0, 2))
 	require.Zero(t, status.status)
 	require.Equal(t, []byte{0x02, 0x00}, status.data)
 
 	configuration := submitTransactionalControl(t, stream.client, 3,
 		usbip.DirOut, transactionalControlSetup(usbReqTypeStandardToDevice,
-			usbReqSetConfiguration, 1, 0, 0), nil)
+			usbReqSetConfiguration, 1, 0, 0))
 	require.Zero(t, configuration.status)
 	require.Zero(t, configuration.actual)
 	require.Empty(t, configuration.data)
 
 	stalled := submitTransactionalControl(t, stream.client, 4, usbip.DirIn,
 		transactionalControlSetup(0xc0,
-			transactionalControlStallRequest, 0, 0, 0), nil)
+			transactionalControlStallRequest, 0, 0, 0))
 	require.Equal(t, int32(errPipe), stalled.status)
 	require.Zero(t, stalled.actual)
 
 	unhandled := submitTransactionalControl(t, stream.client, 5, usbip.DirIn,
 		transactionalControlSetup(0xc0,
-			transactionalControlUnhandledRequest, 0, 0, 1), nil)
+			transactionalControlUnhandledRequest, 0, 0, 1))
 	require.Zero(t, unhandled.status)
 	require.Equal(t, []byte{0x44}, unhandled.data)
 
@@ -542,7 +537,7 @@ func TestTransactionalControlDeliveredLifecycleSynchronizesServerState(
 	configure := submitTransactionalControl(t, stream.client, 19,
 		usbip.DirOut, transactionalControlSetup(
 			usbReqTypeStandardToDevice, usbReqSetConfiguration,
-			1, 0, 0), nil)
+			1, 0, 0))
 	require.Zero(t, configure.status)
 	require.Eventually(t, func() bool {
 		generation, ready :=
@@ -559,7 +554,7 @@ func TestTransactionalControlDeliveredLifecycleSynchronizesServerState(
 	setInterface := submitTransactionalControl(t, stream.client, 20,
 		usbip.DirOut, transactionalControlSetup(
 			usbReqTypeStandardFromInterface, usbReqSetInterface,
-			1, 0, 0), nil)
+			1, 0, 0))
 	require.Zero(t, setInterface.status)
 	require.Eventually(t, func() bool {
 		generation, ready :=
@@ -574,7 +569,7 @@ func TestTransactionalControlDeliveredLifecycleSynchronizesServerState(
 	clearHalt := submitTransactionalControl(t, stream.client, 21,
 		usbip.DirOut, transactionalControlSetup(
 			usbReqTypeStandardToEndpoint, usbReqClearFeature,
-			0, 0x0081, 0), nil)
+			0, 0x0081, 0))
 	require.Zero(t, clearHalt.status)
 	require.Eventually(t, func() bool {
 		generation, ready :=
@@ -587,7 +582,7 @@ func TestTransactionalControlDeliveredLifecycleSynchronizesServerState(
 	unconfigure := submitTransactionalControl(t, stream.client, 22,
 		usbip.DirOut, transactionalControlSetup(
 			usbReqTypeStandardToDevice, usbReqSetConfiguration,
-			0, 0, 0), nil)
+			0, 0, 0))
 	require.Zero(t, unconfigure.status)
 	require.Eventually(t, func() bool {
 		generation, ready :=
@@ -617,7 +612,7 @@ func TestTransactionalControlStartsWithNonzeroEndpointsInactive(t *testing.T) {
 	configure := submitTransactionalControl(t, stream.client, 27,
 		usbip.DirOut, transactionalControlSetup(
 			usbReqTypeStandardToDevice, usbReqSetConfiguration,
-			1, 0, 0), nil)
+			1, 0, 0))
 	require.Zero(t, configure.status)
 
 	afterConfiguration := submitTransactionalEndpointIn(
@@ -647,13 +642,13 @@ func TestTransactionalControlLifecycleStallDoesNotMutateServerState(
 	response := submitTransactionalControl(t, stream.client, 23,
 		usbip.DirOut, transactionalControlSetup(
 			usbReqTypeStandardToDevice, usbReqSetConfiguration,
-			1, 0, 0), nil)
+			1, 0, 0))
 	require.Equal(t, int32(errPipe), response.status)
 	// A following unhandled request proves the STALL completion callback has
 	// returned before state is inspected.
 	fallback := submitTransactionalControl(t, stream.client, 24,
 		usbip.DirIn, transactionalControlSetup(
-			0xc0, transactionalControlUnhandledRequest, 0, 0, 1), nil)
+			0xc0, transactionalControlUnhandledRequest, 0, 0, 1))
 	require.Zero(t, fallback.status)
 
 	generation, ready :=

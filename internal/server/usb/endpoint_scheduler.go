@@ -573,10 +573,6 @@ func (w *endpointWorker) claimNext() int {
 	return w.inFlight
 }
 
-func (w *endpointWorker) finishCurrent(idx int, completed bool) {
-	w.finishCurrentWithRetention(idx, completed, false)
-}
-
 // finishCurrentWithRetention keeps a host request pending when source
 // admission rejected bytes before any RET_SUBMIT was emitted. The first job
 // remains endpoint-ordered and is retried at the next service opportunity;
@@ -1457,11 +1453,6 @@ func (s *endpointSchedulers) enqueueInterruptInBinding(
 	return worker.enqueue(
 		seq, xferLen, nil, nil, time.Now(),
 	)
-}
-
-func (s *endpointSchedulers) enqueueGenericIn(seq, ep, xferLen uint32) bool {
-	binding, found := findEndpointBinding(s.desc, ep, usbip.DirIn)
-	return found && s.enqueueGenericInBinding(seq, xferLen, binding)
 }
 
 func (s *endpointSchedulers) enqueueGenericInBinding(

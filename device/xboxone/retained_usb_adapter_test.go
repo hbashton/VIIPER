@@ -1114,6 +1114,41 @@ func TestDormantRetainedUSBAdapterMetadataACKCommitsOnlyAfterLocalDelivery(t *te
 	}
 }
 
+func TestDormantRetainedUSBAdapterRejectsForeignSessionsAndNonNextResetWithoutClosingOwner(t *testing.T) {
+	adapter, executor, lease := newBoundTestRetainedUSBAdapter(t, []byte{1})
+	for _, session := range []uint64{40, 42} {
+		for _, request := range []retainedusb.Request{
+			retainedINRequest(session, 1, 1, 64),
+			retainedOUTRequest(session, 1, 1, []byte{0x05, 0x20, 0x01, 0x01, byte(SetDeviceStateStart)}),
+		} {
+			if _, err := adapter.Stage(request); !errors.Is(err, errDormantRetainedUSBInvalidRequest) {
+				t.Fatalf("foreign session %d lane %d = %v", session, request.Lane, err)
+			}
+		}
+	}
+	for _, generation := range []uint64{0, 2} {
+		reset := adapterTestReset(lease, 81, generation)
+		result, err := adapter.ResetAndRestart(reset, time.Now().Add(time.Second))
+		if !errors.Is(err, errDormantRetainedUSBInvalidImport) || result.State != retainedusb.ImportResetInvalid {
+			t.Fatalf("non-next reset generation %d = (%+v, %v)", generation, result, err)
+		}
+	}
+	executor.mu.Lock()
+	drains, neutrals := executor.resetDrainCount, len(executor.resetNeutrals)
+	executor.mu.Unlock()
+	if drains != 0 || neutrals != 0 {
+		t.Fatalf("invalid requests reached reset executor: drains=%d neutrals=%d", drains, neutrals)
+	}
+	// Rejected foreign authorities must not consume or quarantine the valid owner.
+	ticket, err := adapter.Stage(retainedINRequest(41, 1, 1, 64))
+	if err != nil {
+		t.Fatalf("valid owner did not remain available: %v", err)
+	}
+	if err := adapter.Retire(ticket, retainedusb.RetireUnlink, adapterTestTime(0)); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestDormantRetainedUSBAdapterForgedStaleMalformedAndExactlyOnce(t *testing.T) {
 	adapter, _, _ := newBoundTestRetainedUSBAdapter(t, []byte{1})
 	other, _, _ := newBoundTestRetainedUSBAdapter(t, []byte{1})

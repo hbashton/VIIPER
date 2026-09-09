@@ -889,29 +889,6 @@ func (scheduler *retainedSubmissionScheduler) sequencePendingLocked(
 	return false
 }
 
-// validateImmediateSubmissionSequence is retained for isolated scheduler
-// callers and tests which do not own the production header-framing lease.
-func (scheduler *retainedSubmissionScheduler) validateImmediateSubmissionSequence(
-	sequence uint32,
-) error {
-	if scheduler == nil {
-		return errRetainedSubmissionUninitialized
-	}
-	scheduler.mu.Lock()
-	defer scheduler.mu.Unlock()
-	if scheduler.closed || scheduler.ctx.Err() != nil {
-		return errRetainedSubmissionClosed
-	}
-	if scheduler.importAdmission != nil &&
-		!scheduler.importAdmission.open.Load() {
-		return errRetainedSubmissionNotActivated
-	}
-	if scheduler.sequencePendingLocked(sequence) {
-		return errRetainedSubmissionDuplicateSequence
-	}
-	return nil
-}
-
 func (scheduler *retainedSubmissionScheduler) serviceRound(
 	now time.Time,
 ) (bool, time.Time, error) {
@@ -1430,7 +1407,7 @@ func (scheduler *retainedSubmissionScheduler) slotForRefLocked(
 
 func (scheduler *retainedSubmissionScheduler) removeRefLocked(
 	ref retainedSubmissionRef,
-) bool {
+) {
 	lane := &scheduler.lanes[ref.laneIndex]
 	for position := 0; position < lane.orderCount; position++ {
 		orderIndex := (lane.orderHead + position) % len(lane.order)
@@ -1444,9 +1421,8 @@ func (scheduler *retainedSubmissionScheduler) removeRefLocked(
 		}
 		lane.orderCount--
 		scheduler.releaseSlotLocked(ref.laneIndex, ref.slotIndex)
-		return true
+		return
 	}
-	return false
 }
 
 func (scheduler *retainedSubmissionScheduler) releaseSlotLocked(

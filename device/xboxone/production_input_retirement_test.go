@@ -161,7 +161,7 @@ func TestProductionInputRetirementRequiresOriginalConsumerStopAck(t *testing.T) 
 			if disposition == "lost-socket" {
 				_ = client.Close()
 			} else {
-				status := byte(productionBrokerAccepted)
+				status := productionBrokerAccepted
 				if disposition == "rejected" {
 					status = productionBrokerRejected
 				}
