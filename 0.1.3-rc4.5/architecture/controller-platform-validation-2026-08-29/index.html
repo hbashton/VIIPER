@@ -1,0 +1,2165 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Virtual Input over IP EmulatoR - Documentation">
+      
+      
+        <meta name="author" content="Peter Repukat">
+      
+      
+      
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Controller platform validation status, 2026-08-29 - VIIPER Documentation</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../stylesheets/extra.css">
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#controller-platform-validation-status-2026-08-29" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="VIIPER Documentation" class="md-header__button md-logo" aria-label="VIIPER Documentation" data-md-component="logo">
+      
+  <img src="../../viiper.svg" alt="logo">
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            VIIPER Documentation
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Controller platform validation status, 2026-08-29
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/hbashton/VIIPER" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    hbashton/VIIPER
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../.." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../getting-started/installation/" class="md-tabs__link">
+          
+  
+  
+  Getting Started
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../cli/overview/" class="md-tabs__link">
+          
+  
+  
+  CLI Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../api/overview/" class="md-tabs__link">
+          
+  
+  
+  API & Clients
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../libviiper/overview/" class="md-tabs__link">
+          
+  
+  
+  libVIIPER
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../devices/xbox360/" class="md-tabs__link">
+          
+  
+  
+  Devices
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../misc/support/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Community & Support
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../changelog/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Changelog
+
+      </a>
+    </li>
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="VIIPER Documentation" class="md-nav__button md-logo" aria-label="VIIPER Documentation" data-md-component="logo">
+      
+  <img src="../../viiper.svg" alt="logo">
+
+    </a>
+    VIIPER Documentation
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/hbashton/VIIPER" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    hbashton/VIIPER
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Getting Started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/installation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/quickstart/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quick Start
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    CLI Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../cli/overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../cli/server/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Server Command
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../cli/proxy/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Proxy Command
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../cli/codegen/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Code Generation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../cli/configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API & Clients
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    API & Clients
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../clients/go/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Go Client
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../clients/cpp/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    C++ Client Library
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../clients/csharp/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    C# Client Library
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../clients/rust/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Rust Client Library
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../clients/typescript/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    TypeScript Client Library
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../clients/generator/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Generator Documentation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    libVIIPER
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    libVIIPER
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../libviiper/overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devices/xbox360/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Xbox 360 Controller
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devices/dualshock4/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    DualShock 4
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devices/dualsense/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    DualSense
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devices/ns2pro/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Switch 2 Pro Controller
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devices/keyboard/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Keyboard
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devices/mouse/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Mouse
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Devices
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Devices
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devices/xbox360/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Xbox 360 Controller
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devices/dualshock4/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    DualShock 4
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devices/dualsense/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    DualSense
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devices/ns2pro/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Switch 2 Pro Controller
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devices/keyboard/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Keyboard
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devices/mouse/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Mouse
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../misc/support/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Community & Support
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../changelog/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Changelog
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#repository-state" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Repository state
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#implemented-and-offline-verified" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Implemented and offline verified
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Implemented and offline verified">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#ordered-presentation-foundations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Ordered presentation foundations
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#feedback-ownership-foundation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Feedback ownership foundation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#switch-2-canonical-input-foundation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Switch 2 canonical input foundation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#xbox-oneseries-protocol-foundation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Xbox One/Series protocol foundation
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#hardware-observed-status" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Hardware-observed status
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#validation-commands-and-results" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Validation commands and results
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Validation commands and results">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#ds4windows" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        DS4Windows
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#viiper" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        VIIPER
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#source-reuse-and-provenance" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Source reuse and provenance
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#designed-or-still-blocked" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Designed or still blocked
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#latency-and-rate-conclusion" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Latency and rate conclusion
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#publication-and-rollback-boundary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Publication and rollback boundary
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="controller-platform-validation-status-2026-08-29">Controller platform validation status, 2026-08-29</h1>
+<p>This is an evidence/status snapshot for the in-progress DS4Windows + VIIPER
+controller-platform work. It is not a release note and does not claim product
+completion, Windows Xbox One/Series visibility, live Switch 2 support, latency
+parity, or 500 Hz physical delivery.</p>
+<p>The source-level audit and provenance detail remain in
+<a href="../controller-platform-audit-2026-08-29/"><code>controller-platform-audit-2026-08-29.md</code></a>
+and
+<a href="../controller-platform-provenance-ledger-2026-08-29/"><code>controller-platform-provenance-ledger-2026-08-29.md</code></a>.</p>
+<h2 id="repository-state">Repository state</h2>
+<table>
+<thead>
+<tr>
+<th>Repository</th>
+<th>Branch</th>
+<th>Baseline HEAD</th>
+<th>State</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>DS4Windows</td>
+<td><code>feature/native-udecx-landing-zone</code></td>
+<td><code>061fab1304e77c995ce9451b7ef20e51cc870070</code></td>
+<td>dirty; current platform work is uncommitted</td>
+</tr>
+<tr>
+<td>VIIPER</td>
+<td><code>feature/native-udecx-landing-zone</code></td>
+<td><code>54f7853aa4f97394298fc8f4c3ebb865237a3456</code></td>
+<td>dirty and ahead of origin; current platform work is uncommitted</td>
+</tr>
+</tbody>
+</table>
+<p>No commit, push, tag, release, installer, driver installation, association,
+pairing, firmware operation, calibration-memory operation, or system setting
+change was performed for this tranche. Existing user changes and dirty working
+trees were preserved.</p>
+<h2 id="implemented-and-offline-verified">Implemented and offline verified</h2>
+<h3 id="ordered-presentation-foundations">Ordered presentation foundations</h3>
+<ul>
+<li>DS4Windows Xbox 360 and virtual Switch 2 egress use semantic journals,
+  writer leases, final-admission fences, mandatory neutral/resync behavior,
+  generation retirement, and deterministic overflow/reset behavior.</li>
+<li>VIIPER Xbox 360 and virtual Switch 2 use lease-bound
+  <code>internal/inputpresentation.Source</code> scheduling through the existing USB/IP
+  endpoint path. Exact HID-interface ownership, committed GET_REPORT
+  snapshots, unsupported-ID stalls, configuration fences, and compat/raw
+  owner handoff are covered by wire-level tests.</li>
+<li>These are virtual-output foundations. They are not physical Switch 2 input
+  support and do not establish application-observed latency.</li>
+</ul>
+<h3 id="feedback-ownership-foundation">Feedback ownership foundation</h3>
+<ul>
+<li>One per-device <code>ControllerFeedbackStateLanePump</code> composes the typed feedback
+  runtime, generation/sequence-fenced mailbox, physical translator, sole
+  writer, and acknowledgement callback. Nested lanes publish values only; they
+  do not create competing writers.</li>
+<li>Transport quiescence waits for an in-progress physical begin/cancel
+  operation before retiring ownership. Neutral/stop remains a first-class
+  state rather than an inferred zero-magnitude side effect.</li>
+<li>The foundation is unit verified but not instantiated by a live physical
+  controller factory. It therefore proves neither real actuator delivery nor
+  neutralization.</li>
+</ul>
+<h3 id="switch-2-canonical-input-foundation">Switch 2 canonical input foundation</h3>
+<ul>
+<li>Exact USB/BLE protocol identity, device/transport generations, QPC
+  completion timestamps, and strict existing parser reuse are implemented.</li>
+<li>The canonical value owns its 63-byte body and retains 12-bit sticks,
+  counters, unknown fields, and opaque motion without early <code>DS4State</code>
+  quantization.</li>
+<li>Calibration adoption is fail-closed and bound to device generation;
+  transport-only reset cannot silently change a calibration snapshot.</li>
+<li>The pure Joy-Con reducer has explicit pair epochs, skew limits, stale-half
+  behavior, generation-fenced loss/replacement, post-loss tombstones, and
+  terminal split semantics.</li>
+<li>The exact Pro USB composite-admission boundary validates HID MI_00 and WinUSB
+  command MI_01 topology. A dormant Windows adapter now groups complete
+  SetupAPI snapshots by opaque container, reserves each admitted container
+  process-wide before revalidation, opens only read-only MI_00 plus MI_01
+  presence, and retains the reservation until both resources terminally
+  dispose. Distinct containers coexist; ambiguous or unattributable snapshots
+  fail closed.</li>
+<li>A separate dormant USB pump owns one transport, blocks on exact overlapped-
+  read retirement, and rearms without a timer, sleep, or polling cadence. Its
+  owner/pump fence prevents a second manual reader. It is not connected to the
+  DS4Windows runtime or legacy enumerator.</li>
+<li>The existing DS4Windows profile pipeline now has one Common05 projection for
+  the exact Pro USB and BLE identities, plus source-pinned joined and
+  standalone-horizontal Joy-Con 2 projections. Raw 12-bit axes, independent
+  half lifetimes, the C button, and four rail/paddle controls survive the
+  legacy <code>DS4State</code> compatibility copy as explicit sidecars.</li>
+<li>A bounded BLE discovery-candidate registry uses per-scan keyed pseudonyms,
+  exact generation fences, explicit scan retirement, stale/conflict ordering,
+  wake rejection, capacity limits, and foreign-host quarantine behavior. A
+  current-scan <code>RememberedThisHost</code> observation may issue one opaque admission,
+  and copied admissions share one atomic single-use reservation.</li>
+<li>A dormant BLE input owner validates exactly one Nintendo service and one
+  Common05 characteristic with properties exactly <code>Read | Notify</code>, subscribes
+  only to CCCD Notify, copies exact 63-byte notifications into bounded
+  non-overwriting storage, and feeds the existing canonical session. Overflow,
+  disconnect, sink failure, and stop retire the generation before unsubscribe;
+  a selected publication completes before its one clear/half-loss callback.
+  No sink callback runs under the queue/session lock.</li>
+<li>A dormant no-HID DS4Windows runtime boundary now represents Pro USB/BLE,
+  standalone Joy-Con 2 L/R, and an explicitly paired joined Joy-Con set without
+  inserting any of them into <code>DS4Devices</code>. Runtime types are append-only and
+  rejected by the legacy HID factory. Exact device/transport generations,
+  model, transport, protocol revision, mode, and pair epoch are revalidated at
+  the one existing <code>DS4State</code>/<code>Report</code> mapping seam. C and rail controls remain
+  in the same-report sidecars. Report callbacks run outside ownership locks,
+  one bad subscriber cannot suppress later subscribers, and one terminal
+  neutral has separate accepted-pending, completed, and delivered states.
+  Reentrant or timed profile actions are queued and drained rather than
+  silently discarded. The immutable registration value authenticates an exact
+  owner/reference/generation and normalizes hostile owner failures closed.</li>
+<li>There is still no ControlService registration table, PID <code>2069</code> runtime
+  registration, production HID worker, WinRT
+  watcher/GATT lease, association/reconnect owner, controller-memory
+  calibration acquisition, profile UI for C/rail controls, or live runtime
+  pair coordinator.</li>
+</ul>
+<h3 id="xbox-oneseries-protocol-foundation">Xbox One/Series protocol foundation</h3>
+<ul>
+<li>Strict headers, base input, Direct Motor, descriptor, Hello, event-free
+  Extended Status, opaque metadata framing, authentication seam, and sequence
+  allocation are implemented as an isolated, unregistered package.</li>
+<li>Metadata owns its blob, performs final <code>AdmitAndCopy</code>, retries exact private
+  images, re-evaluates time-dependent ACME at admission, and models requested
+  and unsolicited reliable-transfer progress/gap ACK semantics through the
+  exact official nine-byte Protocol Control body decoder.</li>
+<li>ACK processing is fenced by transport/transfer generation, epoch, message,
+  sequence, and progress. Rewind invalidates pending work; non-rewind progress
+  rebases selections and retries.</li>
+<li>Lifecycle transitions expose one external action at a time. An admitted
+  action is an exclusive execution lease; USB reset must wait for terminal
+  resolution or synchronous cancel/drain. Metadata transfer generations are
+  burned before exposure and never reused across reset.</li>
+<li>Valid admitted delivery resolution does not fail after the external effect;
+  completion clocks clamp and deadlines saturate.</li>
+<li><code>ControllerPersonaEngine</code> now composes EP0, lifecycle, metadata/ACK, global
+  and gamepad sequence pools, exact input emission, Direct Motor, Guide LED,
+  retry/cancel, USB configuration and endpoint-Halt gating, reset, disconnect,
+  reconnect, and one non-reused clear epoch behind one generation-fenced
+  claim/admit/copy/resolve lane. Prevalidation prevents partial ownership when
+  nested claims fail.</li>
+<li>The downstream classifier admits only exact Direct Motor and Guide LED
+  controller messages. Ordinary input and feedback paths are allocation-free
+  in the offline tests.</li>
+<li>A package-local, dormant transport coordinator now serializes copied EP0,
+  interrupt-IN, and interrupt-OUT tickets against the one persona engine.
+  Selection occurs only at final response ownership; mandatory START input is
+  sampled there rather than when the URB first waits. Local effects consume
+  only already-selected zero-length claims, failed host-output delivery fences
+  every lane until an authoritative generation boundary, and USB reset
+  atomically invalidates every staged old-generation ticket.</li>
+<li>This package is not registered, wired to a backend, or validated through
+  XInput, GameInput, WGI, SDL, Steam, UWP, a game, USB/IP, or hardware.</li>
+<li>Generic EP0 transaction, prepared interrupt-IN late-copy, transactional
+  interrupt-OUT, and input-presentation production paths still do not compose
+  into the persona's whole-device transaction contract. Their result/size
+  decisions remain on separate legacy paths and only IN workers have existing
+  unlink/reset retry ownership. Two dormant generic prerequisites now exist:
+  the bounded three-lane retained EP0/IN/OUT arbiter with final serialized
+  Data/ZLP/success/STALL selection, and a separate nonwrapping exact-import
+  authority. The latter now uses an opaque Reserve -&gt; exclusive Building -&gt;
+  Prepared scheduler -&gt; exact Bind -&gt; bounded one-shot activation -&gt; Claimed/
+  gate-open transaction on one combined owner object. Enqueue and the terminal
+  admission fence share the scheduler mutex; close then orders ingress close,
+  arbiter join, local drain, disconnect-neutral, and release. Bind or activation
+  error/panic/timeout, malformed terminal result, cleanup ambiguity, or failed
+  neutral quarantines the exact device/session. Scripted tests plus real
+  pending/terminal arbiter composition prove abort/build exclusion, late-
+  activation fencing, retirement/completion, bound-owner cleanup, and no
+  premature release. Neither constructor has a production call site; no
+  registry, import, device identity, or production route uses these seams.
+  The exact generic seams are recorded in
+  <a href="../xbox-one-usbip-adapter-audit-2026-08-29/"><code>xbox-one-usbip-adapter-audit-2026-08-29.md</code></a>.
+  A registry regression keeps <code>xboxone</code>/<code>xbox-series</code> names unregistered until
+  those seams and the external identity gate are satisfied.</li>
+</ul>
+<h2 id="hardware-observed-status">Hardware-observed status</h2>
+<p>Earlier passive read-only captures established one Switch 2 Pro USB device as
+<code>057E:2069</code>, <code>bcdDevice 0x0201</code>, with 64-byte report <code>0x05</code> input and host read
+completion cadence near four milliseconds. Those captures validate only the
+observed Pro USB input framing/cadence, not calibration, output, interrupt
+rate, transport latency, or alternate modes.</p>
+<p>After 59 offline verifier tests, an independent adversarial review, and a
+warnings-as-errors Release build, one user-authorized schema-4 run
+re-established the exact target but failed the mandatory exclusive MI_00
+writer lease with <code>HidReadOpenFailed</code> / Win32 error 32 (sharing violation). It
+stopped before opening the command interface and before every battery, LED,
+input-capture, haptic, or cleanup mutation. No controller state was changed.
+The result is bound to the exact procedure, assembly, and executable hashes:</p>
+<ul>
+<li>file:
+  <code>_results/switch2-usb-hardware-2026-08-29-schema4-sole-writer-v2.json</code></li>
+<li>result SHA-256:
+  <code>0DFC1F5240FF3BBBFD9DD8CC0F8689039981EEEA3EF9856E9E626A099E7F8F44</code></li>
+<li>verifier DLL SHA-256:
+  <code>87D2A053DD6FF7A447D71E27B13D2715B188547E8A33E3816EF95164184F4A4E</code></li>
+<li>verifier EXE SHA-256:
+  <code>B68998F98B5FA3A95E9050A0F055456169E16E6B0D678F29C1D4A2044786AA2C</code></li>
+</ul>
+<p>The owning process was not attributable from the available read-only evidence.
+Several controller-related processes were present, but presence does not prove
+handle ownership. No process was named as the owner and no application or
+service was stopped.</p>
+<p>The verifier's live nonzero-haptic gate remains fixed closed. Host HID write
+completion cannot prove physical actuator neutralization after a
+noncooperative kernel write, and no admitted device watchdog or independent
+physical stop measurement exists. The schema-4 run made zero haptic attempts,
+zero haptic writes, and zero neutral writes.</p>
+<h2 id="validation-commands-and-results">Validation commands and results</h2>
+<h3 id="ds4windows">DS4Windows</h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>dotnet test .\DS4WindowsTests\DS4WindowsTests.csproj -c Release --no-restore -p:Platform=x64 --verbosity minimal
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>1315 passed, 3 pre-existing opt-in live-audio tests skipped, 0 failed
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>dotnet build .\DS4WindowsWPF.sln -c Release -p:Platform=x64 --no-restore --nologo
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>build succeeded, 6 pre-existing unrelated warnings, 0 errors
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>dotnet test .\utils\Switch2UsbHardwareVerify.Tests\Switch2UsbHardwareVerify.Tests.csproj -c Release -p:Platform=x64 --no-restore --nologo
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>59 passed, 0 skipped, 0 failed
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>dotnet build .\utils\Switch2UsbHardwareVerify\Switch2UsbHardwareVerify.csproj -c Release -p:Platform=x64 --no-restore --nologo -warnaserror
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>build succeeded, 0 warnings, 0 errors
+<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>
+<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>git diff --check
+<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>passed; line-ending conversion notices only
+</code></pre></div>
+<p>The Switch 2 focused set contains 236 passing tests. This includes 63 focused
+Pro USB owner/pump and Windows-adapter tests. In addition to canonical raw
+ownership, 12-bit preservation, calibration, replay, and Joy-Con pair fences,
+the tests cover per-container reservation, single-use BLE admission, bounded
+non-overwriting BLE ingress, callback reentrancy, exact native retirement,
+cancel/retire/reuse ABA fences, asynchronous no-premature-rearm behavior, and
+zero-allocation steady-state paths. The 63 USB tests also passed 20 repeated
+no-build runs (1,260 executions).
+The new no-HID runtime/registration class contains 10 focused adversarial tests;
+an independent run passed it 10 consecutive times after the first focused pass.</p>
+<h3 id="viiper">VIIPER</h3>
+<p>The workspace-pinned Go 1.27.0 toolchain and w64devkit 2.9.1 compiler were used
+with <code>CGO_ENABLED=1</code>; no toolchain was installed.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>go test -count=1 ./...
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>passed
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>go vet ./...
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>passed
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>
+<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>go test ./device/xboxone -run ControllerPersonaTransport -count=50 -shuffle=on
+<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>passed
+<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a>
+<a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a>go test -race ./device/xboxone -count=20 -shuffle=on
+<a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a>passed
+</code></pre></div>
+<p>The Xbox One package also passed the final coordinator-focused tests repeated
+50 times, its complete package under the race detector 20 times, earlier
+corrected lifecycle/metadata boundary scenarios repeated 200 times, five fuzz
+targets, and independent adversarial P1/P2 re-review. The earlier corrected
+package coverage run reported 85.9%.</p>
+<p><code>git diff --check</code> is clean for the platform tranche. The full command still
+reports pre-existing trailing spaces in <code>docs/cli/configuration.md:70</code> and
+<code>docs/cli/server.md:47</code>; those unrelated user lines were not changed.</p>
+<h2 id="source-reuse-and-provenance">Source reuse and provenance</h2>
+<ul>
+<li>PadForge stable and <code>v4-dev</code> were audited as separate CC BY-NC-SA behavioral
+  references. No PadForge source expression was copied.</li>
+<li>Switch2Connect was used for corroborating facts where independently pinned;
+  inherited/opaque components with unclear provenance were not copied or
+  redistributed.</li>
+<li>HIDMaestro's authored code is MIT and was audited as a distinct architecture,
+  but this tranche did not need to import its implementation.</li>
+<li>Licensed SDL and official Microsoft protocol/documentation facts are the
+  preferred implementation evidence. The provenance ledger records exact
+  component boundaries and protocol-facts-only sources.</li>
+</ul>
+<h2 id="designed-or-still-blocked">Designed or still blocked</h2>
+<ul>
+<li>Xbox One/Series persona registration: blocked by lawful project identity,
+  exact strings/semantic metadata compiler, event/security behavior, transfer
+  reassembly/coalescing and replay policy, Guide/Share/status input, Windows
+  binding/API visibility, physical neutralization on suspend/configuration
+  loss, the unified late USB transaction/job boundary described above, and an
+  actual USB/IP vertical slice. The offline persona/lifecycle engine and its
+  transport coordinator are not a registered <code>usb.Device</code> and have no default
+  identity.</li>
+<li>Physical Switch 2 Pro USB/BLE and Joy-Con 2 L/R: canonical processing,
+  exact profile projections, a dormant concrete Windows USB discovery/read
+  adapter and completion-driven pump, and a dormant transport-neutral BLE
+  admission/notification owner exist. Production registration, atomic legacy
+  HID handoff, a concrete WinRT watcher/GATT lease, association/reconnect,
+  calibration acquisition, profile UI/runtime removal binding, and feedback
+  writers do not.</li>
+<li>Switch 2 HD rumble: raw codecs are offline verified; semantic translation,
+  BLE envelope, cadence, thermal/stop policy, sole writer, and physical
+  measurement remain blocked.</li>
+<li>Four-actuator routing: canonical values, mailbox/arbitration, and sole-writer
+  foundations exist, but no live physical factory instantiates that owner and
+  DualSense/Switch 2/generic physical translation remains unwired.</li>
+<li>XInputHID and raw GIP presentation remain decision/vertical-slice work. No
+  native UdeCx driver was implemented, installed, packaged, or authorized.</li>
+<li>Windows 10/11, multiple Bluetooth radios, Joy-Con hardware, real Xbox
+  references, DualSense/Edge feedback, generic ERM, game/API, installer, and
+  long-soak matrices remain open.</li>
+</ul>
+<h2 id="latency-and-rate-conclusion">Latency and rate conclusion</h2>
+<p>No new application-visible, physical-to-consumer, publication-to-USB/IP, or
+feedback-onset latency run was completed. There is no same-hardware PadForge /
+HIDMaestro non-inferiority result and no parity or lower-latency claim.</p>
+<p>PadForge's named 500 Hz setting is a two-millisecond host-loop target, not
+proof of physical Switch 2 delivery. The strongest current physical evidence
+remains approximately 250 reports/second (roughly four milliseconds) for the
+observed Switch 2 Pro modes. A 500 Hz physical mode remains a controlled
+experiment, not an established capability.</p>
+<h2 id="publication-and-rollback-boundary">Publication and rollback boundary</h2>
+<p>Do not push the current branches. Unpushed DS4Windows commit <code>942b3e6</code> and
+VIIPER commit <code>3af2ce8</code> retain linkable evidence in recoverable history. The
+audit requires a backup, a rewrite limited to the unpushed ranges, <code>git log
+--all -S</code> privacy searches, and independent review of the exact outbound set.
+That history operation must not begin while these dirty worktrees contain
+unresolved work.</p>
+<p>Because current changes are uncommitted and interleaved with preserved user
+work, rollback must be file-scoped and preceded by a recoverable patch/backup.
+Do not use a repository-wide reset or checkout to remove this tranche.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.instant", "navigation.tracking", "navigation.tabs", "navigation.sections", "navigation.expand", "navigation.top", "search.suggest", "search.highlight", "content.code.copy"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"default": "stable", "provider": "mike"}}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>
