@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"runtime"
 	"testing"
 	"time"
 
@@ -77,7 +78,20 @@ func newProductionRetirementIntegrationIdentityDevice(t *testing.T, authority, d
 	return device
 }
 
+// Do not gate shared device factories: identity, admission and deadline tests
+// remain portable. Only integration that publishes real CFBK v1 needs QPC.
+func requireWindowsCanonicalFeedbackClock(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS != "windows" {
+		t.Skip("CFBK v1 Stop/ACK requires Windows QPC; exercised by the required Windows test job")
+	}
+	if _, ok := controllerfeedback.HostMonotonicMicroseconds(); !ok {
+		t.Fatal("required Windows QPC clock is unavailable")
+	}
+}
+
 func TestProductionXboxInputRetirementRemovesOneShotOnlyAfterBrokerStopAck(t *testing.T) {
+	requireWindowsCanonicalFeedbackClock(t)
 	const authorityID, deviceID = uint64(0x9571), uint64(0x0000fffb01020304)
 	device := newProductionRetirementIntegrationDevice(t, authorityID, deviceID)
 	brokerServer, brokerClient := net.Pipe()

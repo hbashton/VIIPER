@@ -154,6 +154,35 @@ primitive values. These are client-generator/test corrections, not a new USB
 protocol or controller mapping. The failed run is retained as diagnostic
 evidence; a fresh successful main/tag run remains required for publication.
 
+### Required Windows feedback-clock coverage
+
+The next main run, `34337578278` at `324349c`, passed lint and every generated
+client build, then failed six integration tests (12 rows) waiting for real
+CFBK terminal Stop/ACK packets on Linux. Production CFBK v1 deliberately uses
+the shared Windows QPC epoch; its non-Windows clock reports unavailable. The
+same complete coverage command passed on Windows, without increasing deadlines.
+
+The shared workflow now requires both the existing Linux test job and a new
+Windows job running the entire coverage and Release-tag suites before any
+executable or native library can build. Only those six real-QPC test functions
+are platform-qualified. Their shared device factories and portable identity,
+drain-deadline and lifecycle tests are unchanged. Missing QPC on Windows fails
+the tests; it is never treated as an optional skip.
+
+New real-clock regressions require non-Windows sampling to remain unavailable,
+with production Apply and terminal Stop refusing publication and never advancing
+safe-stop proof or generation. Windows must provide a nondecreasing QPC clock
+and successful acknowledged publication. No production clock, epoch, timeout,
+protocol value, or allocation assertion was changed to obtain a test pass.
+
+Post-change Windows acceptance passed all 12 previously failing Stop/ACK
+scenarios and both new real-clock tests (14 leaf cases, zero skipped/failed),
+recorded in `viiper-qpc-platform-focused.jsonl` in the local publication folder.
+The full Windows Release suite, all four workflow files under actionlint, and
+Linux-target CGO-disabled lint also pass. The new non-Windows runtime assertions
+still require the next actual Linux CI execution; cross-target lint is not an
+execution result.
+
 ### Local pre-publication acceptance of the pipeline changes
 
 - Release policy: four test methods covering 21 tag cases pass; malformed

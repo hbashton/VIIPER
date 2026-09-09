@@ -2,6 +2,7 @@ package controllerfeedback
 
 import (
 	"math"
+	"runtime"
 	"testing"
 )
 
@@ -32,5 +33,21 @@ func TestQPCConversionVectorsMatchDS4Windows(t *testing.T) {
 func TestHostClockDomainIsExplicit(t *testing.T) {
 	if ClockDomainWindowsQPCV1 != "windows-qpc-host-v1" {
 		t.Fatalf("clock domain = %q", ClockDomainWindowsQPCV1)
+	}
+}
+
+func TestHostClockAvailabilityMatchesNormativePlatform(t *testing.T) {
+	first, firstOK := HostMonotonicMicroseconds()
+	second, secondOK := HostMonotonicMicroseconds()
+	if runtime.GOOS != "windows" {
+		if firstOK || secondOK || first != 0 || second != 0 {
+			t.Fatalf("non-Windows clock must fail closed, got (%d,%t), (%d,%t)",
+				first, firstOK, second, secondOK)
+		}
+		return
+	}
+	if !firstOK || !secondOK || second < first {
+		t.Fatalf("Windows requires available nondecreasing QPC, got (%d,%t), (%d,%t)",
+			first, firstOK, second, secondOK)
 	}
 }

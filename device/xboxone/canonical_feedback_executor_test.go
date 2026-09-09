@@ -2,6 +2,7 @@ package xboxone
 
 import (
 	"errors"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -110,6 +111,47 @@ func canonicalFeedbackMotor(generation, order uint64) ControllerPersonaLocalExec
 			Enabled: MotorAll, LeftVibration: 25, RightVibration: 50,
 			LeftImpulse: 75, RightImpulse: 100, Duration: 25,
 		},
+	}
+}
+
+func TestCanonicalFeedbackExecutorUsesRequiredHostClock(t *testing.T) {
+	publisher := &recordingCanonicalFeedbackPublisher{}
+	// Use the production constructor's actual clock, not the deterministic
+	// clock substituted by the portable executor unit-test helper.
+	executor, err := NewControllerPersonaCanonicalFeedbackExecutor(
+		canonicalFeedbackTestBinding(), publisher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	applyErr := executor.Execute(canonicalFeedbackMotor(5, 1), deadline)
+	if err := executor.CancelAndDrain(deadline); err != nil {
+		t.Fatal(err)
+	}
+	stopErr := executor.DisconnectNeutral(canonicalFeedbackClear(6, 2), deadline)
+	frames := publisher.snapshotFrames()
+	snapshot, ok := executor.Snapshot()
+	if !ok {
+		t.Fatal("executor lost its lifecycle snapshot")
+	}
+	if runtime.GOOS != "windows" {
+		if !errors.Is(applyErr, ErrCanonicalFeedbackClockUnavailable) ||
+			!errors.Is(stopErr, ErrCanonicalFeedbackClockUnavailable) {
+			t.Fatalf("non-Windows publication must fail closed: apply=%v stop=%v", applyErr, stopErr)
+		}
+		if len(frames) != 0 || snapshot.Stopped || !snapshot.TerminalDrained ||
+			snapshot.PersonaGeneration != 5 || snapshot.ExecutionInFlight {
+			t.Fatalf("unavailable clock published feedback or advanced terminal proof: frames=%+v state=%+v", frames, snapshot)
+		}
+		return
+	}
+	if applyErr != nil || stopErr != nil {
+		t.Fatalf("Windows production clock must publish: apply=%v stop=%v", applyErr, stopErr)
+	}
+	if len(frames) != 2 || frames[0].Command != controllerfeedback.CommandApply ||
+		frames[1].Command != controllerfeedback.CommandStop || !snapshot.Stopped ||
+		snapshot.PersonaGeneration != 6 {
+		t.Fatalf("Windows production Apply/Stop: frames=%+v state=%+v", frames, snapshot)
 	}
 }
 

@@ -3,6 +3,7 @@ package xboxone
 import (
 	"errors"
 	"net"
+	"runtime"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -102,7 +103,20 @@ func overflowProductionRetirementTest(t *testing.T, device *AuthorizedDormantRet
 	return 0
 }
 
+// Only the real CFBK v1 Stop/ACK integration requires Windows. Pure lifecycle
+// tests and their shared production-device factory remain portable.
+func requireWindowsCanonicalFeedbackClock(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS != "windows" {
+		t.Skip("CFBK v1 Stop/ACK requires Windows QPC; exercised by the required Windows test job")
+	}
+	if _, ok := controllerfeedback.HostMonotonicMicroseconds(); !ok {
+		t.Fatal("required Windows QPC clock is unavailable")
+	}
+}
+
 func TestProductionInputRetirementRequiresOriginalConsumerStopAck(t *testing.T) {
+	requireWindowsCanonicalFeedbackClock(t)
 	for _, disposition := range []string{"accepted", "rejected", "wrong-correlation", "lost-socket"} {
 		t.Run(disposition, func(t *testing.T) {
 			device, client, writer := startProductionRetirementTest(t)

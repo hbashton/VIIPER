@@ -211,6 +211,7 @@ func (pad *productionMultiXboxPad) remove(t *testing.T) {
 }
 
 func TestProductionXboxIndependentImportIDsKeepBothPadsLiveAndIsolateExactRemoval(t *testing.T) {
+	requireWindowsCanonicalFeedbackClock(t)
 	const authority = uint64(0x9781)
 	server := New(ServerConfig{ConnectionTimeout: time.Second, BusCleanupTimeout: time.Hour,
 		RetainedImportAuthorityID: authority}, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
@@ -242,6 +243,7 @@ func TestProductionXboxIndependentImportIDsKeepBothPadsLiveAndIsolateExactRemova
 }
 
 func TestProductionXboxDuplicateImportIDRejectionAndRemovalCannotRetireFirstPad(t *testing.T) {
+	requireWindowsCanonicalFeedbackClock(t)
 	const authority, duplicateImportID = uint64(0x9791), uint64(0x979101)
 	server := New(ServerConfig{ConnectionTimeout: time.Second, BusCleanupTimeout: time.Hour,
 		RetainedImportAuthorityID: authority}, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)

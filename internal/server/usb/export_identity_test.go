@@ -154,6 +154,7 @@ func TestProductionAliasCannotSelectAddressBusOrServerSuccessor(t *testing.T) {
 }
 
 func TestProductionAliasDevlistImportAndNumericURBIdentityAgree(t *testing.T) {
+	requireWindowsCanonicalFeedbackClock(t)
 	const authority, deviceID = uint64(0x9611), uint64(0x0000fffb01020304)
 	device := newProductionRetirementIntegrationDevice(t, authority, deviceID)
 	brokerServer, brokerClient := net.Pipe()

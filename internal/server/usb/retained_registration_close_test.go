@@ -18,6 +18,7 @@ import (
 )
 
 func TestRetainedExactRegistrationRemovalJoinsActualProductionStop(t *testing.T) {
+	requireWindowsCanonicalFeedbackClock(t)
 	for _, outcome := range []string{"accepted", "rejected", "wrong correlation", "socket lost"} {
 		t.Run(outcome, func(t *testing.T) {
 			const authorityID, deviceID = uint64(0x9581), uint64(0x0000fffb01020304)
