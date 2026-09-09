@@ -65,7 +65,7 @@ func TestSetNS2ProDeviceStatePropagatesSchedulerRejection(t *testing.T) {
 	defer handle.Delete()
 
 	for index := 0; index < inputpresentation.FixedReportTransitionCapacity; index++ {
-		buttons := uint32(ns2pro.ButtonA)
+		buttons := ns2pro.ButtonA
 		if index%2 != 0 {
 			buttons = ns2pro.ButtonB
 		}

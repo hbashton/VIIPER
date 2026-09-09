@@ -137,6 +137,23 @@ being presented as the tested DS4Windows dependency:
 These workflow changes alone do not publish a release, change an installed
 broker, or establish controller/driver acceptance for newly compiled bytes.
 
+### First actual main CI feedback
+
+Main commit `f8aa588` reached GitHub Actions run `34336834061`. C#, Rust and
+TypeScript client builds passed. Two gates failed before any binary/release
+jobs ran: the C++ generator assigned required nested DTOs directly to JSON
+instead of using their member serializer, and Linux CGO lint identified a
+redundant `uint32` conversion in the Switch 2 C-library test. The latter scope
+was not included in the earlier CGO-disabled cross-target lint result.
+
+The focused CGO Release tests passed after removing that redundant conversion.
+The C++ correction preserves the existing optional/pointer/array paths while
+using the existing member serializer for required named children. Deserialization
+value-initializes the result so absent nested children cannot expose uninitialized
+primitive values. These are client-generator/test corrections, not a new USB
+protocol or controller mapping. The failed run is retained as diagnostic
+evidence; a fresh successful main/tag run remains required for publication.
+
 ### Local pre-publication acceptance of the pipeline changes
 
 - Release policy: four test methods covering 21 tag cases pass; malformed

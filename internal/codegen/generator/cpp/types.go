@@ -39,7 +39,7 @@ struct {{pascalcase .Name}} {
 {{- end}}
 
     static {{pascalcase .Name}} from_json(const json_type& j) {
-        {{pascalcase .Name}} result;
+        {{pascalcase .Name}} result{};
 {{- range .Fields}}
 {{- if and .Optional (eq .TypeKind "map")}}
         if (j.contains("{{.JSONName}}") && !j["{{.JSONName}}"].is_null()) {
@@ -113,6 +113,8 @@ struct {{pascalcase .Name}} {
             }
             j["{{.JSONName}}"] = std::move(arr);
         }
+{{- else if isCustomType .Type}}
+        j["{{.JSONName}}"] = {{camelcase .Name}}.to_json();
 {{- else}}
         j["{{.JSONName}}"] = {{camelcase .Name}};
 {{- end}}
