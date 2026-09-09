@@ -1646,6 +1646,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#required-windows-feedback-clock-coverage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Required Windows feedback-clock coverage
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#local-pre-publication-acceptance-of-the-pipeline-changes" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1818,6 +1829,30 @@ value-initializes the result so absent nested children cannot expose uninitializ
 primitive values. These are client-generator/test corrections, not a new USB
 protocol or controller mapping. The failed run is retained as diagnostic
 evidence; a fresh successful main/tag run remains required for publication.</p>
+<h3 id="required-windows-feedback-clock-coverage">Required Windows feedback-clock coverage</h3>
+<p>The next main run, <code>34337578278</code> at <code>324349c</code>, passed lint and every generated
+client build, then failed six integration tests (12 rows) waiting for real
+CFBK terminal Stop/ACK packets on Linux. Production CFBK v1 deliberately uses
+the shared Windows QPC epoch; its non-Windows clock reports unavailable. The
+same complete coverage command passed on Windows, without increasing deadlines.</p>
+<p>The shared workflow now requires both the existing Linux test job and a new
+Windows job running the entire coverage and Release-tag suites before any
+executable or native library can build. Only those six real-QPC test functions
+are platform-qualified. Their shared device factories and portable identity,
+drain-deadline and lifecycle tests are unchanged. Missing QPC on Windows fails
+the tests; it is never treated as an optional skip.</p>
+<p>New real-clock regressions require non-Windows sampling to remain unavailable,
+with production Apply and terminal Stop refusing publication and never advancing
+safe-stop proof or generation. Windows must provide a nondecreasing QPC clock
+and successful acknowledged publication. No production clock, epoch, timeout,
+protocol value, or allocation assertion was changed to obtain a test pass.</p>
+<p>Post-change Windows acceptance passed all 12 previously failing Stop/ACK
+scenarios and both new real-clock tests (14 leaf cases, zero skipped/failed),
+recorded in <code>viiper-qpc-platform-focused.jsonl</code> in the local publication folder.
+The full Windows Release suite, all four workflow files under actionlint, and
+Linux-target CGO-disabled lint also pass. The new non-Windows runtime assertions
+still require the next actual Linux CI execution; cross-target lint is not an
+execution result.</p>
 <h3 id="local-pre-publication-acceptance-of-the-pipeline-changes">Local pre-publication acceptance of the pipeline changes</h3>
 <ul>
 <li>Release policy: four test methods covering 21 tag cases pass; malformed
