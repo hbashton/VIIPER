@@ -112,6 +112,62 @@ func TestDualSenseV5WriterKeepsOnlyLatestOutputState(t *testing.T) {
 	}
 }
 
+func TestDualSenseV5DeviceCallbackPreservesCloselySpacedNativeCommands(t *testing.T) {
+	for _, scenario := range []string{"rumble-pulse-and-stop", "trigger-then-led-only"} {
+		t.Run(scenario, func(t *testing.T) {
+			dev, err := New(nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			server, client := net.Pipe()
+			writer := newDualSenseOutputWriter(server, nil, nil)
+			dev.setV5OutputCallbacks(1, writer.EnqueueOutputState, nil, nil, nil)
+			t.Cleanup(func() {
+				dev.setV5OutputCallbacks(1, nil, nil, nil, nil)
+				_ = client.Close()
+				writer.Stop()
+			})
+
+			var first, second [OutputReportSize]byte
+			first[0], second[0] = ReportIDOutput, ReportIDOutput
+			if scenario == "rumble-pulse-and-stop" {
+				first[1], second[1] = 0x03, 0x03
+				first[3], first[4] = 90, 120
+			} else {
+				first[1], first[11], first[12] = 0x04, 0x25, 0x17
+				second[2], second[45], second[46], second[47] = 0x04, 31, 63, 95
+			}
+
+			// Exercise the actual USB OUT -> device merge -> registered V5
+			// callback boundary. Hold writer presentation until both commands
+			// arrive, as happens during socket backpressure or a scheduling gap.
+			// These are exact validity-bearing commands, not cumulative state.
+			dev.HandleTransfer(context.Background(), EndpointOut&0x0f, usbip.DirOut, first[:])
+			dev.HandleTransfer(context.Background(), EndpointOut&0x0f, usbip.DirOut, second[:])
+			go writer.Run()
+			if err := client.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+				t.Fatal(err)
+			}
+
+			for index, expected := range [][OutputReportSize]byte{first, second} {
+				header, payload := readDualSenseOutputFrame(t, client)
+				if header[5] != StreamFrameOutputState ||
+					binary.LittleEndian.Uint32(header[8:12]) != uint32(index) {
+					t.Fatalf("command %d has wrong output framing: % x", index, header)
+				}
+				var delivered OutputState
+				if err := delivered.UnmarshalV5Binary(payload); err != nil {
+					t.Fatal(err)
+				}
+				if delivered.RawOutputReport != expected {
+					t.Fatalf("native command %d was lost or replaced before V5 presentation:\n got % x\nwant % x",
+						index, delivered.RawOutputReport, expected)
+				}
+			}
+		})
+	}
+}
+
 func TestDualSenseV5LatestOutputStorageIsIndependentOfOrderedControl(t *testing.T) {
 	writer := newDualSenseOutputWriter(nil, nil, nil)
 	for index := 0; index < dualSenseOutputControlQueueCapacity; index++ {
@@ -130,6 +186,264 @@ func TestDualSenseV5LatestOutputStorageIsIndependentOfOrderedControl(t *testing.
 	writer.release(frame)
 	for len(writer.control) != 0 {
 		writer.release(<-writer.control)
+	}
+}
+
+func TestDualSenseV5NativeCommandAdmissionRejectsFullWithoutCommittingState(t *testing.T) {
+	dev, err := New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	admission, ok := any(dev).(interface {
+		TryHandleOutputCommand(uint8, [8]byte, []byte) (bool, bool)
+	})
+	if !ok {
+		t.Fatal("DualSense native output has no bounded USB admission result")
+	}
+	writer := newDualSenseOutputWriter(nil, nil, nil)
+	dev.setV5OutputCallbacks(1, writer.EnqueueOutputState, nil, nil, nil)
+	defer writer.drainOrderedControl()
+	var report [OutputReportSize]byte
+	report[0], report[1] = ReportIDOutput, 0x03
+	for index := 1; index <= dualSenseOutputControlQueueCapacity; index++ {
+		report[3] = byte(index)
+		handled, accepted := admission.TryHandleOutputCommand(EndpointOut, [8]byte{}, report[:])
+		if !handled || !accepted {
+			t.Fatalf("normal burst command %d was not admitted", index)
+		}
+	}
+	beforeOutput, beforeMedia := dev.outputState, dev.mediaOutputState
+	report[3] = 0xee
+	if handled, accepted := admission.TryHandleOutputCommand(EndpointOut, [8]byte{}, report[:]); !handled || accepted {
+		t.Fatal("full native queue did not explicitly reject its next command")
+	}
+	if dev.outputState != beforeOutput || dev.mediaOutputState != beforeMedia {
+		t.Fatal("rejected native command committed persistent or media state")
+	}
+	for index := 1; index <= dualSenseOutputControlQueueCapacity; index++ {
+		frame, exists := writer.claimOrderedControl()
+		if !exists {
+			t.Fatalf("admitted command %d was lost", index)
+		}
+		var feedback OutputState
+		if err := feedback.UnmarshalV5Binary(frame.payload); err != nil {
+			t.Fatal(err)
+		}
+		writer.release(frame)
+		if feedback.RawOutputReport[3] != byte(index) {
+			t.Fatalf("admitted command %d was replaced with %d", index, feedback.RawOutputReport[3])
+		}
+	}
+	if handled, accepted := admission.TryHandleOutputCommand(EndpointOut, [8]byte{}, report[:]); !handled || !accepted {
+		t.Fatal("released capacity did not admit a host retry")
+	}
+	writer.requestStop()
+	beforeOutput, beforeMedia = dev.outputState, dev.mediaOutputState
+	report[3] = 0xff
+	if handled, accepted := admission.TryHandleOutputCommand(EndpointOut, [8]byte{}, report[:]); !handled || accepted {
+		t.Fatal("retired stream accepted a late native command")
+	}
+	if dev.outputState != beforeOutput || dev.mediaOutputState != beforeMedia {
+		t.Fatal("retired-stream command changed persistent state")
+	}
+}
+
+func TestDualSenseV5CombinedMediaSnapshotRemainsReplaceable(t *testing.T) {
+	writer := newDualSenseOutputWriter(nil, nil, nil)
+	feedback := OutputState{}
+	feedback.RawOutputReport[0] = ReportIDOutput
+	feedback.BluetoothCombinedOutputReport[0] = BluetoothCombinedHapticsReportID
+	feedback.RumbleSmall = 1
+	writer.EnqueueOutputState(feedback)
+	feedback.RumbleSmall = 2
+	writer.EnqueueOutputState(feedback)
+	frame, ok := writer.claimLatestOutput()
+	if !ok || frame.payload[0] != 2 || len(writer.control) != 0 {
+		t.Fatal("cumulative combined media snapshot entered the native command FIFO")
+	}
+	writer.release(frame)
+}
+
+func TestDualSenseV5ShortRumbleStopCannotRestartThroughCombinedMedia(t *testing.T) {
+	dev, err := New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer := newDualSenseOutputWriter(nil, nil, nil)
+	dev.setV5OutputCallbacks(1, writer.EnqueueOutputState, nil, nil, nil)
+	defer writer.drainOrderedControl()
+	var on [OutputReportSize]byte
+	on[0], on[1], on[3], on[4] = ReportIDOutput, 0x03, 90, 120
+	dev.HandleTransfer(context.Background(), EndpointOut, usbip.DirOut, on[:])
+	dev.HandleTransfer(context.Background(), EndpointOut, usbip.DirOut, []byte{ReportIDOutput, 0x03, 0, 0, 0})
+	dev.mediaMu.Lock()
+	media, _, built := dev.buildDualSenseV5FeedbackLocked()
+	dev.mediaMu.Unlock()
+	if !built || media.BluetoothCombinedOutputReport[0] != BluetoothCombinedHapticsReportID {
+		t.Fatal("next media callback did not produce a combined carrier")
+	}
+	if media.RawOutputReport[3] != 0 || media.RawOutputReport[4] != 0 ||
+		media.BluetoothCombinedOutputReport[15] != 0 || media.BluetoothCombinedOutputReport[16] != 0 {
+		t.Fatal("accepted short rumble stop was replayed as active rumble by cumulative media")
+	}
+}
+
+func TestDualSenseV5ShortCommandsDoNotSynthesizeAbsentValidityGroups(t *testing.T) {
+	for _, test := range []struct {
+		name                     string
+		length, flagOffset       int
+		mask                     byte
+		fieldOffset, fieldLength int
+	}{
+		{"right-trigger", 12, 1, outputFlag0RightTrigger, outputRightTriggerOffset, outputTriggerLength},
+		{"left-trigger", 32, 1, outputFlag0LeftTrigger, outputLeftTriggerOffset, outputTriggerLength},
+		{"lightbar", 45, 2, outputFlag1Lightbar, outputLightbarOffset, 3},
+		{"brightness", 40, 39, outputFlag2LightbarBrightness, 43, 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dev, err := New(nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var delivered OutputState
+			dev.SetOutputCallback(func(state OutputState) { delivered = state })
+			var initial [OutputReportSize]byte
+			initial[0], initial[test.flagOffset] = ReportIDOutput, test.mask
+			for index := 0; index < test.fieldLength; index++ {
+				initial[test.fieldOffset+index] = byte(17 + index)
+			}
+			dev.HandleTransfer(context.Background(), EndpointOut, usbip.DirOut, initial[:])
+			partial := make([]byte, test.length)
+			partial[0], partial[test.flagOffset] = ReportIDOutput, test.mask
+			dev.HandleTransfer(context.Background(), EndpointOut, usbip.DirOut, partial)
+			if delivered.RawOutputReport[test.flagOffset]&test.mask != 0 {
+				t.Fatal("short exact command synthesized a zero-filled incomplete validity group")
+			}
+			if !bytes.Equal(dev.mediaOutputState.RawOutputReport[test.fieldOffset:test.fieldOffset+test.fieldLength],
+				initial[test.fieldOffset:test.fieldOffset+test.fieldLength]) {
+				t.Fatal("short command cleared a field whose complete payload was absent")
+			}
+			complete := make([]byte, test.fieldOffset+test.fieldLength)
+			complete[0], complete[test.flagOffset] = ReportIDOutput, test.mask
+			for index := 0; index < test.fieldLength; index++ {
+				complete[test.fieldOffset+index] = byte(100 + index)
+			}
+			dev.HandleTransfer(context.Background(), EndpointOut, usbip.DirOut, complete)
+			if delivered.RawOutputReport[test.flagOffset]&test.mask == 0 ||
+				!bytes.Equal(dev.mediaOutputState.RawOutputReport[test.fieldOffset:test.fieldOffset+test.fieldLength],
+					complete[test.fieldOffset:]) {
+				t.Fatal("short command lost a complete, present validity group")
+			}
+			if test.mask == outputFlag0RightTrigger && test.flagOffset == 1 && delivered.TriggerR2Mode != 100 ||
+				test.mask == outputFlag0LeftTrigger && test.flagOffset == 1 && delivered.TriggerL2Mode != 100 {
+				t.Fatal("short complete trigger command left typed state inconsistent")
+			}
+		})
+	}
+}
+
+func TestDualSenseV5NativeCommandAdmissionAllocatesZero(t *testing.T) {
+	if raceEnabled {
+		t.Skip("race instrumentation allocates; allocation contract is tested without -race")
+	}
+	dev, err := New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer := newDualSenseOutputWriter(nil, nil, nil)
+	dev.setV5OutputCallbacks(1, writer.EnqueueOutputState, nil, nil, nil)
+	var report [OutputReportSize]byte
+	report[0], report[1] = ReportIDOutput, 0x03
+	for _, length := range []int{5, OutputReportSize} {
+		allocations := testing.AllocsPerRun(1000, func() {
+			if handled, accepted := dev.TryHandleOutputCommand(EndpointOut, [8]byte{}, report[:length]); !handled || !accepted {
+				t.Fatal("native command not admitted")
+			}
+			writer.drainOrderedControl()
+		})
+		if allocations != 0 {
+			t.Fatalf("native command length %d allocated %.2f objects", length, allocations)
+		}
+	}
+}
+
+func TestDualSenseV5OutputAdmissionOnlyClaimsNativeHidPaths(t *testing.T) {
+	for _, gamepadOnly := range []bool{false, true} {
+		dev, err := New(nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if gamepadOnly {
+			dev.descriptor = makeGamepadOnlyDescriptor(false)
+		}
+		var hidInterface byte
+		for _, iface := range dev.descriptor.Interfaces {
+			if iface.Descriptor.BInterfaceClass == 0x03 {
+				hidInterface = iface.Descriptor.BInterfaceNumber
+				break
+			}
+		}
+		writer := newDualSenseOutputWriter(nil, nil, nil)
+		dev.setV5OutputCallbacks(1, writer.EnqueueOutputState, nil, nil, nil)
+		var report [OutputReportSize]byte
+		report[0], report[1], report[3] = ReportIDOutput, 0x03, 17
+		setup := [8]byte{hidClassOUT, hidSetReport, ReportIDOutput,
+			reportTypeOutput, hidInterface, 0, OutputReportSize, 0}
+		if handled, accepted := dev.TryHandleOutputCommand(0, setup, report[:]); !handled || !accepted {
+			t.Fatalf("native EP0 SET_REPORT not admitted (gamepadOnly=%t)", gamepadOnly)
+		}
+		writer.requestStop()
+		before := dev.outputState
+		report[3] = 18
+		if handled, accepted := dev.TryHandleOutputCommand(0, setup, report[:]); !handled || accepted {
+			t.Fatal("EP0 accepted output into a stopped stream")
+		}
+		for _, endpoint := range []uint8{EndpointHapticsAudioOut, EndpointMicrophoneIn & 0x0f, EndpointIn & 0x0f} {
+			if handled, _ := dev.TryHandleOutputCommand(endpoint, setup, report[:]); handled {
+				t.Fatalf("native output admission claimed unrelated endpoint %d", endpoint)
+			}
+		}
+		for _, offset := range []int{0, 1, 2, 3, 4, 5, 6} {
+			unrelated := setup
+			unrelated[offset] ^= 0x80
+			if handled, _ := dev.TryHandleOutputCommand(0, unrelated, report[:]); handled {
+				t.Fatalf("native output admission claimed unrelated control setup % x", unrelated)
+			}
+		}
+		if dev.outputState != before {
+			t.Fatal("unhandled or stopped command changed native state")
+		}
+		writer.drainOrderedControl()
+	}
+}
+
+func TestDualSenseV5NativeCommandsSurviveMediaResetAndRetireWithWriter(t *testing.T) {
+	server, client := net.Pipe()
+	writer := newDualSenseOutputWriter(server, nil, nil)
+	feedback := OutputState{}
+	feedback.RawOutputReport[0] = ReportIDOutput
+	for index := 0; index < dualSenseOutputControlQueueCapacity; index++ {
+		feedback.RawOutputReport[3] = byte(index)
+		if !writer.EnqueueOutputState(feedback) {
+			t.Fatalf("native command %d not admitted", index)
+		}
+	}
+	media, speaker := testV5Media(1)
+	writer.EnqueueAtomicAudioHaptics(media, speaker)
+	writer.EnqueueRealtimeHaptics(media)
+	if len(writer.audio) != 1 || len(writer.realtimeHaptics) != 1 {
+		t.Fatal("full native command queue starved independent media admission")
+	}
+	writer.ResetSpeaker()
+	if len(writer.control) != dualSenseOutputControlQueueCapacity {
+		t.Fatal("audio reset discarded admitted native commands")
+	}
+	go writer.Run()
+	writer.Stop()
+	_ = client.Close()
+	if writer.EnqueueOutputState(feedback) || len(writer.control) != 0 ||
+		len(writer.controlFree) != dualSenseOutputControlQueueCapacity {
+		t.Fatal("session stop retained native commands or admitted a stale callback")
 	}
 }
 
@@ -294,7 +608,11 @@ func TestDualSenseV5WriterAlternatesControlAndMedia(t *testing.T) {
 	server, client := net.Pipe()
 	writer := newDualSenseOutputWriter(server, nil, nil)
 	for index := 0; index < 4; index++ {
-		writer.EnqueueControl(StreamFrameOutputState, []byte{byte(index)})
+		command := OutputState{RumbleSmall: byte(index)}
+		command.RawOutputReport[0] = ReportIDOutput
+		if !writer.EnqueueOutputState(command) {
+			t.Fatal("native command admission unexpectedly failed")
+		}
 		feedback, speaker := testV5Media(byte(index))
 		writer.EnqueueAtomicAudioHaptics(feedback, speaker)
 	}

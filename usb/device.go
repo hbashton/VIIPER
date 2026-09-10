@@ -32,6 +32,20 @@ type ControlDevice interface {
 	HandleControl(bmRequestType, bRequest uint8, wValue, wIndex, wLength uint16, data []byte) (resp []byte, handled bool)
 }
 
+// OutputCommandAdmissionDevice optionally supplies fixed-cost, nonblocking
+// admission for native output commands. It is consulted only for validated,
+// active interrupt OUT or endpoint-zero OUT requests, never ISO or input.
+// Unhandled preserves legacy routing. A handled rejection must make no state
+// change and receives a no-space completion with zero actual length; it does
+// not disconnect the USB/IP stream. Host retry is not guaranteed: overload is
+// an explicit failed submission, not a promise of later delivery. Accepted
+// means the device owns a copied
+// command, not that physical presentation has already completed. Implementers
+// must not retain setup/data aliases or wait for downstream I/O.
+type OutputCommandAdmissionDevice interface {
+	TryHandleOutputCommand(endpoint uint8, setup [8]byte, data []byte) (handled, accepted bool)
+}
+
 // ControlTransactionDirection identifies the USB/IP envelope direction of an
 // endpoint-zero submission independently of bmRequestType. A transactional
 // device must validate that the two agree for the request it claims.

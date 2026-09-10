@@ -80,7 +80,7 @@ type DualSense struct {
 	atomicAudioHapticsFunc       func(OutputState, []byte)
 	realtimeHapticsFunc          func(OutputState)
 	speakerResetFunc             func()
-	transportOutputFunc          func(OutputState)
+	transportOutputFunc          func(OutputState) bool
 	transportAtomicAudioFunc     func(OutputState, []byte, uint64)
 	transportRealtimeHapticsFunc func(OutputState, uint64)
 	transportSpeakerResetFunc    func(uint64)
@@ -287,7 +287,7 @@ func (d *DualSense) SetSpeakerResetCallback(f func()) {
 // registration. The generation guard means a displaced stream can finish its
 // deferred cleanup without clearing the replacement stream's callbacks.
 func (d *DualSense) setV5OutputCallbacks(streamGeneration uint64,
-	output func(OutputState),
+	output func(OutputState) bool,
 	atomicAudio func(OutputState, []byte, uint64),
 	realtimeHaptics func(OutputState, uint64),
 	resetSpeaker func(uint64)) {
@@ -1311,6 +1311,31 @@ func (d *DualSense) HandleControl(bmRequestType, bRequest uint8, wValue, wIndex,
 	return nil, false
 }
 
+// TryHandleOutputCommand owns only native HID output admission. The USB/IP
+// reader can report a full feedback queue without blocking input/ISO ingestion
+// or falsely acknowledging a command whose partial fields were discarded.
+func (d *DualSense) TryHandleOutputCommand(endpoint uint8,
+	setup [8]byte, out []byte) (handled, accepted bool) {
+	if endpoint == EndpointOut&0x0f {
+		return true, d.handleOutputReport(out)
+	}
+	if endpoint != 0 || setup[0] != hidClassOUT || setup[1] != hidSetReport ||
+		binary.LittleEndian.Uint16(setup[2:4]) != uint16(reportTypeOutput)<<8|uint16(ReportIDOutput) {
+		return false, false
+	}
+	// Leave malformed or differently addressed control requests to the existing
+	// control policy; this seam must not claim feature or enumeration traffic.
+	interfaceNumber := binary.LittleEndian.Uint16(setup[4:6])
+	if interfaceNumber > 0xff || int(binary.LittleEndian.Uint16(setup[6:8])) != len(out) {
+		return false, false
+	}
+	iface, exists := d.descriptor.Interface(uint8(interfaceNumber))
+	if !exists || iface.Descriptor.BInterfaceClass != 0x03 {
+		return false, false
+	}
+	return true, d.handleOutputReport(out)
+}
+
 func (d *DualSense) handleOutputReport(out []byte) bool {
 	var normalized [OutputReportSize]byte
 	report, ok := normalizeOutputReportInto(out, &normalized)
@@ -1318,19 +1343,25 @@ func (d *DualSense) handleOutputReport(out []byte) bool {
 		return false
 	}
 	d.outputMu.Lock()
-	feedback := d.mergeOutputReport(report)
-	mediaState := d.outputState
-	d.outputMu.Unlock()
-	d.mediaMu.Lock()
-	d.mediaOutputState = mediaState
-	d.mediaMu.Unlock()
+	feedback, mediaState := d.mergeOutputReport(report)
 	d.callbackMu.RLock()
 	transportOutputFunc := d.transportOutputFunc
 	outputFunc := d.outputFunc
+	// The transport callback is fixed-cost queue admission, never socket I/O
+	// or a wait. Keep its registration current and the candidate snapshot private
+	// until admission succeeds, so a rejected command cannot leak via later audio.
+	if transportOutputFunc != nil && !transportOutputFunc(feedback) {
+		d.callbackMu.RUnlock()
+		d.outputMu.Unlock()
+		return false
+	}
+	d.outputState = mediaState
+	d.mediaMu.Lock()
+	d.mediaOutputState = mediaState
+	d.mediaMu.Unlock()
 	d.callbackMu.RUnlock()
-	if transportOutputFunc != nil {
-		transportOutputFunc(feedback)
-	} else if outputFunc != nil {
+	d.outputMu.Unlock()
+	if transportOutputFunc == nil && outputFunc != nil {
 		outputFunc(feedback)
 	}
 	return true
@@ -1365,12 +1396,18 @@ var featureGetHandlers = map[byte]func(*DualSense) []byte{
 	featureIDCommandResponse: (*DualSense).featureReportCommandResponse,
 }
 
-func (d *DualSense) mergeOutputReport(out []byte) OutputState {
+func (d *DualSense) mergeOutputReport(out []byte) (OutputState, OutputState) {
+	// The V5 wire image has fixed size, but short HID writes only authorize
+	// complete fields actually present in the source. Clear validity for an
+	// incomplete group before padding, so absent trigger/LED bytes cannot become
+	// an invented zero command. Keep the original bound for cumulative merging.
+	var command [OutputReportSize]byte
+	copy(command[:], out)
+	clearIncompleteOutputValidity(&command, len(out))
+	out = command[:min(len(out), OutputReportSize)]
 	feedback := d.outputState
 	clear(feedback.BluetoothCombinedOutputReport[:])
-	if len(out) >= OutputReportSize {
-		mergeRawOutputReport(&feedback.RawOutputReport, out)
-	}
+	mergeRawOutputReport(&feedback.RawOutputReport, out)
 
 	if len(out) > 4 {
 		flag0 := out[1]
@@ -1394,7 +1431,7 @@ func (d *DualSense) mergeOutputReport(out []byte) OutputState {
 			feedback.PlayerLeds = out[44]
 		}
 	}
-	if len(out) > 31 {
+	if len(out) >= outputRightTriggerOffset+outputTriggerLength {
 		flag0 := out[1]
 		if flag0&0x04 != 0 {
 			feedback.TriggerR2Mode = out[11]
@@ -1406,7 +1443,7 @@ func (d *DualSense) mergeOutputReport(out []byte) OutputState {
 			feedback.TriggerR2PressedStrength = out[17]
 			feedback.TriggerR2Frequency = out[20]
 		}
-		if flag0&0x08 != 0 {
+		if flag0&0x08 != 0 && len(out) >= outputLeftTriggerOffset+outputTriggerLength {
 			feedback.TriggerL2Mode = out[22]
 			feedback.TriggerL2StartResistance = out[23]
 			feedback.TriggerL2EffectForce = out[24]
@@ -1417,19 +1454,51 @@ func (d *DualSense) mergeOutputReport(out []byte) OutputState {
 			feedback.TriggerL2Frequency = out[31]
 		}
 	}
-	d.outputState = feedback
+	mediaState := feedback
 	// The persistent snapshot above feeds VIIPER's atomic audio/haptics
 	// assembler, where independently flagged USB fields must remain coherent.
 	// The ordinary output callback has a different contract: it represents the
 	// exact SET_REPORT update issued by the game. Returning the accumulated
 	// snapshot there replayed one-shot trigger and LED-release validity bits on
 	// later rumble/audio writes. Keep the two contracts separate.
-	copy(feedback.RawOutputReport[:], out[:OutputReportSize])
-	return feedback
+	feedback.RawOutputReport = command
+	return feedback, mediaState
+}
+
+func clearIncompleteOutputValidity(command *[OutputReportSize]byte, length int) {
+	if length >= OutputReportSize {
+		return
+	}
+	for _, field := range [...]struct {
+		flagOffset int
+		mask       byte
+		end        int
+	}{
+		{outputFlag0Offset, outputFlag0RumbleMask, 5},
+		{outputFlag0Offset, outputFlag0HeadphoneVolume, 6},
+		{outputFlag0Offset, outputFlag0SpeakerVolume, 7},
+		{outputFlag0Offset, outputFlag0MicrophoneVolume, 8},
+		{outputFlag0Offset, outputFlag0AudioControl, 9},
+		{outputFlag0Offset, outputFlag0RightTrigger, outputRightTriggerOffset + outputTriggerLength},
+		{outputFlag0Offset, outputFlag0LeftTrigger, outputLeftTriggerOffset + outputTriggerLength},
+		{outputFlag1Offset, outputFlag1MicrophoneLed, 10},
+		{outputFlag1Offset, outputFlag1PowerSave, 11},
+		{outputFlag1Offset, outputFlag1HapticsLowPass, 41},
+		{outputFlag1Offset, outputFlag1MotorPower, 38},
+		{outputFlag1Offset, outputFlag1AudioControl2, 39},
+		{outputFlag1Offset, outputFlag1PlayerLeds, outputPlayerLedsOffset + 1},
+		{outputFlag1Offset, outputFlag1Lightbar, outputLightbarOffset + 3},
+		{outputFlag2Offset, outputFlag2LightbarBrightness, 44},
+		{outputFlag2Offset, outputFlag2LightbarSetup, 43},
+	} {
+		if length < field.end {
+			command[field.flagOffset] &^= field.mask
+		}
+	}
 }
 
 func mergeRawOutputReport(snapshot *[OutputReportSize]byte, update []byte) {
-	if snapshot == nil || len(update) < OutputReportSize ||
+	if snapshot == nil || len(update) < 5 ||
 		update[0] != ReportIDOutput {
 		return
 	}
@@ -1441,7 +1510,10 @@ func mergeRawOutputReport(snapshot *[OutputReportSize]byte, update []byte) {
 
 	flag0 := update[outputFlag0Offset]
 	flag1 := update[outputFlag1Offset]
-	flag2 := update[outputFlag2Offset]
+	var flag2 byte
+	if len(update) > outputFlag2Offset {
+		flag2 = update[outputFlag2Offset]
+	}
 
 	// Rumble selector bits form one contract. Replace that selector only when
 	// the host actually mentions it; a trigger-only report must not clear it.

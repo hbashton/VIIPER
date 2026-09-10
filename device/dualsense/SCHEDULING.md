@@ -153,8 +153,8 @@ cannot create an events alias can query the narrow
 
 ## Lock partition and ordering
 
-There is no required nested lock order; subsystem locks must be acquired one at
-a time and released before acquiring another:
+Subsystem locks are acquired one at a time except for the bounded native HID
+command-admission boundary described below:
 
 | Lock | State |
 | --- | --- |
@@ -165,7 +165,25 @@ a time and released before acquiring another:
 | `microphoneMu` | microphone feature state and bounded jitter buffer |
 | `callbackMu` | callback registrations and stream-generation ownership |
 
-Callbacks are copied under `callbackMu`, then invoked after it and every
-subsystem lock have been released. Diagnostics snapshot each subsystem under
-its own short lock and only then construct maps or JSON. No device lock is held
-during USB/IP response I/O, V5 socket I/O, waits, logging, or callbacks.
+Native HID admission holds `outputMu`, then `callbackMu` for reading, while its
+internal V5 sink performs fixed-cost queue admission. After admission succeeds,
+it briefly acquires `mediaMu` to publish the same cumulative snapshot. No other
+path acquires these locks in reverse order. A rejected command changes neither
+the persistent output state nor the media snapshot. This internal sink must
+never do I/O, wait for capacity, log, or invoke an external callback.
+
+All arbitrary/external callbacks, including legacy `SetOutputCallback`, are
+copied under `callbackMu`, then invoked after it and every subsystem lock have
+been released. Diagnostics snapshot each subsystem under its own short lock
+and only then construct maps or JSON. No device lock is held during USB/IP
+response I/O, V5 socket I/O, waits, logging, or arbitrary/external callbacks.
+
+Exact native HID commands use the fixed 32-buffer ordered control lane; plain
+cumulative snapshots retain latest-state behavior, and media lanes retain their
+independent scheduling. Short writes authorize only complete validity groups
+present in their source bytes; padding must not synthesize absent fields. The
+shared USB/IP reader never waits for output capacity. Native interrupt OUT and
+exact HID SET_REPORT admission failures complete with ENOSPC and zero actual
+length, without disconnecting the stream or committing the rejected command.
+Host retry is not guaranteed; overload is an explicit failed submission, not
+silent success or a promise of eventual physical delivery.

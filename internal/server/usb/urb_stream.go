@@ -273,6 +273,30 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 			continue
 		}
 
+		// Native output command queues cannot discard partial SET_REPORT updates
+		// or wait here: this reader also ingests input, ISO media and UNLINK.
+		// Explicit bounded admission preserves ordinary burst ordering and reports
+		// real overload to the submitting host without retiring the whole stream.
+		if dir == usbip.DirOut && !isIso && (ep == 0 ||
+			activeBinding.descriptor.BMAttributes&0x03 == 0x03) {
+			if admission, ok := dev.(usb.OutputCommandAdmissionDevice); ok {
+				var commandSetup [8]byte
+				copy(commandSetup[:], setup)
+				if handled, accepted := admission.TryHandleOutputCommand(uint8(ep), commandSetup, outPayload); handled {
+					status, actualLength := int32(0), uint32(len(outPayload))
+					if !accepted {
+						status, actualLength = errNoSpace, 0
+					}
+					responseScratch = buildRetSubmitPacket(responseScratch, seq,
+						status, actualLength, nil, nil, false)
+					if err := responses.write(responseScratch, true, time.Now()); err != nil {
+						return err
+					}
+					continue
+				}
+			}
+		}
+
 		if ep == 0 {
 			var handled bool
 			var err error

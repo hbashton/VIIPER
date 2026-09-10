@@ -296,18 +296,22 @@ func (w *dualSenseOutputWriter) acquireCopiedFrameBuffer(
 }
 
 func (w *dualSenseOutputWriter) enqueueOutputState(frameType byte,
-	feedback OutputState, realtime bool, generation uint64) {
-	if !realtime {
-		w.enqueueLatestOutputState(feedback)
-		return
+	feedback OutputState, realtime bool, generation uint64) bool {
+	// A raw HID SET_REPORT is an exact validity-bearing command, not a
+	// replaceable snapshot. Combining a pulse with its stop, or a trigger
+	// update with a later LED-only report, destroys the first command.
+	nativeCommand := feedback.RawOutputReport[0] == ReportIDOutput &&
+		feedback.BluetoothCombinedOutputReport[0] != BluetoothCombinedHapticsReportID
+	if !realtime && !nativeCommand {
+		return w.enqueueLatestOutputState(feedback)
 	}
 	if realtime && !w.prepareMediaGeneration(generation) {
-		return
+		return false
 	}
 	w.enqueueLock.RLock()
 	defer w.enqueueLock.RUnlock()
 	if w.stopped {
-		return
+		return false
 	}
 	queue := w.control
 	free := w.controlFree
@@ -319,12 +323,12 @@ func (w *dualSenseOutputWriter) enqueueOutputState(frameType byte,
 	}
 	buffer := w.acquireCopiedFrameBuffer(queue, free, pool)
 	if buffer == nil {
-		return
+		return false
 	}
 	buffer = buffer[:OutputStateV5Size]
 	if err := feedback.MarshalV5Into(buffer); err != nil {
 		free <- buffer[:cap(buffer)]
-		return
+		return false
 	}
 	frame := dualSenseOutputFrame{
 		frameType:        frameType,
@@ -335,14 +339,16 @@ func (w *dualSenseOutputWriter) enqueueOutputState(frameType byte,
 	}
 	if !w.enqueueFrameLocked(queue, frame) {
 		w.release(frame)
+		return false
 	}
+	return true
 }
 
-func (w *dualSenseOutputWriter) enqueueLatestOutputState(feedback OutputState) {
+func (w *dualSenseOutputWriter) enqueueLatestOutputState(feedback OutputState) bool {
 	w.enqueueLock.RLock()
 	defer w.enqueueLock.RUnlock()
 	if w.stopped {
-		return
+		return false
 	}
 	w.outputStateMu.Lock()
 	if w.hasLatestOutput {
@@ -354,20 +360,20 @@ func (w *dualSenseOutputWriter) enqueueLatestOutputState(feedback OutputState) {
 		case w.outputSignal <- struct{}{}:
 		default:
 		}
-		return
+		return true
 	}
 	var buffer []byte
 	select {
 	case buffer = <-w.latestOutputFree:
 	default:
 		w.outputStateMu.Unlock()
-		return
+		return false
 	}
 	buffer = buffer[:OutputStateV5Size]
 	if err := feedback.MarshalV5Into(buffer); err != nil {
 		w.latestOutputFree <- buffer[:cap(buffer)]
 		w.outputStateMu.Unlock()
-		return
+		return false
 	}
 	frame := dualSenseOutputFrame{
 		frameType: StreamFrameOutputState,
@@ -381,10 +387,14 @@ func (w *dualSenseOutputWriter) enqueueLatestOutputState(feedback OutputState) {
 	case w.outputSignal <- struct{}{}:
 	default:
 	}
+	return true
 }
 
-func (w *dualSenseOutputWriter) EnqueueOutputState(feedback OutputState) {
-	w.enqueueOutputState(StreamFrameOutputState, feedback, false, 0)
+// EnqueueOutputState never waits for socket backpressure. A false result for
+// a native command must reach USB admission; it must not be acknowledged or
+// committed into the device's cumulative media snapshot.
+func (w *dualSenseOutputWriter) EnqueueOutputState(feedback OutputState) bool {
+	return w.enqueueOutputState(StreamFrameOutputState, feedback, false, 0)
 }
 
 func (w *dualSenseOutputWriter) EnqueueRealtimeHapticsState(feedback OutputState) {
