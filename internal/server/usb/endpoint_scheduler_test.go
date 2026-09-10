@@ -28,8 +28,9 @@ type schedulerTestDevice struct {
 
 type generationSchedulerTestDevice struct {
 	*schedulerTestDevice
-	generation atomic.Uint64
-	rejected   atomic.Uint64
+	generation   atomic.Uint64
+	rejected     atomic.Uint64
+	rejectedWake chan struct{}
 }
 
 type fakeEndpointClock struct {
@@ -397,6 +398,12 @@ func (d *generationSchedulerTestDevice) HandleIsoOutTransfer(
 ) bool {
 	if generation != d.generation.Load() {
 		d.rejected.Add(1)
+		if d.rejectedWake != nil {
+			select {
+			case d.rejectedWake <- struct{}{}:
+			default:
+			}
+		}
 		return false
 	}
 	d.HandleTransfer(context.Background(), 1, usbip.DirOut, payload)
@@ -1157,13 +1164,16 @@ func TestIsoOutUnlinkReleasesLaterJobAndResetInvalidatesGeneration(t *testing.T)
 
 func TestIsoOutDeviceGenerationRejectsResetRace(t *testing.T) {
 	base := &schedulerTestDevice{desc: testCompositeDescriptor()}
-	device := &generationSchedulerTestDevice{schedulerTestDevice: base}
+	device := &generationSchedulerTestDevice{
+		schedulerTestDevice: base, rejectedWake: make(chan struct{}, 1),
+	}
 	device.generation.Store(1)
+	clock := newFakeEndpointClock(time.Unix(250, 0))
 	recorder := newRecordingWriter()
 	ctx, cancel := context.WithCancel(context.Background())
-	worker := newEndpointWorker(
+	worker := newEndpointWorkerWithClock(
 		ctx, device, 1, usbip.DirOut, isoOutWorker, time.Millisecond,
-		192, newResponseWriter(recorder, nil), func(error) {},
+		192, newResponseWriter(recorder, nil), func(error) {}, clock,
 	)
 	defer func() {
 		cancel()
@@ -1172,21 +1182,35 @@ func TestIsoOutDeviceGenerationRejectsResetRace(t *testing.T) {
 	}()
 
 	packets := []usbip.IsoPacketDescriptor{{Length: 1}}
+	firstService := clock.Now().Add(4 * time.Millisecond)
 	require.True(t, worker.enqueueWithGeneration(
-		501, 1, []byte{0x51}, packets, time.Now().Add(4*time.Millisecond), 1,
+		501, 1, []byte{0x51}, packets, firstService, 1,
 	))
+	clock.waitForDeadline(t, firstService)
 	device.generation.Store(2) // Device reset wins the service-boundary race.
-	time.Sleep(10 * time.Millisecond)
+	clock.advance(4 * time.Millisecond)
+	// A wall-clock sleep cannot establish that the worker has run. Observe its
+	// actual rejection, while the fake clock makes reset-before-service exact.
+	select {
+	case <-device.rejectedWake:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for old-generation ISO rejection")
+	}
 	recorder.mu.Lock()
 	require.Empty(t, recorder.writes)
 	recorder.mu.Unlock()
 	require.Equal(t, uint64(1), device.rejected.Load())
 
 	require.True(t, worker.enqueueWithGeneration(
-		502, 1, []byte{0x52}, packets, time.Now(), 2,
+		502, 1, []byte{0x52}, packets, clock.Now(), 2,
 	))
+	clock.waitForDeadline(t, clock.Now().Add(time.Millisecond))
+	clock.advance(time.Millisecond)
+	clock.waitForDeadline(t, clock.Now().Add(time.Millisecond))
+	clock.advance(time.Millisecond)
 	writes := recorder.waitForWrites(t, 1)
 	require.Equal(t, uint32(502), binary.BigEndian.Uint32(writes[0].packet[4:8]))
+	require.Equal(t, uint64(1), device.rejected.Load())
 	base.mu.Lock()
 	require.Equal(t, [][]byte{{0x52}}, base.isoOutPayloads)
 	base.mu.Unlock()
