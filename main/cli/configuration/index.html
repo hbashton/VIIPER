@@ -830,6 +830,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#legacy-update-setting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Legacy update setting
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#server-configuration" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1819,6 +1830,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#legacy-update-setting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Legacy update setting
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#server-configuration" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2001,6 +2023,13 @@
 </tr>
 </tbody>
 </table>
+<h3 id="legacy-update-setting">Legacy update setting</h3>
+<p>VIIPER no longer checks for, downloads, or installs its own updates. The update
+dialog and its installer action have been removed. The legacy <code>--update-notify</code>
+flag, <code>VIIPER_UPDATE_NOTIFY</code> environment variable, and saved configuration values
+are still accepted for compatibility, but are ignored and normalize to <code>none</code>.
+No update-dismissal file is read or written; existing files are left untouched.
+The tray's normal startup-registration and Quit actions are unchanged.</p>
 <h3 id="server-configuration">Server Configuration</h3>
 <table>
 <thead>
@@ -2096,7 +2125,7 @@ Generate a starter file (default configuration) with:</p>
 <p>For an isolated configuration selection, use <code>--config-only</code> together with
 exactly one command-line <code>--config</code> specifying an absolute <code>.json</code>, <code>.yaml</code>,
 <code>.yml</code>, or <code>.toml</code> file:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="p">.\</span><span class="n">viiper</span><span class="p">.</span><span class="n">exe</span> <span class="p">-</span><span class="n">-config-only</span> <span class="p">-</span><span class="n">-config</span> <span class="s1">'C:\Lab\server.json'</span> <span class="p">-</span><span class="n">-update-notify</span><span class="p">=</span><span class="n">none</span> <span class="n">server</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="p">.\</span><span class="n">viiper</span><span class="p">.</span><span class="n">exe</span> <span class="p">-</span><span class="n">-config-only</span> <span class="p">-</span><span class="n">-config</span> <span class="s1">'C:\Lab\server.json'</span> <span class="n">server</span>
 </code></pre></div>
 <p>The file must already exist, be a readable regular file with no linked/reparse
 ancestors, and contain valid configuration. A missing, unreadable, or malformed
@@ -2104,7 +2133,7 @@ file fails closed; no fallback location is consulted. JSON and YAML must contain
 one document with an object/mapping root. <code>VIIPER_CONFIG</code> alone does not satisfy
 this explicit selection. Environment variables and other CLI flags still override
 values in the chosen file. This is not whole-server isolation: use an explicit
-key file, disable update checks, and control log destinations separately.</p>
+key file and control log destinations separately.</p>
 <p>If --config is not provided, VIIPER will search for configuration in this order and first-found is used for each format:</p>
 <ol>
 <li>Working directory: server.(json|yaml|yml|toml), proxy.(json|yaml|yml|toml), viiper.(json|yaml|yml|toml), config.(json|yaml|yml|toml)</li>
@@ -2136,9 +2165,9 @@ VIIPER generates a random 16-character password on first start and displays it i
 file without reading or writing the default password location. Explicit invalid,
 unreadable, or empty key files fail closed; only a missing file is generated,
 using exclusive creation so an existing key cannot be overwritten. This does
-not isolate other configuration, logging, update-cache, or tray-startup behavior.
+not isolate other configuration, logging, or tray-startup behavior.
 See <a href="../server/#--key-file">the server key-file option</a> for a local lab example and
-the limits of <code>--config</code> and <code>--update-notify=none</code>.</p>
+the limits of <code>--config</code> and <code>--config-only</code>.</p>
 <h3 id="localhost-exemption">Localhost Exemption</h3>
 <p>By default, clients connecting from <code>localhost</code>, <code>127.0.0.1</code>, or <code>::1</code> do NOT require authentication (they can optionally provide it).<br />
 To require authentication even for localhost connections, use <code>--api.require-local-host-auth=true</code>.</p>
