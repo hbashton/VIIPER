@@ -1,0 +1,2544 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Virtual Input over IP EmulatoR - Documentation">
+      
+      
+        <meta name="author" content="Peter Repukat">
+      
+      
+      
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Dormant Stage-B retained USB submission boundary - VIIPER Documentation</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../stylesheets/extra.css">
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#dormant-stage-b-retained-usb-submission-boundary" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="VIIPER Documentation" class="md-header__button md-logo" aria-label="VIIPER Documentation" data-md-component="logo">
+      
+  <img src="../../viiper.svg" alt="logo">
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            VIIPER Documentation
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Dormant Stage-B retained USB submission boundary
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/hbashton/VIIPER" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    hbashton/VIIPER
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../.." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../getting-started/installation/" class="md-tabs__link">
+          
+  
+  
+  Getting Started
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../cli/overview/" class="md-tabs__link">
+          
+  
+  
+  CLI Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../api/overview/" class="md-tabs__link">
+          
+  
+  
+  API & Clients
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../libviiper/overview/" class="md-tabs__link">
+          
+  
+  
+  libVIIPER
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../devices/xbox360/" class="md-tabs__link">
+          
+  
+  
+  Devices
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../misc/support/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Community & Support
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../changelog/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Changelog
+
+      </a>
+    </li>
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="VIIPER Documentation" class="md-nav__button md-logo" aria-label="VIIPER Documentation" data-md-component="logo">
+      
+  <img src="../../viiper.svg" alt="logo">
+
+    </a>
+    VIIPER Documentation
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/hbashton/VIIPER" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    hbashton/VIIPER
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Getting Started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/installation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/quickstart/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quick Start
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    CLI Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../cli/overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../cli/server/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Server Command
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../cli/proxy/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Proxy Command
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../cli/codegen/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Code Generation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../cli/configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API & Clients
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    API & Clients
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../clients/go/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Go Client
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../clients/cpp/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    C++ Client Library
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../clients/csharp/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    C# Client Library
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../clients/rust/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Rust Client Library
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../clients/typescript/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    TypeScript Client Library
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../clients/generator/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Generator Documentation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    libVIIPER
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    libVIIPER
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../libviiper/overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devices/xbox360/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Xbox 360 Controller
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devices/dualshock4/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    DualShock 4
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devices/dualsense/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    DualSense
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devices/ns2pro/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Switch 2 Pro Controller
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devices/keyboard/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Keyboard
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devices/mouse/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Mouse
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Devices
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Devices
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devices/xbox360/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Xbox 360 Controller
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devices/dualshock4/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    DualShock 4
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devices/dualsense/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    DualSense
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devices/ns2pro/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Switch 2 Pro Controller
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devices/keyboard/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Keyboard
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devices/mouse/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Mouse
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../misc/support/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Community & Support
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../changelog/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Changelog
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#decision" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Decision
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#boundary-roles" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Boundary roles
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Boundary roles">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#concrete-dormant-contract-shape" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Concrete dormant contract shape
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#fixed-ownership-and-queue-bounds" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fixed ownership and queue bounds
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#job-states" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Job states
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#lock-and-callback-order" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Lock and callback order
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#unlink-and-endpoint-lifecycle" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Unlink and endpoint lifecycle
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#connection-and-whole-device-lifecycle" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Connection and whole-device lifecycle
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#required-tests-before-any-adapter-binding" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Required tests before any adapter binding
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Required tests before any adapter binding">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#queue-and-ownership" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Queue and ownership
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#reader-progress-and-cross-lane-ordering" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Reader progress and cross-lane ordering
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#serializer-and-unlink-races" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Serializer and unlink races
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#endpoint-and-whole-session-lifecycle" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Endpoint and whole-session lifecycle
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#compatibility" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Compatibility
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#implementation-status-and-recommendation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Implementation status and recommendation
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="dormant-stage-b-retained-usb-submission-boundary">Dormant Stage-B retained USB submission boundary</h1>
+<p>Status update (2026-09-01): the Stage-B.1 arbiter, Stage-B.2 lifecycle, and
+Xbox three-lane owner are now connected to the production USB/IP command reader
+only through explicit retained-device plus nonzero-authority opt-in. The Xbox
+wrapper remains absent from registry/API product creation. No driver, Windows
+binding, hardware conformance, or latency claim follows from transport routing.</p>
+<h2 id="decision">Decision</h2>
+<p>The smallest safe boundary is one opt-in, connection-scoped retained
+submission arbiter covering all three mutually ordered lanes:</p>
+<ol>
+<li>endpoint zero;</li>
+<li>one exact interrupt-IN descriptor binding; and</li>
+<li>one exact interrupt-OUT descriptor binding.</li>
+</ol>
+<p>For an opted-in device, endpoint zero and interrupt OUT must move off the sole
+USB/IP command reader together. Interrupt IN is already asynchronous, but it
+must leave the independent endpoint worker and join the same arbiter. This is
+an all-or-nothing route selection for those exact bindings.</p>
+<p>Either endpoint zero or interrupt OUT may reach final admission and discover
+that a preceding upstream or local action must finish first. If either remains
+synchronous, the command reader cannot ingest the interrupt-IN URB or
+<code>CMD_UNLINK</code> needed to make progress. Moving only OUT does not fix a waiting
+EP0 request; moving only EP0 does not fix a waiting OUT request. Giving the
+three lanes independent workers would also let goroutine scheduling decide
+which lane first acquires <code>responseWriter.mu</code>. One arbiter makes the actual
+serialized selection order explicit.</p>
+<p>Devices which do not opt in retain the current transactional EP0,
+transactional interrupt-OUT, prepared interrupt-IN, generic, and ISO behavior
+byte-for-byte. An opted-in device must not simultaneously claim an overlapping
+lane through <code>TransactionalControlDevice</code>, <code>TransactionalInterruptOutDevice</code>,
+or <code>PreparedSource</code>; import must reject that ambiguous ownership rather than
+choose a precedence.</p>
+<h2 id="boundary-roles">Boundary roles</h2>
+<p>The command reader remains the connection's only reader. It performs only
+wire framing, existing envelope/descriptor validation, exact active-binding
+lookup, immutable copying into bounded scheduler storage, enqueue, and
+<code>CMD_UNLINK</code> dispatch. It never calls the retained device owner and never waits
+for device protocol progress.</p>
+<p>The retained arbiter is the only code which stages a device ticket, chooses a
+lane for a late admission attempt, or calls the late response serializer. A
+future owner contract needs five value-oriented operations:</p>
+<ul>
+<li>construction-time route and storage limits;</li>
+<li>pure <code>Stage</code>, which copies the request facts it needs and returns an opaque,
+  generation-bound ticket without selecting a device action;</li>
+<li>late <code>Prepare</code>, which runs under response serialization and returns Pending,
+  Data, successful no-payload completion, or STALL;</li>
+<li>exactly-once <code>Complete(ticket, delivered)</code> for a terminal preparation; and</li>
+<li>exactly-once <code>Retire(ticket, reason)</code> when endpoint or session ownership is
+  lost before admission.</li>
+</ul>
+<p>Names above describe roles rather than a public Go interface. The internal
+value types reject zero, forged, stale, duplicate, cross-owner, cross-lane, and
+cross-session tickets. <code>Stage</code>, <code>Prepare</code>, <code>Complete</code>, and <code>Retire</code> must be
+bounded, nonblocking, perform no I/O, retain no server slice, and never call
+back into the server. <code>Prepare</code> alone may choose a protocol action. An IN job
+stores only host receive capacity; latest/ordered semantic input is sampled by
+the future adapter inside <code>Prepare</code>, never when the host URB is enqueued.</p>
+<p>Pending also needs an explicit level-triggered readiness contract. The owner
+must expose a session-lifetime latched wake channel with capacity at least one
+plus a monotonically increasing readiness epoch. A pending result may
+additionally supply one absolute retry
+deadline. The owner increments the epoch before signaling input arrival,
+local-executor completion, or protocol progress. The arbiter compares epochs
+before sleeping, so a signal racing the transition to sleep cannot be lost.
+A timer deadline must be strictly later than the attempt time; immediate
+Pending without a changed epoch is not retryable in the same scheduling round.</p>
+<h3 id="concrete-dormant-contract-shape">Concrete dormant contract shape</h3>
+<p>The smallest reviewable contract lives in the repository-internal neutral
+<code>internal/retainedusb</code> package, which future <code>device/...</code> adapters and
+<code>internal/server/usb</code> may import. It is not part of the broad <code>usb.Device</code>
+interface. The following is a condensed view of the implemented shape:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kd">type</span><span class="w"> </span><span class="nx">Lane</span><span class="w"> </span><span class="kt">uint8</span><span class="w"> </span><span class="c1">// Control, InterruptIn, InterruptOut</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="kd">type</span><span class="w"> </span><span class="nx">Limits</span><span class="w"> </span><span class="kd">struct</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">    </span><span class="nx">QueueDepth</span><span class="w">             </span><span class="p">[</span><span class="mi">3</span><span class="p">]</span><span class="kt">uint8</span><span class="w"> </span><span class="c1">// each 1..endpointQueueCapacity</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="w">    </span><span class="nx">BufferedRequestBytes</span><span class="w">   </span><span class="kt">uint32</span><span class="w">   </span><span class="c1">// aggregate, &lt;= maximumTransferSize</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="w">    </span><span class="nx">MaximumControlOut</span><span class="w">      </span><span class="kt">uint32</span>
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="w">    </span><span class="nx">MaximumControlResponse</span><span class="w"> </span><span class="kt">uint32</span>
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="w">    </span><span class="nx">MaximumInterruptIn</span><span class="w">     </span><span class="kt">uint32</span>
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="w">    </span><span class="nx">MaximumInterruptOut</span><span class="w">    </span><span class="kt">uint32</span>
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="w">    </span><span class="nx">InterruptInRoute</span><span class="w">       </span><span class="nx">Route</span>
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="w">    </span><span class="nx">InterruptOutRoute</span><span class="w">      </span><span class="nx">Route</span>
+<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="p">}</span>
+<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>
+<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a><span class="kd">type</span><span class="w"> </span><span class="nx">Request</span><span class="w"> </span><span class="kd">struct</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a><span class="w">    </span><span class="nx">Lane</span><span class="w">              </span><span class="nx">Lane</span>
+<a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a><span class="w">    </span><span class="nx">Direction</span><span class="w">         </span><span class="nx">Direction</span>
+<a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a><span class="w">    </span><span class="nx">SessionGeneration</span><span class="w"> </span><span class="kt">uint64</span>
+<a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a><span class="w">    </span><span class="nx">BindingGeneration</span><span class="w"> </span><span class="kt">uint64</span>
+<a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a><span class="w">    </span><span class="nx">IngressOrdinal</span><span class="w">    </span><span class="kt">uint64</span>
+<a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a><span class="w">    </span><span class="nx">Sequence</span><span class="w">          </span><span class="kt">uint32</span>
+<a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a><span class="w">    </span><span class="nx">TransferLength</span><span class="w">    </span><span class="kt">uint32</span>
+<a id="__codelineno-0-22" name="__codelineno-0-22" href="#__codelineno-0-22"></a><span class="w">    </span><span class="nx">Setup</span><span class="w">             </span><span class="p">[</span><span class="mi">8</span><span class="p">]</span><span class="kt">byte</span>
+<a id="__codelineno-0-23" name="__codelineno-0-23" href="#__codelineno-0-23"></a><span class="w">    </span><span class="nx">Route</span><span class="w">             </span><span class="nx">Route</span>
+<a id="__codelineno-0-24" name="__codelineno-0-24" href="#__codelineno-0-24"></a><span class="w">    </span><span class="nx">Data</span><span class="w">              </span><span class="p">[]</span><span class="kt">byte</span><span class="w"> </span><span class="c1">// exact read-only view, valid only during Stage</span>
+<a id="__codelineno-0-25" name="__codelineno-0-25" href="#__codelineno-0-25"></a><span class="p">}</span>
+<a id="__codelineno-0-26" name="__codelineno-0-26" href="#__codelineno-0-26"></a>
+<a id="__codelineno-0-27" name="__codelineno-0-27" href="#__codelineno-0-27"></a><span class="kd">type</span><span class="w"> </span><span class="nx">Ticket</span><span class="w"> </span><span class="kd">struct</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-0-28" name="__codelineno-0-28" href="#__codelineno-0-28"></a><span class="w">    </span><span class="nx">OwnerID</span><span class="w">           </span><span class="kt">uint64</span>
+<a id="__codelineno-0-29" name="__codelineno-0-29" href="#__codelineno-0-29"></a><span class="w">    </span><span class="nx">Token</span><span class="w">             </span><span class="kt">uint64</span>
+<a id="__codelineno-0-30" name="__codelineno-0-30" href="#__codelineno-0-30"></a><span class="w">    </span><span class="nx">Generation</span><span class="w">        </span><span class="kt">uint64</span>
+<a id="__codelineno-0-31" name="__codelineno-0-31" href="#__codelineno-0-31"></a><span class="w">    </span><span class="nx">SessionGeneration</span><span class="w"> </span><span class="kt">uint64</span>
+<a id="__codelineno-0-32" name="__codelineno-0-32" href="#__codelineno-0-32"></a><span class="w">    </span><span class="nx">Lane</span><span class="w">              </span><span class="nx">Lane</span>
+<a id="__codelineno-0-33" name="__codelineno-0-33" href="#__codelineno-0-33"></a><span class="p">}</span>
+<a id="__codelineno-0-34" name="__codelineno-0-34" href="#__codelineno-0-34"></a>
+<a id="__codelineno-0-35" name="__codelineno-0-35" href="#__codelineno-0-35"></a><span class="kd">type</span><span class="w"> </span><span class="nx">Preparation</span><span class="w"> </span><span class="kd">struct</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-0-36" name="__codelineno-0-36" href="#__codelineno-0-36"></a><span class="w">    </span><span class="nx">Result</span><span class="w">         </span><span class="nx">Result</span><span class="w"> </span><span class="c1">// Pending, Data, Success, Stall</span>
+<a id="__codelineno-0-37" name="__codelineno-0-37" href="#__codelineno-0-37"></a><span class="w">    </span><span class="nx">ActualLength</span><span class="w">   </span><span class="kt">uint32</span>
+<a id="__codelineno-0-38" name="__codelineno-0-38" href="#__codelineno-0-38"></a><span class="w">    </span><span class="nx">RetryAt</span><span class="w">        </span><span class="nx">time</span><span class="p">.</span><span class="nx">Time</span>
+<a id="__codelineno-0-39" name="__codelineno-0-39" href="#__codelineno-0-39"></a><span class="w">    </span><span class="nx">ReadinessEpoch</span><span class="w"> </span><span class="kt">uint64</span>
+<a id="__codelineno-0-40" name="__codelineno-0-40" href="#__codelineno-0-40"></a><span class="p">}</span>
+<a id="__codelineno-0-41" name="__codelineno-0-41" href="#__codelineno-0-41"></a>
+<a id="__codelineno-0-42" name="__codelineno-0-42" href="#__codelineno-0-42"></a><span class="kd">type</span><span class="w"> </span><span class="nx">Owner</span><span class="w"> </span><span class="kd">interface</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-0-43" name="__codelineno-0-43" href="#__codelineno-0-43"></a><span class="w">    </span><span class="nx">Identity</span><span class="p">()</span><span class="w"> </span><span class="kt">uint64</span>
+<a id="__codelineno-0-44" name="__codelineno-0-44" href="#__codelineno-0-44"></a><span class="w">    </span><span class="nx">Limits</span><span class="p">()</span><span class="w"> </span><span class="nx">Limits</span>
+<a id="__codelineno-0-45" name="__codelineno-0-45" href="#__codelineno-0-45"></a><span class="w">    </span><span class="nx">Stage</span><span class="p">(</span><span class="nx">Request</span><span class="p">)</span><span class="w"> </span><span class="p">(</span><span class="nx">Ticket</span><span class="p">,</span><span class="w"> </span><span class="kt">error</span><span class="p">)</span>
+<a id="__codelineno-0-46" name="__codelineno-0-46" href="#__codelineno-0-46"></a><span class="w">    </span><span class="nx">Prepare</span><span class="p">(</span><span class="nx">Ticket</span><span class="p">,</span><span class="w"> </span><span class="p">[]</span><span class="kt">byte</span><span class="p">,</span><span class="w"> </span><span class="nx">time</span><span class="p">.</span><span class="nx">Time</span><span class="p">)</span><span class="w"> </span><span class="p">(</span><span class="nx">Preparation</span><span class="p">,</span><span class="w"> </span><span class="kt">error</span><span class="p">)</span>
+<a id="__codelineno-0-47" name="__codelineno-0-47" href="#__codelineno-0-47"></a><span class="w">    </span><span class="nx">Complete</span><span class="p">(</span><span class="nx">Ticket</span><span class="p">,</span><span class="w"> </span><span class="kt">bool</span><span class="p">,</span><span class="w"> </span><span class="nx">time</span><span class="p">.</span><span class="nx">Time</span><span class="p">)</span><span class="w"> </span><span class="kt">error</span>
+<a id="__codelineno-0-48" name="__codelineno-0-48" href="#__codelineno-0-48"></a><span class="w">    </span><span class="nx">Retire</span><span class="p">(</span><span class="nx">Ticket</span><span class="p">,</span><span class="w"> </span><span class="nx">RetireReason</span><span class="p">,</span><span class="w"> </span><span class="nx">time</span><span class="p">.</span><span class="nx">Time</span><span class="p">)</span><span class="w"> </span><span class="kt">error</span>
+<a id="__codelineno-0-49" name="__codelineno-0-49" href="#__codelineno-0-49"></a><span class="w">    </span><span class="nx">Readiness</span><span class="p">()</span><span class="w"> </span><span class="p">(</span><span class="kt">uint64</span><span class="p">,</span><span class="w"> </span><span class="o">&lt;-</span><span class="kt">chan</span><span class="w"> </span><span class="kd">struct</span><span class="p">{})</span>
+<a id="__codelineno-0-50" name="__codelineno-0-50" href="#__codelineno-0-50"></a><span class="p">}</span>
+</code></pre></div>
+<p><code>Route</code> is an exact interface/alternate-setting/endpoint-address tuple, not
+merely an endpoint number. <code>Result</code> shapes mirror the already-reviewed late
+writer. The scheduler validates generic structure; the one Owner instance
+authenticates ticket identity and capability. There is no Unhandled or legacy
+fallback result after opt-in routing. Every Stage error is fatal: because the
+scheduler itself enforces one ticket per lane, an owner reporting lane busy
+means the two ownership ledgers disagree and must not be retried indefinitely.
+An errored, forged, or colliding Stage result never becomes transport-owned and
+must not receive per-ticket <code>Retire</code>: doing so could retire an accepted
+predecessor with the same tuple. The outer session-fatal cleanup owns any such
+owner-side ambiguity and retires already-accepted predecessor tickets once.</p>
+<p><code>Identity</code> is nonzero, stable for the owner lifetime, and unique across
+independent owner authorities. The exact import authority issues the nonzero
+session generation before the parked scheduler is constructed; it must never
+reuse or wrap it. <code>Readiness</code> returns the same
+session-lifetime, latched channel with capacity at least one on every call and
+a monotonically increasing, nonwrapping epoch; the owner advances the epoch
+before a nonblocking signal, where a full channel means an earlier wake is
+already pending, and Pending reports the current snapshot. A nil, unbuffered,
+closed, or changed channel, epoch regression, or <code>MaxUint64</code> epoch is
+connection-fatal.</p>
+<p>The whole-import lifecycle remains a separate contract. Folding it into
+<code>Owner</code> would encourage a hot-path ticket callback to perform teardown I/O.
+Stage-B.2 implements this repository-internal value shape:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="kd">type</span><span class="w"> </span><span class="nx">ImportLease</span><span class="w"> </span><span class="kd">struct</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">    </span><span class="nx">AuthorityID</span><span class="w">       </span><span class="kt">uint64</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">    </span><span class="nx">DeviceID</span><span class="w">          </span><span class="kt">uint64</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">    </span><span class="nx">OwnerID</span><span class="w">           </span><span class="kt">uint64</span>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="w">    </span><span class="nx">ImportToken</span><span class="w">       </span><span class="kt">uint64</span>
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="w">    </span><span class="nx">SessionGeneration</span><span class="w"> </span><span class="kt">uint64</span>
+<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="p">}</span>
+<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>
+<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="kd">type</span><span class="w"> </span><span class="nx">ImportSessionOwner</span><span class="w"> </span><span class="kd">interface</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="w">    </span><span class="nx">Identity</span><span class="p">()</span><span class="w"> </span><span class="kt">uint64</span>
+<a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="w">    </span><span class="nx">BindImport</span><span class="p">(</span><span class="nx">ImportLease</span><span class="p">,</span><span class="w"> </span><span class="nx">time</span><span class="p">.</span><span class="nx">Time</span><span class="p">)</span><span class="w"> </span><span class="p">(</span><span class="nx">ImportBindResult</span><span class="p">,</span><span class="w"> </span><span class="kt">error</span><span class="p">)</span>
+<a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a><span class="w">    </span><span class="nx">CancelAndDrain</span><span class="p">(</span><span class="nx">ImportLease</span><span class="p">,</span><span class="w"> </span><span class="nx">ImportCloseReason</span><span class="p">,</span><span class="w"> </span><span class="nx">time</span><span class="p">.</span><span class="nx">Time</span><span class="p">)</span><span class="w"> </span><span class="p">(</span>
+<a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a><span class="w">        </span><span class="nx">ImportDrainResult</span><span class="p">,</span><span class="w"> </span><span class="kt">error</span><span class="p">)</span>
+<a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a><span class="w">    </span><span class="nx">DisconnectNeutral</span><span class="p">(</span><span class="nx">ImportLease</span><span class="p">,</span><span class="w"> </span><span class="nx">ImportCloseReason</span><span class="p">,</span><span class="w"> </span><span class="nx">time</span><span class="p">.</span><span class="nx">Time</span><span class="p">)</span><span class="w"> </span><span class="p">(</span>
+<a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a><span class="w">        </span><span class="nx">ImportDisconnectResult</span><span class="p">,</span><span class="w"> </span><span class="kt">error</span><span class="p">)</span>
+<a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a><span class="p">}</span>
+<a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a>
+<a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a><span class="kd">type</span><span class="w"> </span><span class="nx">ImportResetLease</span><span class="w"> </span><span class="kd">struct</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-1-19" name="__codelineno-1-19" href="#__codelineno-1-19"></a><span class="w">    </span><span class="nx">ImportLease</span><span class="w">     </span><span class="nx">ImportLease</span>
+<a id="__codelineno-1-20" name="__codelineno-1-20" href="#__codelineno-1-20"></a><span class="w">    </span><span class="nx">ResetToken</span><span class="w">      </span><span class="kt">uint64</span><span class="w"> </span><span class="c1">// authority-wide, never reused</span>
+<a id="__codelineno-1-21" name="__codelineno-1-21" href="#__codelineno-1-21"></a><span class="w">    </span><span class="nx">ResetGeneration</span><span class="w"> </span><span class="kt">uint64</span><span class="w"> </span><span class="c1">// exact per-import successor</span>
+<a id="__codelineno-1-22" name="__codelineno-1-22" href="#__codelineno-1-22"></a><span class="p">}</span>
+<a id="__codelineno-1-23" name="__codelineno-1-23" href="#__codelineno-1-23"></a>
+<a id="__codelineno-1-24" name="__codelineno-1-24" href="#__codelineno-1-24"></a><span class="kd">type</span><span class="w"> </span><span class="nx">ImportResetSessionOwner</span><span class="w"> </span><span class="kd">interface</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-1-25" name="__codelineno-1-25" href="#__codelineno-1-25"></a><span class="w">    </span><span class="nx">FenceAndDrainReset</span><span class="p">(</span><span class="nx">ImportResetLease</span><span class="p">,</span><span class="w"> </span><span class="nx">time</span><span class="p">.</span><span class="nx">Time</span><span class="p">)</span><span class="w"> </span><span class="kt">error</span>
+<a id="__codelineno-1-26" name="__codelineno-1-26" href="#__codelineno-1-26"></a><span class="w">    </span><span class="nx">ResetAndRestart</span><span class="p">(</span><span class="nx">ImportResetLease</span><span class="p">,</span><span class="w"> </span><span class="nx">time</span><span class="p">.</span><span class="nx">Time</span><span class="p">)</span><span class="w"> </span><span class="p">(</span><span class="nx">ImportResetResult</span><span class="p">,</span><span class="w"> </span><span class="kt">error</span><span class="p">)</span>
+<a id="__codelineno-1-27" name="__codelineno-1-27" href="#__codelineno-1-27"></a><span class="p">}</span>
+</code></pre></div>
+<p>The exact lease binds an issuing authority, an internal device key, the outer
+owner identity, a nonzero import token, and a nonzero session generation. The
+two counters never wrap; exhaustion rejects the reservation without advancing
+either one. <code>DeviceID</code> is only a key supplied to this dormant authority and is
+not a registry entry, USB identity, or public device identifier. The authority
+first reserves the lease against one exact pointer-backed object implementing
+both owner contracts. Before any scheduler callback or allocation, the
+reservation atomically transfers from Reserved to Building. Abort wins first
+and construction touches no owner, or build wins and plain abort can no longer
+orphan the resource. A failed build returns to exact abortable Reserved state;
+a successful build publishes one authority-owned Prepared scheduler which must
+be committed or cancelled through bounded <code>abortPrepared</code>.</p>
+<p>Commit authenticates the opaque reservation pointer, exact owner reference and
+identity, issued session generation, same authority-owned scheduler, and its
+never-started state before mandatory bounded <code>BindImport</code>. Exact Bound is
+followed by a separate bounded one-shot scheduler activation. Activation only
+permits the final claim attempt: while the session still owns the exact
+reservation, the scheduler synchronously rechecks that activation is Started,
+the worker is started and live, context is not cancelled, no terminal failure
+has been recorded, and the gate is still closed. Claimed is published under the
+session mutex before that scheduler-mutex-linearized check opens the gate. A
+worker which exits before this point therefore rejects commit rather than
+publishing a dead claimed session. Enqueue checks the gate while holding the
+scheduler mutex; close fences it under the same mutex before closing ingress,
+so no enqueue begun after the fence can acquire a slot. An exact Rejected result
+rolls back only after the gate, ingress, and scheduler prove terminal, while
+both counters remain burned.
+Bind or activation error, panic, timeout, malformed echo, cleanup ambiguity, or
+Quarantined retains the exact unpublished record in quarantine. If the owner
+may have reached Bound, failure cleanup additionally runs exact
+<code>CancelAndDrain</code> then <code>DisconnectNeutral</code>; a failed neutral remains
+quarantined. If scheduler stop/join itself is unproven, the outer boundary
+instead issues containment-only <code>CancelAndDrain</code>. That operation is valid after
+the outer fence was attempted but could not be proven because the owner first
+closes its own Stage/Prepare admission. The boundary accepts only an exact
+<code>ImportDrainQuarantined</code> acknowledgement and never calls neutral or releases.
+Drain and disconnect results echo the complete lease and immutable
+close reason. Safe disconnect is the only result which permits import release.</p>
+<p>Reversible whole-device reset is intentionally a third, optional contract; it
+cannot be satisfied by either terminal close method. The authority issues one
+exact nonwrapping reset token and successor reset generation only while the
+import is Claimed. The transaction directly latches the scheduler's atomic
+admission gate before waiting for any serializer work, invokes
+<code>FenceAndDrainReset</code> to close owner Stage/Prepare and join local execution,
+deadline-drains the response serializer and all retained tickets, then invokes
+<code>ResetAndRestart</code> to advance the canonical owner generation and deliver one
+successor-generation clear. Only an exact echoed Safe result followed by an
+exact callback-free scheduler revalidation can reopen admission. Exact repeats
+return the cached terminal result; stale/cross-import values are rejected. Any
+failure or ambiguity quarantines the retained session, and terminal containment
+may fence the local executor but cannot neutralize, release, or reopen it.</p>
+<p>The dormant server-side coordinator owns one ingress closer, one Stage-B.1
+scheduler, and the same combined owner object used by its hot tickets. It
+contains callback panic and absolute-deadline timeout at every outer phase.
+A callback which outlives its deadline cannot publish Claimed or reopen the
+revoked admission gate; the quarantined session strongly retains every exact
+reference and rejects a successor. Same-reason close, release, reservation
+abort, and prepared cancellation are idempotent at their permitted states. A
+different close reason, zero/forged/stale/cross-owner/cross-device/
+cross-session lease or reservation, malformed echoed result, split owner,
+predicted generation, or premature release is rejected without changing
+ownership.</p>
+<h2 id="fixed-ownership-and-queue-bounds">Fixed ownership and queue bounds</h2>
+<p>The opt-in scheduler is created before command ingestion and owns all of its
+slots, payload storage, response scratch, wake signal, timer, and one arbiter
+goroutine. The hard bounds are:</p>
+<ul>
+<li>at most <code>endpointQueueCapacity</code> (currently 64) raw jobs per lane;</li>
+<li>at most one device ticket per lane;</li>
+<li>at most one admitted response across the connection;</li>
+<li>a construction-time host-to-device byte budget no larger than
+  <code>maximumTransferSize</code> (currently 16 MiB) across EP0 and interrupt OUT; and</li>
+<li>construction-time per-route request and response maxima, each no larger than
+  the descriptor/envelope limit and the 16-MiB server ceiling.</li>
+</ul>
+<p>The future adapter must choose smaller protocol-backed maxima where possible.
+The scheduler preallocates its selected slot rings, byte arena, and largest
+response scratch before the first URB. Raw EP0 data and interrupt-OUT data are
+deep-copied; setup bytes, sequence, direction, transfer length, exact endpoint
+binding, binding generation, session generation, and one monotonic ingress
+ordinal are stored by value. IN consumes no request-payload budget.</p>
+<p>If a lane has no free slot or the byte budget cannot hold the complete request,
+the command reader emits one immediate <code>RET_SUBMIT</code> with <code>-ENOSPC</code>, zero actual
+length, and no owner callback. It never blocks waiting for capacity, silently
+drops a request, partially copies it, or falls through to legacy handling. A
+duplicate still-pending USB/IP sequence number or any counter exhaustion is a
+connection-fatal protocol/invariant error.</p>
+<h2 id="job-states">Job states</h2>
+<p>Each slot has one of these externally meaningful states:</p>
+<table>
+<thead>
+<tr>
+<th>State</th>
+<th>Owner</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Free</td>
+<td>scheduler</td>
+<td>no request or ticket</td>
+</tr>
+<tr>
+<td>RawQueued</td>
+<td>scheduler</td>
+<td>the complete host request is copied; no device capability exists</td>
+</tr>
+<tr>
+<td>Ticketed</td>
+<td>scheduler + device</td>
+<td>the head of this lane has one pure staged ticket and has not returned Pending</td>
+</tr>
+<tr>
+<td>Pending</td>
+<td>scheduler + device</td>
+<td>late preparation emitted nothing and retained the exact ticket</td>
+</tr>
+<tr>
+<td>Admitted</td>
+<td>response serializer + device</td>
+<td>final cancellation/generation checks won and a terminal image was selected</td>
+</tr>
+<tr>
+<td>Terminal</td>
+<td>none</td>
+<td>completion ran exactly once; the slot may be scrubbed and reused</td>
+</tr>
+<tr>
+<td>LifecycleRetired</td>
+<td>none</td>
+<td>raw ownership was discarded or the exact ticket was retired before admission</td>
+</tr>
+</tbody>
+</table>
+<p>Allowed transitions are:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>Free -&gt; RawQueued
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>RawQueued -&gt; Ticketed
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>RawQueued -&gt; LifecycleRetired
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>Ticketed -&gt; Pending
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>Pending -&gt; Ticketed                 (only after readiness changes/deadline)
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>Ticketed|Pending -&gt; Admitted
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>Ticketed|Pending -&gt; LifecycleRetired
+<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>Admitted -&gt; Terminal                (delivered or delivery-failed)
+<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a>Terminal|LifecycleRetired -&gt; Free
+</code></pre></div>
+<p>Only the FIFO head of a lane may become Ticketed. <code>Stage</code> runs under the
+scheduler lock, so unlink cannot observe a half-created capability. Later jobs
+in the same lane remain RawQueued and cannot overtake it. The arbiter examines
+the oldest ingress ordinal among the three lane heads, but a Pending head does
+not block a different lane. In one scheduling round, each unchanged pending
+ticket is attempted at most once. A terminal response, a new raw job, a changed
+readiness epoch, a due retry deadline, a local completion, or a lifecycle event
+starts another round. This prevents both head-of-line deadlock and busy-spin.</p>
+<h2 id="lock-and-callback-order">Lock and callback order</h2>
+<p>The only permitted nested order is:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>responseWriter.mu -&gt; retainedScheduler.mu -&gt; retained owner
+</code></pre></div>
+<p>Pure staging uses <code>retainedScheduler.mu -&gt; retained owner</code>. The owner never
+acquires a server lock or calls the transport. Unlink/reset may acquire the
+scheduler lock to mark a job retired, but must release it before acquiring the
+response writer to send its own reply. Whole-session callbacks run only after
+the arbiter and all response callbacks have drained.</p>
+<p>For one candidate job the arbiter calls
+<code>responseWriter.writeLateRetSubmit</code> with preallocated scratch and the job's
+validated maximum response:</p>
+<ol>
+<li>The preparation callback revalidates slot identity, lane FIFO position,
+   exact endpoint binding generation, session generation, and cancellation
+   after any response-lock wait while <code>responseWriter.mu</code> and the scheduler
+   lock are held. Cancellation is sampled again after bounded owner Prepare
+   and before terminal admission.</li>
+<li>It calls owner <code>Prepare</code> with an exact-length/exact-capacity payload window.</li>
+<li>Pending leaves the job Pending and returns <code>lateResponsePending</code>; it writes,
+   flushes, and completes nothing. After releasing both locks, the scheduler
+   verifies that the owner's published readiness epoch has reached the epoch
+   reported by Pending; a future/unpublished snapshot is fatal.</li>
+<li>Data, Success/ZLP, or STALL is checked against the original lane and host
+   envelope, then changes the job to Admitted before the callback returns.</li>
+<li><code>writeLateRetSubmit</code> writes the exact <code>RET_SUBMIT</code>, performs its mandatory
+   flush, and calls completion exactly once with the real delivery result while
+   serializer ownership remains held.</li>
+<li>Completion calls owner <code>Complete</code>. An owner error is connection-fatal. A
+   successful callback makes the slot Terminal and wakes the arbiter.</li>
+</ol>
+<p>Lane shapes are strict: interrupt IN may return Data only; interrupt OUT may
+return Success acknowledging exactly the copied OUT length or STALL with zero;
+EP0 may return Data, Success/ZLP, or STALL as allowed by its setup direction and
+host capacities. Data always has a nonzero length; control ZLP uses Success.
+EP0 OUT is accepted only when setup <code>wLength</code>, the copied data
+length, and USB/IP transfer length agree exactly. No terminal image may exceed
+the original USB/IP transfer
+length, setup <code>wLength</code>, endpoint capacity, owner maximum, or server maximum.</p>
+<p>A preparation error cannot fall through. The connection fails, the exact
+ticket is retired if it never became Admitted, and session teardown owns the
+remaining protocol boundary. A successful terminal preparation remains
+Terminal even when socket write or flush fails because its exactly-once
+completion already received <code>delivered=false</code>.</p>
+<h2 id="unlink-and-endpoint-lifecycle">Unlink and endpoint lifecycle</h2>
+<p><code>CMD_UNLINK</code> must search both the retained scheduler and existing non-owned
+endpoint workers. USB/IP sequence numbers are unique within the live session.</p>
+<ul>
+<li>RawQueued, Ticketed, or Pending: atomically mark LifecycleRetired. Ticketed
+  and Pending call owner <code>Retire</code> exactly once. Emit no target <code>RET_SUBMIT</code>, then
+  emit <code>RET_UNLINK</code> with the existing removed status (<code>-ECONNRESET</code>).</li>
+<li>Admitted or Terminal: unlink has lost. The target response and completion
+  remain first under <code>responseWriter.mu</code>; <code>RET_UNLINK</code> follows with the existing
+  not-removed status (zero).</li>
+<li>A race where the arbiter owns <code>responseWriter.mu</code> but has not passed its
+  scheduler revalidation is decided by the scheduler state: unlink may mark
+  retirement, causing late preparation to return Pending/no-write; otherwise
+  admission wins and unlink cannot cancel it.</li>
+</ul>
+<p>A delivered, accepted transactional lifecycle control response keeps the
+current ordering: owner completion commits first; the current EP0 job becomes
+Terminal; affected raw/ticketed/pending endpoint jobs are retired; presentation
+generations and endpoint generations advance; and only then are server
+configuration/alternate-setting routes published. These operations remain
+under response serialization. STALL, admission error, write/flush failure, or
+completion error changes no server routing.</p>
+<p><code>CLEAR_FEATURE(ENDPOINT_HALT)</code> retires only the exact endpoint direction.
+<code>SET_INTERFACE</code> retires all bindings of the affected interface before the new
+alternate route is visible. <code>SET_CONFIGURATION</code> retires non-EP0 endpoint jobs
+before the new configuration is visible; later queued EP0 requests remain
+valid because endpoint zero persists. None of these requests is a USB bus
+reset, disconnect, or reconnect, and none may call an authoritative
+whole-device reset merely to simplify cleanup.</p>
+<h2 id="connection-and-whole-device-lifecycle">Connection and whole-device lifecycle</h2>
+<p>The current production import lease remains unchanged: its token is hidden in
+an unconditional release closure and its counter wraps to one. Stage-B.2 does
+not reuse or route that legacy mechanism. Its dormant exact authority and
+session coordinator implement this required order:</p>
+<ol>
+<li>Reserve one exact nonwrapping import/session capability for one combined
+   owner object.</li>
+<li>Build and authenticate a parked scheduler from the issued generation, bind
+   the owner, activate the scheduler once, publish Claimed, then perform the
+   synchronous liveness-linearized ingress open described above.</li>
+<li>On read failure, write failure, context cancellation, or explicit detach,
+   fence scheduler admission under its enqueue mutex and advance to Closing.</li>
+<li>Close ingress to unblock any active read/write, then close and join the arbiter,
+   let every Admitted job complete once with <code>delivered=false</code> where needed,
+   and retire every remaining RawQueued/Ticketed/Pending job.</li>
+<li>Synchronously cancel and drain any device-local executor. Only after no
+   response, local lease, or staged ticket remains may the owner begin the
+   authoritative Disconnect boundary and deliver its one neutral/clear action.
+   A failed ingress/scheduler boundary still solicits bounded containment drain,
+   but must skip neutralization and release even when that drain is acknowledged.</li>
+<li>Release the exact import lease only after the disconnect/neutral boundary reaches
+   its proven terminal state. Failure quarantines the device/session and must
+   not permit a successor import to overtake an uncleared predecessor.</li>
+</ol>
+<p>The coordinator states are Reserved, Building, Prepared, PreparedAborting,
+Committing, Claimed, ReservationAborted, BindRejected, Closing, IngressStopped,
+SchedulerClosed, LocalDrained, Neutralized, Released, and Quarantined. Only
+Claimed can execute terminal close; a close which first arrives while an exact
+reset is active latches its immutable reason, blocks another reset, and resumes
+from Claimed only after that reset reaches Safe. A short observer deadline may
+expire without quarantining the owning reset, while a reset failure completes
+the already-latched close as Quarantined. An internal stale holder cannot
+resurrect an aborted, rejected, or quarantined transaction. All
+uncertainty retains the exact active record; an old idempotent release compares
+the full capability and session object, so it cannot delete a successor after
+a safe close.</p>
+<p>The dormant Xbox owner now exposes exact cancel-and-drain,
+DisconnectNeutral/one-clear, and reconnect behavior over its one canonical
+coordinator. It also exposes the optional two-phase exact reset owner described
+above. The reset flow is separate from terminal close:</p>
+<ol>
+<li><code>fenceReset</code> atomically closes import admission without waiting for
+   <code>scheduler.mu</code> or the response serializer; a submission already past the
+   gate is predecessor work.</li>
+<li><code>FenceAndDrainReset</code> closes owner admission, reversibly cancels and joins
+   local execution, and stops the owner worker while leaving exact retained
+   tickets owned.</li>
+<li><code>resetAndDrain</code> deadline-acquires the serializer, lets an already-active
+   response reach its exact completion, and retires all remaining control,
+   interrupt-IN, and interrupt-OUT jobs with <code>RetireDeviceReset</code>.</li>
+<li><code>ResetAndRestart</code> advances the owner exactly once and requires terminal
+   delivery of its one successor-generation neutral/clear before owner
+   admission can reopen.</li>
+<li><code>reopenAfterReset</code> validates the same reservation, reset capability, empty
+   lanes, live scheduler, and closed gate before reopening. It performs no
+   callback and no rollback is possible after quarantine.</li>
+</ol>
+<p>A forged, stale, cross-import, unissued, or pre-start expired reset returns the
+echoed capability with <code>ImportResetInvalid</code> and performs no containment or
+admission change. <code>ImportResetQuarantined</code> is reserved for a transaction which
+actually entered the reset boundary and then proved containment without Safe;
+the two states are not interchangeable even when both carry an error.
+The same distinction applies to terminal owner callbacks: rejected drain and
+disconnect credentials return their <code>Invalid</code> states, while <code>Quarantined</code>
+requires the exact import to have reached its containment boundary.</p>
+<p>The reversible bus-reset seam remains deliberately unrouted. The pinned
+usbip-win2 0.9.7.7 UdeCx source
+defines a post-enumeration reset callback, but
+<code>drivers/ude/device.cpp:493</code> comments out its registration because the server
+returns <code>EPIPE</code>. Its <code>device_ioctl.cpp:506-515,558-574</code> special EP0 OUT
+<code>SET_FEATURE(PORT_RESET)</code> encoding is therefore not a usable reset event and is
+not treated as a generic USB/IP or MS-GIPUSB wire requirement. The registered
+link-power/function-suspend callbacks and VHCI D0 callbacks only trace and
+return success; they send no server notification. USB/IP currently provides no
+usable bus-reset or suspend/resume callback to VIIPER, so none is synthesized
+from configuration, interface, pipe-clear, connection-close, or cancellation.</p>
+<h2 id="required-tests-before-any-adapter-binding">Required tests before any adapter binding</h2>
+<p>All tests use a scripted fake retained owner and in-memory USB/IP streams. No
+registry or hardware is involved.</p>
+<h3 id="queue-and-ownership">Queue and ownership</h3>
+<ul>
+<li>Deep-copy EP0 setup/data and interrupt-OUT data, then overwrite the command
+  reader scratch before staging.</li>
+<li>Prove per-lane FIFO, one ticket per lane, immutable ingress ordinals, exact
+  binding/session generations, slot/byte overflow <code>-ENOSPC</code>, duplicate sequence
+  rejection, counter exhaustion, scrubbing, and zero steady-state allocation.</li>
+<li>Inject every Stage error, including an owner-side lane-busy mismatch, and
+  prove fail-closed connection retirement with no fallback or later staging.</li>
+</ul>
+<h3 id="reader-progress-and-cross-lane-ordering">Reader progress and cross-lane ordering</h3>
+<ul>
+<li>Hold an OUT job Pending on an upstream prerequisite, send a later IN URB, and
+  prove the reader ingests it, IN carries the prerequisite, and OUT ACK follows.</li>
+<li>Repeat with a waiting EP0 job. These are the regression proofs that EP0 and
+  OUT must move together.</li>
+<li>Prove an unchanged Pending ticket is attempted once per round, another lane
+  can progress, same-lane FIFO is preserved, readiness-before-wait is not lost,
+  and timer wake does not spin or reorder.</li>
+</ul>
+<h3 id="serializer-and-unlink-races">Serializer and unlink races</h3>
+<ul>
+<li>Cover exact Data, ZLP, OUT acknowledgement, and STALL images; bounds and stale
+  tail clearing; mandatory flush; short/no-progress writes; delivery plus
+  completion failure; preparation error; and panic containment.</li>
+<li>Unlink RawQueued, Ticketed, and Pending jobs and prove one retirement, no
+  target response, and removed <code>RET_UNLINK</code>.</li>
+<li>Gate immediately before scheduler revalidation and immediately after
+  Admitted, proving unlink respectively wins or loses and response-stream order
+  is exact.</li>
+</ul>
+<h3 id="endpoint-and-whole-session-lifecycle">Endpoint and whole-session lifecycle</h3>
+<ul>
+<li>For delivered CLEAR_HALT, SET_INTERFACE, and SET_CONFIGURATION, assert the
+  observable order: owner completion, current EP0 terminal, affected ticket
+  retirement, generation rotation, route publication.</li>
+<li>For STALL and every delivery/completion failure, assert no route mutation.</li>
+<li>Prove endpoint/interface/configuration retirement scopes and that none calls
+  the whole-device reset hook.</li>
+<li>For the dormant reset capability, prove the atomic ingress latch cannot wait
+  behind blocked control/IN/OUT preparation; every raw, staged, pending,
+  admitted, and terminal predecessor is completed or retired exactly once;
+  selected and retrying clears fence reset; and no cross-generation ticket or
+  local action replays.</li>
+<li>Prove reset waits for local execution and serializer drain, delivers exactly
+  one successor clear without a successor URB, and reopens only for the exact
+  capability after terminal delivery. Inject scheduler cancellation ambiguity,
+  blocked local reset callbacks, stale and repeated reset,
+  reset/sequence/clear-epoch exhaustion, first-reason close intent during reset,
+  a second-reset overtake attempt, and reset/close/import races; every
+  ambiguity must retain quarantine without neutral or release.</li>
+<li>Close the connection from every job state and during local execution; prove
+  exactly-once failed completion/retirement, worker join, one disconnect clear,
+  and delayed import release. A failed neutral must quarantine and reject a
+  successor import.</li>
+<li>Stress unlink/reset/close/admission races under <code>-race</code>, shuffled repeated
+  runs, forged/stale tickets, and a successor session rejecting every old
+  generation artifact.</li>
+<li>Race exact abort against parked scheduler construction and prove one winner:
+  abort-before-build performs no scheduler callback, while build-before-abort
+  transfers cleanup ownership explicitly. Inject activation error, panic, and
+  timeout after Bound; prove admission revocation, transport cleanup, terminal
+  owner drain/neutral attempt, late-return fencing, and successor rejection.</li>
+</ul>
+<h3 id="compatibility">Compatibility</h3>
+<ul>
+<li>Preserve byte-equivalence for every non-opt-in EP0, transactional OUT,
+  prepared IN, generic endpoint, and ISO path.</li>
+<li>Reject overlapping old/new ownership at import.</li>
+<li>Assert the only production call site is the explicit retained import branch;
+  registry imports, product identities, automatic attach paths, and hardware
+  operations remain absent.</li>
+</ul>
+<p>Passing these tests would establish only the generic dormant job and lifecycle
+boundary and scripted device-owner behavior. It would not establish production
+Xbox routing, Windows API visibility, GIP framing/reassembly, latency, physical
+feedback delivery, or hardware conformance.</p>
+<h2 id="implementation-status-and-recommendation">Implementation status and recommendation</h2>
+<p><strong>Implemented dormant Stage-B.1:</strong> the repository-internal hot-owner value
+contract, bounded three-lane state machine/arbiter, scripted fake-owner tests,
+direct use of <code>writeLateRetSubmit</code>, and a dormancy test proving the constructor
+has no non-test call site. It accepts an externally supplied nonzero session
+generation and exposes scope-retirement operations without knowing about
+import registration.</p>
+<p><strong>Implemented dormant Stage-B.2:</strong> the separate <code>ImportLease</code> and
+<code>ImportSessionOwner</code> value contract; one pointer-exact combined owner;
+nonwrapping exact reservation; exclusive Building/Prepared ownership; bounded
+prepared cancellation; mandatory Bind; one-shot scheduler activation; a
+synchronous failure/close-linearized admission open; and an enqueue-linearized
+admission fence before ordered close. Scripted and real-scheduler tests cover
+abort/build races and failed construction; bind acceptance, rejection, and
+ambiguity; activation error, panic, timeout, late return, pre-publication worker
+exit, and error/panic/malformed admission open; bound-owner drain/neutral
+cleanup; every outer state and
+represented job state; concurrent close; exact reason; failed neutral; delayed
+release; successor quarantine; stale/forged/cross-session capabilities;
+counter exhaustion; exactly-once outer callbacks; one pending-ticket
+retirement; and no duplicate terminal completion. A source scan proves both
+Stage-B.2 constructors have only their declarations in production Go files and
+that <code>server.go</code>/<code>urb_stream.go</code> do not reference the boundary.</p>
+<p><strong>Implemented dormant reversible reset:</strong> an optional <code>ImportResetLease</code>,
+reset scheduler, and two-phase reset owner form one exact offline transaction.
+The ingress latch is atomic and independent of serializer ownership; local
+execution is fenced before serializer/ticket drain; exact predecessor tickets
+are retired before the canonical generation boundary; and one authenticated
+successor clear must reach terminal delivery before exact reopen. Timeout,
+panic, malformed echo, cancellation ambiguity, late return, or exhaustion
+quarantines without release. This is a local lifecycle policy with no
+production reset-notification caller.</p>
+<p><strong>Implemented dormant Xbox owner:</strong> <code>DormantRetainedUSBAdapter</code> implements both
+contracts on one owner reference for exactly EP0, interrupt IN, and interrupt
+OUT. It adopts only the reserved session lease, delegates all selection to the
+existing persona coordinator, samples semantic input only during final
+Prepare, routes typed feedback to a separate local executor, uses one bounded
+drain and one disconnect clear, implements the optional reversible-reset
+phases, and quarantines every ambiguous terminal. Its tests cover golden
+protocol flow, forged/stale capabilities, reset retirement, active/staged/
+pending reset races, exact successor clear, feedback, readiness, allocation,
+completion/retire faults, panic/close races, noncooperative executor deadlines,
+disconnect, and reconnect fencing.</p>
+<p>The production slice now adds a narrow pre-legacy import branch in <code>server.go</code>.
+It rejects overlapping ownership contracts, authenticates one exact bus/device
+snapshot, and owns the retained authority from reservation through terminal
+release. Conclusively legacy imports transfer back to the historical path
+before device callbacks, preserving their ownership and response behavior.</p>
+<p>The retained management/import cold path preflights the fixed one-interface,
+two-endpoint shape before allocating, copies only the bounded scalar topology,
+and uses that sealed value for the import reply, exact topology validation,
+and all later lifecycle classification. It never copies caller-sized legacy
+string, Microsoft OS, HID, IAD, class, or trailing descriptor collections. One
+per-device plus per-owner
+single-flight admission spans descriptor/capability/limits/identity/readiness,
+the live stream, and terminal teardown. A callback timeout, panic, ambiguous
+commit, or failed teardown permanently rejects both exact referents; competing
+aliases cannot enter callbacks. Successful per-registration device admission
+is released only after exact removal and the active lease join. Failed device
+proofs and all owner identity/limits/quarantine proofs deliberately remain
+latched until <code>Server.Close</code>; this prevents removal plus same-pointer re-add or
+a fresh wrapper around the same owner from erasing a contradiction. Exact safe
+BindRejected remains retryable.</p>
+<p>DEVLIST remains joined to server connection shutdown through its retained
+descriptor callbacks. API stream timeout, explicit device removal, and whole
+bus removal all route through the server-owned admission cleanup. Whole-bus
+removal atomically fences <code>Add</code>, drains exact device objects, and releases their
+admissions. Authorized one-shot retirement is exact and idempotent: a device
+already removed by an explicit device/bus operation is success, while an
+address-reuse successor is never selected. A failed UNLINK ticket retirement
+is latched as scheduler failure, forcing containment-only close rather than an
+unsafe neutral/release path. Owner claim and device association publish under
+one admission-map fence, so cleanup cannot orphan an active owner record.</p>
+<p>Virtual-bus ownership is incarnation-based rather than address- or
+pointer-based. Every successful <code>Add</code> receives a nonzero, nonwrapping opaque
+registration token bound to the bus pointer, context, device, and export
+metadata. Removal, API cleanup, descriptor snapshots, and one-shot retirement
+must authenticate that complete tuple. Empty-bus cleanup likewise owns one
+exact empty context, so an old timer cannot close a bus which became nonempty
+and empty again. API stream state keys include the exact bus pointer and
+registration token; terminal states are removed after their timers drain, and
+timer callbacks authenticate the captured state object plus generation before
+acting. Callback panics are contained at that asynchronous boundary.</p>
+<p>Explicit retained registration adds a private bus-bound lifecycle capability
+to that tuple. A bounded provisional Add is owned for duplicate/removal/close
+purposes but is undiscoverable to DEVLIST, address lookup, import selection,
+device enumeration, and context lookup until descriptor admission and exact
+authority revalidation publish it. The non-consuming preflight and bounded Add
+both reject unavailable nonzero 16-bit device-address or registration-token
+capacity. Warm operation acquisition authenticates the capability in O(1) with
+zero measured allocations. Removal marks it undiscoverable under the bus lock,
+then drains its operation fence without holding bus/server map locks; exact
+duplicate removal and concurrent bus/server close join the same completion.
+Typed-nil or dynamically non-comparable generic device identities are rejected
+before Add mutation.</p>
+<p>One cold server lifecycle watcher links exact registration-context cancellation
+back to retained admission cleanup when callers use the still-exported lower
+VirtualBus removal/Close APIs. Immediate same-pointer admission additionally
+reconciles a recognized inactive predecessor synchronously, so scheduler timing
+cannot manufacture Busy before the watcher runs. Rollback retires the exact
+recognized admission even if concurrent server bus removal already removed the
+topology mapping.</p>
+<p>Retained USB/IP framing validates the exact 16-bit bus and device components
+of the wire <code>devid</code> before any callback, body read, or sequence reservation.
+Unrepresentable retained topology is rejected before descriptor/capability
+admission. For a valid command, the sequence is reserved when its fixed header
+arrives and transferred atomically to the queued submission only after the
+remaining OUT/ISO body is consumed. A partial body therefore cannot allow a
+completed predecessor to free and reuse the same sequence. Endpoint topology
+also enforces the interrupt attribute byte and speed-specific EP0/interrupt
+packet and interval limits; unsupported SuperSpeed topology remains rejected
+because this fixed descriptor shape has no companion descriptors.</p>
+<p>Direct descriptor leases, DEVLIST leases, imports, and tracked connections all
+enter the server shutdown join before callback admission. <code>Close</code> first fences
+new buses and callbacks, then joins those leases. The connection wrapper runs
+the underlying <code>Close</code> exactly once and replays its complete result, while
+leaf-wise terminal classification suppresses only ordinary closed-connection
+leaves and preserves joined transport or teardown failures.</p>
+<p>EP0 lifecycle classification occurs when the control-lane FIFO reaches
+service, not when the command reader first sees the setup bytes. This makes a
+pipelined request observe the delivered configuration/alternate/halt state of
+its predecessor and stamps the current binding generation before owner Stage.
+Only a delivered successful lifecycle result rotates routing and retires the
+predecessor generation.</p>
+<p><strong>No-go</strong> remains for generic registry/API product exposure or a release claim.
+One explicit internal factory can now register exactly one caller-authorized
+retained Xbox wrapper only when the server's default-off authority, a
+representable existing bus, a free representable device address, and token
+capacity match; it exposes only semantic input and joining exact removal.
+Windows
+binding/API visibility, end-to-end latency, physical feedback, and reconnect
+provisioning are not established. The current authorized Xbox wrapper is
+explicitly one-shot and is removed from its bus after Safe disconnect rather
+than reusing a stopped executor.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.instant", "navigation.tracking", "navigation.tabs", "navigation.sections", "navigation.expand", "navigation.top", "search.suggest", "search.highlight", "content.code.copy"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"default": "stable", "provider": "mike"}}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>
