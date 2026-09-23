@@ -1,4 +1,4 @@
-# VIIPER 0.1.8-rc4.6.6 — Reliable Startup & Better Edge Support
+# VIIPER 0.1.9-rc4.6.6 — Reliable Startup & Better Edge Support
 
 - Improved startup and shutdown cleanup so failed or canceled attempts can be retried more reliably.
 - Added clearer startup failure information for DS4Windows.
