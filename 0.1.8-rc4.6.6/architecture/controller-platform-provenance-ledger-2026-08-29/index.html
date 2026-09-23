@@ -1,0 +1,2305 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Virtual Input over IP EmulatoR - Documentation">
+      
+      
+        <meta name="author" content="Peter Repukat">
+      
+      
+      
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Controller platform provenance ledger, 2026-08-29 - VIIPER Documentation</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../stylesheets/extra.css">
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#controller-platform-provenance-ledger-2026-08-29" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="VIIPER Documentation" class="md-header__button md-logo" aria-label="VIIPER Documentation" data-md-component="logo">
+      
+  <img src="../../viiper.svg" alt="logo">
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            VIIPER Documentation
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Controller platform provenance ledger, 2026-08-29
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/hbashton/VIIPER" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    hbashton/VIIPER
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../.." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../getting-started/installation/" class="md-tabs__link">
+          
+  
+  
+  Getting Started
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../cli/overview/" class="md-tabs__link">
+          
+  
+  
+  CLI Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../api/overview/" class="md-tabs__link">
+          
+  
+  
+  API & Clients
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../libviiper/overview/" class="md-tabs__link">
+          
+  
+  
+  libVIIPER
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../devices/xbox360/" class="md-tabs__link">
+          
+  
+  
+  Devices
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../misc/support/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Community & Support
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../changelog/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Changelog
+
+      </a>
+    </li>
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="VIIPER Documentation" class="md-nav__button md-logo" aria-label="VIIPER Documentation" data-md-component="logo">
+      
+  <img src="../../viiper.svg" alt="logo">
+
+    </a>
+    VIIPER Documentation
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/hbashton/VIIPER" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    hbashton/VIIPER
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Getting Started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/installation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/quickstart/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quick Start
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    CLI Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../cli/overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../cli/server/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Server Command
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../cli/proxy/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Proxy Command
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../cli/codegen/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Code Generation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../cli/configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API & Clients
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    API & Clients
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../clients/go/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Go Client
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../clients/cpp/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    C++ Client Library
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../clients/csharp/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    C# Client Library
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../clients/rust/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Rust Client Library
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../clients/typescript/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    TypeScript Client Library
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../clients/generator/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Generator Documentation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    libVIIPER
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    libVIIPER
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../libviiper/overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devices/xbox360/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Xbox 360 Controller
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devices/dualshock4/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    DualShock 4
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devices/dualsense/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    DualSense
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devices/ns2pro/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Switch 2 Pro Controller
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devices/keyboard/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Keyboard
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devices/mouse/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Mouse
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Devices
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Devices
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devices/xbox360/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Xbox 360 Controller
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devices/dualshock4/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    DualShock 4
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devices/dualsense/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    DualSense
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devices/ns2pro/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Switch 2 Pro Controller
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devices/keyboard/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Keyboard
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../devices/mouse/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Mouse
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../misc/support/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Community & Support
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../changelog/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Changelog
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#2026-09-01-retained-xbox-transport-update" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2026-09-01 retained Xbox transport update
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#mandatory-source-trace" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Mandatory source trace
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#september-5-native-xbox-activation-attempt-policy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        September 5: native Xbox activation attempt policy
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#clean-room-rules" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Clean-room rules
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#capture-fixture-manifest-requirement" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Capture fixture manifest requirement
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="controller-platform-provenance-ledger-2026-08-29">Controller platform provenance ledger, 2026-08-29</h1>
+<p>This ledger applies to the Xbox One/Series and physical Switch 2 work. A fact
+may be independently implemented only when its destination license and the
+source's grant permit it, or when it is a protocol fact recovered through a
+documented clean-room process. No external binary is a code donor by default.</p>
+<h2 id="2026-09-01-retained-xbox-transport-update">2026-09-01 retained Xbox transport update</h2>
+<p>September 5 native activation follow-up is project-authored lifecycle code,
+not donor controller-protocol code. It uses the existing pinned usbip-win2
+v.0.9.7.7 ABI from <code>7c219953101cc5d0ec9a0bcb3eb87259cf72bedd</code> (BSD-2-Clause)
+and Microsoft's documented overlapped operation/cancellation contracts:
+<a href="https://learn.microsoft.com/en-us/windows/win32/api/ioapiset/nf-ioapiset-deviceiocontrol">DeviceIoControl</a>,
+<a href="https://learn.microsoft.com/en-us/windows/win32/api/ioapiset/nf-ioapiset-cancelioex">CancelIoEx</a>,
+<a href="https://learn.microsoft.com/en-us/windows/win32/api/ioapiset/nf-ioapiset-getoverlappedresult">GetOverlappedResult</a>.
+No source implementation from those documents was copied. Payload/operation
+pinning and exact registration cleanup are VIIPER-local implementation. Tests
+substitute native calls and use local authenticated test streams; neither driver
+cancellation timing nor permanent successful-import retry cleanup is proven by
+those tests. Details/evidence are in the September 4 validation ledger's dated
+September 5 follow-up and the Xbox exact-removal API contract.</p>
+<p>The project-authored Xbox owner is now connected to VIIPER's production USB/IP
+reader through a narrow, explicit <code>retainedusb.ImportDevice</code> branch guarded by
+a nonzero server authority. This is transport composition, not product
+registration: no registry/API route creates the Xbox device, and no installer,
+driver, Windows binding, physical feedback, or hardware test was added here.</p>
+<p>The routed seam now proves offline:</p>
+<ul>
+<li>exact bus/device snapshot selection and descriptor/owner topology agreement;</li>
+<li>one retained owner for EP0 plus the exact interrupt IN/OUT pair, with legacy
+  ownership overlap rejected before import;</li>
+<li>complete request consumption, connection-wide live sequence uniqueness,
+  bounded queues, and one response/completion per admitted submission;</li>
+<li>delivered-only configuration/interface/halt publication with a cross-lane
+  response-visibility barrier and generation-bound retirement;</li>
+<li>inactive interrupt routes stall before owner dispatch, including USB Default
+  state and delivered unconfiguration;</li>
+<li>shutdown fences accepted preclassification and retained connections, joins
+  retained teardown, and returns drain/neutral failures while conclusively
+  legacy imports retain their historical ownership; and</li>
+<li>the currently authorized Xbox wrapper is one-shot and is removed from its
+  virtual bus only after Safe disconnect, so a stopped executor is not
+  re-imported or silently quarantined.</li>
+</ul>
+<p>The 2026-09-01 adversarial follow-up additionally closed joined-error masking,
+descriptor mutation/TOCTOU, concurrent pre-session callback entry, same-owner
+alias entry, pointer-address ABA, hotplug retention, and dependent pipelined
+EP0 lifecycle classification. The retained descriptor topology now requires
+one explicit nonzero configuration, interface 0/alternate 0, exactly the two
+declared interrupt routes, nonzero intervals, and no hidden IAD/HID/class or
+trailing descriptor payload. These are transport correctness results; they do
+not establish Windows Xbox binding or product registration.</p>
+<p>The follow-up capacity/lifecycle audit replaced the nominal descriptor deep
+copy with a fixed-shape preflight and scalar-only seal; kept retained DEVLIST
+callbacks inside the server shutdown join; routed API and whole-bus removal
+through exact admission cleanup; added an atomic closed-bus/Add fence; made
+safe one-shot absence idempotent without address-based successor removal;
+latched failed UNLINK retirement as a scheduler terminal fault; and made owner
+claim plus device association one cleanup-atomic publication.</p>
+<p>The final retained-seam audit added opaque exact registration and empty-bus
+incarnations, exact API stream/timer ownership with terminal-state deletion and
+panic containment, server-lifetime owner/failure proof latches, and shutdown
+joining for direct descriptor callbacks. It validates representable and exact
+USB/IP <code>devid</code> before callbacks or variable-length reads, reserves sequences at
+header arrival, enforces speed-specific fixed endpoint topology, preserves
+joined connection-close error leaves, and proves one-shot same-pointer
+re-registration plus actual loopback TCP shutdown/removal. These changes are
+project-local transport/lifecycle engineering; they add no external code or
+new donor dependency.</p>
+<p>The next default-off integration step adds one explicit internal Xbox factory,
+not a generic API registration. It preflights the exact retained authority and
+representable bus plus free 16-bit device-address and registration-token
+capacity before consuming the caller's one-shot identity authorization. A
+bounded provisional Add repeats the capacity checks atomically, remains
+undiscoverable while the retained seal admits its descriptor, and publishes
+only after exact authority/bus revalidation. A private bus-bound lifecycle
+capability provides O(1) warm operation authentication; two-phase marked
+removal and duplicate close/remove joins avoid holding bus/server map locks
+while operations drain. The broker handle returns only semantic input and
+joining exact removal. Generic Add rejects malformed dynamic identities before
+mutation. This is project-local composition and adds no external code or
+provenance dependency. Windows binding and product exposure remain gated.</p>
+<p>Current offline evidence: <code>go test -count=1 ./...</code>, <code>go vet ./...</code>, and the
+complete repository <code>go test -race -count=1 ./...</code> pass; the production retained
+Xbox/lifecycle/shutdown sequence passes 20 repetitions with <code>GOMAXPROCS=1</code>;
+and the complete API package passes 10 race-enabled repetitions after exact
+test bus teardown was added. The explicit factory/registration boundary also
+passes focused race-enabled repetitions and targeted single-processor stress;
+an independent adversarial review found no remaining correctness, security, or
+capacity blocker in the frozen retained seam and factory tranche. No hardware
+was exercised.
+End-to-end USB/IP latency, 500 Hz delivery, Windows API visibility, physical
+four-actuator feedback, reconnect provisioning, and release readiness remain
+unproven.</p>
+<table>
+<thead>
+<tr>
+<th>Source or artifact</th>
+<th>Exact pin / identity</th>
+<th>License observed</th>
+<th>Material used</th>
+<th>Allowed treatment</th>
+<th>Remaining risk</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>DS4Windows</td>
+<td><code>c216e9d71ed17c45bc07bb6d34e264c50d61cd69</code> baseline</td>
+<td>GPL version 3 (<code>LICENSE.txt</code>)</td>
+<td>local architecture and destination code</td>
+<td>modify under project license</td>
+<td>preserve upstream notices and user changes</td>
+</tr>
+<tr>
+<td>VIIPER core/server/lib</td>
+<td><code>9806b5a2dcbafe3dea161f255249779c4ab1124e</code> baseline</td>
+<td>GPL-3.0-or-later project grant</td>
+<td>destination code and current USB/IP architecture</td>
+<td>modify under project license</td>
+<td>generated/TCP clients have separate MIT grants; do not assume GPL code can enter them</td>
+</tr>
+<tr>
+<td>usbip-win2</td>
+<td><code>7c219953101cc5d0ec9a0bcb3eb87259cf72bedd</code>, tag <code>v.0.9.7.7</code></td>
+<td>BSD-2-Clause</td>
+<td>UDE architecture, receive/completion behavior</td>
+<td>source reuse is possible with notice; current work uses facts only</td>
+<td>keep exact installer/driver hashes and BSD notice with any redistributed source</td>
+</tr>
+<tr>
+<td>PadForge stable</td>
+<td><code>0794fd01bd19f4c096b982ffc824b88bce5ed743</code></td>
+<td>CC BY-NC-SA 4.0</td>
+<td>behavior, scheduling, comparison claims</td>
+<td>clean-room behavioral evidence only</td>
+<td>noncommercial/share-alike terms are not accepted for project code</td>
+</tr>
+<tr>
+<td>PadForge development</td>
+<td>branch <code>origin/v4-dev</code> at <code>b7f58cf852b4028eae582b14d2173b4b716a73ee</code>; focused feedback change <code>49377fb4</code>; per-profile host-loop changes <code>88686582</code>/<code>b7f58cf8</code></td>
+<td>CC BY-NC-SA 4.0</td>
+<td>development-only false-trigger release test, payload-sensitive diagnostic/jitter risk, and explicit 1/2/4/8/16 ms application-loop targets</td>
+<td>clean-room behavioral evidence only</td>
+<td>do not attribute development behavior to v4.3.2 or interpret a named 500 Hz loop option as physical/report/end-to-end evidence; fetched <code>latest-v4-dev</code> tag conflicted with the existing local tag, so the branch commit is authoritative here</td>
+</tr>
+<tr>
+<td>HIDMaestro stable/current authored source</td>
+<td><code>46054b862830fcec7bc98d72ccb7c4f0c0179fb1</code>; <code>9df50410230c11b410f43909ede0e5fc8b23d15b</code>; driver/companion/shared-memory/Microsoft-profile/latency components byte-identical, while common <code>HMController</code> changed for Valve/Triton raw routing; current WGI investigation document SHA-256 <code>DABC00BA3D424D4758E7A5B3163EFF19BB884761370D23193BDC7A920F3E1D18</code></td>
+<td>MIT</td>
+<td>two-motor/raw XUSB behavior, one latest seqlock snapshot with separate HID/XUSB doorbells, lossy 64-slot output ring, narrow latency harness, and source-reported Windows feedback compatibility limits</td>
+<td>no donor import: local typed feedback and scheduler contracts supersede it; patterns and compatibility results remain behavioral test references</td>
+<td>profiles, descriptors, reverse-engineered inbox bindings, global IPC ACLs, signed binaries, and third-party payloads need separate provenance; the WGI document's USB-parent explanation is an inference and its GameInput statements conflict internally</td>
+</tr>
+<tr>
+<td>PadForge stable/development SDL3.dll</td>
+<td>git blob <code>407c96df...</code>; SHA-256 <code>AE1FFD8C537ADDC190F7C874430488AE501665AFDCAC0297682F2B2F33243487</code>; file version 3.5.0.0</td>
+<td>binary grant not inferred solely from fork license</td>
+<td>identifies exact Switch 2 transport used by both branches</td>
+<td>audit/reference only</td>
+<td>source relationship is pinned to fork <code>d98c580...</code>, but custom BLE file has transcribed-source risk</td>
+</tr>
+<tr>
+<td>HIDMaestro stable DLL</td>
+<td>SHA-256 <code>BD42A99BCB260435CE25796C54A4B792F8A2CED6AB78659C0CF926011663938E</code></td>
+<td>not inferred from repository license alone</td>
+<td>identifies PadForge 4.3.2 payload</td>
+<td>audit/reference only</td>
+<td>binary build provenance and signing chain remain separate</td>
+</tr>
+<tr>
+<td>HIDMaestro development DLL</td>
+<td>SHA-256 <code>FA0517F4BDAABFE3EE93B8E6393215DAFC5622602430C244748BBC0FFBBF6055</code></td>
+<td>not inferred from repository license alone</td>
+<td>identifies PadForge development payload</td>
+<td>audit/reference only</td>
+<td>same risk as stable binary</td>
+</tr>
+<tr>
+<td>OpenXInput DLL bundled by PadForge</td>
+<td>SHA-256 <code>EF0124DF707564CB64AEE909374B67B429EC1B132DBC508F30155FB0091DDF47</code></td>
+<td>no normal OSS grant found</td>
+<td>competitor dependency identification</td>
+<td>do not redistribute, link, derive, or depend on it</td>
+<td>legal and supportability blocker</td>
+</tr>
+<tr>
+<td>Switch2Connect inherited protocol core</td>
+<td>current <code>4487322a306f04efa27682e3f3a508635a84fd98</code>; initial source <code>25f631fccc75df849b368e516f272890b40aad4a</code>; closely matching upstream <code>switch2-controllers</code> <code>e79720b6a3042f710b3a1c7470dc9575c42e560a</code></td>
+<td>current tree has GPL headers, but the matching upstream and initial core had no identified license</td>
+<td>behavior and corroborating Switch 2 facts from <code>controller.py</code>/<code>discoverer.py</code></td>
+<td>protocol facts only; do not copy implementation, static association payloads, control flow, or tables</td>
+<td>a later repository header cannot by itself establish rights to inherited expression; core also mixes protocol, UI, logging, I/O, and sensitive material</td>
+</tr>
+<tr>
+<td>Switch2Connect v2.6.1 discovery file</td>
+<td><code>688f8149ff5441efad713997def484c3cc5e90cc</code>, <code>src/discoverer.py:42,1606-1661</code></td>
+<td>explicit GPL-3.0-or-later file header</td>
+<td>BLE company ID <code>0x0553</code>, little-endian VID/PID offsets, minimum 16-byte manufacturer value, remembered-host bytes 10..15, and zero/local/foreign discovery classification</td>
+<td>facts independently expressed in DS4Windows' GPL destination; no callback/control-flow or bundled artifact copied</td>
+<td>advertisement host data is a discovery hint, not authentication, encryption, bond proof, or authority to change controller association</td>
+</tr>
+<tr>
+<td>Switch2Connect later file-level authored Python</td>
+<td>current <code>4487322a306f04efa27682e3f3a508635a84fd98</code>; <code>usb_hid_controller.py</code> introduced <code>430a3dd7ffbdedeab9eb116024d62ca92d3fd827</code>; <code>esp32_rumble_dispatcher.py</code> introduced <code>83fb9bf885b791ed5dc8dad2d99bca0f6d83b212</code></td>
+<td>explicit GPL-3.0-or-later file headers</td>
+<td>USB topology/lifecycle and newest-state/rolling-ID behavioral patterns</td>
+<td>deliberate adaptation is license-compatible with these GPL destinations only after preserving notice and independently validating every protocol/capture-derived fact; current implementation copies no donor expression</td>
+<td>do not inherit broadcast-to-all-PID writes, callback-blocking reads, host-timed cadence guesses, or packed-field limiter; <code>system_bt_pair_rumble.py</code> and <code>windows_ble_parameters.py</code> have only repository-level GPL evidence and remain reference-only pending clarification</td>
+</tr>
+<tr>
+<td>Switch2Connect bundled WinUHid DLLs/drivers</td>
+<td>tree at <code>4487322a...</code>; DLL SHA-256 <code>4678BA3ACF80A0D7A3857F93A4400CA02742B56789BEC34A8F575CC776053FB4</code>; Devs <code>4877A17D97A485E0E0176DBA7B47ADEA1A1FA1C6218D776160FEC73DA1722CF4</code>; Driver <code>0667CF90F1ED5E47D2CA5A58B99435EF0555045D5D6E87606548A09396CBF3EE</code></td>
+<td>no component-separated provenance located</td>
+<td>identifies an opaque Xbox backend</td>
+<td>do not execute, redistribute, or depend on it</td>
+<td>unsigned/no version resource; no manifest ties these files to an upstream source revision</td>
+</tr>
+<tr>
+<td>WinUHid upstream authored source</td>
+<td><code>d880a9f3a42580ea7f6b96d37201f965feb4b310</code></td>
+<td>MIT</td>
+<td>Xbox-compatible HID design and conformance-test evidence</td>
+<td>possible donor only after file/history review and notice; current work uses facts</td>
+<td>does not establish that Switch2Connect's bundled binaries were built from this revision</td>
+</tr>
+<tr>
+<td>Microsoft GIP/XInputHID documentation package</td>
+<td>official <code>https://dlassets-ssl.xboxlive.com/public/content/GIP/GIPDocumentation.zip</code>; ZIP SHA-256 <code>BFE0E08D5915A09375CB7909F3ACF35A1BF35A9E48C293969C62879FDDD517CF</code>; XInputHID DOCX SHA-256 <code>AAF46FC046BF46F730313FBC00757D76F800246A9683166AB5EEE36BFF55829B</code>; Original GIP DOCX SHA-256 <code>27A664B206FC4B2C5B0DB8E4DDA7C7575ECA2DDA18318376CDEFC984526ED37</code></td>
+<td>official Microsoft documentation; no standalone open-source grant inferred from the package</td>
+<td>standardized XInputHID descriptor/input/output report facts, GIP facts, and documented custom-INF architecture</td>
+<td>independently implement facts; do not reproduce package prose or the internally inconsistent sample INF wholesale</td>
+<td>no-INF compatible-ID sentence conflicts with official ID rules; custom-INF runtime behavior and arbitrary-VID binding remain unproven</td>
+</tr>
+<tr>
+<td>Microsoft Open Specifications MS-GIPUSB 1.0</td>
+<td>revision 1.0, published 2024-09-16; official DOCX SHA-256 <code>810F2841AF3FD832E5EBBDFB581D67413DDA5914364E713AEB35D63483D6D9B0</code></td>
+<td>Open Specifications notice permits implementation copies/necessary excerpts and included schemas/samples; patent/trademark reservations remain</td>
+<td>exact USB descriptors, <code>XGIP10</code> binding, framing, lifecycle, metadata, input, motor, ACK and security-opt-out facts</td>
+<td>primary implementation specification with notice/citation; use a lawfully assigned VID/PID</td>
+<td>Windows-version behavior and physical/API latency still require tests; spec requires IN interval at least 4 ms</td>
+</tr>
+<tr>
+<td>Microsoft OS 1.0 and HIDClass ID documentation</td>
+<td>exact URLs in trace table; accessed 2026-08-29</td>
+<td>Microsoft documentation terms; OS-descriptor specification has its own implementation license</td>
+<td>eight-byte CompatibleID rule and <code>HID_DEVICE_SYSTEM_GAME</code> special-hardware-ID classification</td>
+<td>facts and citations only</td>
+<td>establishes a contradiction, not an encoding; no guessed truncation or alias is allowed</td>
+</tr>
+<tr>
+<td>Microsoft Learn UDE/UdeCx/KMDF/UMDF/HID/VHF pages</td>
+<td>exact URLs in trace table; accessed 2026-08-29</td>
+<td>Microsoft documentation terms; WDK headers/libraries remain under their own terms</td>
+<td>supported virtual USB/HID architecture, endpoint/lifecycle APIs, and framework/mode boundaries</td>
+<td>facts and documented APIs only; do not clone sample implementation structure</td>
+<td>UdeCx/VHF are transport backends, not Xbox promotion; production driver remains unimplemented and unsigned</td>
+</tr>
+<tr>
+<td>Microsoft Learn XInput/GameInput/WGI pages</td>
+<td>exact URLs in trace table; GameInput view <code>gdk-2604</code>, WGI view <code>winrt-26100</code>, accessed 2026-08-29</td>
+<td>Microsoft documentation/API terms</td>
+<td>two-channel XInput and four-channel GameInput/WGI value shapes</td>
+<td>facts and documented API contracts only</td>
+<td>four independent application-to-virtual-report delivery remains a vertical-slice unknown</td>
+</tr>
+<tr>
+<td>Microsoft Learn Bluetooth GATT pages</td>
+<td>exact URLs in trace table; accessed 2026-08-29</td>
+<td>Microsoft documentation/API terms</td>
+<td>WinRT service/characteristic/property/notify/write primitives</td>
+<td>facts and documented APIs only</td>
+<td>generic GATT docs establish no Switch 2 UUID, association, encryption, report, HD-rumble, interval, or rate fact</td>
+</tr>
+<tr>
+<td>Microsoft Learn driver-signing pages</td>
+<td>exact URLs in trace table; accessed 2026-08-29</td>
+<td>Microsoft documentation terms</td>
+<td>packaging and production-signing constraints</td>
+<td>facts and citations only</td>
+<td>attestation is testing-only; any custom INF/UdeCx/VHF production path needs a separately authorized signing/release plan</td>
+</tr>
+<tr>
+<td>Windows inbox INF observations</td>
+<td>Windows <code>10.0.26100.8972</code>; <code>dc1-controller.inf</code> SHA-256 <code>34C417A8A35BE801D8A16B230E5968B6F932DA89E3DF83FFF6C6BE2EAACA0975</code>; <code>xboxgip.inf</code> <code>04B74435E7F23576DD9652BA04C5071891B999674695B8779C89BF0F94A317EB</code>; <code>xinputhid.inf</code> <code>DA1F33CDE2926A673F02DAF72617253464DA487A30E2FD404E3ADA41FD619D48</code>; <code>input.inf</code> <code>66D408138C0914CDCF77B846042215E9DEFCF8ED3116C6FC54C7643F5516CEF4</code></td>
+<td>Microsoft Windows components; no redistribution grant inferred</td>
+<td>build-specific binding-section and hardware-ID observations</td>
+<td>facts only; never copy or redistribute inbox files</td>
+<td>other Windows builds must be inspected/tested; local files do not prove USB/IP runtime binding</td>
+</tr>
+<tr>
+<td>Switch2Connect bundled firmware/binaries/PDF</td>
+<td>tree at <code>4487322a...</code></td>
+<td>no component-separated provenance located</td>
+<td>none</td>
+<td>do not ship or use as implementation inputs</td>
+<td>third-party rights and embedded payloads unknown</td>
+</tr>
+<tr>
+<td>SDL current/release</td>
+<td><code>c71abd08605b8bb7078372307a93274725c99fe0</code>; <code>release-3.4.x</code> tip <code>58ff755ea58cd4c64e72678f4b3e0d720aa79206</code></td>
+<td>zlib</td>
+<td>Switch 2 USB behavior, calibration parser, HD-rumble encoder facts</td>
+<td>permissible donor with notice; new code remains independently tested</td>
+<td>SDL Bluetooth path is a stub; unknown commands are not specifications</td>
+</tr>
+<tr>
+<td>hifihedgehog SDL BLE experiment</td>
+<td><code>d98c5804a9d20b0d96e993741797878c86b8f1e1</code></td>
+<td>top-level zlib; file says portions were transcribed</td>
+<td>negative-control behavior only</td>
+<td>facts-only until the transcribed portions are provenance-cleared</td>
+<td>unverified offsets, single-slot loss, and WinRT lifecycle defects</td>
+</tr>
+<tr>
+<td>xone</td>
+<td><code>3484f603484782dd7551c64e5a33fc602b127051</code></td>
+<td>examined files GPL-2.0-or-later; GPLv2 root text</td>
+<td>wired GIP framing, input/rumble body and auth behavior facts</td>
+<td>clean-room protocol-facts implementation; no code/structure copying</td>
+<td>destination-specific GPL compatibility and generated-client grants need legal review before any reuse</td>
+</tr>
+<tr>
+<td>xow</td>
+<td>current <code>master</code> <code>d335d6024f8380f52767a7de67727d9b2f867871</code>, 2022-04-24</td>
+<td>root GPLv2 text; audited source headers say GPL-2.0-or-later</td>
+<td>physical Xbox Wireless Adapter receiver/GIP/uinput facts and negative-control evidence</td>
+<td>protocol facts only; no code/structure copying is needed</td>
+<td>not virtual Xbox presentation; its two-motor <code>FF_RUMBLE</code> heuristic and forced 10 ms delay are unsuitable donors</td>
+</tr>
+<tr>
+<td>xpadneo</td>
+<td><code>3acca9f5e211edb601000bb64767b78b2468f787</code></td>
+<td>GPL-3.0 (<code>LICENSE.md</code>)</td>
+<td>Xbox Bluetooth corroboration</td>
+<td>facts-only for this phase</td>
+<td>Bluetooth, receiver, and wired packet families must stay distinct</td>
+</tr>
+<tr>
+<td>Linux xpad</td>
+<td><code>cf72cbb39da84b6f02f90c07f33b102fc10b16f0</code>, <code>drivers/input/joystick/xpad.c</code></td>
+<td>file SPDX GPL-2.0-or-later; kernel root license context must be preserved</td>
+<td>GIP constants, independent D-pad bits, public two-motor FF mapping</td>
+<td>protocol facts only; no code/structure copying</td>
+<td>public FF path leaves impulse-trigger bytes zero and does not prove four-channel app delivery</td>
+</tr>
+<tr>
+<td>ndeadly Switch 2 research</td>
+<td><code>d1c5a7f7ba298f83017fae84952a4e6d2ef8fc92</code></td>
+<td>no license found</td>
+<td>capture-backed protocol facts</td>
+<td>facts-only, independently implemented</td>
+<td>repository contains raw LTKs and sensitive captures; never copy or redistribute them</td>
+</tr>
+<tr>
+<td>switch2-controllers</td>
+<td><code>e79720b6a3042f710b3a1c7470dc9575c42e560a</code></td>
+<td>no license found</td>
+<td>corroborating protocol facts</td>
+<td>facts-only</td>
+<td>no code copying</td>
+</tr>
+<tr>
+<td>joycon2py</td>
+<td><code>9d80b764682a171580fd134b96f00866df6ae398</code></td>
+<td>MIT</td>
+<td>prototype corroboration</td>
+<td>possible donor after file review; current work uses facts</td>
+<td>prototype behavior is not a production contract</td>
+</tr>
+<tr>
+<td>joycon2cpp</td>
+<td><code>1db6999a17a36e24e9d5d09f9fafb4fb0adce6f1</code></td>
+<td>MIT</td>
+<td>Windows/WinRT wiring and benchmark-scope evidence</td>
+<td>possible donor after file review; current work uses facts</td>
+<td>its Pro rumble is explicitly untested</td>
+</tr>
+<tr>
+<td>BlueRetro</td>
+<td><code>e1a9831a875f5313a923160a1379a7ebbfaa2b11</code></td>
+<td>Apache-2.0; archived project</td>
+<td>independent calibration order, model IDs, association lifecycle and output-envelope corroboration</td>
+<td>facts now; code reuse only after file-level review and notice</td>
+<td>unsafe length assumptions, fixed handles, incomplete Joy-Con mapping, key/address persistence and no cadence evidence</td>
+</tr>
+<tr>
+<td>JoyShockLibrary</td>
+<td><code>023dfb6f83d27134bf0cb0be085bfab4a251ffa5</code></td>
+<td>MIT</td>
+<td>negative-control inventory</td>
+<td>no Switch 2 implementation input</td>
+<td>no Switch 2 PIDs/protocol; README says Nintendo HD rumble unsupported</td>
+</tr>
+<tr>
+<td>project-owned passive Switch 2 Pro USB captures</td>
+<td>two out-of-tree sessions, 2,048 and 4,096 reports; exact raw identities deliberately omitted from git</td>
+<td>project-owned, subject to device/user data policy</td>
+<td>framing, strict-decoder and passive-cadence evidence</td>
+<td>raw evidence stays operator-controlled; commit only fully synthetic or independently reviewed sanitized fixtures</td>
+<td>remove MAC, serial, path derivatives, raw digests that link a fixture to a session, host identity, and environmental sensor values</td>
+</tr>
+<tr>
+<td>committed Switch 2 common-<code>0x05</code> golden fixture</td>
+<td>fully synthetic public-layout vectors; no raw capture ancestry</td>
+<td>project-authored synthetic facts</td>
+<td>strict decode/replay and counter-order tests</td>
+<td>safe to commit and redistribute with project tests</td>
+<td>must remain algorithmically constructed; never replace values with a hardware fingerprint</td>
+</tr>
+<tr>
+<td>project-authored four-actuator-to-Switch-2 synthesis policy</td>
+<td>local <code>Switch2HdRumbleFeedbackTranslator</code>; licensed constants traced to SDL <code>c71abd08605b8bb7078372307a93274725c99fe0</code></td>
+<td>project code under DS4Windows license; SDL fact source is zlib</td>
+<td>exact SDL body-rumble compatibility arithmetic plus an explicitly approximate side-local impulse policy</td>
+<td>offline translator/tests only; no PadForge or unlicensed implementation input</td>
+<td>physical sidedness, energy, cadence, stop, thermal behavior, and actuator onset remain hardware gates; the translator authorizes no I/O</td>
+</tr>
+<tr>
+<td>project-authored DualSense-trigger-to-Switch-2 approximation</td>
+<td>local <code>DualSenseAdaptiveTriggerHdRumbleTranslator</code>; DS4Windows' own <code>TriggerLabEffectEncoder</code>; behavioral comparison against Switch2Connect <code>61ac6642ce12fe7217e38a860b14863b18ca7e28</code>, <code>src/virtual_controller.py:2399-2420,4641-4737</code></td>
+<td>project code and DS4Windows source are GPL-3.0; cited Switch2Connect file is explicitly GPL-3.0-or-later</td>
+<td>Switch2Connect supplies evidence for a side-local, trigger-held tactile substitute and a bounded 150 ms program-change punch; the project implementation independently decodes supported effect modes and preserves a bounded three-region strength/frequency envelope in the existing owner</td>
+<td>compatible behavioral evidence only; no Python expression, timing state, logging, threading, or write path copied</td>
+<td>Switch 2 has no adaptive resistance actuator; this is replay-verified approximation only, and physical onset, energy, perceptual value, and thermal behavior remain hardware gates</td>
+</tr>
+<tr>
+<td>project-owned future active captures</td>
+<td>not yet collected</td>
+<td>project-owned, subject to device/user data policy</td>
+<td>rate, volatile LED, rumble basis and cleanup evidence after gates pass</td>
+<td>sanitize and commit only after redaction review</td>
+<td>no pairing/key/NVM commands; remove device/host identity and environmental data</td>
+</tr>
+</tbody>
+</table>
+<h2 id="mandatory-source-trace">Mandatory source trace</h2>
+<table>
+<thead>
+<tr>
+<th>Source</th>
+<th>Exact pin, document hash, or access identity</th>
+<th>Symbol / line</th>
+<th>Fact</th>
+<th>Inference / unknown</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="https://github.com/medusalix/xow/tree/d335d6024f8380f52767a7de67727d9b2f867871">xow</a></td>
+<td><code>d335d6024f8380f52767a7de67727d9b2f867871</code></td>
+<td><code>xow.cpp:44-63</code>; <code>dongle/dongle.cpp:20-36,51-72,137-228,272-290</code>; <code>controller/input.cpp:25-35,94-113,141-220</code>; <code>controller/controller.cpp:118-145,214-255,260-346</code>; <code>controller/gip.h:106-121</code></td>
+<td>opens a physical Microsoft wireless adapter, unwraps receiver WLAN/GIP, publishes Linux uinput, accepts two-magnitude <code>FF_RUMBLE</code>, heuristically derives trigger values, and forces a 10 ms rumble delay</td>
+<td><strong>Fact:</strong> physical receiver input only. <strong>Unknown/not established:</strong> any Windows virtual Xbox persona or genuine four-channel application delivery; do not use it for those claims</td>
+</tr>
+<tr>
+<td><a href="https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-gipusb/e7c90904-5e21-426e-b9ad-d82adeee0dbc">MS-GIPUSB 1.0</a></td>
+<td>revision 1.0, 2024-09-16; DOCX SHA-256 <code>810F2841AF3FD832E5EBBDFB581D67413DDA5914364E713AEB35D63483D6D9B0</code></td>
+<td>section 2.2.6 tables 5-6; 2.2.9.1 table 9; 2.2.9.1.2 table 11; 3.1.5.4; 3.1.5.6.1 table 56; Appendix B note 1</td>
+<td>exact <code>MSFT100</code>/<code>0x90</code>/<code>XGIP10</code> binding, <code>FF/47/D0</code> 64-byte interrupt interface, IN <code>bInterval &gt;= 4 ms</code>, lifecycle/ACK/input, and four-motor Direct Motor command; modern Windows removes USB authentication</td>
+<td><strong>Inference:</strong> VIIPER can host this persona over existing USB/IP if every descriptor/control/lifecycle/message rule is implemented. <strong>Unknown:</strong> usbip-win2 behavior, API visibility, feedback return, supported-build matrix, and latency until the vertical slice</td>
+</tr>
+<tr>
+<td>Local Windows inbox GIP binding</td>
+<td>Windows <code>10.0.26100.8972</code>; hashes in ledger above</td>
+<td><code>dc1-controller.inf:14,40-63,85-89</code>; <code>xboxgip.inf:14,26-56</code></td>
+<td><code>USB\MS_COMP_XGIP10</code> selects the inbox Xbox controller stack on this build without a Microsoft VID/PID match</td>
+<td><strong>Inference:</strong> exact no-new-package candidate. <strong>Unknown:</strong> other builds and actual USB/IP enumeration/runtime behavior</td>
+</tr>
+<tr>
+<td><a href="https://dlassets-ssl.xboxlive.com/public/content/GIP/GIPDocumentation.zip">Official GIP/XInputHID package</a></td>
+<td>ZIP <code>BFE0E08D5915A09375CB7909F3ACF35A1BF35A9E48C293969C62879FDDD517CF</code>; XInputHID DOCX <code>AAF46FC046BF46F730313FBC00757D76F800246A9683166AB5EEE36BFF55829B</code></td>
+<td>XInputHID DOCX paragraphs 121-171, 174-194, 195-214, 236-274</td>
+<td>report 2 carries left impulse, right impulse, left body, right body plus duration/delay/repeat; xinputhid is a HID upper filter; a custom-INF Include/Needs mechanism is documented</td>
+<td><strong>Fact:</strong> report and custom-INF mechanism. <strong>Unknown:</strong> exact runtime flags/version support. <strong>Unknown and contradicted as written:</strong> para 194 no-INF <code>HID_DEVICE_SYSTEM_GAME</code> CompatibleID; never truncate or guess it</td>
+</tr>
+<tr>
+<td><a href="https://learn.microsoft.com/en-us/windows-hardware/drivers/usbcon/microsoft-os-1-0-descriptors-specification">Microsoft OS 1.0 descriptor</a> and <a href="https://learn.microsoft.com/en-us/windows-hardware/drivers/hid/hidclass-hardware-ids-for-top-level-collections">HIDClass IDs</a></td>
+<td>living pages, accessed 2026-08-29; no immutable document hash</td>
+<td>OS 1.0 “all IDs must be eight bytes”; HIDClass “Special purpose hardware ID” and “Important notes”</td>
+<td><code>HID_DEVICE_SYSTEM_GAME</code> is a special HID hardware ID; HIDClass generates no compatible IDs</td>
+<td><strong>Fact:</strong> the XInputHID DOCX no-INF sentence conflicts with these rules. <strong>Unknown:</strong> a corrected Microsoft-supported arbitrary-VID no-INF recipe; absence of one is a gate, not permission to invent it</td>
+</tr>
+<tr>
+<td><a href="https://learn.microsoft.com/en-us/windows-hardware/drivers/usbcon/writing-a-ude-client-driver">UDE client model</a>, <a href="https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/udecxusbdevice/nf-udecxusbdevice-udecxusbdeviceinitsetendpointstype">UdeCx endpoint type</a>, <a href="https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/udecxusbdevice/nc-udecxusbdevice-evt_udecx_usb_device_endpoints_configure">UdeCx endpoint callback</a>, <a href="https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/using-the-framework-to-develop-a-driver">KMDF development</a>, <a href="https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/user-mode-driver-framework-frequently-asked-questions">UMDF FAQ</a>, <a href="https://learn.microsoft.com/en-us/windows-hardware/drivers/hid/hid-architecture">HID architecture</a>, and <a href="https://learn.microsoft.com/en-us/windows-hardware/drivers/hid/virtual-hid-framework--vhf-">VHF</a></td>
+<td>living pages, accessed 2026-08-29; no immutable document hash</td>
+<td><code>UdecxUsbDeviceInitSetEndpointsType</code>; <code>EVT_UDECX_USB_DEVICE_ENDPOINTS_CONFIGURE</code>; <code>WdfDeviceCreate</code>; <code>WdfIoQueueCreate</code>; <code>VhfCreate</code></td>
+<td>UdeCx creates USB descriptors/endpoints/lifecycle and requires at least KMDF 1.15 for the cited DDI; UMDF is the preferred starting point only when its feature set suffices; VHF HID source is currently kernel-only; none supplies Xbox semantics</td>
+<td><strong>Inference:</strong> UdeCx or VHF can later sit below the existing VIIPER semantic seam. <strong>Unknown:</strong> latency benefit and product value until measured; no native phase is authorized by these facts</td>
+</tr>
+<tr>
+<td><a href="https://learn.microsoft.com/en-us/windows/win32/api/xinput/ns-xinput-xinput_vibration">XInput</a>, <a href="https://learn.microsoft.com/en-us/gaming/gdk/docs/reference/input/gameinput/structs/gameinputrumbleparams?view=gdk-2604">GameInput</a>, and <a href="https://learn.microsoft.com/en-us/uwp/api/windows.gaming.input.gamepadvibration?view=winrt-26100">WGI</a></td>
+<td>versioned views/accessed 2026-08-29; no immutable document hash</td>
+<td><code>XINPUT_VIBRATION</code>; <code>GameInputRumbleParams</code>; <code>GamepadVibration</code></td>
+<td>public XInput supplies two body values; GameInput/WGI name four independent body/trigger values</td>
+<td><strong>Inference:</strong> retain one atomic four-lane feedback value end to end and accept zero trigger lanes from XInput-only titles. <strong>Unknown:</strong> which representative games/APIs deliver four independent basis vectors through the eventual persona</td>
+</tr>
+<tr>
+<td>HIDMaestro current WGI silent-sink investigation</td>
+<td><code>9df50410230c11b410f43909ede0e5fc8b23d15b</code>; document SHA-256 <code>DABC00BA3D424D4758E7A5B3163EFF19BB884761370D23193BDC7A920F3E1D18</code></td>
+<td><code>docs/investigations/wgi-silent-sink-2026-04/finding.md</code>: executive summary, post-fix evidence matrix, architectural explanation, open questions, caveats, consumer impact</td>
+<td><strong>Source-reported observation, not independently reproduced here:</strong> on Windows 11 <code>26200.8115</code>, direct XInput motor bytes reached the experiment's ROOT-enumerated UMDF2 XUSB virtual, while WGI/Chromium produced probes and idle clears but no motor-bearing bytes at three instrumented layers; physical positive controls were tactile only</td>
+<td><strong>Inference in source:</strong> WGI may require a USB-bus/xusb22 parent. <strong>Contradiction in source:</strong> the evidence matrix says GameInput <code>SetRumbleState</code> reached the virtual, while later open-question and consumer-impact sections say GameInput was blocked. Treat GameInput and the proposed cause as unknown. This does not prove that VIIPER USB/IP will work, but it rules out treating HIDMaestro's ROOT presentation as a complete compatibility oracle</td>
+</tr>
+<tr>
+<td><a href="https://learn.microsoft.com/en-us/windows/apps/develop/devices-sensors/gatt-client">Windows GATT client</a> and <a href="https://learn.microsoft.com/en-us/uwp/api/windows.devices.bluetooth.genericattributeprofile.gattcharacteristicproperties?view=winrt-26100">characteristic properties</a></td>
+<td>accessed 2026-08-29; no immutable document hash</td>
+<td><code>BluetoothLEDevice</code>; <code>GattSession.MaintainConnection</code>; <code>GattCharacteristicProperties</code>; CCCD/<code>ValueChanged</code></td>
+<td>WinRT exposes service/characteristic objects and read/write/notify/indicate primitives, not raw transport; a vendor profile must already be known</td>
+<td><strong>Inference:</strong> use capture-pinned UUID/property roles in a serialized generation-bound adapter. <strong>Unknown:</strong> Switch 2 association/security, interval, report cadence, and haptics; generic GATT docs prove none of them</td>
+</tr>
+<tr>
+<td><a href="https://learn.microsoft.com/en-us/windows-hardware/drivers/install/windows-driver-signing-tutorial">Windows driver signing</a> and <a href="https://learn.microsoft.com/en-us/windows-hardware/drivers/dashboard/driver-signing-offerings">signing options</a></td>
+<td>accessed 2026-08-29; no immutable document hash</td>
+<td>“Overview”; “Hardware Lab Kit tested”; “Attestation signed drivers for testing scenarios”</td>
+<td>kernel drivers must be signed; HLK/dashboard is the recommended production path; attestation is testing-only and not Windows certification</td>
+<td><strong>Inference:</strong> raw GIP over the already supported importer avoids a new project driver package. <strong>Unknown/separate authority:</strong> production custom-INF, UdeCx, or VHF signing and distribution</td>
+</tr>
+</tbody>
+</table>
+<p>The official ZIP and nested DOCX files above were downloaded, hashed, and
+inspected entirely in memory. No copy was written to the repository, a temp
+directory, or the desktop. Windows inbox INFs were inspected read-only and are
+not project artifacts.</p>
+<h2 id="september-5-native-xbox-activation-attempt-policy">September 5: native Xbox activation attempt policy</h2>
+<p>Source: <code>vadimgrn/usbip-win2@7c219953101cc5d0ec9a0bcb3eb87259cf72bedd</code>
+(<code>v.0.9.7.7</code>), BSD-2-Clause. Examined <code>include/usbip/vhci.h</code>,
+<code>userspace/libusbip/src/vhci.cpp</code>, <code>drivers/ude/vhci_ioctl.cpp</code>,
+<code>drivers/ude/device.cpp</code> and <code>drivers/ude/persistent.cpp</code>. The upstream
+<a href="https://github.com/vadimgrn/usbip-win2/wiki/How-automatic-reattachment-works">reattachment documentation</a>
+was checked separately on September 5.</p>
+<p>Facts: <code>PLUGIN_HARDWARE_ONCE</code> uses function <code>0x806</code> / IOCTL <code>0x0022e018</code>
+with the same 1,100-byte request and 8-byte response as normal attach. Its
+<code>one_attempt</code> flag prevents background retries of that initial call when it
+fails. It does not disable receiver-loss reattachment after a successful import.
+<code>STOP_ATTACH_ATTEMPTS</code> accepts a location, but the driver matches that location
+by its 32-bit hash and cancels currently queued requests; it is not a durable
+per-device no-retry setting or proof that later detach work cannot enqueue again.</p>
+<p>VIIPER's original implementation selects the documented one-attempt IOCTL only
+for canonical production Xbox export aliases, using the existing exact payload
+builder. Legacy numeric imports retain their previous operation. Five original
+fake-native boundary tests cover operation selection, preserved payload/port,
+failure without fallback, invalid requests and returned-byte validation. No donor
+code, driver binary, new fixture, native stop/detach, registry change or global
+retry setting was copied or introduced. Tests do not call an installed driver.</p>
+<h2 id="clean-room-rules">Clean-room rules</h2>
+<ol>
+<li>Cite the exact source revision and file for every imported fact or constant.</li>
+<li>Write destination code from a short fact specification, not while copying
+   the donor's control flow, naming, comments, or test vectors.</li>
+<li>Prefer licensed SDL and official Microsoft documentation where they
+   corroborate the same fact.</li>
+<li>Treat PadForge as a behavioral black-box/architecture comparison only.</li>
+<li>Keep raw GIP, Xbox Bluetooth, receiver, Switch 2 USB, and Switch 2 GATT
+   packet families in distinct codecs. Length is never a transport detector.</li>
+<li>Do not commit third-party encrypted sessions, LTKs, credentials, device
+   certificates, MACs, serials, or remembered-host addresses.</li>
+<li>Generated test fixtures must state whether every byte is synthetic,
+   licensed, or newly project-captured, and include a redaction manifest.</li>
+<li>Any later source reuse into VIIPER's MIT-generated clients requires a
+   separate license review; permission for GPL core code is not assumed.</li>
+</ol>
+<h2 id="capture-fixture-manifest-requirement">Capture fixture manifest requirement</h2>
+<p>Every future fixture must record:</p>
+<ul>
+<li>schema version and SHA-256 of the exact byte payload;</li>
+<li>source type (<code>synthetic</code>, <code>project-captured</code>, or licensed donor);</li>
+<li>evidence status (<code>fact</code>, <code>inference</code>, or <code>unknown-field-preserved</code>);</li>
+<li>controller model, transport, direction, and firmware revision;</li>
+<li>report ID or characteristic UUID and lifecycle generation;</li>
+<li>host monotonic delta, never a wall-clock identifier unless needed;</li>
+<li>every redaction and the replacement rule;</li>
+<li>reviewer and collection procedure;</li>
+<li>explicit confirmation that no key, certificate, MAC, serial, console
+  address, or account-linked identifier remains.</li>
+</ul>
+<p>This ledger must be updated before adding a new external fixture, descriptor,
+protocol constant, algorithm, binary, or copied source fragment.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.instant", "navigation.tracking", "navigation.tabs", "navigation.sections", "navigation.expand", "navigation.top", "search.suggest", "search.highlight", "content.code.copy"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"default": "stable", "provider": "mike"}}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>
