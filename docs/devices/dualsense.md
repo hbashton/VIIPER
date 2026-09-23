@@ -79,6 +79,12 @@ Every input payload begins with the same 33-byte little-endian mapped state:
 - Two touch contacts: X/Y, active flag, and tracking ID.
 - Gyroscope and accelerometer: three signed 16-bit axes each.
 
+Motion values use DS4Windows' calibrated canonical scale: gyroscope 16 units
+per degree/second and accelerometer 8192 units per g. Feature `0x05` describes
+that same scale for both DualSense personas, so a calibration-aware game does
+not apply an unintended second gyro gain. These are virtual calibration values,
+not a copied physical controller's factory coefficients.
+
 Button bits:
 
 | Control | Value |
@@ -122,8 +128,9 @@ VIIPER copies physical report
 bytes 49 through 52 only when the physical source and virtual target both use
 the same base or Edge layout. On a mismatch it synthesizes the target layout:
 base uses its generated device clock, while Edge uses `80 00 00 00`. The
-virtual connection byte `54` is always USB-wired `0x08` even when the source
-report arrived over Bluetooth. Without valid metadata, trigger status is the
+virtual connection byte `54` always sets USB-wired bit `0x08` even when the source
+report arrived over Bluetooth, while retaining physical headset/microphone
+presence and mute bits `0x07`. Without valid metadata, trigger status is the
 confirmed physical off/no-load value `09 09`, effect status is `00`, and the
 clock/profile and battery use VIIPER's generated state.
 
@@ -170,7 +177,10 @@ failed-admission response with zero accepted bytes. Later ordinary game effects
 remain usable without reconnecting. Standard DualSense behavior is unchanged.
 
 Edge onboard-profile features `0x60..0x65`, `0x68`, and `0x70..0x7B` likewise
-STALL rather than acknowledging an unimplemented read or write. VIIPER does not
+STALL rather than acknowledging an unimplemented read or write. Edge feature
+`0x80` profile-snapshot command `0x70` also STALLs without overwriting the last
+implemented command response. Ordinary serial/status/sensor queries remain
+unchanged. VIIPER does not
 edit profiles stored on a physical Edge. Feature `0x20` remains a synthetic
 identity rather than a captured complete Edge firmware response.
 
@@ -179,6 +189,7 @@ Protocol references:
 - [dualsense-tester stick preview](https://github.com/daidr/dualsense-tester/blob/f6e6247fd66ada9c8b63f3ba62c6d72945c0da53/src/router/DualSenseEdge/views/_Profile/pages/JoystickSensitivity.vue)
 - [dualsense-tester trigger preview](https://github.com/daidr/dualsense-tester/blob/f6e6247fd66ada9c8b63f3ba62c6d72945c0da53/src/router/DualSenseEdge/views/_Profile/pages/TriggerDeadZone.vue)
 - [Titania output structure](https://github.com/neptuwunium/titania/blob/develop/src/structures.h) and [Edge controls](https://github.com/neptuwunium/titania/blob/develop/src/hid.c)
+- [DS5Dongle Edge profile-snapshot preparation](https://github.com/awalol/DS5Dongle/blob/c67c7f685fe8d8cc44f519d27710c5a639a1be7d/src/dse.cpp#L50-L75)
 
 These are source-verified report contracts, not a claim of physical hardware
 validation or complete Sony firmware-management compatibility.

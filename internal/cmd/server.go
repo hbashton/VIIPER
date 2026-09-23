@@ -34,18 +34,21 @@ func (s *Server) Run(logger *slog.Logger, rawLogger log.RawLogger) error {
 }
 
 func (s *Server) StartServer(ctx context.Context, logger *slog.Logger, rawLogger log.RawLogger) error {
+	if ctx.Err() != nil {
+		return nil
+	}
 	keyFilePath, err := resolveServerKeyFilePath(s.KeyFile)
 	if err != nil {
 		return startupFailure(StartupKey, err)
 	}
-	if err := requireUSBIPRuntime(); err != nil {
-		logger.Error("Refusing to start VIIPER with an incompatible USB/IP runtime", "error", err)
-		return err
+	password, generated, err := prepareServerStartup(ctx, keyFilePath, s.KeyFile != nil,
+		requireUSBIPRuntimeContext, loadServerAPIKey)
+	if ctx.Err() != nil {
+		return nil
 	}
-
-	password, generated, err := loadServerAPIKey(keyFilePath, s.KeyFile != nil)
 	if err != nil {
-		return startupFailure(StartupKey, err)
+		logger.Error("Refusing to start VIIPER after failed prerequisites", "error", err)
+		return err
 	}
 	s.APIServerConfig.Password = password
 	if generated {
@@ -81,6 +84,9 @@ func (s *Server) StartServer(ctx context.Context, logger *slog.Logger, rawLogger
 	}
 	return runOwnedServers(ctx, serveUSB, usbSrv.Ready(), usbSrv.Close,
 		func() (func(), error) {
+			if ctx.Err() != nil {
+				return nil, nil
+			}
 			if s.APIServerConfig.Addr == "" {
 				logger.Error("API server address must be set (default :3242).")
 				return nil, startupFailure(StartupAPIListener,
@@ -121,6 +127,9 @@ func (s *Server) StartServer(ctx context.Context, logger *slog.Logger, rawLogger
 				}
 			}
 
+			if ctx.Err() != nil {
+				return apiSrv.Close, nil
+			}
 			if err := apiSrv.Start(); err != nil {
 				logger.Error("failed to start API server", "error", err)
 				return apiSrv.Close, startupFailure(StartupAPIListener, err)
@@ -129,10 +138,37 @@ func (s *Server) StartServer(ctx context.Context, logger *slog.Logger, rawLogger
 		})
 }
 
+// The cancellation boundary precedes key creation as well as helper execution.
+// Dependencies are cold-path seams for proving cancellation without probing the
+// installed driver, creating real credentials, or starting either listener.
+func prepareServerStartup(ctx context.Context, keyPath string, explicit bool,
+	checkRuntime func(context.Context) error,
+	loadKey func(string, bool) (string, bool, error)) (string, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return "", false, err
+	}
+	err := checkRuntime(ctx)
+	if cancelled := ctx.Err(); cancelled != nil {
+		return "", false, cancelled
+	}
+	if err != nil {
+		return "", false, err
+	}
+	password, generated, err := loadKey(keyPath, explicit)
+	if cancelled := ctx.Err(); cancelled != nil {
+		return "", false, cancelled
+	}
+	return password, generated, startupFailure(StartupKey, err)
+}
+
 // runOwnedServers contains the actual attempt-owned listener lifecycle, with
 // cold dependencies that permit failure-path tests without opening sockets.
 func runOwnedServers(ctx context.Context, serveUSB func() error, usbReady <-chan struct{},
 	closeUSB func() error, startAPI func() (func(), error)) error {
+	if ctx.Err() != nil {
+		_ = closeUSB()
+		return nil
+	}
 	usbErrCh := make(chan error, 1)
 	go func() { usbErrCh <- serveUSB() }()
 	var closeAPI func()

@@ -22,12 +22,19 @@ const (
 type usbipCommandRunner func(context.Context, string, ...string) ([]byte, error)
 
 func requireUSBIPRuntime() error {
+	return requireUSBIPRuntimeContext(context.Background())
+}
+
+func requireUSBIPRuntimeContext(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	usbipPath, err := canonicalUSBIPExecutable()
 	if err != nil {
 		return startupFailure(StartupUSBIPUnavailable, err)
 	}
 
-	return probeUSBIPRuntime(usbipPath, runUSBIPCommand)
+	return probeUSBIPRuntimeContext(ctx, usbipPath, runUSBIPCommand)
 }
 
 func canonicalUSBIPExecutable() (string, error) {
@@ -72,10 +79,20 @@ func usbipCommand(ctx context.Context, executable string, args ...string) *exec.
 }
 
 func probeUSBIPRuntime(usbipPath string, run usbipCommandRunner) error {
-	versionCtx, cancelVersion := context.WithTimeout(context.Background(), usbipProbeTimeout)
+	return probeUSBIPRuntimeContext(context.Background(), usbipPath, run)
+}
+
+func probeUSBIPRuntimeContext(ctx context.Context, usbipPath string, run usbipCommandRunner) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	versionCtx, cancelVersion := context.WithTimeout(ctx, usbipProbeTimeout)
 	versionOutput, versionErr := run(versionCtx, usbipPath, "--version")
 	versionTimedOut := usbipCommandTimedOut(versionCtx, versionErr)
 	cancelVersion()
+	if err := ctx.Err(); err != nil {
+		return err // Owner cancellation is not an incompatible driver.
+	}
 
 	if versionTimedOut {
 		return startupFailure(StartupUSBIPTimeout,
@@ -103,10 +120,13 @@ func probeUSBIPRuntime(usbipPath string, run usbipCommandRunner) error {
 		))
 	}
 
-	portCtx, cancelPort := context.WithTimeout(context.Background(), usbipProbeTimeout)
+	portCtx, cancelPort := context.WithTimeout(ctx, usbipProbeTimeout)
 	portOutput, portErr := run(portCtx, usbipPath, "port")
 	portTimedOut := usbipCommandTimedOut(portCtx, portErr)
 	cancelPort()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	if portTimedOut {
 		return startupFailure(StartupUSBIPTimeout,

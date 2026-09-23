@@ -29,3 +29,14 @@ An older VIIPER build may return a generic code instead.
 
 Successful startup still requires verified process ownership and the normal
 authenticated API response. A process merely staying alive is not readiness.
+
+Stopping the server cancels its in-flight prerequisite helpers and prevents
+subsequent startup stages from opening new listeners. API shutdown cancels
+accepted request contexts and closes owned sockets, including clients still in
+the initial handshake; connections accepted across shutdown are rejected.
+
+The packaged Windows tray does not create its own startup entry. DS4Windows
+manages normal startup with the correct executable, credentials, and launch
+settings. The legacy standalone tray toggle, like the standalone CLI installer,
+requires the explicit `VIIPER_DEVELOPER_STANDALONE=1` opt-in. Ordinary launch does
+not rewrite or remove existing registry entries or scheduled tasks.

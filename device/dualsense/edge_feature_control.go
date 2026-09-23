@@ -35,9 +35,11 @@ func (d *DualSense) ClaimControlTransaction(request usb.ControlTransactionReques
 	}
 	unsupportedProfile := s[3] == reportTypeFeature && isEdgeFeatureReport(s[2]) &&
 		((s[0] == hidClassIN && s[1] == hidGetReport) || (s[0] == hidClassOUT && s[1] == hidSetReport))
+	unsupportedProfileUnlock := s[0] == hidClassOUT && s[1] == hidSetReport &&
+		s[3] == reportTypeFeature && s[2] == featureIDCommand && isEdgeProfileUnlockCommand(request.Data)
 	unsupportedConfiguration := s[0] == hidClassOUT && s[1] == hidSetReport &&
 		s[3] == reportTypeOutput && s[2] == ReportIDOutput && d.rejectsEdgeConfigurationOutput(request.Data)
-	if !unsupportedProfile && !unsupportedConfiguration {
+	if !unsupportedProfile && !unsupportedProfileUnlock && !unsupportedConfiguration {
 		return usb.ControlTransactionClaim{}, nil
 	}
 	index := binary.LittleEndian.Uint16(s[4:6])
@@ -65,6 +67,15 @@ func (d *DualSense) ClaimControlTransaction(request usb.ControlTransactionReques
 		}
 	}
 	return usb.ControlTransactionClaim{}, errEdgeFeatureClaim
+}
+
+// Edge profile snapshot preparation is a feature 0x80 subcommand, not an
+// ordinary serial/status/sensor query. DS5Dongle c67c7f6 src/dse.cpp sends
+// {0x80, 0x70, 0x01, ...} before reading profiles and after saving them. We do
+// not implement that store, so neither its unlock nor an incomplete variant
+// may be acknowledged and cached as a successful generic feature command.
+func isEdgeProfileUnlockCommand(data []byte) bool {
+	return len(data) >= 2 && data[0] == featureIDCommand && data[1] == 0x70
 }
 
 // Configuration previews and Edge extension controls are not the common native

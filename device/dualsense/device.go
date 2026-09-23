@@ -1325,6 +1325,10 @@ func (d *DualSense) HandleControl(bmRequestType, bRequest uint8, wValue, wIndex,
 		}
 	case hidClassOUT:
 		if bRequest == hidSetReport {
+			if d.input.edge && reportType == reportTypeFeature && reportID == featureIDCommand &&
+				isEdgeProfileUnlockCommand(data) {
+				return nil, false
+			}
 			switch {
 			case reportType == reportTypeFeature && reportID == featureIDCommand && len(data) >= 3:
 				d.outputMu.Lock()
@@ -1647,7 +1651,10 @@ func (d *DualSense) featureReportCalibration() []byte {
 	for i, v := range [17]int16{
 		0, 0, 0,
 		8192, -8192, 8192, -8192, 8192, -8192,
-		500, 500,
+		// The client publishes calibrated gyro at 16 units/(degree/second).
+		// +/-8192 at +/-512 degrees/second describes that scale exactly;
+		// 500 would apply an unintended second gain of 125/128 in games.
+		512, 512,
 		8192, -8192, 8192, -8192, 8192, -8192,
 	} {
 		binary.LittleEndian.PutUint16(report[1+i*2:], uint16(v))

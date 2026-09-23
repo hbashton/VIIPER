@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Alia5/VIIPER/device/xboxone"
@@ -25,6 +26,9 @@ import (
 
 // Server implements a small TCP API for managing virtual bus topology.
 type Server struct {
+	lifecycleMu   sync.Mutex
+	closing       bool
+	connections   map[net.Conn]context.CancelFunc
 	usbs          *usb.Server
 	addr          string
 	ln            net.Listener
@@ -52,10 +56,11 @@ const deviceStreamReconnectGrace = 250 * time.Millisecond
 func New(s *usb.Server, addr string, config ServerConfig, logger *slog.Logger) *Server {
 	cfg := config
 	a := &Server{
-		usbs:   s,
-		addr:   addr,
-		logger: logger,
-		config: &cfg,
+		connections: make(map[net.Conn]context.CancelFunc),
+		usbs:        s,
+		addr:        addr,
+		logger:      logger,
+		config:      &cfg,
 	}
 	a.router = NewRouter()
 	a.xboxRetries = newXboxOneRetryCleanup(logger)
@@ -100,6 +105,8 @@ func (s *Server) ScheduleDeviceCleanup(
 // Addr returns the actual address the server is listening on.
 // If Start hasn't been called yet, it returns the configured address.
 func (s *Server) Addr() string {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
 	if s.ln != nil {
 		return s.ln.Addr().String()
 	}
@@ -108,6 +115,14 @@ func (s *Server) Addr() string {
 
 // Start listens on the configured address and serves incoming API commands.
 func (s *Server) Start() error {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	if s.closing {
+		return net.ErrClosed
+	}
+	if s.ln != nil {
+		return fmt.Errorf("API server is already started")
+	}
 	ln, err := net.Listen("tcp", s.addr)
 	if err != nil {
 		return err
@@ -117,20 +132,60 @@ func (s *Server) Start() error {
 	s.addr = ln.Addr().String()
 	s.config.Addr = s.addr
 	s.logger.Info("API listening", "addr", s.addr)
-	go s.serve()
+	go s.serve(ln)
 	return nil
 }
 
-// Close stops the API server.
+// Close fences admission and cancels/closes only this server's accepted clients.
+// There is no per-report synchronization and no unbounded handler join. A
+// request that is still inside a dependency observes its cancelled context.
 func (s *Server) Close() {
-	if s.ln != nil {
-		_ = s.ln.Close()
+	s.lifecycleMu.Lock()
+	if s.closing {
+		s.lifecycleMu.Unlock()
+		return
+	}
+	s.closing = true
+	ln := s.ln
+	connections := make(map[net.Conn]context.CancelFunc, len(s.connections))
+	for conn, cancel := range s.connections {
+		connections[conn] = cancel
+	}
+	s.lifecycleMu.Unlock()
+	if ln != nil {
+		_ = ln.Close()
+	}
+	for conn, cancel := range connections {
+		cancel()
+		_ = conn.Close()
 	}
 }
 
-func (s *Server) serve() {
+func (s *Server) registerConnection(conn net.Conn) (context.Context, bool) {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	if s.closing {
+		return nil, false
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	s.connections[conn] = cancel
+	return ctx, true
+}
+
+func (s *Server) finishConnection(conn net.Conn) {
+	s.lifecycleMu.Lock()
+	cancel := s.connections[conn]
+	delete(s.connections, conn)
+	s.lifecycleMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	_ = conn.Close()
+}
+
+func (s *Server) serve(ln net.Listener) {
 	for {
-		c, err := s.ln.Accept()
+		c, err := ln.Accept()
 		if err != nil {
 			if errors.Is(err, net.ErrClosed) || strings.Contains(strings.ToLower(err.Error()), "use of closed network connection") {
 				s.logger.Info("API server stopped")
@@ -144,7 +199,12 @@ func (s *Server) serve() {
 				s.logger.Warn("failed to set TCP_NODELAY", "error", err)
 			}
 		}
-		go s.handleConn(c)
+		ctx, admitted := s.registerConnection(c)
+		if !admitted {
+			_ = c.Close()
+			continue
+		}
+		go s.handleConn(c, ctx)
 	}
 }
 
@@ -171,11 +231,8 @@ func (s *Server) writeOK(w io.Writer, rest string) {
 	}
 }
 
-func (s *Server) handleConn(conn net.Conn) {
-	defer conn.Close() //nolint:errcheck
-
-	connCtx, connCancel := context.WithCancel(context.Background())
-	defer connCancel()
+func (s *Server) handleConn(conn net.Conn, connCtx context.Context) {
+	defer s.finishConnection(conn)
 
 	connLogger := s.logger.With("remote", conn.RemoteAddr().String())
 	r := bufio.NewReader(conn)
@@ -270,6 +327,9 @@ func (s *Server) handleConn(conn net.Conn) {
 
 	path = strings.ToLower(path)
 	connLogger.Info("api cmd", "path", path)
+	if connCtx.Err() != nil {
+		return
+	}
 
 	if h, params := s.router.Match(path); h != nil {
 		req := &Request{

@@ -75,6 +75,37 @@ func TestUSBIPPrerequisiteProbesEachHaveAFiniteDeadline(t *testing.T) {
 	require.Equal(t, 2, calls)
 }
 
+func TestUSBIPPrerequisiteCancellationStopsBeforeAnotherCommand(t *testing.T) {
+	for _, phase := range []string{"before", "--version", "port"} {
+		t.Run(phase, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if phase == "before" {
+				cancel()
+			}
+			calls := 0
+			err := probeUSBIPRuntimeContext(ctx, `C:\synthetic\usbip.exe`,
+				func(child context.Context, _ string, args ...string) ([]byte, error) {
+					calls++
+					if args[0] == phase {
+						cancel()
+						select {
+						case <-child.Done():
+						case <-time.After(time.Second):
+							t.Fatal("prerequisite command did not inherit owner cancellation")
+						}
+					}
+					return []byte(requiredUSBIPVersion), nil
+				})
+			require.ErrorIs(t, err, context.Canceled)
+			_, classified := StartupExitCode(err)
+			require.False(t, classified, "an intentional stop is not an incompatible driver")
+			want := map[string]int{"before": 0, "--version": 1, "port": 2}[phase]
+			require.Equal(t, want, calls)
+		})
+	}
+}
+
 func TestProbeUSBIPRuntimeAcceptsPinnedCompatibleRuntime(t *testing.T) {
 	var calls [][]string
 	run := func(_ context.Context, executable string, args ...string) ([]byte, error) {

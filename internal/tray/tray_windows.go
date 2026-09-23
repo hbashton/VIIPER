@@ -50,7 +50,17 @@ func Run(ctx context.Context, shutdown func()) func() {
 
 			systray.AddSeparator()
 
-			autoStartItem := systray.AddMenuItemCheckbox("Run at startup", "", autoStartEnabled())
+			var autoStartItem *systray.MenuItem
+			var autoStartClicks <-chan struct{}
+			if standaloneStartupAllowed() {
+				autoStartItem = systray.AddMenuItemCheckbox("Run at startup", "", autoStartEnabled())
+				autoStartClicks = autoStartItem.ClickedCh
+			} else {
+				// A bare `viiper.exe server` Run entry loses the portable
+				// owner's explicit key, config, and authentication settings.
+				// Match the CLI's developer-only legacy startup policy.
+				systray.AddMenuItem("Startup is managed by DS4Windows", "").Disable()
+			}
 
 			systray.AddSeparator()
 
@@ -62,7 +72,7 @@ func Run(ctx context.Context, shutdown func()) func() {
 					select {
 					case <-ctx.Done():
 						return
-					case <-autoStartItem.ClickedCh:
+					case <-autoStartClicks:
 						if toggleAutoStart() {
 							autoStartItem.Check()
 						} else {
@@ -135,6 +145,21 @@ func autoStartEnabled() bool {
 }
 
 func toggleAutoStart() bool {
+	return toggleStandaloneStartup(standaloneStartupAllowed, toggleLegacyAutoStart)
+}
+
+func standaloneStartupAllowed() bool {
+	return os.Getenv("VIIPER_DEVELOPER_STANDALONE") == "1"
+}
+
+func toggleStandaloneStartup(allowed func() bool, toggle func() bool) bool {
+	if !allowed() {
+		return false
+	}
+	return toggle()
+}
+
+func toggleLegacyAutoStart() bool {
 	if autoStartEnabled() {
 		key, err := registry.OpenKey(registry.CURRENT_USER, runKeyPath, registry.SET_VALUE)
 		if err != nil {

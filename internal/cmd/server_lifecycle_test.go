@@ -11,6 +11,52 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestServerPreCancelledAttemptDoesNotBindEitherListener(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	closes := 0
+	err := runOwnedServers(ctx,
+		func() error { t.Fatal("cancelled startup bound USB"); return nil }, make(chan struct{}),
+		func() error { closes++; return nil },
+		func() (func(), error) { t.Fatal("cancelled startup bound API"); return nil, nil })
+	require.NoError(t, err)
+	require.Equal(t, 1, closes)
+}
+
+func TestServerStartupCancellationFencesRuntimeAndKeyCreation(t *testing.T) {
+	for _, phase := range []string{"before", "runtime", "key"} {
+		t.Run(phase, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if phase == "before" {
+				cancel()
+			}
+			checks, keys := 0, 0
+			password, generated, err := prepareServerStartup(ctx, "synthetic-key", true,
+				func(child context.Context) error {
+					checks++
+					require.Same(t, ctx, child)
+					if phase == "runtime" {
+						cancel()
+					}
+					return nil
+				},
+				func(path string, explicit bool) (string, bool, error) {
+					keys++
+					require.Equal(t, "synthetic-key", path)
+					require.True(t, explicit)
+					cancel()
+					return "must not be published", true, nil
+				})
+			require.ErrorIs(t, err, context.Canceled)
+			require.Empty(t, password)
+			require.False(t, generated)
+			require.Equal(t, map[string]int{"before": 0, "runtime": 1, "key": 1}[phase], checks)
+			require.Equal(t, map[string]int{"before": 0, "runtime": 0, "key": 1}[phase], keys)
+		})
+	}
+}
+
 func TestServerAPIFailureClosesAndJoinsOnlyAttemptResources(t *testing.T) {
 	for _, apiCreated := range []bool{false, true} {
 		name := "missing-api-address"

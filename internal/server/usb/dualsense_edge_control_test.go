@@ -38,6 +38,25 @@ func AssertEdgeProfileStallTransport(t *testing.T, device usbdesc.Device) {
 		require.Zero(t, write.actual)
 		seq++
 	}
+	// DS5Dongle's captured Edge profile preparation uses SET feature 0x80,
+	// subcommand 0x70/0x01. It is not an implemented generic status query.
+	for _, size := range []int{2, 3, 64} {
+		data := make([]byte, size)
+		data[0], data[1] = 0x80, 0x70
+		if size > 2 {
+			data[2] = 1
+		}
+		unlock := submitTransactionalControl(t, stream.client, seq, usbip.DirOut,
+			transactionalControlSetup(0x21, 9, 0x380, hidInterface, uint16(size)), data)
+		require.Equal(t, int32(errPipe), unlock.status, "unsupported Edge profile unlock must STALL")
+		require.Zero(t, unlock.actual)
+		seq++
+	}
+	// The implemented serial command remains usable after the rejected unlock.
+	serialCommand := submitEdgeOutputCommand(t, stream.client, seq, 0,
+		transactionalControlSetup(0x21, 9, 0x380, hidInterface, 3), []byte{0x80, 1, 0})
+	require.Zero(t, serialCommand.status)
+	seq++
 	// A STALL ends that request, not the device connection. Ordinary descriptor
 	// and implemented firmware reads must still take their unchanged paths.
 	descriptor := submitTransactionalControl(t, stream.client, seq, usbip.DirIn,
