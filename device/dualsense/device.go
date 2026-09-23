@@ -1342,6 +1342,9 @@ func (d *DualSense) HandleControl(bmRequestType, bRequest uint8, wValue, wIndex,
 				}
 				return nil, true
 			case reportType == reportTypeOutput && reportID == ReportIDOutput:
+				if d.rejectsEdgeConfigurationOutput(data) {
+					return nil, false
+				}
 				d.handleOutputReport(data)
 				return nil, true
 			}
@@ -1382,13 +1385,18 @@ func (d *DualSense) TryHandleOutputCommand(endpoint uint8,
 	if !exists || iface.Descriptor.BInterfaceClass != 0x03 {
 		return false, false
 	}
+	if d.rejectsEdgeConfigurationOutput(out) {
+		// EP0 must reach the transactional owner for an actual STALL, not the
+		// queue-full response used by ordinary output admission failures.
+		return false, false
+	}
 	return true, d.handleOutputReport(out)
 }
 
 func (d *DualSense) handleOutputReport(out []byte) bool {
 	var normalized [OutputReportSize]byte
 	report, ok := normalizeOutputReportInto(out, &normalized)
-	if !ok {
+	if !ok || d.input.edge && hasEdgeConfigurationOutput(report) {
 		return false
 	}
 	d.outputMu.Lock()

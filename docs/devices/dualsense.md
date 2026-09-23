@@ -1,6 +1,6 @@
 # DualSense Controller
 
-VIIPER emulates complete USB-connected DualSense and DualSense Edge devices,
+VIIPER emulates USB-connected DualSense and DualSense Edge devices,
 including controls, touch, motion, adaptive triggers, lightbar, speaker,
 advanced haptics, and microphone endpoints.
 
@@ -152,3 +152,33 @@ The 474-byte V5 feedback object contains:
 The combined carrier keeps state and media on one presentation clock. The
 physical-controller bridge supplies the encoded speaker lane and forwards it
 using its V5 transport.
+
+### DualSense Edge configuration boundary
+
+Edge USB output `0x02` has 64 bytes including its report ID. Ordinary effects
+use the same 48-byte prefix as DualSense, but the remaining bytes are **not
+always padding**. Edge configuration previews carry stick-curve and trigger
+deadzone parameters there; Edge extension commands also control profile-related
+behavior. The fixed V5 feedback object cannot transport those commands intact.
+
+Until a separately negotiated complete configuration transport and virtual
+profile model exist, Edge commands with USB byte 39 bit `0x80` or USB byte 41
+bit `0x80` are rejected atomically. No bundled rumble, trigger effect, LED, or
+partial configuration reaches the feedback queue or persistent audio state.
+EP0 `SET_REPORT` receives a USB STALL; interrupt OUT receives the existing
+failed-admission response with zero accepted bytes. Later ordinary game effects
+remain usable without reconnecting. Standard DualSense behavior is unchanged.
+
+Edge onboard-profile features `0x60..0x65`, `0x68`, and `0x70..0x7B` likewise
+STALL rather than acknowledging an unimplemented read or write. VIIPER does not
+edit profiles stored on a physical Edge. Feature `0x20` remains a synthetic
+identity rather than a captured complete Edge firmware response.
+
+Protocol references:
+
+- [dualsense-tester stick preview](https://github.com/daidr/dualsense-tester/blob/f6e6247fd66ada9c8b63f3ba62c6d72945c0da53/src/router/DualSenseEdge/views/_Profile/pages/JoystickSensitivity.vue)
+- [dualsense-tester trigger preview](https://github.com/daidr/dualsense-tester/blob/f6e6247fd66ada9c8b63f3ba62c6d72945c0da53/src/router/DualSenseEdge/views/_Profile/pages/TriggerDeadZone.vue)
+- [Titania output structure](https://github.com/neptuwunium/titania/blob/develop/src/structures.h) and [Edge controls](https://github.com/neptuwunium/titania/blob/develop/src/hid.c)
+
+These are source-verified report contracts, not a claim of physical hardware
+validation or complete Sony firmware-management compatibility.
