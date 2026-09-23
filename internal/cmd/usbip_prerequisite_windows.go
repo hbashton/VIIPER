@@ -4,6 +4,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -13,8 +14,9 @@ import (
 )
 
 const (
-	requiredUSBIPVersion = "0.9.7.7"
-	usbipProbeTimeout    = 10 * time.Second
+	requiredUSBIPVersion  = "0.9.7.7"
+	usbipProbeTimeout     = 10 * time.Second
+	usbipPipeDrainTimeout = 250 * time.Millisecond
 )
 
 type usbipCommandRunner func(context.Context, string, ...string) ([]byte, error)
@@ -22,7 +24,7 @@ type usbipCommandRunner func(context.Context, string, ...string) ([]byte, error)
 func requireUSBIPRuntime() error {
 	usbipPath, err := canonicalUSBIPExecutable()
 	if err != nil {
-		return err
+		return startupFailure(StartupUSBIPUnavailable, err)
 	}
 
 	return probeUSBIPRuntime(usbipPath, runUSBIPCommand)
@@ -57,25 +59,35 @@ func canonicalUSBIPExecutable() (string, error) {
 }
 
 func runUSBIPCommand(ctx context.Context, executable string, args ...string) ([]byte, error) {
-	return exec.CommandContext(ctx, executable, args...).CombinedOutput()
+	return usbipCommand(ctx, executable, args...).CombinedOutput()
+}
+
+func usbipCommand(ctx context.Context, executable string, args ...string) *exec.Cmd {
+	command := exec.CommandContext(ctx, executable, args...)
+	// CommandContext bounds the process, but CombinedOutput also joins its
+	// redirected pipe readers. A descendant retaining a pipe handle must not
+	// keep prerequisite startup alive after that process exits or times out.
+	command.WaitDelay = usbipPipeDrainTimeout
+	return command
 }
 
 func probeUSBIPRuntime(usbipPath string, run usbipCommandRunner) error {
 	versionCtx, cancelVersion := context.WithTimeout(context.Background(), usbipProbeTimeout)
 	versionOutput, versionErr := run(versionCtx, usbipPath, "--version")
-	versionTimedOut := versionCtx.Err() == context.DeadlineExceeded
+	versionTimedOut := usbipCommandTimedOut(versionCtx, versionErr)
 	cancelVersion()
 
 	if versionTimedOut {
-		return fmt.Errorf("USB/IP prerequisite failed: %s --version timed out", usbipPath)
+		return startupFailure(StartupUSBIPTimeout,
+			fmt.Errorf("USB/IP prerequisite failed: %s --version timed out", usbipPath))
 	}
 	if versionErr != nil {
-		return fmt.Errorf(
+		return startupFailure(StartupUSBIPUnavailable, fmt.Errorf(
 			"USB/IP prerequisite failed: cannot query %s version: %w%s",
 			usbipPath,
 			versionErr,
 			formatUSBIPOutput(versionOutput),
-		)
+		))
 	}
 
 	installedVersion := strings.TrimSpace(string(versionOutput))
@@ -83,39 +95,45 @@ func probeUSBIPRuntime(usbipPath string, run usbipCommandRunner) error {
 		if installedVersion == "" {
 			installedVersion = "unknown"
 		}
-		return fmt.Errorf(
+		return startupFailure(StartupUSBIPVersion, fmt.Errorf(
 			"USB/IP prerequisite failed: VIIPER requires usbip-win2 %s at %s (found %s); run the DS4Windows VIIPER setup",
 			requiredUSBIPVersion,
 			usbipPath,
 			installedVersion,
-		)
+		))
 	}
 
 	portCtx, cancelPort := context.WithTimeout(context.Background(), usbipProbeTimeout)
 	portOutput, portErr := run(portCtx, usbipPath, "port")
-	portTimedOut := portCtx.Err() == context.DeadlineExceeded
+	portTimedOut := usbipCommandTimedOut(portCtx, portErr)
 	cancelPort()
 
 	if portTimedOut {
-		return fmt.Errorf("USB/IP prerequisite failed: %s port timed out", usbipPath)
+		return startupFailure(StartupUSBIPTimeout,
+			fmt.Errorf("USB/IP prerequisite failed: %s port timed out", usbipPath))
 	}
 	if portErr != nil {
-		return fmt.Errorf(
+		return startupFailure(StartupUSBIPDriver, fmt.Errorf(
 			"USB/IP prerequisite failed: usbip-win2 %s driver/CLI probe failed: %w%s",
 			requiredUSBIPVersion,
 			portErr,
 			formatUSBIPOutput(portOutput),
-		)
+		))
 	}
 	if reason := usbipProbeFailure(portOutput); reason != "" {
-		return fmt.Errorf(
+		return startupFailure(StartupUSBIPDriver, fmt.Errorf(
 			"USB/IP prerequisite failed: usbip-win2 %s driver/CLI probe reported %s; repair USBIP and reboot before starting VIIPER",
 			requiredUSBIPVersion,
 			reason,
-		)
+		))
 	}
 
 	return nil
+}
+
+func usbipCommandTimedOut(ctx context.Context, err error) bool {
+	return ctx.Err() == context.DeadlineExceeded ||
+		errors.Is(err, context.DeadlineExceeded) || errors.Is(err, exec.ErrWaitDelay)
 }
 
 func usbipProbeFailure(output []byte) string {

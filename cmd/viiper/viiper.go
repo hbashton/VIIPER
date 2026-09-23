@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/Alia5/VIIPER/internal/cmd"
 	"github.com/Alia5/VIIPER/internal/config"
 	"github.com/Alia5/VIIPER/internal/log"
 
@@ -57,7 +58,20 @@ func main() {
 	ctx.BindTo(rawLogger, (*log.RawLogger)(nil))
 
 	err = ctx.Run()
+	if exitForStartupFailure(err, os.Stderr, os.Exit) {
+		return
+	}
 	ctx.FatalIfErrorf(err)
+}
+
+func exitForStartupFailure(err error, stderr io.Writer, exit func(int)) bool {
+	code, classified := cmd.StartupExitCode(err)
+	if !classified {
+		return false
+	}
+	_, _ = fmt.Fprintln(stderr, "VIIPER startup failed:", err)
+	exit(code)
+	return true
 }
 
 func handlePlainHelpFlag() {

@@ -36,7 +36,7 @@ func (s *Server) Run(logger *slog.Logger, rawLogger log.RawLogger) error {
 func (s *Server) StartServer(ctx context.Context, logger *slog.Logger, rawLogger log.RawLogger) error {
 	keyFilePath, err := resolveServerKeyFilePath(s.KeyFile)
 	if err != nil {
-		return err
+		return startupFailure(StartupKey, err)
 	}
 	if err := requireUSBIPRuntime(); err != nil {
 		logger.Error("Refusing to start VIIPER with an incompatible USB/IP runtime", "error", err)
@@ -45,7 +45,7 @@ func (s *Server) StartServer(ctx context.Context, logger *slog.Logger, rawLogger
 
 	password, generated, err := loadServerAPIKey(keyFilePath, s.KeyFile != nil)
 	if err != nil {
-		return err
+		return startupFailure(StartupKey, err)
 	}
 	s.APIServerConfig.Password = password
 	if generated {
@@ -76,11 +76,15 @@ func (s *Server) StartServer(ctx context.Context, logger *slog.Logger, rawLogger
 	logger.Info("Starting VIIPER USB-IP server", "addr", s.USBServerConfig.Addr)
 
 	usbSrv := usb.New(s.USBServerConfig, logger, rawLogger)
-	return runOwnedServers(ctx, usbSrv.ListenAndServe, usbSrv.Ready(), usbSrv.Close,
+	serveUSB := func() error {
+		return startupFailure(StartupUSBListener, usbSrv.ListenAndServe())
+	}
+	return runOwnedServers(ctx, serveUSB, usbSrv.Ready(), usbSrv.Close,
 		func() (func(), error) {
 			if s.APIServerConfig.Addr == "" {
 				logger.Error("API server address must be set (default :3242).")
-				return nil, fmt.Errorf("API server address must be set (default :3242).") // nolint
+				return nil, startupFailure(StartupAPIListener,
+					fmt.Errorf("API server address must be set (default :3242).")) // nolint
 			}
 
 			apiSrv := api.New(usbSrv, s.APIServerConfig.Addr, s.APIServerConfig, logger)
@@ -119,7 +123,7 @@ func (s *Server) StartServer(ctx context.Context, logger *slog.Logger, rawLogger
 
 			if err := apiSrv.Start(); err != nil {
 				logger.Error("failed to start API server", "error", err)
-				return apiSrv.Close, err
+				return apiSrv.Close, startupFailure(StartupAPIListener, err)
 			}
 			return apiSrv.Close, nil
 		})
