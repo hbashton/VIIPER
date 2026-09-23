@@ -1117,9 +1117,12 @@ func encodeUSBInputMetadata(report []byte, state *InputState, timestamp uint32,
 		copy(report[49:53], state.PhysicalInputMetadata[8:12])
 	}
 	report[53] = state.PhysicalInputMetadata[physicalMetadataBattery]
-	// The virtual device is always presented over USB even when DS4Windows
-	// normalized the authoritative metadata from a physical Bluetooth report.
-	report[54] = dualSenseUSBConnectStateWired
+	// Normalize only the transport. Bits 0..2 are headphone presence,
+	// microphone presence and microphone mute, not Bluetooth/USB identity.
+	// Clearing them hides valid headset status from native Sony consumers.
+	// Unknown upper bits and physical USB-power/data flags are not forwarded.
+	report[54] = state.PhysicalInputMetadata[physicalMetadataConnectState]&0x07 |
+		dualSenseUSBConnectStateWired
 	// Byte 55 is the third non-authenticated controller-status byte
 	// (external-microphone / haptics low-pass state), common to base and Edge.
 	report[55] = state.PhysicalInputMetadata[physicalMetadataHeadsetStatus]

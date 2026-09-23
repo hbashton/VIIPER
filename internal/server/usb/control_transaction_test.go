@@ -317,7 +317,7 @@ type transactionalControlStream struct {
 
 func newTransactionalControlStream(
 	t *testing.T,
-	device *transactionalControlTestDevice,
+	device usbdesc.Device,
 ) transactionalControlStream {
 	t.Helper()
 	bus := virtualbus.New(249)
@@ -353,11 +353,14 @@ func submitTransactionalControl(
 	connection net.Conn,
 	seq, direction uint32,
 	setup [8]byte,
+	payload ...[]byte,
 ) transactionalControlResponse {
 	t.Helper()
 	length := uint32(0)
 	if direction == usbip.DirIn {
 		length = uint32(binary.LittleEndian.Uint16(setup[6:8]))
+	} else if len(payload) != 0 {
+		length = uint32(len(payload[0]))
 	}
 	command := usbip.CmdSubmit{
 		Basic: usbip.HeaderBasic{
@@ -369,6 +372,10 @@ func submitTransactionalControl(
 		Setup:             setup,
 	}
 	require.NoError(t, command.Write(connection))
+	if direction == usbip.DirOut && len(payload) != 0 {
+		_, err := connection.Write(payload[0])
+		require.NoError(t, err)
+	}
 	var header [retSubmitHeaderSize]byte
 	require.NoError(t, usbip.ReadExactly(connection, header[:]))
 	response := transactionalControlResponse{

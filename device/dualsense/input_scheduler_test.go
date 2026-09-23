@@ -1038,7 +1038,7 @@ func TestDualSenseInputEncoderPreservesPhysicalResonanceMetadata(t *testing.T) {
 			t.Fatalf("%s battery=%#x, want raw %#x", name, report[53],
 				physical[physicalMetadataBattery])
 		}
-		if report[54] != dualSenseUSBConnectStateWired {
+		if report[54] != physical[physicalMetadataConnectState]&0x07|dualSenseUSBConnectStateWired {
 			t.Fatalf("%s exposed physical transport state %#x", name, report[54])
 		}
 		if report[55] != physical[physicalMetadataHeadsetStatus] {
@@ -1106,7 +1106,7 @@ func TestDualSensePhysicalMetadataCrossLayoutSynthesizesTargetStatus(t *testing.
 				t.Fatalf("target status=% x, want % x", got, test.wantStatus)
 			}
 			if report[53] != physical[physicalMetadataBattery] ||
-				report[54] != dualSenseUSBConnectStateWired {
+				report[54] != physical[physicalMetadataConnectState]&0x07|dualSenseUSBConnectStateWired {
 				t.Fatalf("battery/connect=% x", report[53:55])
 			}
 		})

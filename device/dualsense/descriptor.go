@@ -338,7 +338,26 @@ func makeDescriptor(edge bool) usb.Descriptor {
 			}
 
 			collection.Items = append([]hid.Item(nil), collection.Items...)
-			if !edge {
+			if edge {
+				// The Edge shares the 47-byte effect-state prefix, but its
+				// physical USB descriptor declares a 63-byte output payload
+				// and a 52-byte feature 0xF2 payload. Do not change the V5
+				// feedback prefix just to describe the USB padding correctly.
+				var reportID uint8
+				for j, field := range collection.Items {
+					switch field := field.(type) {
+					case hid.ReportID:
+						reportID = field.ID
+					case hid.ReportCount:
+						switch reportID {
+						case ReportIDOutput:
+							collection.Items[j] = hid.ReportCount{Count: 63}
+						case 0xF2:
+							collection.Items[j] = hid.ReportCount{Count: 52}
+						}
+					}
+				}
+			} else {
 				collection.Items = withoutEdgeFeatureReports(collection.Items)
 			}
 

@@ -134,11 +134,12 @@ type DualSense struct {
 	// health telemetry without affecting presentation timing.
 	hapticsPCMStartedAt time.Time
 
-	metaMu       sync.Mutex
-	outputMu     sync.Mutex
-	mediaMu      sync.Mutex
-	microphoneMu sync.Mutex
-	callbackMu   sync.RWMutex
+	metaMu             sync.Mutex
+	outputMu           sync.Mutex
+	mediaMu            sync.Mutex
+	microphoneMu       sync.Mutex
+	callbackMu         sync.RWMutex
+	edgeFeatureControl edgeFeatureControlTransactions
 }
 
 func New(o *device.CreateOptions) (*DualSense, error) {
@@ -1332,6 +1333,13 @@ func (d *DualSense) HandleControl(bmRequestType, bRequest uint8, wValue, wIndex,
 				d.outputMu.Unlock()
 				return nil, true
 			case reportType == reportTypeFeature:
+				// Declaring the native Edge feature IDs does not implement
+				// their onboard-profile protocol. Acknowledge neither a save
+				// nor a profile switch that was silently discarded. Never
+				// forward configuration writes to physical hardware here.
+				if isEdgeFeatureReport(reportID) {
+					return nil, false
+				}
 				return nil, true
 			case reportType == reportTypeOutput && reportID == ReportIDOutput:
 				d.handleOutputReport(data)
