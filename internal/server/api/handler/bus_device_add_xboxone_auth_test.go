@@ -55,7 +55,7 @@ func TestXboxOneActivationAcceptsPinned0977NativePortWithoutOwnerSerial(
 		result api.AutoAttachResult
 		want   bool
 	}{
-		{name: "native 0.9.7.7", result: api.AutoAttachResult{USBIPPort: 7}, want: true},
+		{name: "native 0.9.8.1", result: api.AutoAttachResult{USBIPPort: 7}, want: true},
 		{name: "future owner token", result: api.AutoAttachResult{
 			USBIPPort: 8, USBIPOwnerSerial: "DS4W123456789AB"}, want: true},
 		{name: "missing port", result: api.AutoAttachResult{}, want: false},

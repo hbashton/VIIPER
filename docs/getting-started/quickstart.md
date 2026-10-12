@@ -248,7 +248,7 @@ See [Linux Kernel Module Setup](installation.md#linux-kernel-module-setup-for-au
 **Windows - USBIP tool not found:**
 
 Install the exact signed
-[usbip-win2 0.9.7.7 x64 release](https://github.com/vadimgrn/usbip-win2/releases/tag/v.0.9.7.7).
+[usbip-win2 0.9.8.1 x64 release](https://github.com/vadimgrn/usbip-win2/releases/tag/v.0.9.8.1).
 Do not mix it with another usbip-win2 userspace or driver version; VIIPER
 checks the live ABI before starting.
 

@@ -22,7 +22,7 @@ func submitAttachIOCTLTest(t *testing.T, request *attachIOCTL,
 	_, calls, closed := nativeOperationFixture(t)
 	calls.control = control
 	port, returned, err := submitAttachIOCTLContext(context.Background(), 202, request, calls)
-	if request != nil && request.Size == 1100 && control != nil {
+	if request != nil && request.Size == 1124 && control != nil {
 		require.Equal(t, int32(1), closed.Load())
 	} else {
 		require.Zero(t, closed.Load())
@@ -31,8 +31,18 @@ func submitAttachIOCTLTest(t *testing.T, request *attachIOCTL,
 }
 
 func TestUsbipAttachABISizes(t *testing.T) {
-	require.Equal(t, uintptr(1100), unsafe.Sizeof(attachIOCTL{}),
-		"usbip-win2 0.9.7.7 plugin_hardware ABI changed")
+	require.Equal(t, uintptr(1124), unsafe.Sizeof(attachIOCTL{}),
+		"usbip-win2 0.9.8.1 plugin_hardware ABI changed")
+	// Values measured by MSVC against the exact upstream release header,
+	// commit 55e1fa7f0c2157017b02dc1f3236e98169a535e4.
+	var request attachIOCTL
+	require.Equal(t, uintptr(4), unsafe.Offsetof(request.PortOutput))
+	require.Equal(t, uintptr(8), unsafe.Offsetof(request.LocationHash))
+	require.Equal(t, uintptr(12), unsafe.Offsetof(request.BusID))
+	require.Equal(t, uintptr(44), unsafe.Offsetof(request.Service))
+	require.Equal(t, uintptr(76), unsafe.Offsetof(request.Host))
+	require.Equal(t, uintptr(1104), unsafe.Offsetof(request.Serial))
+	require.Equal(t, uintptr(1120), unsafe.Offsetof(request.WskEvents))
 }
 
 func TestNativeAttachPayloadPreservesExactAliasWithoutOpeningDriver(t *testing.T) {
@@ -42,11 +52,14 @@ func TestNativeAttachPayloadPreservesExactAliasWithoutOpeningDriver(t *testing.T
 	copy(meta.USBBusID[:], alias)
 	request, err := newAttachIOCTL(&meta, 3241)
 	require.NoError(t, err)
-	require.Equal(t, uint32(1100), request.Size)
+	require.Equal(t, uint32(1124), request.Size)
 	require.Equal(t, meta.USBBusID, request.BusID)
 	require.Equal(t, "3241", string(bytes.TrimRight(request.Service[:], "\x00")))
 	require.Equal(t, "localhost", string(bytes.TrimRight(request.Host[:], "\x00")))
 	require.Zero(t, request.PortOutput)
+	require.Zero(t, request.LocationHash)
+	require.Equal(t, [16]byte{}, request.Serial)
+	require.Equal(t, uint8(1), request.WskEvents)
 	meta.USBBusID = [32]byte{}
 	_, err = newAttachIOCTL(&meta, 3241)
 	require.Error(t, err)
@@ -59,6 +72,24 @@ func TestNativeAutoAttachResultCarriesExactPort(t *testing.T) {
 
 	require.Equal(t, int32(7), got.USBIPPort)
 	require.Empty(t, got.USBIPOwnerSerial)
+}
+
+func TestWindowsCommandAttachUsesLowLatencyAndExactXboxRetryPolicy(t *testing.T) {
+	alias, err := usbip.NewProductionXboxOneBusID()
+	require.NoError(t, err)
+	for _, busID := range []string{"17-4", alias} {
+		meta := usbip.ExportMeta{BusID: 17, DevID: 4}
+		copy(meta.USBBusID[:], busID)
+		args, err := windowsAttachArguments(&meta, 3241)
+		require.NoError(t, err)
+		expected := []string{"--tcp-port", "3241", "attach", "-r", "localhost", "-b", busID, "--receive-mode=low-latency"}
+		if busID == alias {
+			expected = append(expected, "--once")
+		}
+		require.Equal(t, expected, args)
+	}
+	_, err = windowsAttachArguments(nil, 3241)
+	require.Error(t, err)
 }
 
 func TestNativeXboxOneAttachFailureUsesOneAttemptWithoutFallback(t *testing.T) {
@@ -77,7 +108,7 @@ func TestNativeXboxOneAttachFailureUsesOneAttemptWithoutFallback(t *testing.T) {
 			controlCode = code
 			require.Equal(t, (*byte)(unsafe.Pointer(&request)), in)
 			require.Equal(t, in, out)
-			require.Equal(t, uint32(1100), inSize)
+			require.Equal(t, uint32(1124), inSize)
 			require.Equal(t, uint32(8), outSize)
 			require.NotNil(t, overlapped)
 			return windows.ERROR_TIMEOUT
@@ -86,7 +117,7 @@ func TestNativeXboxOneAttachFailureUsesOneAttemptWithoutFallback(t *testing.T) {
 	require.Zero(t, port)
 	require.Zero(t, returned)
 	require.Equal(t, 1, calls)
-	// v.0.9.7.7 include/usbip/vhci.h: PLUGIN_HARDWARE_ONCE,
+	// v.0.9.8.1 include/usbip/vhci.h: PLUGIN_HARDWARE_ONCE,
 	// CTL_CODE(FILE_DEVICE_UNKNOWN, 0x806, METHOD_BUFFERED, READ|WRITE).
 	require.Equal(t, uint32(0x0022e018), controlCode,
 		"failed transactional Xbox activation must not start background kernel attaches")
@@ -145,17 +176,17 @@ func TestNativeAttachInvalidRequestDoesNotReachDriver(t *testing.T) {
 		called = true
 		return nil
 	}
-	for _, request := range []*attachIOCTL{nil, {}, {Size: 8}, {Size: 1104}} {
+	for _, request := range []*attachIOCTL{nil, {}, {locationIOCTL: locationIOCTL{Size: 8}}, {locationIOCTL: locationIOCTL{Size: 1100}}} {
 		_, _, err := submitAttachIOCTLTest(t, request, fake)
 		require.Error(t, err)
 	}
-	_, _, err := submitAttachIOCTLTest(t, &attachIOCTL{Size: 1100}, nil)
+	_, _, err := submitAttachIOCTLTest(t, &attachIOCTL{locationIOCTL: locationIOCTL{Size: 1124}}, nil)
 	require.Error(t, err)
 	require.False(t, called)
 }
 
 func TestNativeAttachRejectsTruncatedAndOversizedSuccessWithoutRetry(t *testing.T) {
-	for _, size := range []uint32{0, 4, 7, 9, 1100} {
+	for _, size := range []uint32{0, 4, 7, 9, 1124} {
 		meta := usbip.ExportMeta{BusID: 17, DevID: 4}
 		copy(meta.USBBusID[:], "17-4")
 		request, err := newAttachIOCTL(&meta, 3241)

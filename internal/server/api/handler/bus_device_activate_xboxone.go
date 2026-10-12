@@ -127,13 +127,14 @@ func BusDeviceActivateAuthorizedXboxOne(
 	}
 }
 
-// usbip-win2 0.9.7.7's native attach IOCTL returns exactly the base size and
-// assigned hub port; it has no attach-time serial override or owner-token
-// field. The authenticated capability selects the exact registration; its
+// usbip-win2 0.9.8.1's native attach IOCTL returns exactly the base size and
+// assigned hub port, not an owner-token field. The published release's serial
+// override is broken, so we leave it empty. The authenticated capability
+// selects the exact registration; its
 // separate public export alias survives automatic reconnect without selecting
 // a same-numeric-address successor. A positive port is an attach result, never
 // authority to detach that number later. Requiring a nonempty serial here
-// would reject every real 0.9.7.7 native attach after it already succeeded.
+// would reject every real 0.9.8.1 native attach after it already succeeded.
 func validXboxOneActivationAttachResult(result api.AutoAttachResult) bool {
 	return result.USBIPPort > 0
 }

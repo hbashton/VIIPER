@@ -18,23 +18,16 @@ You must have a USBIP-Client implementation available on your system to use VIIP
 
 === "Windows"
 
-    VIIPER for DS4Windows requires the signed
-    [usbip-win2 0.9.7.7 x64 release](https://github.com/vadimgrn/usbip-win2/releases/tag/v.0.9.7.7).
-    Use the DS4Windows **Install / Repair VIIPER** action whenever possible; its
-    package contains this exact verified installer.
+    This ABI update requires the signed
+    [usbip-win2 0.9.8.1 x64 release](https://github.com/vadimgrn/usbip-win2/releases/tag/v.0.9.8.1).
+    Use the complete matching DS4Windows package once it is published; do not
+    install the new driver underneath a backend built for the older ABI.
 
-    !!! danger "Do not substitute another USBIP build"
-        This release is ABI-pinned to **0.9.7.7**. Version 0.9.7.8 reproduced
-        kernel pool corruption during controller attachment and is explicitly
-        rejected. The installer verifies the version and live ABI before
-        allowing VIIPER to start.
-
-    !!! warning "USBIP-Win2 signing certificate"
-        The upstream 0.9.7.7 installer may add the publicly available USBIP
-        test-signing CA to **Trusted Root Certification Authorities**. After
-        installation, you may remove the certificate named **USBIP** with
-        `certlm.msc` (run as administrator). Do not replace 0.9.7.7 with a
-        newer or OSSign build: VIIPER validates this exact userspace/driver ABI.
+    !!! warning "Coordinate the app, backend and driver"
+        Existing published DS4Windows packages retain their original dependency
+        pin until a matching backend is released. Driver replacement preserves
+        the uninstall/restart/install boundary. Setup verifies identities and
+        the live ABI before starting output.
 
 === "Linux"
 
@@ -141,7 +134,10 @@ You must have a USBIP-Client implementation available on your system to use VIIP
     === "Windows"
 
         ```powershell
-        irm https://raw.githubusercontent.com/hbashton/VIIPER/main/scripts/install.ps1 | iex
+        Invoke-WebRequest https://raw.githubusercontent.com/hbashton/VIIPER/main/scripts/install.ps1 -OutFile install.ps1
+        $approvedTag = Read-Host "Upstream VIIPER release tag supporting USB/IP 0.9.8.1"
+        $env:VIIPER_DEVELOPER_STANDALONE = "1"
+        .\install.ps1 -DeveloperStandalone -ViiperReleaseTag $approvedTag
         ```
 
         Installs to: `%LOCALAPPDATA%\VIIPER\viiper.exe`

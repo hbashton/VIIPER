@@ -1,4 +1,31 @@
 # Exact production Xbox One removal
+## Windows driver ABI for VIIPER 0.1.10
+
+The Windows integration now targets the published usbip-win2 **0.9.8.1**
+headers at commit `55e1fa7f0c2157017b02dc1f3236e98169a535e4`.
+Microsoft's C++ compiler independently confirms these layouts:
+
+| Native request | Input bytes | Response bytes |
+| --- | ---: | ---: |
+| `PLUGIN_HARDWARE` / `PLUGIN_HARDWARE_ONCE` | 1124 | 8 |
+| Exact-location `STOP_ATTACH_ATTEMPTS` | 1108 | 1108 |
+
+Attach fields are size at 0, output port at 4, location hash at 8, bus ID at
+12, service at 44, host at 76, optional serial at 1104, and `wsk_events` at
+1120. Retry cancellation has its count at 1104 and does not contain attach's
+serial or receive-mode fields. Golden tests bind these offsets and the separate
+request lengths to the upstream header, alongside completion/cancellation tests.
+
+Windows attaches select `low-latency` WSK reception. Production Xbox One retains
+`PLUGIN_HARDWARE_ONCE`, its exact export alias, token-bound removal, and the
+existing registration lifetime checks. Serial overrides remain empty because
+the published 0.9.8.1 driver has an upstream bug; the post-release fix
+`a2a1159763088c85d940078cfa6491f38540953d` is not bundled. Port numbers and
+serial display values do not grant removal authority. Native ABI failures do
+not fall back to a command-line attach.
+
+The implementation notes below retain their original 0.9.7.7 source context.
+Their older request layouts are not the current Windows ABI.
 
 The authenticated `bus/{id}/add-authorized-xboxone` response includes a
 top-level `removalToken`. It is a fresh 256-bit `crypto/rand` nonce encoded as

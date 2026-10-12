@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	requiredUSBIPVersion  = "0.9.7.7"
+	requiredUSBIPVersion  = "0.9.8.1"
 	usbipProbeTimeout     = 10 * time.Second
 	usbipPipeDrainTimeout = 250 * time.Millisecond
 )

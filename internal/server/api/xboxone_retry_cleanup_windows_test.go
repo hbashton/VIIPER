@@ -13,15 +13,15 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-func TestStopRetry0977ABIHasExactLocationAndNeverDetachesOrStopsAll(t *testing.T) {
+func TestStopRetry0981ABIHasExactLocationAndNeverDetachesOrStopsAll(t *testing.T) {
 	alias, err := usbip.NewProductionXboxOneBusID()
 	require.NoError(t, err)
 	meta := usbip.ExportMeta{BusID: 17, DevID: 4}
 	copy(meta.USBBusID[:], alias)
 	request, err := newStopAttachIOCTL(&meta, 3241)
 	require.NoError(t, err)
-	require.Equal(t, uintptr(1104), unsafe.Sizeof(request))
-	require.Equal(t, uintptr(1100), unsafe.Offsetof(request.Count))
+	require.Equal(t, uintptr(1108), unsafe.Sizeof(request))
+	require.Equal(t, uintptr(1104), unsafe.Offsetof(request.Count))
 	require.Equal(t, uint32(0x0022e014), uint32(ioctlStopAttachAttempts))
 	require.Equal(t, alias, string(bytes.TrimRight(request.BusID[:], "\x00")))
 	require.Equal(t, "localhost", string(bytes.TrimRight(request.Host[:], "\x00")))
@@ -31,7 +31,7 @@ func TestStopRetry0977ABIHasExactLocationAndNeverDetachesOrStopsAll(t *testing.T
 	calls.control = func(_ windows.Handle, code uint32, in *byte, inSize uint32, out *byte, outSize uint32, returned *uint32, _ *windows.Overlapped) error {
 		require.Equal(t, uint32(ioctlStopAttachAttempts), code)
 		require.Equal(t, in, out)
-		require.Equal(t, uint32(1104), inSize)
+		require.Equal(t, uint32(1108), inSize)
 		require.Equal(t, inSize, outSize)
 		request.Count = 3
 		*returned = outSize

@@ -63,3 +63,28 @@ finally {
 }
 
 Write-Host "VIIPER installer first-run registry contract passed."
+
+$ownership = $ast.Find({
+    param($node)
+    $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+        $node.Name -eq 'Test-ViiperOwnedUsbipPort'
+}, $true)
+if ($null -eq $ownership) { throw 'USB-IP ownership helper is missing.' }
+Invoke-Expression $ownership.Extent.Text
+foreach ($case in @(
+        @{ Line = '-> serial: '; Owned = $true },
+        @{ Line = '-> serial: DS4W0123456789A'; Owned = $true },
+        @{ Line = '-> serial: foreign'; Owned = $false },
+        @{ Line = "-> serial 'DS4W0123456789A'"; Owned = $true },
+        @{ Line = "-> serial 'foreign'"; Owned = $false },
+        @{ Line = '-> serial foreign'; Owned = $false })) {
+    foreach ($location in @('localhost:3241/17-4', 'remote.example:3241/17-4',
+            'localhost:3240/17-4', 'localhost:3241/x1-protected')) {
+        $block = "Port 07: device in use at high-speed`n -> usbip://$location`n $($case.Line)`n -> mode: low-latency"
+        $expected = $case.Owned -and $location -eq 'localhost:3241/17-4'
+        if ((Test-ViiperOwnedUsbipPort $block) -ne $expected) {
+            throw "USB-IP cleanup ownership mismatch: $location / $($case.Line)"
+        }
+    }
+}
+Write-Host "VIIPER cleanup ownership passes with old and 0.9.8.1 port output."

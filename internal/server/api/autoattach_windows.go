@@ -57,13 +57,25 @@ const (
 	niMaxServ = 32
 )
 
-// PLUGIN_HARDWARE structure from usbip-win2
+// base + imported_device_location from usbip-win2 v.0.9.8.1.
+// MSVC retains the location's trailing padding before derived members.
+type locationIOCTL struct {
+	Size         uint32
+	PortOutput   int32
+	LocationHash uint32
+	BusID        [32]byte
+	Service      [niMaxServ]byte
+	Host         [niMaxHost]byte
+	_            [3]byte
+}
+
+// plugin_hardware adds the optional serial and WSK receive selector.
+// Leave Serial empty: the published 0.9.8.1 serial override is broken.
 type attachIOCTL struct {
-	Size       uint32
-	PortOutput int32
-	BusID      [32]byte
-	Service    [niMaxServ]byte
-	Host       [niMaxHost]byte
+	locationIOCTL
+	Serial    [16]byte
+	WskEvents uint8
+	_         [3]byte
 }
 
 const (
@@ -72,7 +84,7 @@ const (
 	fileReadData        = 0x0001
 	fileWriteData       = 0x0002
 	ioctlPluginHardware = (fileDeviceUnknown << 16) | ((fileReadData | fileWriteData) << 14) | (0x800 << 2) | methodBuffered
-	// usbip-win2 v.0.9.7.7 include/usbip/vhci.h, function::plugin_hardware_once.
+	// usbip-win2 v.0.9.8.1 include/usbip/vhci.h, function::plugin_hardware_once.
 	// The payload and 8-byte response ABI are identical to PLUGIN_HARDWARE.
 	ioctlPluginHardwareOnce = (fileDeviceUnknown << 16) | ((fileReadData | fileWriteData) << 14) | (0x806 << 2) | methodBuffered
 )
@@ -80,7 +92,7 @@ const (
 func attachLocalhostClientImpl(ctx context.Context, deviceExportMeta *usbip.ExportMeta, usbipServerPort uint16, useNativeIOCTL bool, logger *slog.Logger) (AutoAttachResult, error) {
 	if useNativeIOCTL {
 		// Never hide a native ABI mismatch behind usbip.exe. A mismatch means
-		// the pinned 0.9.7.7 userspace and loaded driver are not a valid pair and must
+		// the pinned 0.9.8.1 userspace and loaded driver are not a valid pair and must
 		// be repaired/rebooted before VIIPER creates devices.
 		return attachViaIOCTL(ctx, deviceExportMeta, usbipServerPort, logger)
 	}
@@ -136,7 +148,7 @@ func attachViaIOCTL(ctx context.Context, deviceExportMeta *usbip.ExportMeta, usb
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return AutoAttachResult{}, fmt.Errorf("IOControl: native attach canceled after operation completion: %w", err)
 		}
-		return AutoAttachResult{}, fmt.Errorf("IOControl: usbip-win2 0.9.7.7 native attach failed (repair or reboot USBIP; no command fallback was attempted): %w", err)
+		return AutoAttachResult{}, fmt.Errorf("IOControl: usbip-win2 0.9.8.1 native attach failed (repair or reboot USBIP; no command fallback was attempted): %w", err)
 	}
 
 	logger.Debug("IOCTL completed", "bytesReturned", bytesReturned, "portOutput", port)
@@ -163,7 +175,11 @@ func newAttachIOCTL(meta *usbip.ExportMeta, port uint16) (attachIOCTL, error) {
 	if err != nil {
 		return attachIOCTL{}, err
 	}
-	result := attachIOCTL{Size: uint32(unsafe.Sizeof(attachIOCTL{}))}
+	result := attachIOCTL{
+		locationIOCTL: locationIOCTL{Size: uint32(unsafe.Sizeof(attachIOCTL{}))},
+		// WSK callbacks are upstream's low-latency mode for frequent HID reports.
+		WskEvents: 1,
+	}
 	copy(result.BusID[:], busID)
 	copy(result.Service[:], strconv.FormatUint(uint64(port), 10))
 	copy(result.Host[:], "localhost")
@@ -180,13 +196,22 @@ func nativeAttachControlCode(request *attachIOCTL) uint32 {
 	return uint32(ioctlPluginHardware)
 }
 
-func attachViaCommand(ctx context.Context, deviceExportMeta *usbip.ExportMeta, usbipServerPort uint16, logger *slog.Logger) (AutoAttachResult, error) {
+func windowsAttachArguments(deviceExportMeta *usbip.ExportMeta, usbipServerPort uint16) ([]string, error) {
 	arguments, err := localhostAttachArguments(deviceExportMeta, usbipServerPort)
 	if err != nil {
-		return AutoAttachResult{}, err
+		return nil, err
 	}
+	arguments = append(arguments, "--receive-mode=low-latency")
 	if alias, aliasErr := usbip.ExportBusID(*deviceExportMeta); aliasErr == nil && usbip.ValidProductionXboxOneBusID(alias) {
 		arguments = append(arguments, "--once")
+	}
+	return arguments, nil
+}
+
+func attachViaCommand(ctx context.Context, deviceExportMeta *usbip.ExportMeta, usbipServerPort uint16, logger *slog.Logger) (AutoAttachResult, error) {
+	arguments, err := windowsAttachArguments(deviceExportMeta, usbipServerPort)
+	if err != nil {
+		return AutoAttachResult{}, err
 	}
 	logger.Info("Auto-attaching localhost client", "busID", deviceExportMeta.BusID, "deviceID", deviceExportMeta.DevID)
 
@@ -208,7 +233,7 @@ func resolveUsbipExecutable() string {
 	// The usbip-win2 installer does not consistently add its directory to
 	// PATH for already-running services. Prefer the canonical installation so
 	// a stale copy elsewhere cannot pair a different userspace ABI with the
-	// pinned 0.9.7.7 driver.
+	// pinned 0.9.8.1 driver.
 	seen := make(map[string]struct{})
 	for _, root := range []string{
 		os.Getenv("ProgramW6432"),
@@ -320,8 +345,8 @@ func CheckAutoAttachPrerequisites(useNativeIOCTL bool, logger *slog.Logger) bool
 		if err != nil {
 			logger.Warn("Native IOCTL auto-attach prerequisites not met", "error", err)
 			logger.Warn("Native IOCTL auto-attach is unavailable until discovery succeeds")
-			logger.Info("Install the exact signed usbip-win2 0.9.7.7 x64 package:")
-			logger.Info("  https://github.com/vadimgrn/usbip-win2/releases/tag/v.0.9.7.7")
+			logger.Info("Install the exact signed usbip-win2 0.9.8.1 x64 package:")
+			logger.Info("  https://github.com/vadimgrn/usbip-win2/releases/tag/v.0.9.8.1")
 			return false
 		}
 		logger.Debug("usbip-win2 driver found")

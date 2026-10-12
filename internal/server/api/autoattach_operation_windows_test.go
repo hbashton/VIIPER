@@ -57,7 +57,7 @@ func TestContextNativeAttachPreservesABIAndOperationChoice(t *testing.T) {
 				require.Equal(t, expected, *req)
 				require.Equal(t, (*byte)(unsafe.Pointer(req)), in)
 				require.Equal(t, in, out)
-				require.Equal(t, uint32(1100), inSize)
+				require.Equal(t, uint32(1124), inSize)
 				require.Equal(t, uint32(8), outSize)
 				require.NotNil(t, ov)
 				require.Equal(t, windows.Handle(101), ov.HEvent)

@@ -11,10 +11,10 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// usbip-win2 0.9.7.7 vhci::ioctl::stop_attach_attempts, not PLUGOUT.
+// usbip-win2 0.9.8.1 vhci::ioctl::stop_attach_attempts, not PLUGOUT.
 // All three location strings must be present: zero strings mean stop ALL.
 type stopAttachIOCTL struct {
-	attachIOCTL
+	locationIOCTL
 	Count int32
 }
 
@@ -29,7 +29,8 @@ func newStopAttachIOCTL(meta *usbip.ExportMeta, port uint16) (stopAttachIOCTL, e
 	if err != nil {
 		return stopAttachIOCTL{}, err
 	}
-	request := stopAttachIOCTL{attachIOCTL: location}
+	// Stop uses only base + location; serial and receive mode are attach-only.
+	request := stopAttachIOCTL{locationIOCTL: location.locationIOCTL}
 	request.Size = uint32(unsafe.Sizeof(request))
 	return request, nil
 }

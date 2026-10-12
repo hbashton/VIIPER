@@ -3,16 +3,32 @@
 === "Windows"
 
     VIIPER for DS4Windows requires the signed
-    [usbip-win2 0.9.7.7 x64 release](https://github.com/vadimgrn/usbip-win2/releases/tag/v.0.9.7.7).
+    [usbip-win2 0.9.8.1 x64 release](https://github.com/vadimgrn/usbip-win2/releases/tag/v.0.9.8.1)
+    with VIIPER 0.1.10 and DS4Windows 5.0.15 or newer.
     Prefer the DS4Windows **Install / Repair VIIPER** action because it bundles
-    and verifies this exact package. Do not install 0.9.7.8 or substitute a
+    and verifies this exact package. Older DS4Windows packages require their
+    original dependency; update the complete DS4Windows package together.
+    Do not substitute a
     different userspace/driver build; VIIPER rejects an incompatible ABI.
 
-    !!! warning "USBIP-Win2 signing certificate"
-        The 0.9.7.7 installer may add the publicly available USBIP test-signing
-        CA as a trusted root. After installation, you may remove the certificate
-        named **USBIP** with `certlm.msc` (run as administrator). Keep the
-        0.9.7.7 driver and userspace files installed together.
+    ### Upgrading from 0.9.7.7
+
+    Close games and controller tools, then use the matching DS4Windows
+    installer or **Install / Repair**. A driver replacement first removes the
+    previous package, then requires a Windows restart before installing the
+    new package. Run setup again after restarting. If the new driver requests
+    another restart, complete it before using VIIPER.
+
+    The 0.9.8.1 x64 installer and command-line executable have a valid Cloudyne
+    Systems Authenticode signature. Both bundled driver binaries are signed by
+    Microsoft Windows Hardware Compatibility Publisher. This upgrade does not
+    require enabling test-signing mode or adding a test certificate.
+
+    Windows attachments use upstream's `low-latency` WSK receive mode for
+    frequent controller reports. Linux attachments keep the Linux usbip tools.
+    The published 0.9.8.1 serial override has a known upstream bug; VIIPER leaves
+    it empty and retains exact endpoint/export identity checks. See the
+    [upstream release](https://github.com/vadimgrn/usbip-win2/releases/tag/v.0.9.8.1).
 
 === "Linux"
 
@@ -65,3 +81,5 @@
     ```bash
     lsmod | grep vhci_hcd
     ```
+
+Developer standalone setup requires `-ViiperReleaseTag` naming an upstream build with the 0.9.8.1 ABI. The matching DS4Windows package must also be rebuilt; this change does not retag an existing upstream release.
