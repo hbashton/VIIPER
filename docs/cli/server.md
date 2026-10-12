@@ -1,6 +1,6 @@
 # Server Command
 
-Start the VIIPER daemon/server to expose virtual devices.  
+Start the VIIPER daemon/server to expose virtual devices.\
 This is the default command you should run when you want to create virtual USB devices using VIIPER.
 
 ## Usage
@@ -19,26 +19,28 @@ The server exposes two interfaces:
 2. **VIIPER API Server** - Management API for device/bus control
 
 !!! warning "Authentication Required for Remote Connections"
-    VIIPER requires **authentication for all remote (non-localhost) connections** to prevent unauthorized device creation.  
+    VIIPER requires **authentication for all remote (non-localhost) connections** to prevent unauthorized device creation.\
 
     On first start, VIIPER generates a random password
-    and saves it to `<USER_CONFIG_DIR>/viiper.key.txt`.  
-    Windows: `%APPDATA%\VIIPER\viiper.key.txt`  
-    Linux (user): `~/.config/github.com/Alia5/viiper/viiper.key.txt`  
+    and saves it to `<USER_CONFIG_DIR>/viiper.key.txt`.\
+    Windows: `%APPDATA%\VIIPER\viiper.key.txt`\
+    Linux (user): `~/.config/github.com/Alia5/viiper/viiper.key.txt`\
     Linux (root/systemd): `/etc/viiper/viiper.key.txt`
-    
+
     - **Localhost clients** (`127.0.0.1`, `::1`): Authentication is optional by default
     - **Remote clients**: Authentication is required and enforced
     - All authenticated connections use **ChaCha20-Poly1305 encryption**
-    
+
     See the `--api.require-local-host-auth` option below to require authentication for localhost connections.
 
 !!! info "Automatic Local Attachment"
-    By default, VIIPER automatically attaches newly created devices to the local USBIP client (localhost only).  
-    This means when you create a device via the API, it will be immediately available on the same machine without manual `usbip attach` commands.  
+    By default, VIIPER automatically attaches newly created devices to the local USBIP client (localhost only).\
+    This means when you create a device via the API, it will be immediately available on the same machine without manual `usbip attach` commands.\
     This behavior can be disabled with `--api.auto-attach-local-client=false` if you prefer manual control or are running on a remote server.
 
 ## Options
+
+<a id="option-key-file"></a>
 
 ### `--key-file`
 
@@ -88,15 +90,17 @@ authentication does not authenticate the separate USB/IP port.
 
 API server listen address.
 
-**Default:** `:3242`  
+**Default:** `:3242`\
 **Environment Variable:** `VIIPER_API_ADDR`
 
 ### `--api.device-handler-timeout`
 
 Time before auto-cleanup occurs when a device handler has no active connection.
 
-**Default:** `5s`  
+**Default:** `5s`\
 **Environment Variable:** `VIIPER_API_DEVICE_HANDLER_TIMEOUT`
+
+<a id="option-auto-attach-local-client"></a>
 
 ### `--api.auto-attach-local-client`
 
@@ -104,7 +108,7 @@ Automatically attach newly added devices to a local USBIP client on the same hos
 
 VIIPER expects the USBIP command-line tool to be in the PATH (should be by default) (`usbip` on Linux, `usbip.exe` on Windows). If it is missing, auto-attach will simply log an error.
 
-**Default:** `true`  
+**Default:** `true`\
 **Environment Variable:** `VIIPER_API_AUTO_ATTACH_LOCAL_CLIENT`
 
 Disable example:
@@ -117,10 +121,10 @@ viiper server --api.auto-attach-local-client=false
 
 Require authentication even for clients connecting from localhost (`127.0.0.1`, `::1`, `localhost`).
 
-By default, localhost clients are exempt from authentication for convenience during local development.  
+By default, localhost clients are exempt from authentication for convenience during local development.\
 Enable this option if you want to enforce authentication for all connections regardless of origin.
 
-**Default:** `false`  
+**Default:** `false`\
 **Environment Variable:** `VIIPER_API_REQUIRE_LOCALHOST_AUTH`
 
 Enable example:
@@ -133,7 +137,7 @@ viiper server --api.require-local-host-auth=true
 
 Connection operation timeout for both USBIP and API servers.
 
-**Default:** `30s`  
+**Default:** `30s`\
 **Environment Variable:** `VIIPER_CONNECTION_TIMEOUT`
 
 ## Examples

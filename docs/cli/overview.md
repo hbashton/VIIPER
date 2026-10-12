@@ -6,8 +6,8 @@ VIIPER provides a command-line interface for running the USBIP server and proxy.
 
 - [`server`](server.md) - Start the VIIPER USBIP server
 - [`proxy`](proxy.md) - Start the VIIPER USBIP proxy
-- `install` - Configure VIIPER to start automatically on system boot (see [Installation](../getting-started/installation.md#system-startup-configuration))
-- `uninstall` - Remove VIIPER from system startup configuration
+- `install` - Developer-only standalone startup registration (see [Standalone development](../getting-started/installation.md#standalone-development)); DS4Windows manages its own backend startup
+- `uninstall` - Remove standalone startup registration; use DS4Windows setup/repair for managed installations
 - [`codegen`](codegen.md) - Generate client libraries from source code annotations
 
 ## Global Options
@@ -20,8 +20,8 @@ VIIPER supports flexible logging configuration via global flags or environment v
 
 Set the logging level.
 
-**Values:** `trace`, `debug`, `info`, `warn`, `error`  
-**Default:** `info`  
+**Values:** `trace`, `debug`, `info`, `warn`, `error`\
+**Default:** `info`\
 **Environment Variable:** `VIIPER_LOG_LEVEL`
 
 **Example:**
@@ -34,7 +34,7 @@ viiper server --log.level=debug
 
 Log to a file in addition to console output.
 
-**Default:** (none - logs only to console)  
+**Default:** (none - logs only to console)\
 **Environment Variable:** `VIIPER_LOG_FILE`
 
 **Example:**
@@ -47,7 +47,7 @@ viiper server --log.file=/var/log/viiper.log
 
 Log raw USB packet data to a file for debugging and reverse engineering.
 
-**Default:** (none)  
+**Default:** (none)\
 **Environment Variable:** `VIIPER_LOG_RAW_FILE`
 
 **Example:**

@@ -11,7 +11,7 @@ The Rust client library features:
 - **Tokio-based async**: Optional `async` feature for async/await support with Tokio runtime
 
 !!! note "License"
-    The Rust client library is licensed under the **MIT License**, providing maximum flexibility for integration into your projects.  
+    The Rust client library is licensed under the **MIT License**, providing maximum flexibility for integration into your projects.\
     The core VIIPER server remains under its original license.
 
 ## Installation
@@ -224,11 +224,11 @@ For devices that send feedback (rumble, LEDs), register a callback with `on_outp
         let mut buf = [0u8; OUTPUT_SIZE];
         reader.read_exact(&mut buf)?;
         let leds = buf[0];
-        
+
         let num_lock = (leds & 0x01) != 0;
         let caps_lock = (leds & 0x02) != 0;
         let scroll_lock = (leds & 0x04) != 0;
-        
+
         println!("LEDs: Num={} Caps={} Scroll={}", num_lock, caps_lock, scroll_lock);
         Ok(())
     }).expect("Failed to register callback");
@@ -258,11 +258,11 @@ For devices that send feedback (rumble, LEDs), register a callback with `on_outp
         let mut guard = stream.lock().await;
         guard.read_exact(&mut buf).await?;
         drop(guard);
-        
+
         let leds = buf[0];
         let num_lock = (leds & 0x01) != 0;
         let caps_lock = (leds & 0x02) != 0;
-        
+
         println!("LEDs: Num={} Caps={}", num_lock, caps_lock);
         Ok(())
     }).expect("Failed to register callback");
@@ -361,7 +361,7 @@ match client.bus_list() {
 }
 ```
 
-The server returns errors as RFC 7807 Problem inspired JSON.  
+The server returns errors as RFC 7807 Problem inspired JSON.\
 The client parses these into `ProblemJson`:
 
 ```rust
@@ -397,7 +397,7 @@ Full working examples are available in the repository:
 - **Virtual Keyboard (sync)**: `examples/rust/sync/virtual_keyboard/`
     - Types "Hello!" every 5 seconds using generated maps
     - Displays LED feedback in console
-  
+
 - **Virtual Keyboard (async)**: `examples/rust/async/virtual_keyboard/`
     - Async version using Tokio runtime
 
@@ -417,4 +417,4 @@ Full working examples are available in the repository:
 - [TypeScript Client Library Documentation](typescript.md): Node.js client library
 - [C++ Client Library Documentation](cpp.md): Header-only C++ client library
 - [API Overview](../api/overview.md): Management API reference
-- [Device Documentation](../devices/): Wire formats and device-specific details
+- [Device Documentation](../devices/overview.md): Wire formats and device-specific details

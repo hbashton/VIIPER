@@ -4,8 +4,8 @@
 
 Ensure you have:
 
-1. **USBIP installed** on your system (see [Installation](installation.md#requirements))
-2. **VIIPER binary** downloaded from [hbashton/VIIPER Releases](https://github.com/hbashton/VIIPER/releases) or [built from source](installation.md#building-from-source)
+1. **USBIP installed** on your system (see [Installation](usbip.md))
+2. **VIIPER binary** downloaded from [this project's releases](https://github.com/hbashton/VIIPER/releases) or [built from source](installation.md#building-from-source)
 
 ## Starting the Server
 
@@ -22,16 +22,16 @@ This starts two services:
 
 !!! warning "Authentication for Remote Connections"
     On first start, VIIPER generates a random password
-    and saves it to `<USER_CONFIG_DIR>/viiper.key.txt`.  
-    Windows: `%APPDATA%\VIIPER\viiper.key.txt`  
-    Linux (user): `~/.config/github.com/Alia5/viiper/viiper.key.txt`  
+    and saves it to `<USER_CONFIG_DIR>/viiper.key.txt`.\
+    Windows: `%APPDATA%\VIIPER\viiper.key.txt`\
+    Linux (user): `~/.config/github.com/Alia5/viiper/viiper.key.txt`\
     Linux (root/systemd): `/etc/viiper/viiper.key.txt`
 
     - **Localhost clients** (`127.0.0.1`, `::1`): Authentication is **optional** (but supported)
     - **Remote clients**: Authentication is **required** - provide the password using your client library
-    
+
     All authenticated connections use **ChaCha20-Poly1305 encryption** to protect against man-in-the-middle attacks.
-    
+
     You can change the password at any time by editing `viiper.key.txt`.
 
 !!! warning "USB/IP is local-only by default"
@@ -41,7 +41,7 @@ This starts two services:
     tunnel, host firewall, or equivalent authenticated network boundary.
 
 !!! tip "Auto-attach Feature"
-    By default, VIIPER automatically attaches newly created devices to the local machine. You can disable this with `--api.auto-attach-local-client=false`.  
+    By default, VIIPER automatically attaches newly created devices to the local machine. You can disable this with `--api.auto-attach-local-client=false`.\
     **Linux users:** Auto-attach requires running VIIPER with `sudo` as USBIP attach operations need elevated permissions.
 
 !!! info "Custom Ports"
@@ -55,7 +55,7 @@ This starts two services:
 
 ## 🎮 Creating Your First Virtual Device
 
-VIIPER provides multiple ways to interact with the API.  
+VIIPER provides multiple ways to interact with the API.\
 Choose the method that works best for you.
 
 ### Option 1: Using Client Libraries (Recommended)
@@ -74,9 +74,9 @@ Full working examples for all device types are available in the `examples/` dire
 
 ### Example
 
-For a minimal example, we'll be using TypeScript (as there are more Javascript devs than Insects on this planet), but you can checkout any of the examples provided in the [API Reference](../../api/overview.md)
+The minimal example below uses TypeScript. Other client examples are linked from the [API Reference](../api/overview.md).
 
-This minimal example creates a virtual Xbox 360 controller and sends an input state to press the "A" button, left bumper, half-press the left trigger, and push the left analog-stick to the right.  
+This minimal example creates a virtual Xbox 360 controller and sends an input state to press the "A" button, left bumper, half-press the left trigger, and push the left analog-stick to the right.\
 
 Error handling is omitted for brevity.
 
@@ -107,7 +107,7 @@ device.send(new Xbox360Input({
 
 ### Option 2: Using Raw TCP
 
-VIIPER provides a lightweight TCP API for direct interaction.  
+VIIPER provides a lightweight TCP API for direct interaction.\
 See: [API Reference](../api/overview.md) for complete documentation.
 
 For quick testing you can use `netcat` on Linux or the provided PowerShell helper script on Windows.
@@ -191,7 +191,7 @@ If auto-attach is disabled or you're connecting from a remote machine:
 
 VIIPER supports multiple virtual device types including keyboards, mice, and game controllers. Each device type has its own protocol and capabilities.
 
-For a complete list of supported devices, their specifications, and wire protocols, see the [Devices](../devices/) documentation.
+For a complete list of supported devices, their specifications, and wire protocols, see the [Devices](../devices/overview.md) documentation.
 
 ## ➡️ Next Steps
 
@@ -243,7 +243,7 @@ sudo modprobe vhci-hcd
 # Or configure persistent loading (see Installation guide)
 ```
 
-See [Linux Kernel Module Setup](installation.md#linux-kernel-module-setup-for-auto-attach) for detailed setup instructions.
+See [Linux Kernel Module Setup](usbip.md) for detailed setup instructions.
 
 **Windows - USBIP tool not found:**
 
@@ -256,7 +256,7 @@ checks the live ABI before starting.
 
 **USBIP tool not found:**
 
-Make sure USBIP is installed and in your PATH (see [Installation requirements](installation.md#requirements)).
+Make sure USBIP is installed and in your PATH (see [Installation requirements](usbip.md)).
 
 **Connection refused:**
 

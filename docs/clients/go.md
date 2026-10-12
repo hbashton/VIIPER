@@ -29,13 +29,13 @@ func main() {
   // Create new Viiper client
   client := viiperclient.New("127.0.0.1:3242")
   ctx := context.Background()
-  
+
   // Create or find a bus
   buses, err := client.BusList()
   if err != nil {
     log.Fatal(err)
   }
-  
+
   var busID uint32
   if len(buses) > 0 {
     busID = buses[0]
@@ -46,7 +46,7 @@ func main() {
     }
     busID = resp.BusID
   }
-  
+
   // Add device and connect (optional CreateOptions parameter for VID/PID)
   // Pass nil to use default VID/PID for the device type.
   stream, resp, err := client.AddDeviceAndConnect(ctx, busID, "keyboard", nil)
@@ -54,21 +54,21 @@ func main() {
     log.Fatal(err)
   }
   defer stream.Close()
-  
+
   log.Printf("Connected to device %s", resp.ID)
-  
+
   // Send keyboard input
   input := &keyboard.InputState{
     Modifiers: keyboard.ModLeftShift,
   }
   input.SetKey(keyboard.KeyH, true)
-  
+
   if err := stream.WriteBinary(input); err != nil {
     log.Fatal(err)
   }
-  
+
   time.Sleep(100 * time.Millisecond)
-  
+
   // Release
   input = &keyboard.InputState{}
   stream.WriteBinary(input)
@@ -94,8 +94,8 @@ log.Printf("Connected to device %s", resp.ID)
 
 ### Sending Input
 
-Device input is sent using structs that implement `encoding.BinaryMarshaler`.  
-Every device package (e.g. `device/xbox360`) provides type-safe input state structs.  
+Device input is sent using structs that implement `encoding.BinaryMarshaler`.\
+Every device package (e.g. `device/xbox360`) provides type-safe input state structs.\
 
 ```go
 import "github.com/Alia5/VIIPER/device/xbox360"
@@ -155,8 +155,8 @@ The VIIPER server automatically removes the device when the stream is closed aft
 
 ## Device-Specific Notes
 
-Each device type has specific wire formats and helper methods.  
-For wire format details and usage patterns, see the [Devices](../devices/) section of the documentation.
+Each device type has specific wire formats and helper methods.\
+For wire format details and usage patterns, see the [Devices](../devices/overview.md) section of the documentation.
 
 The Go client provides device packages under `/device/` with type-safe structs and constants (e.g., `keyboard.InputState`, `keyboard.KeyA`, `mouse.Btn_Left`).
 

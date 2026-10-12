@@ -1,5 +1,8 @@
 # Dormant Xbox external-identity gate
 
+> **Historical record.** This preserves the source, tests and limitations recorded at the time; it is not current setup guidance. See the [documentation index](../index.md).
+
+
 Date: 2026-08-31
 Status: offline prerequisite only; no registry, CLI, USB/IP, device, Windows,
 or hardware activation

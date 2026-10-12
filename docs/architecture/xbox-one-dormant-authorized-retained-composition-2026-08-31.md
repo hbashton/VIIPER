@@ -1,5 +1,8 @@
 # Dormant authorized Xbox retained-USB composition (2026-08-31)
 
+> **Historical record.** This preserves the source, tests and limitations recorded at the time; it is not current setup guidance. See the [documentation index](../index.md).
+
+
 ## Scope and status
 
 `NewAuthorizedDormantRetainedUSBAdapter` remains the private-engine

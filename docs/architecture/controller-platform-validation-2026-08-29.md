@@ -1,5 +1,8 @@
 # Controller platform validation status, 2026-08-29
 
+> **Historical record.** This preserves the source, tests and limitations recorded at the time; it is not current setup guidance. See the [documentation index](../index.md).
+
+
 This is an evidence/status snapshot for the in-progress DS4Windows + VIIPER
 controller-platform work. It is not a release note and does not claim product
 completion, Windows Xbox One/Series visibility, live Switch 2 support, latency

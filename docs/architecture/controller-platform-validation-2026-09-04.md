@@ -1,5 +1,8 @@
 # Controller platform validation status, 2026-09-04
 
+> **Historical record.** This preserves the source, tests and limitations recorded at the time; it is not current setup guidance. See the [documentation index](../index.md).
+
+
 Current working order: [itemized execution checklist](controller-platform-execution-checklist.md).
 The user redirected prioritization on September 4: core USB/Xbox/Bluetooth play
 and measured failures take precedence over continuing the profile-picker pathway.
@@ -1243,7 +1246,6 @@ that event alone is not claimed as an immediate cancellation trigger. Pinned
 usbip-win2 parallel query/Stop queues and hash-based retry selection still do
 not supply a permanent exact retry-removal barrier after successful imports.
 That separate cleanup remains open; no Stop All/numeric-port detach is added.
-See [the API lifecycle contract](../api/xboxone-exact-removal.md) for details and
 Microsoft references. No app, broker, controller, pairing or output action was
 performed during this source follow-up; installed binaries remain untouched.
 

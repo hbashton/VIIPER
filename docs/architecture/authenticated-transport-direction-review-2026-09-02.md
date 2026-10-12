@@ -1,5 +1,8 @@
 # Authenticated transport direction review, 2026-09-02
 
+> **Historical record.** This preserves the source, tests and limitations recorded at the time; it is not current setup guidance. See the [documentation index](../index.md).
+
+
 Status: **original v1 defect confirmed; coordinated v2 source repair implemented
 on September 3, with deployment/SDK acceptance still open**. This is not an exploitation claim, a hardware result, or
 an explanation for the isolated b48 probe failure. No live credentials or raw

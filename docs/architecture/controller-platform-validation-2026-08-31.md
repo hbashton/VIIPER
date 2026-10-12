@@ -1,5 +1,8 @@
 # Controller platform validation status, 2026-08-31
 
+> **Historical record.** This preserves the source, tests and limitations recorded at the time; it is not current setup guidance. See the [documentation index](../index.md).
+
+
 This is a dated evidence snapshot for the in-progress DS4Windows + VIIPER
 Xbox One/Series output and physical Switch 2 work. It is not a release note.
 It does not claim a production-registered Xbox One/Series persona, live

@@ -1,5 +1,8 @@
 # Xbox One/Series offline persona to USB/IP adapter audit
 
+> **Historical record.** This preserves the source, tests and limitations recorded at the time; it is not current setup guidance. See the [documentation index](../index.md).
+
+
 Status: generic transactional EP0, prepared interrupt-IN, transactional
 interrupt-OUT, late RET_SUBMIT serialization, and a narrow three-lane Xbox
 retained owner are implemented and dormant. A separately typed exact reset

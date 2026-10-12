@@ -1,5 +1,8 @@
 # RC4.5 candidate release preparation, 2026-09-08
 
+> **Historical record.** This preserves the source, tests and limitations recorded at the time; it is not current setup guidance. See the [documentation index](../index.md).
+
+
 This source checkpoint prepares VIIPER `v0.1.3-rc4.5` for the DS4Windows
 `5.0.5.0-VIIPERRC4.5` tester package. It is not a GitHub release, signed binary,
 live hardware acceptance, driver replacement, or permission to change the

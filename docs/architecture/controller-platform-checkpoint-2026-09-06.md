@@ -1,5 +1,8 @@
 # Controller platform source checkpoint, 2026-09-06
 
+> **Historical record.** This preserves the source, tests and limitations recorded at the time; it is not current setup guidance. See the [documentation index](../index.md).
+
+
 This is a source-preservation checkpoint on `feature/native-udecx-landing-zone`,
 not a release tag or a claim that the remaining hardware/game acceptance matrix
 is complete. It collects the accumulated Xbox One retained-USB, authentication,

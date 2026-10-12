@@ -33,15 +33,15 @@ viiper codegen [flags]
 
 Output directory for generated client libraries (relative to repository root).
 
-**Default:** `clients`  
+**Default:** `clients`\
 **Environment Variable:** `VIIPER_CODEGEN_OUTPUT`
 
 ### `--lang`
 
 Target language to generate.
 
-**Values:** `csharp`, `typescript`, `all`  
-**Default:** `all`  
+**Values:** `csharp`, `typescript`, `all`\
+**Default:** `all`\
 **Environment Variable:** `VIIPER_CODEGEN_LANG`
 
 ## Examples
@@ -71,5 +71,5 @@ Run codegen when any of these change:
 ## See Also
 
 - [Generator Documentation](../clients/generator.md): Detailed explanation of tagging system and code generation flow
-- [API and Client Reference](../../api/overview.md): API endpoints and data structures
+- [API and Client Reference](../api/overview.md): API endpoints and data structures
 - [Configuration](configuration.md): Global configuration options

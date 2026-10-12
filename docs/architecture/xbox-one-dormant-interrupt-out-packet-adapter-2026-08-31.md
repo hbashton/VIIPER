@@ -1,5 +1,8 @@
 # Xbox One dormant interrupt-OUT packet adapter
 
+> **Historical record.** This preserves the source, tests and limitations recorded at the time; it is not current setup guidance. See the [documentation index](../index.md).
+
+
 Audit and implementation date: 2026-08-31.
 
 ## Outcome

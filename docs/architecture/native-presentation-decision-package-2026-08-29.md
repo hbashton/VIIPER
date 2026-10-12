@@ -1,5 +1,8 @@
 # Native presentation decision package, 2026-08-29
 
+> **Historical record.** This preserves the source, tests and limitations recorded at the time; it is not current setup guidance. See the [documentation index](../index.md).
+
+
 Decision: do not implement, merge, install, or package the native driver in the
 current Xbox/Switch 2 task. Preserve ABI 1.14 and the current
 `inputpresentation.Source` seam so a separately authorized backend can be

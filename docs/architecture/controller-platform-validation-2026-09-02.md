@@ -1,5 +1,8 @@
 # Controller platform validation status, 2026-09-02
 
+> **Historical record.** This preserves the source, tests and limitations recorded at the time; it is not current setup guidance. See the [documentation index](../index.md).
+
+
 For the later coordinated auth v2 repair and current acceptance gaps, see the
 [September 3 continuation](controller-platform-validation-2026-09-03.md).
 
@@ -1431,7 +1434,7 @@ Switch2Connect `61ac6642ce12fe7217e38a860b14863b18ca7e28` (GPL-3.0-or-later).
 XML defaults, absent-key migration, reset and view-model properties are covered.
 This reuses the existing DS4Windows translators and sole physical writers; no
 donor transport, bundled binary or PadForge code was copied. See
-[`switch2-dualsense-conversion-policy.md`](../../../DS4Windows/docs/protocols/switch2-dualsense-conversion-policy.md).
+[`switch2-dualsense-conversion-policy.md`](https://github.com/hbashton/DS4Windows/blob/main/docs/protocols/switch2-dualsense-conversion-policy.md).
 
 Live edits retain ordinary body rumble and any still-enabled component within
 the original absolute expiry, without resurrecting removed media on re-enable.

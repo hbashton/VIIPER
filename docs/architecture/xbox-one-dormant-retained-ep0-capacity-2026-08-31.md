@@ -1,5 +1,8 @@
 # Dormant Xbox retained EP0 254-byte response capacity (2026-08-31)
 
+> **Historical record.** This preserves the source, tests and limitations recorded at the time; it is not current setup guidance. See the [documentation index](../index.md).
+
+
 Status update (2026-09-01): still unregistered, but now transport-routed behind
 the explicit retained-device/authority opt-in. Product creation, Windows
 binding, and hardware validation remain absent.

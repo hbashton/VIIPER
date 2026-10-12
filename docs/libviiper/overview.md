@@ -4,23 +4,23 @@ libVIIPER is a shared library (`libVIIPER.dll` on Windows, `libVIIPER.so` on Lin
 
 - Single shared library (`libVIIPER.dll` / `libVIIPER.so`)
 - Pure C API callable from any language with C FFI support
-- In-process + threadsafe  
+- In-process + threadsafe\
   the USBIP server runs in a background thread inside your application
 - Optional auto-attach to the local USBIP client on the same machine
 
 !!! warning "License"
-    libVIIPER is licensed under **GPL-3.0**.  
-    Linking against it **requires your application to be GPL-3.0 compatible**.  
+    libVIIPER is licensed under **GPL-3.0**.\
+    Linking against it **requires your application to be GPL-3.0 compatible**.\
     If your project cannot comply with the GPL-3.0, use the standalone VIIPER executable and the [TCP API](../api/overview.md) instead. All TCP client libraries are **MIT licensed**.
 
 !!! info "USBIP Required"
-    libVIIPER uses USBIP internally. A USBIP client must be installed on the target machine.  
-    See [Installation › Requirements](../getting-started/installation.md#usbip) for setup instructions.
+    libVIIPER uses USBIP internally. A USBIP client must be installed on the target machine.\
+    See [Installation › Requirements](../getting-started/usbip.md) for setup instructions.
 
 ## API Overview
 
-The libVIIPER C API is declared in `libVIIPER.h`.  
-All functions return `bool` (`true` on success, `false` on failure).  
+The libVIIPER C API is declared in `libVIIPER.h`.\
+All functions return `bool` (`true` on success, `false` on failure).\
 Handles (`USBServerHandle`, `Xbox360DeviceHandle`, …) are opaque `uintptr_t` values.
 
 ### Server lifecycle
@@ -109,7 +109,7 @@ Full working examples are in [`examples/libVIIPER/`](https://github.com/hbashton
 
 ### Logging
 
-Pass a `VIIPERLogCallback` to `NewUSBServer` to receive log messages from the library.  
+Pass a `VIIPERLogCallback` to `NewUSBServer` to receive log messages from the library.\
 Pass `NULL` to discard all log output.
 
 ```c

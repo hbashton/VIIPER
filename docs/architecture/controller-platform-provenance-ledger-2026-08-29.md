@@ -1,5 +1,8 @@
 # Controller platform provenance ledger, 2026-08-29
 
+> **Historical record.** This preserves the source, tests and limitations recorded at the time; it is not current setup guidance. See the [documentation index](../index.md).
+
+
 This ledger applies to the Xbox One/Series and physical Switch 2 work. A fact
 may be independently implemented only when its destination license and the
 source's grant permit it, or when it is a protocol fact recovered through a

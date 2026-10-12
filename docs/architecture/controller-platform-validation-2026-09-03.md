@@ -1,5 +1,8 @@
 # Controller platform validation status, 2026-09-03
 
+> **Historical record.** This preserves the source, tests and limitations recorded at the time; it is not current setup guidance. See the [documentation index](../index.md).
+
+
 Continuation: [September 4 evidence](controller-platform-validation-2026-09-04.md)
 establishes and repairs the recurring USB counter disconnect, records actual
 Go↔DS4Windows auth interoperability, and stages the matched portable b50 pair.

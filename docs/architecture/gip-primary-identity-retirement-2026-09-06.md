@@ -1,5 +1,8 @@
 # Primary GIP identity must survive asynchronous native retirement
 
+> **Historical record.** This preserves the source, tests and limitations recorded at the time; it is not current setup guidance. See the [documentation index](../index.md).
+
+
 The primary GIP Hello DeviceID is an OS lookup key, not a model identifier.
 Changing only the USB serial or retained import lease ID does not make two
 primary GIP devices distinct. Local Windows dump evidence from September 6

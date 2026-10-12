@@ -9,7 +9,7 @@ The TypeScript client library features:
 - **Zero external dependencies**: Uses only built-in Node.js libraries
 
 !!! note "License"
-    The TypeScript client library is licensed under the **MIT License**, providing maximum flexibility for integration into your projects.  
+    The TypeScript client library is licensed under the **MIT License**, providing maximum flexibility for integration into your projects.\
     The core VIIPER server remains under its original license.
 
 ## Installation
@@ -154,7 +154,7 @@ const { LED } = Keyboard;
 device.on("output", (data: Buffer) => {
   if (data.length < 1) return;
   const leds = data.readUInt8(0);
-  
+
   console.log(`LEDs: ` +
     `Num=${(leds & LED.NumLock) !== 0} ` +
     `Caps=${(leds & LED.CapsLock) !== 0} ` +
@@ -203,7 +203,7 @@ For long-running applications with intervals or timers, stop them before cleanup
 let running = true;
 const interval = setInterval(async () => {
   if (!running) return;
-  
+
   try {
     await device.send(input);
   } catch (err) {
@@ -342,7 +342,7 @@ Full working examples are available in the repository:
 - **Virtual Keyboard**: `examples/typescript/virtual_keyboard.ts`
     - Types "Hello!" every 5 seconds using generated maps
     - Displays LED feedback in console
-  
+
 - **Virtual Mouse**: `examples/typescript/virtual_mouse.ts`
     - Moves cursor diagonally
     - Demonstrates button clicks and scroll wheel
@@ -369,4 +369,4 @@ node dist/virtual_keyboard.js localhost:3242
 - [Rust Client Library Documentation](rust.md): Rust client library with sync/async support
 - [C++ Client Library Documentation](cpp.md): Header-only C++ client library
 - [API Overview](../api/overview.md): Management API reference
-- [Device Documentation](../devices/): Wire formats and device-specific details
+- [Device Documentation](../devices/overview.md): Wire formats and device-specific details

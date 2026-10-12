@@ -46,7 +46,7 @@ The tray's normal startup-registration and Quit actions are unchanged.
 
 ## Configuration Files
 
-VIIPER supports JSON, YAML, and TOML configuration files.  
+VIIPER supports JSON, YAML, and TOML configuration files.\
 Generate a starter file (default configuration) with:
 
 ```bash
@@ -101,13 +101,13 @@ authenticated network boundary.
 
 The password file is _intentionally_ separated from the main configuration
 
-**Password File:** `viiper.key.txt`  
+**Password File:** `viiper.key.txt`\
 
-- **Location:**  
-    - **Windows:** `%APPDATA%\VIIPER\`  
-    - **Linux/macOS (user):** `~/.config/github.com/Alia5/viiper/`  
-    - **Linux (root/systemd):** `/etc/viiper/`  
-- **Auto-generation:** If the file doesn't exist,  
+- **Location:**\
+    - **Windows:** `%APPDATA%\VIIPER\`\
+    - **Linux/macOS (user):** `~/.config/github.com/Alia5/viiper/`\
+    - **Linux (root/systemd):** `/etc/viiper/`\
+- **Auto-generation:** If the file doesn't exist,\
 VIIPER generates a random 16-character password on first start and displays it in the console
 - **Custom passwords:** You can edit `viiper.key.txt` and replace it with any password of any length
 - **Encryption:** All authenticated connections use fast ChaCha20-Poly1305 encryption with unique session keys
@@ -117,12 +117,12 @@ file without reading or writing the default password location. Explicit invalid,
 unreadable, or empty key files fail closed; only a missing file is generated,
 using exclusive creation so an existing key cannot be overwritten. This does
 not isolate other configuration, logging, or tray-startup behavior.
-See [the server key-file option](server.md#--key-file) for a local lab example and
+See [the server key-file option](server.md#option-key-file) for a local lab example and
 the limits of `--config` and `--config-only`.
 
 ### Localhost Exemption
 
-By default, clients connecting from `localhost`, `127.0.0.1`, or `::1` do NOT require authentication (they can optionally provide it).  
+By default, clients connecting from `localhost`, `127.0.0.1`, or `::1` do NOT require authentication (they can optionally provide it).\
 To require authentication even for localhost connections, use `--api.require-local-host-auth=true`.
 
 ### Remote Connections

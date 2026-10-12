@@ -11,7 +11,7 @@ The C# client library features:
 - **Zero external dependencies**: Uses only built-in .NET libraries
 
 !!! note "License"
-    The C# client library is licensed under the **MIT License**, providing maximum flexibility for integration into your projects.  
+    The C# client library is licensed under the **MIT License**, providing maximum flexibility for integration into your projects.\
     The core VIIPER server remains under its original license.
 
 ## Installation
@@ -151,7 +151,7 @@ device.OnOutput += data =>
 {
     if (data.Length < 1) return;
     byte leds = data[0];
-    
+
     Console.WriteLine($"LEDs: " +
         $"Num={(leds & (byte)LED.NumLock) != 0} " +
         $"Caps={(leds & (byte)LED.CapsLock) != 0} " +
@@ -315,7 +315,7 @@ Full working examples are available in the repository:
 - **Virtual Keyboard**: `examples/csharp/virtual_keyboard/Program.cs`
     - Types "Hello!" every 5 seconds using generated maps
     - Displays LED feedback in console
-  
+
 - **Virtual Mouse**: `examples/csharp/virtual_mouse/Program.cs`
     - Moves cursor in a circle pattern
     - Demonstrates button clicks and scroll wheel
@@ -359,4 +359,4 @@ The generated code uses nullable annotations. You may see warnings like CS8601/C
 - [TypeScript Client Library Documentation](typescript.md): Node.js client library
 - [C++ Client Library Documentation](cpp.md): Header-only C++ client library
 - [API Overview](../api/overview.md): Management API reference
-- [Device Documentation](../devices/): Wire formats and device-specific details
+- [Device Documentation](../devices/overview.md): Wire formats and device-specific details

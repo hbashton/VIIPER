@@ -1,5 +1,8 @@
 # Xbox One dormant duplex boundary audit
 
+> **Historical record.** This preserves the source, tests and limitations recorded at the time; it is not current setup guidance. See the [documentation index](../index.md).
+
+
 Audit date: 2026-08-30.
 
 Status: the semantic input contract, persona-local feedback translation, and

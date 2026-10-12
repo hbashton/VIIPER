@@ -17,11 +17,11 @@ The C++ client library features:
     **Recommended**: [nlohmann/json](https://github.com/nlohmann/json) - a header-only JSON library that can be easily integrated.
 
 !!! warning "OpenSSL Required"
-    The C++ client library requires OpenSSL for encrypted connections to VIIPER servers with authentication enabled.  
+    The C++ client library requires OpenSSL for encrypted connections to VIIPER servers with authentication enabled.\
     Ensure OpenSSL is installed and linked in your project.
 
 !!! note "License"
-    The C++ client library is licensed under the **MIT License**, providing maximum flexibility for integration into your projects.  
+    The C++ client library is licensed under the **MIT License**, providing maximum flexibility for integration into your projects.\
     The core VIIPER server remains under its original license.
 
 ## Installation
@@ -234,7 +234,7 @@ stream->on_output(viiper::keyboard::OUTPUT_SIZE, [](const std::uint8_t* data, st
     if (len < viiper::keyboard::OUTPUT_SIZE) return;
     auto result = viiper::keyboard::Output::from_bytes(data, len);
     if (result.is_error()) return;
-    
+
     auto& leds = result.value();
     bool num_lock = (leds.leds & viiper::keyboard::LEDNumLock) != 0;
     bool caps_lock = (leds.leds & viiper::keyboard::LEDCapsLock) != 0;
@@ -249,7 +249,7 @@ stream->on_output(viiper::xbox360::OUTPUT_SIZE, [](const std::uint8_t* data, std
     if (len < viiper::xbox360::OUTPUT_SIZE) return;
     auto result = viiper::xbox360::Output::from_bytes(data, len);
     if (result.is_error()) return;
-    
+
     auto& rumble = result.value();
     std::cout << "Rumble: Left=" << static_cast<int>(rumble.left)
               << ", Right=" << static_cast<int>(rumble.right) << "\n";
@@ -382,7 +382,7 @@ Full working examples are available in the repository:
 - **Virtual Keyboard**: `examples/cpp/virtual_keyboard.cpp`
     - Types "Hello!" every 5 seconds using generated maps
     - Displays LED feedback in console
-  
+
 - **Virtual Mouse**: `examples/cpp/virtual_mouse.cpp`
     - Moves cursor in a circle pattern
     - Demonstrates button clicks
@@ -445,4 +445,4 @@ viiper server --api-addr localhost:3242
 - [C# Client Library Documentation](csharp.md): .NET client library
 - [TypeScript Client Library Documentation](typescript.md): Node.js client library
 - [API Overview](../api/overview.md): Management API reference
-- [Device Documentation](../devices/): Wire formats and device-specific details
+- [Device Documentation](../devices/overview.md): Wire formats and device-specific details

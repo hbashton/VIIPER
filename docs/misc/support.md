@@ -1,23 +1,22 @@
-# Cummonity & Support
+# Support and bug reports
 
-Still stuck after reading the documentation?  
-No worries, there are several ways to get help from the community
+[Documentation index](../index.md) · [Startup diagnostics](../startup-diagnostics.md)
 
-## Discord
+For installation, controller mapping and app UI questions, start with
+[DS4Windows documentation](https://github.com/hbashton/DS4Windows/blob/main/docs/README.md).
+Report app issues to [hbashton/DS4Windows](https://github.com/hbashton/DS4Windows/issues).
 
-[![Discord](https://img.shields.io/discord/368823110817808384?logo=discord&logoColor=white&label=Discord&color=%23535fe5
-)](https://discord.gg/hs34MtcHJY)  
+For reproducible backend bugs, use
+[hbashton/VIIPER Issues](https://github.com/hbashton/VIIPER/issues).
+Search existing reports and include:
 
-Feel free to joind the Discord server to ask for help, or a general chat and hangout with other users and the developers
+- VIIPER and feeder/app version, plus source commit for development builds.
+- OS and architecture, driver version, device type and physical connection.
+- Reproduction steps, expected behaviour and actual result.
+- Relevant diagnostics, checked for personal data and credentials.
 
-## GitHub Discussions
+Describe which hardware was tested. Keep virtual device behaviour separate from
+physical-controller feedback when isolating a fault.
 
-The repository has [Discussions](https://github.com/hbashton/VIIPER/discussions) enabled; browse existing topics or open your own.
-if your search didn't bring up satisfying results
-
-## GitHub Issues
-
-Please respect that the GitHub issue tracker is a collaboration platform mainly intended for developers.  
-Please do not use it to ask for general support or help.  
-If you are absolutely sure you found a bug, you may go ahead with detailed steps on how to reproduce.  
-Otherwise, please use GitHub Discussions or Discord for general support.
+The [DS4Windows community](https://www.reddit.com/r/DS4Windows/) can help with
+general usage. This project does not claim ownership of upstream community channels.

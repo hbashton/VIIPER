@@ -1,5 +1,8 @@
 # Controller platform validation status, 2026-09-01
 
+> **Historical record.** This preserves the source, tests and limitations recorded at the time; it is not current setup guidance. See the [documentation index](../index.md).
+
+
 This is the current dirty-working-tree evidence ledger for the DS4Windows +
 VIIPER Xbox One/Series output and physical Switch 2 work. It supersedes the
 implementation-status portions of

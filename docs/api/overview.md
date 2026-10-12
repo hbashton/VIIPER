@@ -53,11 +53,11 @@
 })();
 </script>
 
-VIIPER provides a lightweight TCP API for managing and controlling virtual buses/devices.  
+VIIPER provides a lightweight TCP API for managing and controlling virtual buses/devices.\
 It's designed to be trivial to drive from any language that can open a TCP socket and send null-byte-terminated payloads.
 
 !!! tip "Client Libraries Available"
-    Client libraries are available that abstract away any protocol details described below.  
+    Client libraries are available that abstract away any protocol details described below.\
     For most use cases, you should use one of the provided client libraries rather than implementing the raw protocol yourself:
 
     - [Go Client](../clients/go.md): Reference implementation included in the repository
@@ -67,13 +67,13 @@ It's designed to be trivial to drive from any language that can open a TCP socke
     - [TypeScript Client Library](../clients/typescript.md): Generated Node.js library with EventEmitter streams
     - [Rust Client Library](../clients/rust.md): Generated Rust library with sync/async support
 
-    
+
     The documentation below is provided for reference and for implementing clients in languages not supported officially.
 
 ## Protocol overview
 
-The TCP API is inspired by the ubiquitous HTTP REST style, but is more lightweight.  
-If you ever worked with HTTP APIs before, you'll feel right at home.  
+The TCP API is inspired by the ubiquitous HTTP REST style, but is more lightweight.\
+If you ever worked with HTTP APIs before, you'll feel right at home.\
 The exception to this are the device-control and feedback streams, which are raw binary streams specific to each device type.
 
 - **Transport**: TCP with optional encryption (ChaCha20-Poly1305)
@@ -81,9 +81,9 @@ The exception to this are the device-control and feedback streams, which are raw
 - **Authentication**: Required for remote connections, optional for localhost (password-based with HMAC validation)
 - **Encryption**: Automatic for authenticated connections (ChaCha20-Poly1305 with unique session keys)
 - **Request format**: a single ASCII/UTF‑8 line terminated by `\0`
-- **Routing**: path followed by optional payload separated by whitespace  
+- **Routing**: path followed by optional payload separated by whitespace\
   (e.g., `bus/list\0` or `bus/create 5\0`)
-- **Payload**: optional string that can be a JSON object, numeric value, or plain string depending on the endpoint.  
+- **Payload**: optional string that can be a JSON object, numeric value, or plain string depending on the endpoint.\
   The payload may contain newlines (e.g., pretty-printed JSON) as only the null byte terminates the request.
 - **Success response**: a single line containing a JSON payload (or an empty line for commands that have no payload), terminated by connection close
 - **Error response**: a single line JSON object following RFC 7807 Problem Details format with a `status` field (HTTP-style status code) and other error details, terminated by connection close
@@ -95,31 +95,31 @@ The exception to this are the device-control and feedback streams, which are raw
     After you add a device with `bus/{id}/add`, you must connect to its streaming endpoint within the configured `DeviceHandlerConnectTimeout` (default: 5s). If no stream connection is established in time, the device is automatically removed. Likewise, when a stream disconnects, a reconnection timer with the same timeout starts; if the client doesn’t reconnect before it expires, the device is removed.
 
 !!! warning "Authentication Required for Remote Connections"
-    **VIIPER requires authentication for all non-localhost connections.**  
+    **VIIPER requires authentication for all non-localhost connections.**\
 
     - **Localhost clients** (`127.0.0.1`, `::1`, `localhost`): Authentication is **optional** (but supported) by default
     - **Remote clients**: Authentication is **required** and enforced
-    
+
     On first start, VIIPER generates a random password
-    and saves it to `<USER_CONFIG_DIR>/viiper.key.txt`.  
-    Windows: `%APPDATA%\VIIPER\viiper.key.txt`  
-    Linux (user): `~/.config/github.com/Alia5/viiper/viiper.key.txt`  
+    and saves it to `<USER_CONFIG_DIR>/viiper.key.txt`.\
+    Windows: `%APPDATA%\VIIPER\viiper.key.txt`\
+    Linux (user): `~/.config/github.com/Alia5/viiper/viiper.key.txt`\
     Linux (root/systemd): `/etc/viiper/viiper.key.txt`
 
-    Remote clients must provide this password to establish a connection.  
+    Remote clients must provide this password to establish a connection.\
 
     See the [Configuration](../cli/configuration.md) documentation for details on password management and the `--api.require-localhost-auth` option.
 
 ## Endpoints
 
 !!! info "null byte excluded"
-    The `\0` (null byte) terminator is excluded from all examples below for readability.  
+    The `\0` (null byte) terminator is excluded from all examples below for readability.\
     All requests must be terminated with a null byte (unless otherwise noted).
 
 <div class="grid cards" markdown>
 
 - **Bus Management**
-  
+
     ---
 
     Create, list, and remove virtual buses
@@ -127,7 +127,7 @@ The exception to this are the device-control and feedback streams, which are raw
     [Jump to section](#bus-management)
 
 - **Device Management**
-  
+
     ---
 
     Add, list, and remove devices on a bus
@@ -135,7 +135,7 @@ The exception to this are the device-control and feedback streams, which are raw
     [Jump to section](#device-management)
 
 - **Device Control / Feedback**
-  
+
     ---
 
     Real-time input and feedback streams for devices
@@ -143,7 +143,7 @@ The exception to this are the device-control and feedback streams, which are raw
     [Jump to section](#device-control--feedback)
 
 - **Error Handling**
-  
+
     ---
 
     Error response format and common error codes
@@ -173,9 +173,9 @@ The exception to this are the device-control and feedback streams, which are raw
 ??? info "bus/create - Create a new bus"
     **Request:** `bus/create` or `bus/create 5`
 
-    **Payload:** Optional numeric bus ID (e.g., `5`)  
+    **Payload:** Optional numeric bus ID (e.g., `5`)\
     If provided, VIIPER attempts to create the bus with that id; otherwise it picks the next free id.
-    
+
     **Response:** `{ "busId": <id> }`
 
 #### `bus/remove <busId>` {.toc-anchor}
@@ -184,7 +184,7 @@ The exception to this are the device-control and feedback streams, which are raw
     **Request:** `bus/remove 1`
 
     **Payload:** Numeric bus ID (e.g., `1`)
-    
+
     **Response:** `{ "busId": <id> }`
 
 ### Device Management {#device-management}
@@ -194,7 +194,7 @@ The exception to this are the device-control and feedback streams, which are raw
 ??? info "bus/{id}/list - List devices on a bus"
     **Request:** `bus/1/list`
 
-    **Response:** 
+    **Response:**
     ```json
     {
       "devices": [
@@ -226,12 +226,12 @@ The exception to this are the device-control and feedback streams, which are raw
       "deviceSpecific": <optional device specific args>
     }
     ```
-    
+
     **Examples:**
     - `{"type":"xbox360"}`
     - `{"type":"keyboard","idVendor":1234,"idProduct":5678}`
     - `{"type":"xbox360", "deviceSpecific": {"subType": 7}}`
-    
+
     **Response:**
     ```json
     {
@@ -245,12 +245,12 @@ The exception to this are the device-control and feedback streams, which are raw
       }
     }
     ```
-    
+
     !!! warning "Connection timeout"
         After add, the server starts a connect timer (default `5s`). You must open a device stream before the timeout expires, otherwise the device is auto-removed.
-    
+
     !!! info "Auto-attach"
-        If [auto-attach](../cli/server.md#api.auto-attach-local-client) is enabled (default), the server automatically attaches the new device to a local USBIP client on the same host (localhost only). Failures are logged but do not affect the API response.
+        If [auto-attach](../cli/server.md#option-auto-attach-local-client) is enabled (default), the server automatically attaches the new device to a local USBIP client on the same host (localhost only). Failures are logged but do not affect the API response.
 
 #### `bus/{id}/remove <deviceId>` {.toc-anchor}
 
@@ -258,7 +258,7 @@ The exception to this are the device-control and feedback streams, which are raw
     **Request:** `bus/1/remove 1`
 
     **Payload:** Numeric device ID (e.g., `1` for device 1-1 on the bus)
-    
+
     **Response:** `{ "busId": <id>, "devId": "<dev>" }`
 
 ### Device Control / Feedback {#device-control--feedback}
@@ -268,19 +268,19 @@ Device Control and Feedback requires an initial "handshake" request, afterwards 
 !!! info "Establish control/feedback connection/stream"
     **Path:** `bus/{busId}/{deviceId}`
 
-    **Handshake:** Send the path followed by `\0` (null byte)  
+    **Handshake:** Send the path followed by `\0` (null byte)\
     Example: `bus/1/1\0`
-    
+
     **Type:** Long-lived TCP connection
-    
-    **Purpose:** Device-specific, bidirectional stream.  
-    
+
+    **Purpose:** Device-specific, bidirectional stream.\
+
     !!! warning "Timeout behavior"
-        When a stream ends, a reconnect timer is started.  
+        When a stream ends, a reconnect timer is started.\
         If the client doesn't reconnect in time, the device is removed.
 
-Device control and feedback is **device-specific**.  
-Each device type defines it's own packet formats.  
+Device control and feedback is **device-specific**.\
+Each device type defines it's own packet formats.\
 
 **In general** the client (your code) sends sends binary input state packets to the VIIPER server and possibly receives binary feedback packets (rumble, keyboard leds, etc.) back.
 
@@ -288,8 +288,8 @@ Refer to the individual [device documentation](../devices/overview.md) for detai
 
 ### Error Handling {#error-handling}
 
-All errors are inspired by HTTP REST APIs and are returned as single-line JSON objects in the style of [RFC 7807 Problem Details](https://tools.ietf.org/html/rfc7807).  
-The connection closes immediately after the error response.  
+All errors are inspired by HTTP REST APIs and are returned as single-line JSON objects in the style of [RFC 7807 Problem Details](https://tools.ietf.org/html/rfc7807).\
+The connection closes immediately after the error response.\
 
 If you have ever worked with HTTP APIs, the errors and status codes will feel familiar.
 
@@ -360,9 +360,9 @@ Error codes are basically HTTP carbon copies:
     printf "bus/1/list\0" | nc localhost 3242
     ```
 
-Then, open a second TCP connection for device control to `bus/1/1` (the API port, not the USBIP port).  
-First send the "handshake" `bus/1/1\0`,  
-then you'll write device-specific input packets and read device-specific feedback packets.  
+Then, open a second TCP connection for device control to `bus/1/1` (the API port, not the USBIP port).\
+First send the "handshake" `bus/1/1\0`,\
+then you'll write device-specific input packets and read device-specific feedback packets.\
 Any language with raw TCP support works.
 
 ### Go snippet (raw TCP Socket)
@@ -379,10 +379,10 @@ import (
 func main() {
     conn, _ := net.Dial("tcp", "localhost:3242")
     defer conn.Close()
-    
+
     // Send request with null terminator
     fmt.Fprint(conn, "bus/create\x00")
-    
+
     // Read entire response until connection closes
     resp, _ := io.ReadAll(conn)
     fmt.Println(string(resp)) // {"busId":1}\n
@@ -393,7 +393,7 @@ For a higher-level experience, see the Go client in `/apiclient/`.
 
 ## How this relates to USBIP
 
-The VIIPER API controls which virtual devices exist and exposes a device stream for live input/feedback.  
+The VIIPER API controls which virtual devices exist and exposes a device stream for live input/feedback.\
 Separately, the USBIP server (default `127.0.0.1:3241`) makes these devices
 attachable from a local USBIP client. USB/IP is not covered by API
 authentication; remote exposure requires an explicitly configured address and

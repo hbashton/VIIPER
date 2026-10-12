@@ -1,5 +1,8 @@
 # VIIPER tray startup recovery validation — 2026-09-08
 
+> **Historical record.** This preserves the source, tests and limitations recorded at the time; it is not current setup guidance. See the [documentation index](../index.md).
+
+
 ## Scope and confidence
 
 Source-level repair for [DS4Windows #69](https://github.com/hbashton/DS4Windows/issues/69),

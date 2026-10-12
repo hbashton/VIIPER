@@ -1,5 +1,8 @@
 # Controller platform audit, 2026-08-29
 
+> **Historical record.** This preserves the source, tests and limitations recorded at the time; it is not current setup guidance. See the [documentation index](../index.md).
+
+
 Status: the pinned PadForge/HIDMaestro, Switch2Connect, mandatory Microsoft,
 and xow source audits are complete enough to select the current offline Phase
 1/2 work. This is not a completed full-platform audit: Windows binding,
